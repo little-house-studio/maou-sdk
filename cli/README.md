@@ -27,12 +27,14 @@ maou --theme cyber        # 赛博主题
 | `Ctrl+N` | 新对话 |
 | `Ctrl+B` / `Ctrl+G` | 切换侧栏 / HUD |
 | `Tab` | 切换焦点面板 |
-| `` ` `` (反引号) | 开/关鼠标（**关闭时可拖选复制**，默认关） |
-| 鼠标点击 | 聚焦面板 / 输入框光标定位（需先开鼠标） |
+| `` ` `` (反引号) | 开/关鼠标（1002 拖动模式；关闭时走终端原生选择） |
+| 鼠标单击 | 移动光标到该字符（输入框，宽字符感知） |
+| 鼠标拖动 | 选中高亮，**松手用 OSC52 复制到系统剪贴板**（+「已复制 N 字」） |
+| `Shift`/`Option`+拖动 | 走终端原生选择（任意屏上文字，兜底） |
 | 滚轮 / `↑↓`(焦点在对话) | 滚动对话历史 |
 | `Ctrl+C` | 退出 |
 
-> **拖选复制**：默认不开鼠标上报，终端原生选区/复制可用。按 `` ` `` 开启鼠标后才接管点击/滚轮（开启时若想复制再按 `` ` `` 关掉）。
+> **点击移光标 + 拖选复制 同时拥有**：鼠标开启后，单击移光标、拖动选区、松手即用 **OSC 52** 写入系统剪贴板（`clipboard.ts`）。这正是 Claude Code 新版的做法。需终端支持 OSC52（iTerm2 / WezTerm / kitty / Ghostty / Windows Terminal；tmux 需 `set -g set-clipboard on`）。想用终端原生选择（覆盖任意 scrollback）则按住 `Shift`(xterm)/`Option`(iTerm2) 拖动。
 
 ## 响应式布局（底层）
 `hooks/useTerminalSize.ts` 提供断点（narrow/normal/wide）；窄屏自动折叠侧栏/HUD。所有布局以此为底层自适应。
@@ -46,7 +48,8 @@ maou --theme cyber        # 赛博主题
 | `Scrollable` | `ScrollView` 滚轮/方向键滚动视口 + 滚动条（`overflow:hidden` + 负偏移） |
 | `Collapsible` | 折叠/展开动画容器（`useTween` 缓动 + 裁剪） |
 | `Markdown` | Markdown + 轻量 HTML(`<b><i><code><a>`) → 终端富文本（卡片内容渲染） |
-| `Chat` / `Hud` / `InputBox` | 消息流/工具卡片 · 侧栏/HUD/状态栏 · 点击定位输入框 |
+| `Chat` / `Hud` / `InputBox` | 消息流/工具卡片 · 侧栏/HUD/状态栏 · 输入框(点击移光标+拖选高亮) |
+| `clipboard.ts` | OSC 52 写系统剪贴板（`osc52()` / `copyToClipboard()`） |
 
 ## 功能验收 Demo
 ```bash

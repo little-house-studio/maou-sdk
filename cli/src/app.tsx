@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useApp } from "ink";
 import { Box } from "ink";
+import { useStdout } from "ink";
 import { currentTheme, setTheme, THEMES } from "./theme.js";
 import { useStore } from "./state/store.js";
 import { runChat } from "./sdk/index.js";
@@ -14,12 +15,14 @@ import { ModelPicker, CommandPalette, HelpModal } from "./components/Modals.js";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
 import { useMouse } from "./hooks/useMouse.js";
 import { useCleanInput } from "./hooks/useCleanInput.js";
+import { osc52 } from "./clipboard.js";
 
 type Focus = "input" | "sidebar" | "hud" | "chat";
 
 export function App() {
   const { exit } = useApp();
   const term = useTerminalSize();
+  const { stdout } = useStdout();
   const store = useStore();
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -27,6 +30,8 @@ export function App() {
   const [frame, setFrame] = useState(0);
   const [mouseOn, setMouseOn] = useState(false); // 默认关 → 终端原生可拖选复制
   const [chatOffset, setChatOffset] = useState(0); // 对话滚动（消息粒度，0=最新）
+  const [sel, setSel] = useState<[number, number] | null>(null); // 输入框选区
+  const selAnchor = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const cols = term.cols;
@@ -34,6 +39,7 @@ export function App() {
   // 响应式：窄屏自动折叠（与用户手动开关取交集）
   const sidebarVisible = store.sidebarOpen && term.showSidebar;
   const hudVisible = store.hudOpen && term.showHud;
+  const inputColOffset = 4; // 输入框文本起始列（border+pad+"❯ "）
 
   // 动画帧循环 + 3D 旋转
   useEffect(() => {
@@ -41,17 +47,27 @@ export function App() {
     return () => clearInterval(id);
   }, []);
 
-  // 鼠标（默认关；按 ` 开启）。开启时只用 1000 模式，尽量不抢拖选。
+  // 鼠标（默认关；按 ` 开启，1002 拖动模式）。点击=光标，拖动=选区，松手=OSC52 复制。
   useMouse(mouseOn, (e) => {
+    const inInputRow = e.row >= rows - 3;
     if (e.type === "down") {
       const sidebarW = sidebarVisible ? 20 : 0;
       const hudW = hudVisible ? 26 : 0;
-      if (e.col <= sidebarW) setFocus("sidebar");
-      else if (e.col >= cols - hudW) setFocus("hud");
-      else if (e.row >= rows - 3) {
+      if (inInputRow) {
         setFocus("input");
-        setCursor(colToCharIndex(input, Math.max(0, e.col - 4)));
-      } else setFocus("chat");
+        const idx = colToCharIndex(input, Math.max(0, e.col - inputColOffset));
+        selAnchor.current = idx; setSel([idx, idx]); setCursor(idx);
+      } else if (e.col <= sidebarW) setFocus("sidebar");
+      else if (e.col >= cols - hudW) setFocus("hud");
+      else setFocus("chat");
+    } else if (e.type === "drag" && selAnchor.current != null) {
+      const idx = colToCharIndex(input, Math.max(0, e.col - inputColOffset));
+      setSel([selAnchor.current, idx]); setCursor(idx);
+    } else if (e.type === "up" && selAnchor.current != null) {
+      const a = selAnchor.current, b = colToCharIndex(input, Math.max(0, e.col - inputColOffset));
+      selAnchor.current = null;
+      if (a !== b) { const s = Math.min(a, b), en = Math.max(a, b); setSel([s, en]); const text = input.slice(s, en); if (text && stdout) { stdout.write(osc52(text)); store.toastMsg(`已复制 ${[...text].length} 字`, "ok"); } }
+      else setSel(null);
     } else if (e.type === "wheelUp") {
       setChatOffset((o) => Math.min(Math.max(0, store.messages.length - 1), o + 1));
     } else if (e.type === "wheelDown") {
@@ -62,7 +78,7 @@ export function App() {
   const doSend = async () => {
     const text = input.trim();
     if (!text || store.streaming) return;
-    setInput(""); setCursor(0); setChatOffset(0);
+    setInput(""); setCursor(0); setChatOffset(0); setSel(null);
     store.send(text);
     const history = [...useStore.getState().messages].map((m) => ({ role: m.role, content: m.content })) as any;
     abortRef.current = new AbortController();
@@ -113,13 +129,14 @@ export function App() {
 
     if (focus === "input") {
       if (key.return) return void doSend();
-      if (key.leftArrow) return setCursor((c) => Math.max(0, c - 1));
-      if (key.rightArrow) return setCursor((c) => Math.min(input.length, c + 1));
+      if (key.leftArrow) { setSel(null); return setCursor((c) => Math.max(0, c - 1)); }
+      if (key.rightArrow) { setSel(null); return setCursor((c) => Math.min(input.length, c + 1)); }
       if (key.backspace || key.delete) {
+        setSel(null);
         if (cursor > 0) { setInput((v) => v.slice(0, cursor - 1) + v.slice(cursor)); setCursor((c) => c - 1); }
         return;
       }
-      if (char && !key.ctrl && !key.meta) { setInput((v) => v.slice(0, cursor) + char + v.slice(cursor)); setCursor((c) => c + char.length); return; }
+      if (char && !key.ctrl && !key.meta) { setSel(null); setInput((v) => v.slice(0, cursor) + char + v.slice(cursor)); setCursor((c) => c + char.length); return; }
     }
   });
 
@@ -138,7 +155,7 @@ export function App() {
         </Box>
         {hudVisible && <Hud frame={frame} angle={store.wireAngle} />}
       </Box>
-      <InputBox value={input} cursor={cursor} focused={focus === "input"} />
+      <InputBox value={input} cursor={cursor} focused={focus === "input"} selStart={sel?.[0]} selEnd={sel?.[1]} />
       <StatusBar mode={focus === "input" ? "输入" : focus.toUpperCase()} input={input} mouse={mouseOn} />
       {store.modal === "model" && <ModelPicker />}
       {store.modal === "command" && <CommandPalette onRun={runCommand} />}

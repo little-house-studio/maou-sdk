@@ -8,14 +8,17 @@ export interface MouseEvent {
 }
 
 /**
- * 启用鼠标：只用 1000（按下/释放，不含移动/拖动）+ 1006 SGR。
- * 故意不启用 1002/1003（按钮拖动/全跟踪）—— 这样终端原生拖选复制仍可用（你标的优先项）。
+ * 启用鼠标 SGR(1006)。
+ * - drag=false：1000 模式（仅按下/释放/滚轮），尽量不破坏终端原生选区。
+ * - drag=true：1002 模式（额外上报"按住拖动"），用于自绘选区拖选；
+ *   此时终端原生拖选需配合 Shift(xterm)/Option(iTerm2) 修饰键绕过。
  */
-export function enableMouse(out: NodeJS.WriteStream): void {
-  out.write("\x1b[?1000h\x1b[?1006h");
+export function enableMouse(out: NodeJS.WriteStream, opts: { drag?: boolean } = {}): void {
+  out.write(opts.drag ? "\x1b[?1002h\x1b[?1006h" : "\x1b[?1000h\x1b[?1006h");
 }
 export function disableMouse(out: NodeJS.WriteStream): void {
-  out.write("\x1b[?1006l\x1b[?1000l");
+  // 关掉所有可能开过的模式
+  out.write("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
 }
 
 /** SGR 鼠标转义正则（用于解析 + 从输入流剥离） */

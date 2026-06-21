@@ -97,6 +97,19 @@ async function main() {
   const cIdxAfterDel = Number((latestScreen().match(/索引\s*(\d+)/) || [])[1] ?? -1);
   const deleteWorks = cIdxAfterType >= 1 && cIdxAfterDel === cIdxAfterType - 1;
 
+  // 开鼠标（1002 拖动模式），验证状态栏 ON
+  key("`"); await sleep(70);
+  const mouseOk = latestScreen().includes("ON");
+  // 拖选复制：useMouse 监听真实 process.stdin，所以鼠标 SGR 发到 process.stdin
+  const mseq = (b, c, r, tail) => Buffer.from(`\x1b[<${b};${c};${r}${tail}`, "latin1");
+  process.stdin.emit("data", mseq(0, 8, 20, "M"));   await sleep(45); // down @列8 → 字符0(锚)
+  process.stdin.emit("data", mseq(32, 14, 20, "M")); await sleep(45); // drag @列14
+  process.stdin.emit("data", mseq(0, 18, 20, "m"));  await sleep(110); // up @列18 → OSC52 复制
+  const KNOWN_INPUT = "点这行→中文abc混排定位";
+  const oscm = stdout.frames.join("").match(/\x1b\]52;c;([A-Za-z0-9+/=]+)\x07/);
+  const copiedText = oscm ? Buffer.from(oscm[1], "base64").toString("utf8") : "";
+  const osc52Works = !!oscm && copiedText.length > 0 && KNOWN_INPUT.includes(copiedText);
+
   // 用 goto 确定性导航到弹窗页（index 13）
   const onModalPage = await goto(13);
   key("k"); await sleep(120);
@@ -104,10 +117,6 @@ async function main() {
   // 不透明检测：弹窗帧里的背景填充 SGR(48;2;…) 数量（需 FORCE_COLOR）
   const bgFill = (latestRaw().match(/48;2;/g) || []).length;
   key(ESC); await sleep(50);
-
-  // 鼠标开关
-  key("`"); await sleep(70);
-  const mouseOk = latestScreen().includes("ON");
 
   app.unmount();
   await sleep(50);
@@ -126,6 +135,8 @@ async function main() {
     modalBgFillSGR: bgFill,
     inputDeleteWorks: deleteWorks,
     mouseToggleWorks: mouseOk,
+    osc52CopyWorks: osc52Works,
+    osc52CopiedText: copiedText,
     missedTitles: seen.filter((s) => !s.probe).map((s) => s.page),
     errors,
   };
@@ -134,7 +145,7 @@ async function main() {
   // bgFill 需 FORCE_COLOR；未强制色彩时跳过该断言
   const colorOn = Boolean(process.env.FORCE_COLOR);
   const opaqueOk = colorOn ? bgFill >= 15 : modalOk;
-  const pass = headerOk >= 15 && probeOk >= 15 && rendered && modalOk && opaqueOk && deleteWorks && mouseOk && errors.length === 0;
+  const pass = headerOk >= 15 && probeOk >= 15 && rendered && modalOk && opaqueOk && deleteWorks && mouseOk && osc52Works && errors.length === 0;
   console.log(pass ? "\nSMOKE: PASS ✅" : "\nSMOKE: FAIL ❌");
   process.exit(pass ? 0 : 1);
 }

@@ -1,4 +1,4 @@
-/** 输入框 —— 支持点击定位光标到字符位置（宽字符感知） */
+/** 输入框 —— 点击定位光标（宽字符感知）+ 拖选高亮 */
 import React from "react";
 import { Box, Text } from "ink";
 import stringWidth from "string-width";
@@ -10,6 +10,9 @@ export interface InputBoxProps {
   focused: boolean;
   placeholder?: string;
   prompt?: string;
+  /** 选区字符索引区间 [selStart, selEnd)（拖选时高亮） */
+  selStart?: number;
+  selEnd?: number;
 }
 
 /**
@@ -26,21 +29,27 @@ export function colToCharIndex(text: string, col: number): number {
   return text.length;
 }
 
-export function InputBox({ value, cursor, focused, placeholder = "输入消息…", prompt = "❯" }: InputBoxProps) {
+export function InputBox({ value, cursor, focused, placeholder = "输入消息…", prompt = "❯", selStart, selEnd }: InputBoxProps) {
   const t = currentTheme;
-  const before = value.slice(0, cursor);
-  const at = value[cursor] ?? " ";
-  const after = value.slice(cursor + 1);
+  const s = Math.min(selStart ?? cursor, selEnd ?? cursor);
+  const e = Math.max(selStart ?? cursor, selEnd ?? cursor);
+  const hasSel = e > s;
+  const chars = [...value];
   return (
     <Box borderStyle="round" borderColor={focused ? t.accent : t.border} paddingX={1}>
       <Text color={t.accent} bold>{prompt} </Text>
-      {value.length === 0 && !focused ? (
+      {chars.length === 0 && !focused ? (
         <Text color={t.dim}>{placeholder}</Text>
       ) : (
         <Text>
-          <Text color={t.fg}>{before}</Text>
-          {focused ? <Text backgroundColor={t.accent} color={t.bg}>{at}</Text> : <Text color={t.fg}>{at === " " ? "" : at}</Text>}
-          <Text color={t.fg}>{after}</Text>
+          {chars.map((ch, i) => {
+            const inSel = hasSel && i >= s && i < e;
+            const isCursor = focused && i === cursor && !hasSel;
+            if (isCursor) return <Text key={i} backgroundColor={t.accent} color={t.bg}>{ch}</Text>;
+            if (inSel) return <Text key={i} backgroundColor={t.selectionBg} color={t.overlayFg}>{ch}</Text>;
+            return <Text key={i} color={t.fg}>{ch}</Text>;
+          })}
+          {focused && cursor >= chars.length && !hasSel && <Text backgroundColor={t.accent} color={t.bg}> </Text>}
         </Text>
       )}
     </Box>

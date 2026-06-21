@@ -8,8 +8,8 @@
  *
  * 不连真实 LLM（faux 数据），纯展示组件能力供验收。
  */
-import React, { useState, useEffect } from "react";
-import { render, Box, Text, useApp } from "ink";
+import React, { useState, useEffect, useRef } from "react";
+import { render, Box, Text, useApp, useStdout } from "ink";
 import { currentTheme, setTheme, THEMES } from "./theme.js";
 import { Panel } from "./components/Panel.js";
 import { Gauge, Spark, Wireframe, AsciiArt, Spinner } from "./components/graphics.js";
@@ -27,6 +27,7 @@ import { useTerminalSize } from "./hooks/useTerminalSize.js";
 import { useMouse } from "./hooks/useMouse.js";
 import { useScroll } from "./hooks/useScroll.js";
 import { useCleanInput } from "./hooks/useCleanInput.js";
+import { osc52 } from "./clipboard.js";
 // @ts-ignore pngjs 无类型声明
 import pngjs from "pngjs";
 import { writeFileSync, existsSync } from "node:fs";
@@ -118,6 +119,10 @@ export function Demo() {
   const [mouseOn, setMouseOn] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [focusIdx, setFocusIdx] = useState(0);
+  const [sel, setSel] = useState<[number, number] | null>(null);
+  const [copied, setCopied] = useState("");
+  const selAnchor = useRef<number | null>(null);
+  const { stdout } = useStdout();
   const store = useStore();
   const t = currentTheme;
   const img = ensureTestImage();
@@ -128,12 +133,24 @@ export function Demo() {
     return () => clearInterval(id);
   }, []);
 
-  // 鼠标（默认关；按 ` 开启）。关闭时终端原生拖选复制可用。
+  const doCopy = (text: string) => {
+    if (text && stdout) stdout.write(osc52(text));
+    setCopied(`已复制 ${[...text].length} 字`);
+  };
+
+  // 鼠标（默认关；按 ` 开启，1002 拖动模式）。关闭时终端原生拖选复制可用。
   useMouse(mouseOn, (e) => {
     setLastMouse(`${e.type} @ 列${e.col} 行${e.row} 键${e.button}`);
-    if (page === 12 && e.type === "down") {
-      const rel = Math.max(0, e.col - 8); // 估算输入框文本起始列
-      setCursor(colToCharIndex(input, rel));
+    // 第13页：点击=移光标，拖动=选区，松手=OSC52 复制（无修饰键同时拥有两者）
+    if (page === 12) {
+      const idx = colToCharIndex(input, Math.max(0, e.col - 8)); // 估算输入框文本起始列
+      if (e.type === "down") { selAnchor.current = idx; setSel([idx, idx]); setCursor(idx); setCopied(""); }
+      else if (e.type === "drag" && selAnchor.current != null) { setSel([selAnchor.current, idx]); setCursor(idx); }
+      else if (e.type === "up" && selAnchor.current != null) {
+        const a = selAnchor.current, b = idx; selAnchor.current = null;
+        if (a !== b) { const s = Math.min(a, b), en = Math.max(a, b); setSel([s, en]); doCopy(input.slice(s, en)); }
+        else setSel(null);
+      }
     }
     if (page === 9) {
       if (e.type === "wheelUp") chat.scrollBy(-1);
@@ -167,12 +184,14 @@ export function Demo() {
     // —— 输入框页：完整编辑（删除键 char 为空，必须在 char 判空之外处理）——
     if (page === 12) {
       if (key.backspace || key.delete) {
+        setSel(null); setCopied("");
         if (cursor > 0) { setInput((v) => v.slice(0, cursor - 1) + v.slice(cursor)); setCursor((c) => c - 1); }
         return;
       }
       if (key.upArrow) return setCursor(0);
       if (key.downArrow) return setCursor(input.length);
       if (char && !key.ctrl && !key.meta && !key.return) {
+        setSel(null); setCopied("");
         setInput((v) => v.slice(0, cursor) + char + v.slice(cursor)); setCursor((c) => c + 1);
         return;
       }
@@ -374,10 +393,20 @@ export function Demo() {
 
         {page === 12 && (
           <Box flexDirection="column">
-            <Hint>{mouseOn ? "鼠标已开：点击输入框任意字符，光标跳过去" : "按 ` 开启鼠标后可点击定位（关闭时可拖选复制）"}</Hint>
-            <Box marginTop={1}><InputBox value={input} cursor={cursor} focused /></Box>
-            <Box marginTop={1}><Hint>光标字符索引 <Text color={t.accent}>{cursor}</Text>（中文占 2 列，点击宽字符感知对齐）· ←→ 移动也可</Hint></Box>
-            <Check>点击列→字符索引（宽字符感知）· 也可直接打字编辑</Check>
+            <Hint>{mouseOn
+              ? "单击=光标跳到该字符 · 拖动=选中高亮 · 松手=OSC52 复制到系统剪贴板"
+              : "按 ` 开启鼠标（拖选复制+点击移光标）· 关闭时走终端原生拖选"}</Hint>
+            <Box marginTop={1}>
+              <InputBox value={input} cursor={cursor} focused selStart={sel?.[0]} selEnd={sel?.[1]} />
+            </Box>
+            <Box marginTop={1}>
+              <Hint>光标索引 <Text color={t.accent}>{cursor}</Text>
+                {sel && sel[0] !== sel[1] ? <Text color={t.role.assistant}> · 选中 [{Math.min(sel[0], sel[1])},{Math.max(sel[0], sel[1])})</Text> : null}
+                {copied ? <Text color={t.status.ok}>　📋 {copied}</Text> : null}
+              </Hint>
+            </Box>
+            <Check>无修饰键同时：点击移光标 + 拖选复制(OSC52→真剪贴板) · 退格可删 · ↑↓ 行首/尾</Check>
+            <Hint>想用终端原生选择(任意屏上文字)：按住 Shift(xterm)/Option(iTerm2) 拖动</Hint>
           </Box>
         )}
 
