@@ -1,0 +1,13 @@
+{
+  "name": "gemini",
+  "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+  "model": "gemini-2.5-flash",
+  "protocol": "openai",
+  "stream": true,
+  "supportsVision": true,
+  "supportsReasoning": true,
+  "nativeToolCalling": true,
+  "nativeStructuredOutput": false,
+  "structuredOutputMode": "json_object",
+  "maxTokens": 65536
+}

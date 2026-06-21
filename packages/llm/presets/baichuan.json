@@ -1,0 +1,13 @@
+{
+  "name": "baichuan",
+  "url": "https://api.baichuan-ai.com/v1/chat/completions",
+  "model": "baichuan4",
+  "protocol": "openai",
+  "stream": true,
+  "supportsVision": false,
+  "supportsReasoning": false,
+  "nativeToolCalling": true,
+  "nativeStructuredOutput": false,
+  "structuredOutputMode": "json_object",
+  "maxTokens": 65536
+}

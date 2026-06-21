@@ -1,0 +1,13 @@
+{
+  "name": "deepseek",
+  "url": "https://api.deepseek.com/v1/chat/completions",
+  "model": "deepseek-chat",
+  "protocol": "openai",
+  "stream": true,
+  "supportsVision": false,
+  "supportsReasoning": true,
+  "nativeToolCalling": true,
+  "nativeStructuredOutput": false,
+  "structuredOutputMode": "json_object",
+  "maxTokens": 65536
+}

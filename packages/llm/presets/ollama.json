@@ -1,0 +1,13 @@
+{
+  "name": "ollama",
+  "url": "http://localhost:11434/v1/chat/completions",
+  "model": "llama3",
+  "protocol": "openai",
+  "stream": true,
+  "supportsVision": false,
+  "supportsReasoning": false,
+  "nativeToolCalling": true,
+  "nativeStructuredOutput": false,
+  "structuredOutputMode": "json_object",
+  "maxTokens": 65536
+}

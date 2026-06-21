@@ -1,0 +1,14 @@
+{
+  "name": "my-custom-provider",
+  "url": "https://your-api-endpoint.com/v1/chat/completions",
+  "model": "your-model-name",
+  "protocol": "openai",
+  "stream": true,
+  "supportsVision": false,
+  "supportsReasoning": false,
+  "nativeToolCalling": true,
+  "nativeStructuredOutput": false,
+  "structuredOutputMode": "json_object",
+  "maxTokens": 65536,
+  "description": "自定义 API 配置示例。复制此文件重命名（去掉 _ 前缀），填入你的信息即可。"
+}

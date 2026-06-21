@@ -1,0 +1,13 @@
+{
+  "name": "gitee",
+  "url": "https://ai.gitee.com/v1/chat/completions",
+  "model": "deepseek-r1",
+  "protocol": "openai",
+  "stream": true,
+  "supportsVision": false,
+  "supportsReasoning": true,
+  "nativeToolCalling": true,
+  "nativeStructuredOutput": false,
+  "structuredOutputMode": "json_object",
+  "maxTokens": 65536
+}

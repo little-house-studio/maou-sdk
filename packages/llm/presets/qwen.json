@@ -1,0 +1,13 @@
+{
+  "name": "qwen",
+  "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  "model": "qwen-max",
+  "protocol": "openai",
+  "stream": true,
+  "supportsVision": true,
+  "supportsReasoning": false,
+  "nativeToolCalling": true,
+  "nativeStructuredOutput": false,
+  "structuredOutputMode": "json_object",
+  "maxTokens": 65536
+}

@@ -1,0 +1,13 @@
+{
+  "name": "together",
+  "url": "https://api.together.xyz/v1/chat/completions",
+  "model": "mistralai/Mixtral-8x22B-Instruct-v0.1",
+  "protocol": "openai",
+  "stream": true,
+  "supportsVision": false,
+  "supportsReasoning": false,
+  "nativeToolCalling": true,
+  "nativeStructuredOutput": false,
+  "structuredOutputMode": "json_object",
+  "maxTokens": 65536
+}
