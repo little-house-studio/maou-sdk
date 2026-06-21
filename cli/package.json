@@ -1,30 +1,40 @@
 {
   "name": "@little-house-studio/cli",
-  "version": "0.1.0",
-  "description": "Maou SDK 最小 CLI（对标 pi 的 `pi` 命令）——交互式 agent REPL",
+  "version": "0.2.0",
+  "description": "Maou CLI — RPG 风格终端 AI 对话界面（Ink + React）",
   "type": "module",
   "license": "MIT",
-  "bin": {
-    "maou": "./dist/index.js"
-  },
+  "bin": { "maou": "./dist/index.js" },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./image": { "types": "./dist/image/ascii.d.ts", "import": "./dist/image/ascii.js" },
+    "./canvas": { "types": "./dist/canvas/primitives.d.ts", "import": "./dist/canvas/primitives.js" }
+  },
   "files": ["dist", "README.md"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
+    "dev": "tsx src/index.tsx",
+    "start": "node dist/index.js",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@little-house-studio/agent": "workspace:*",
     "@little-house-studio/llm": "workspace:*",
-    "@little-house-studio/types": "workspace:*"
+    "@little-house-studio/types": "workspace:*",
+    "ink": "^5.0.1",
+    "react": "^18.2.0",
+    "pngjs": "^3.3.3",
+    "string-width": "^7.1.0",
+    "zustand": "^4.5.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/react": "^18.2.0",
+    "tsx": "^4.7.0",
     "typescript": "^5.7.0"
   },
-  "engines": {
-    "node": ">=20"
-  }
+  "engines": { "node": ">=20" }
 }
