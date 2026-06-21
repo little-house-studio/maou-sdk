@@ -4,21 +4,37 @@
   "description": "Maou CLI — RPG 风格终端 AI 对话界面（Ink + React）",
   "type": "module",
   "license": "MIT",
-  "bin": { "maou": "./dist/index.js" },
+  "bin": {
+    "maou": "./dist/index.js"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./image": { "types": "./dist/image/ascii.d.ts", "import": "./dist/image/ascii.js" },
-    "./canvas": { "types": "./dist/canvas/primitives.d.ts", "import": "./dist/canvas/primitives.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./image": {
+      "types": "./dist/image/ascii.d.ts",
+      "import": "./dist/image/ascii.js"
+    },
+    "./canvas": {
+      "types": "./dist/canvas/primitives.d.ts",
+      "import": "./dist/canvas/primitives.js"
+    }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "dev:demo": "tsx src/demo.tsx",
+    "demo": "node dist/demo.js"
   },
   "dependencies": {
     "@little-house-studio/agent": "workspace:*",
@@ -36,5 +52,7 @@
     "tsx": "^4.7.0",
     "typescript": "^5.7.0"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }
