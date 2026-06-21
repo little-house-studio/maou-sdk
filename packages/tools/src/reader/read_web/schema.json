@@ -1,0 +1,22 @@
+{
+  "name": "read_web",
+  "description": "读取网页或URL内容（占位）",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具？"
+      },
+      "url": {
+        "type": "string",
+        "description": "网页URL"
+      }
+    },
+    "required": [
+      "reason",
+      "url"
+    ],
+    "additionalProperties": false
+  }
+}

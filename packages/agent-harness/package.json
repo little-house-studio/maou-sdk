@@ -1,0 +1,34 @@
+{
+  "name": "@little-house-studio/agent-harness",
+  "version": "0.1.0",
+  "description": "Maou SDK Agent 运行时层（注册表/工厂、提示词编译、token 追踪、agent-loop、事件总线、技能、Git 监听、插件基类）",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@little-house-studio/core": "workspace:*",
+    "@little-house-studio/types": "workspace:*",
+    "@little-house-studio/tools": "workspace:*",
+    "@little-house-studio/context": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

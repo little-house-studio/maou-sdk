@@ -1,0 +1,63 @@
+{
+  "name": "board",
+  "description": "共享状态看板（仅限结构化状态数据）。存储键值对形式的状态信息，如任务进度、计数器、角色属性、配置标记等。【禁止】不要存储对话摘要、聊天总结、用户消息、上下文记忆或任何自然语言段落。对话上下文由系统自动管理，不需要你用 board 存储。不要存代码，不要存聊天记录。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "list",
+          "get",
+          "add",
+          "replace",
+          "edit",
+          "del"
+        ],
+        "description": "list: 全部列出 | get: 查单条或分类 | add: 新增 | replace: 覆盖/新建 | edit: 局部改 | del: 删除"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "session",
+          "project",
+          "global"
+        ],
+        "description": "作用域。session(默认) | project | global"
+      },
+      "name": {
+        "type": "string",
+        "description": "键名。add/replace/edit/del 时必填。"
+      },
+      "value": {
+        "type": "string",
+        "description": "键值，最长100字符。add 时必填。"
+      },
+      "type": {
+        "type": "string",
+        "description": "数据类型，如 string/number/json。可选。"
+      },
+      "category": {
+        "type": "string",
+        "description": "分类标签。如 identity/status/progress/config。可选。"
+      },
+      "owner": {
+        "type": "string",
+        "description": "所属者。可选。"
+      },
+      "description": {
+        "type": "string",
+        "description": "用途说明。可选。"
+      }
+    },
+    "required": [
+      "action",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

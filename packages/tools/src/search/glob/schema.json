@@ -1,0 +1,32 @@
+{
+  "name": "glob",
+  "description": "按文件名模式查找项目中的文件。仅在需要定位文件时使用。支持递归如 '**/*.py'。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "Glob 模式。如 '**/*.py'。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "path": {
+        "type": "string",
+        "description": "搜索目录，默认整个项目。"
+      },
+      "head_limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 500,
+        "description": "最多返回文件数。默认 100。"
+      }
+    },
+    "required": [
+      "pattern",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

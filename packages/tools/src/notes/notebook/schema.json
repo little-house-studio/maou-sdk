@@ -1,0 +1,43 @@
+{
+  "name": "notebook",
+  "description": "临时笔记。仅在多步骤复杂任务中需要记录中间结果或踩坑项时使用。简单对话、问候、闲聊不需要使用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "list",
+          "create",
+          "read",
+          "write",
+          "mount",
+          "unmount",
+          "delete"
+        ],
+        "description": "list: 列出 | create: 创建 | read: 阅读 | write: 写入 | mount: 挂载 | unmount: 卸下 | delete: 删除"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "name": {
+        "type": "string",
+        "description": "笔记名称。"
+      },
+      "description": {
+        "type": "string",
+        "description": "笔记用途说明。"
+      },
+      "content": {
+        "type": "string",
+        "description": "笔记正文。"
+      }
+    },
+    "required": [
+      "action",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "create_skill",
+  "description": "创建新的 skill。根据需求生成 SKILL.md 模板，并提供完善和测试的提示词引导 AI 完成整个 skill 创建流程。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "skill 名称，使用 kebab-case 格式（如 'code-review', 'lark-im'）"
+      },
+      "description": {
+        "type": "string",
+        "description": "skill 的简短描述"
+      },
+      "requirements": {
+        "type": "string",
+        "description": "详细需求（50-3000字）。包含：目的、大纲、验收标准、是否需要程序代码资源、CLI工具或外部依赖等。"
+      }
+    },
+    "required": ["name", "description", "requirements"],
+    "additionalProperties": false
+  }
+}

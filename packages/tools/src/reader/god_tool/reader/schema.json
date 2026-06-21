@@ -1,0 +1,38 @@
+{
+  "name": "reader",
+  "description": "读取文件、网页或图片。仅在用户要求查看文件内容、或你需要读取文件来完成用户任务时使用。不要为了「确认」或「检查」而去读不存在的文件。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "文件路径（相对项目根目录）或完整URL。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "start_line": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "起始行号。默认 1。"
+      },
+      "end_line": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "结束行号。默认文件末尾。"
+      },
+      "max_chars": {
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 100000,
+        "description": "最大返回字符数。默认 50000。"
+      }
+    },
+    "required": [
+      "path",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

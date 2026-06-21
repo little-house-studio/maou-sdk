@@ -1,0 +1,118 @@
+{
+  "name": "find_code",
+  "description": "代码结构搜索工具，类似 grep 但搜的是代码结构（函数、类、调用关系），不是文本。返回符号名+文件路径+行号，不返回原始代码行。能回答 grep 做不到的问题：谁调用了 X、X 依赖了谁、有哪些死代码、有没有循环依赖。仅在需要分析代码结构、调用关系、依赖关系时使用。简单文本搜索用 grep。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "search",
+          "callers",
+          "callees",
+          "path",
+          "cycles",
+          "unused",
+          "impact",
+          "explain",
+          "hierarchy",
+          "duplicates",
+          "subgraph"
+        ],
+        "description": "操作类型。search=按名搜符号，callers=谁调用了它，callees=它调用了谁，path=两符号间调用链，cycles=循环依赖，unused=死代码，impact=修改影响范围，explain=符号上下文解释，hierarchy=调用层级，duplicates=重复代码，subgraph=局部代码图。"
+      },
+      "symbol": {
+        "type": "string",
+        "description": "要搜索的符号名。search/callers/callees/impact/explain/hierarchy/subgraph 必填。支持正则匹配。"
+      },
+      "target": {
+        "type": "string",
+        "description": "目标符号名。path 查调用链时必填，与 symbol 组成起点→终点。"
+      },
+      "kind": {
+        "type": "string",
+        "enum": [
+          "function",
+          "class",
+          "method",
+          "struct",
+          "enum",
+          "interface",
+          "trait",
+          "variable",
+          "constant",
+          "type",
+          "module",
+          "namespace"
+        ],
+        "description": "符号类型过滤。默认不过滤。"
+      },
+      "lang": {
+        "type": "string",
+        "description": "语言过滤。如 ts、python、rust、go。"
+      },
+      "in_file": {
+        "type": "string",
+        "description": "符号所在文件路径。当符号名有歧义（多个定义）时用于消歧。"
+      },
+      "exact": {
+        "type": "boolean",
+        "description": "精确匹配符号名（关闭正则）。默认 false。"
+      },
+      "fuzzy": {
+        "type": "boolean",
+        "description": "模糊匹配符号名。适合不确定确切名称时使用。默认 false。"
+      },
+      "depth": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10,
+        "description": "调用关系搜索深度。impact 默认 3，subgraph 默认 2。"
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "all",
+          "public",
+          "private",
+          "function",
+          "struct"
+        ],
+        "description": "unused 模式专用。all=所有未使用符号(默认)，public=未使用的公开符号，private=未使用的私有符号，function=只看函数，struct=只看类型。"
+      },
+      "cycle_type": {
+        "type": "string",
+        "enum": [
+          "calls",
+          "imports",
+          "modules"
+        ],
+        "description": "cycles 模式专用。calls=函数调用循环(默认)，imports=文件导入循环，modules=模块循环。"
+      },
+      "min_cycle_size": {
+        "type": "integer",
+        "minimum": 2,
+        "description": "cycles 模式专用。只返回包含 ≥N 个符号的循环。默认 2。"
+      },
+      "direct_only": {
+        "type": "boolean",
+        "description": "impact 模式专用。true=只看直接依赖者，false=包含间接依赖。默认 false。"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "description": "最大返回结果数。默认 30。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      }
+    },
+    "required": [
+      "action",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "agent_message",
+  "description": "子 Agent 管理。仅在需要并行处理复杂任务时创建子 Agent。简单任务不需要子 Agent。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "list",
+          "create",
+          "status",
+          "output",
+          "update-task",
+          "stop"
+        ],
+        "description": "list | create | status | output | update-task | stop"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "name": {
+        "type": "string",
+        "description": "子 Agent 唯一名称。"
+      },
+      "task": {
+        "type": "string",
+        "description": "任务描述。create 必填。"
+      },
+      "description": {
+        "type": "string",
+        "description": "角色说明。可选。"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "output 时返回的最大消息数。默认 5。"
+      }
+    },
+    "required": [
+      "action",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

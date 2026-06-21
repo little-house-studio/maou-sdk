@@ -1,0 +1,121 @@
+{
+  "name": "@little-house-studio/llm",
+  "version": "0.1.0",
+  "description": "统一多厂商 LLM SDK：流式/工具调用/结构化 JSON 输出/思考解析/多模态/成本统计/agentLoop/订阅 OAuth/图片生成/跨厂商交接，浏览器与 Node 双跑。",
+  "type": "module",
+  "license": "MIT",
+  "author": "little-house-studio",
+  "keywords": [
+    "llm",
+    "ai",
+    "openai",
+    "anthropic",
+    "claude",
+    "gemini",
+    "bedrock",
+    "agent",
+    "tool-calling",
+    "structured-output",
+    "streaming",
+    "sdk"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/little-house-studio/maou-sdk.git",
+    "directory": "packages/llm"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./oauth": {
+      "types": "./dist/oauth/index.d.ts",
+      "import": "./dist/oauth/index.js"
+    },
+    "./registry": {
+      "types": "./dist/registry/index.d.ts",
+      "import": "./dist/registry/index.js"
+    },
+    "./image": {
+      "types": "./dist/image/index.d.ts",
+      "import": "./dist/image/index.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js"
+    },
+    "./faux": {
+      "types": "./dist/faux.d.ts",
+      "import": "./dist/faux.js"
+    },
+    "./agent-loop": {
+      "types": "./dist/agent-loop.d.ts",
+      "import": "./dist/agent-loop.js"
+    },
+    "./handoff": {
+      "types": "./dist/handoff.d.ts",
+      "import": "./dist/handoff.js"
+    },
+    "./transport": {
+      "types": "./dist/transport.d.ts",
+      "import": "./dist/transport.js"
+    },
+    "./stealth": {
+      "types": "./dist/stealth.d.ts",
+      "import": "./dist/stealth.js"
+    },
+    "./proxy": {
+      "types": "./dist/proxy.d.ts",
+      "import": "./dist/proxy.js"
+    },
+    "./anthropic": {
+      "types": "./dist/adapters/anthropic.d.ts",
+      "import": "./dist/adapters/anthropic.js"
+    },
+    "./openai": {
+      "types": "./dist/adapters/openai.d.ts",
+      "import": "./dist/adapters/openai.js"
+    },
+    "./google": {
+      "types": "./dist/adapters/google.d.ts",
+      "import": "./dist/adapters/google.js"
+    },
+    "./bedrock": {
+      "types": "./dist/adapters/bedrock.d.ts",
+      "import": "./dist/adapters/bedrock.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0",
+    "partial-json": "^0.1.7"
+  },
+  "optionalDependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@aws-sdk/credential-provider-node": "^3.972.0",
+    "@smithy/core": "^3.25.0",
+    "@smithy/signature-v4": "^5.5.0",
+    "@smithy/types": "^4.15.0",
+    "undici": "^6.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

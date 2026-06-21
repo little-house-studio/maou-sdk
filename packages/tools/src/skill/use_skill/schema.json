@@ -1,0 +1,22 @@
+{
+  "name": "use_skill",
+  "description": "按名称加载专门领域的 skill（专业知识包）。仅在遇到不熟悉的专业领域任务时使用。角色设定已自动加载，不需要加载角色相关的 skill。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "skill 名称（区分大小写）。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      }
+    },
+    "required": [
+      "name",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

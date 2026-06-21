@@ -1,0 +1,27 @@
+{
+  "name": "task_finish",
+  "description": "汇报任务完成。仅在你之前使用 task_manage 创建了任务、且该任务确实已完成时调用。不要用来汇报问候、闲聊等非任务场景。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "task_id": {
+        "type": "string",
+        "description": "已完成的任务 ID"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "summary": {
+        "type": "string",
+        "description": "完成汇报（200字内），说明做了什么、结果如何"
+      }
+    },
+    "required": [
+      "task_id",
+      "summary",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

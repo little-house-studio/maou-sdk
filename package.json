@@ -1,0 +1,17 @@
+{
+  "name": "maou-sdk",
+  "private": true,
+  "description": "Maou Agent 官方 SDK — 可复用组件集合",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
+    "typecheck": "pnpm -r run typecheck",
+    "clean": "pnpm -r run clean"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

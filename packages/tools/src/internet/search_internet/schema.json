@@ -1,0 +1,41 @@
+{
+  "name": "search_internet",
+  "description": "搜索互联网，返回实时结果。每次同时传入多个子查询并发搜索以获取全面信息，必须指定时间范围。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "主搜索词。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "sub_queries": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "附加子查询列表。复杂问题拆成多个具体子查询并发搜索，效果更好。"
+      },
+      "time": {
+        "type": "string",
+        "enum": [
+          "d",
+          "w",
+          "m",
+          "y"
+        ],
+        "description": "时间范围。d=近24小时, w=近一周, m=近一月, y=近一年。"
+      }
+    },
+    "required": [
+      "query",
+      "sub_queries",
+      "time",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

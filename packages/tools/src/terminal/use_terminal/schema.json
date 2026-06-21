@@ -1,0 +1,63 @@
+{
+  "name": "use_terminal",
+  "description": "执行 shell 命令或管理常驻终端。不指定 id 为临时终端（执行完即销毁）；指定 id 为持久终端（可反复操作，已退出的同名终端会复用）。action=run 运行命令；action=manage 管理终端。仅在用户明确要求执行命令、运行程序、安装依赖等操作时使用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "run",
+          "manage"
+        ],
+        "description": "操作类型，默认 run。"
+      },
+      "id": {
+        "type": "string",
+        "description": "终端名称（自定义）。不填为临时终端。已存在的 id 会复用该终端执行新任务。"
+      },
+      "command": {
+        "type": "string",
+        "description": "要执行的 shell 命令（run 时必填）。"
+      },
+      "description": {
+        "type": "string",
+        "description": "任务简介，用于状态面板显示（run 时必填）。"
+      },
+      "background": {
+        "type": "boolean",
+        "description": "是否后台运行（run 时可选，默认 false）。前台超时会自动转后台。"
+      },
+      "timeout": {
+        "type": "number",
+        "description": "超时秒数。前台默认 120（超时转后台）；后台默认 0（不超时提醒）。"
+      },
+      "result_limit": {
+        "type": "integer",
+        "description": "返回结果限制字数，默认 5000。0 表示只返回状态提示不返回输出内容。"
+      },
+      "manage_action": {
+        "type": "string",
+        "enum": [
+          "list",
+          "rm",
+          "stop",
+          "logs"
+        ],
+        "description": "管理操作（manage 时必填）。list: 列表 | rm: 删除 | stop: 终止任务 | logs: 查看输出"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "logs 查看字数（manage logs 时可选，默认 5000）。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？"
+      }
+    },
+    "required": [
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

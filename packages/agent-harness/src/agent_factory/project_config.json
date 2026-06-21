@@ -1,0 +1,33 @@
+{
+  "_comment": "项目级开关。LLM 配置（api.presets）放在 ~/.maou/config.json，本文件不再放 api 段。",
+  "dev": {
+    "debug_mode": false,
+    "log_level": "info",
+    "verbose_sse": false
+  },
+  "features": {
+    "frontend_chat": true,
+    "frontend_raw_viewer": true,
+    "tool_calling": true,
+    "background_jobs": true,
+    "goal_mode": true,
+    "plan_mode": true,
+    "auto_compression": true
+  },
+  "permissions": {
+    "max_rounds_per_run": 0,
+    "max_background_jobs": 3,
+    "max_retries": 3,
+    "allow_sub_agents": true,
+    "allow_file_write": true,
+    "allow_network": true
+  },
+  "prompt": {
+    "root": "ROLE/default",
+    "entrypoint": "SYSTEM.md",
+    "context_settings": {
+      "thresholdPercent": 70,
+      "keepRecentPercent": 25
+    }
+  }
+}

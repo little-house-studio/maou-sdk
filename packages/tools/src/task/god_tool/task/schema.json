@@ -1,0 +1,17 @@
+{
+  "name": "task",
+  "description": "任务管理集成统一入口（上帝工具，占位）",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具？"
+      }
+    },
+    "required": [
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

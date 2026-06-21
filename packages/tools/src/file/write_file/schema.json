@@ -1,0 +1,27 @@
+{
+  "name": "write_file",
+  "description": "创建或覆盖文件。仅在用户明确要求创建文件、或你需要生成代码/配置文件来完成任务时使用。不要为了「记录」而创建文件。自动建立父目录。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "相对于项目根目录的文件路径。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "content": {
+        "type": "string",
+        "description": "要写入的完整文件内容。"
+      }
+    },
+    "required": [
+      "path",
+      "content",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

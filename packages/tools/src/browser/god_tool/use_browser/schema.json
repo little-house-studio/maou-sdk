@@ -1,0 +1,42 @@
+{
+  "name": "use_browser",
+  "description": "控制真实浏览器，操作网页、填写表单、点击按钮、抓取内容。仅在用户要求操作网页时使用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "description": "操作类型：open|state|click|type|fill|select|keys|hover|scroll|check|uncheck|back|wait|extract|network|eval|screenshot|find|get|tab-list|tab-new|tab-select|tab-close|bind|unbind|close|sessions|batch|multi|watch|run|help"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具？"
+      },
+      "url": {
+        "type": "string",
+        "description": "URL（open 用）"
+      },
+      "target": {
+        "type": "string",
+        "description": "目标元素：数字引用 [N] 或 CSS 选择器"
+      },
+      "text": {
+        "type": "string",
+        "description": "文本内容"
+      },
+      "js": {
+        "type": "string",
+        "description": "只读 JavaScript，IIFE 包装"
+      },
+      "session": {
+        "type": "string",
+        "description": "浏览器会话名称"
+      }
+    },
+    "required": [
+      "action",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "name": "agent_manage",
+  "description": "团队管理。仅在用户要求管理 Agent 团队时使用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "list",
+          "create",
+          "stop",
+          "message",
+          "interrupt",
+          "insert",
+          "remove"
+        ],
+        "description": "list | create | stop | message | interrupt | insert | remove"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "to": {
+        "type": "string",
+        "description": "目标 Agent 名称。"
+      },
+      "content": {
+        "type": "string",
+        "description": "消息内容。"
+      },
+      "name": {
+        "type": "string",
+        "description": "新 Agent 名称。"
+      },
+      "role": {
+        "type": "string",
+        "description": "新 Agent 职能。"
+      },
+      "description": {
+        "type": "string",
+        "description": "详细说明。可选。"
+      },
+      "notes": {
+        "type": "string",
+        "description": "备注。可选。"
+      },
+      "team": {
+        "type": "string",
+        "description": "所属团队。可选。"
+      },
+      "personality": {
+        "type": "string",
+        "description": "性格描述。可选。"
+      },
+      "scope": {
+        "type": "string",
+        "enum": [
+          "system",
+          "project"
+        ],
+        "description": "作用域。默认 project。"
+      }
+    },
+    "required": [
+      "action",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

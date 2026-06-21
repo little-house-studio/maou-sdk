@@ -1,0 +1,40 @@
+{
+  "name": "grep",
+  "description": "在项目文件中用正则搜索文字内容。仅在需要查找代码、配置或文本内容时使用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "正则表达式。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "path": {
+        "type": "string",
+        "description": "搜索目录，默认整个项目。"
+      },
+      "glob": {
+        "type": "string",
+        "description": "只搜匹配此 glob 的文件。如 '*.py'。"
+      },
+      "ignore_case": {
+        "type": "boolean",
+        "description": "忽略大小写。默认 false。"
+      },
+      "head_limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+        "description": "最多返回行数。默认 50。"
+      }
+    },
+    "required": [
+      "pattern",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

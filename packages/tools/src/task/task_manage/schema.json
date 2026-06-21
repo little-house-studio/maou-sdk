@@ -1,0 +1,67 @@
+{
+  "name": "task_manage",
+  "description": "管理任务表。仅在用户给出明确的多步骤复杂任务时使用，用于规划和跟踪进度。简单对话、问候、闲聊、单步操作不需要使用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "replace",
+          "delete"
+        ],
+        "description": "create: 新建 | replace: 替换 | delete: 清空"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "tasks": {
+        "type": "array",
+        "description": "任务列表（delete 时忽略）。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "任务唯一标识"
+            },
+            "desc": {
+              "type": "string",
+              "description": "任务描述"
+            },
+            "deps": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "依赖的任务 ID 列表。空数组=无依赖。"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "in_progress",
+                "completed"
+              ],
+              "description": "状态"
+            }
+          },
+          "required": [
+            "id",
+            "desc",
+            "deps",
+            "status"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": [
+      "action",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

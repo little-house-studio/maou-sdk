@@ -1,0 +1,32 @@
+{
+  "name": "edit_file",
+  "description": "替换文件中首次出现的精确文本。仅在需要修改已有文件时使用。适用于定向修改。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "相对于项目根目录的文件路径。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "old_text": {
+        "type": "string",
+        "description": "要搜索的精确旧文本。"
+      },
+      "new_text": {
+        "type": "string",
+        "description": "替换后的新文本。"
+      }
+    },
+    "required": [
+      "path",
+      "old_text",
+      "new_text",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}

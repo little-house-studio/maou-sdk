@@ -1,0 +1,89 @@
+{
+  "name": "project_manage",
+  "description": "项目管理：查看/新增/删除项目、查看成员、创建项目 Agent。仅在用户明确要求管理项目时使用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "list",
+          "create",
+          "disband",
+          "members",
+          "add-agent",
+          "message"
+        ],
+        "description": "list: 查看 | create: 新增 | disband: 删除 | members: 成员 | add-agent: 创建项目 Agent | message: 沟通"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+      },
+      "name": {
+        "type": "string",
+        "description": "项目名称。"
+      },
+      "project_path": {
+        "type": "string",
+        "description": "项目路径。可选。"
+      },
+      "to": {
+        "type": "string",
+        "description": "目标 Agent 名称。默认 main。"
+      },
+      "content": {
+        "type": "string",
+        "description": "消息内容。"
+      },
+      "agent_name": {
+        "type": "string",
+        "description": "新 Agent 名称。"
+      },
+      "role": {
+        "type": "string",
+        "description": "Agent 职能。"
+      },
+      "preset": {
+        "type": "string",
+        "enum": [
+          "default",
+          "frontend",
+          "backend",
+          "tester"
+        ],
+        "description": "职业预设。可选。"
+      },
+      "permission": {
+        "type": "string",
+        "enum": [
+          "full",
+          "restricted",
+          "observer"
+        ],
+        "description": "权限。可选。"
+      },
+      "personality": {
+        "type": "string",
+        "description": "性格描述。可选。"
+      },
+      "team": {
+        "type": "string",
+        "description": "所属团队。可选。"
+      },
+      "description": {
+        "type": "string",
+        "description": "详细说明。可选。"
+      },
+      "notes": {
+        "type": "string",
+        "description": "备注。可选。"
+      }
+    },
+    "required": [
+      "action",
+      "reason"
+    ],
+    "additionalProperties": false
+  }
+}
