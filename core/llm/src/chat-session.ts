@@ -552,6 +552,38 @@ export class ChatSession {
     this.messages = [...messages]
   }
 
+  // ── 重试 / 续传（一流操作）──
+
+  /**
+   * 重试上一轮：移除最后一条 assistant 消息（若有），重新发起。
+   * 用于"模型答得不好/中断，重来一次"。保留历史上下文。
+   */
+  async retry(options?: { attachments?: Attachment[] }): Promise<ChatResponse> {
+    // 移除最后一条 assistant（重试的就是它）；若末条是 user 则直接重发
+    if (this.messages.length > 0 && this.messages[this.messages.length - 1].role === 'assistant') {
+      const lastUser = [...this.messages].reverse().find((m) => m.role === 'user')
+      this.messages.pop() // 移除 assistant
+      if (!lastUser) throw new Error('retry: 历史里没有 user 消息可重发')
+      return this.send(lastUser.content, { attachments: options?.attachments ?? lastUser.attachments })
+    }
+    throw new Error('retry: 上一条不是 assistant，无需重试')
+  }
+
+  /**
+   * 从一个（被中断/出错的）AssistantMessage 续传：把它的部分内容当作 assistant 历史存入，
+   * 调用方可继续追加 user 消息让模型接着写。
+   * 用于 stream 的 abort/error 后"断点续传"。
+   */
+  resumeFrom(partial: { content?: string; toolCalls?: LLMToolCall[] }): void {
+    const msg: ChatMessage = {
+      role: 'assistant',
+      content: partial.content ?? '',
+      toolCalls: partial.toolCalls && partial.toolCalls.length > 0 ? partial.toolCalls : undefined,
+      timestamp: Date.now(),
+    }
+    this.messages.push(msg)
+  }
+
   // ── 获取原始发送请求 ──
 
   buildRequest(text: string): { url: string; headers: Record<string, string>; body: string } {

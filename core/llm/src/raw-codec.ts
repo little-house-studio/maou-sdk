@@ -162,3 +162,60 @@ export function transparentDecodeField(
   delete entry[compressedFieldName];
   return entry;
 }
+
+// ─── POST ↔ 结构体 双向：重建可发的原始 POST / 直接重放 ─────────────────────
+
+/** 重建出的完整 POST 请求（可直接交给 fetch 发出） */
+export interface ReconstructedPost {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/**
+ * 从一条 POST 日志记录重建出"可直接发出的原始 POST"（结构体 → POST 反向）。
+ * 完成你要求的 round-trip：POST → 压缩结构体存储 → 读出 → 重建 POST。
+ *
+ * @param record 日志记录（含 url/method/headers/body_compressed 或 body）
+ * @param bodyField 记录里原始 body 的字段名（默认 "body"）
+ * @param compressedField 压缩 body 的字段名（默认 "body_compressed"）
+ */
+export function reconstructPost(
+  record: Record<string, unknown>,
+  bodyField = "body",
+  compressedField = "body_compressed",
+): ReconstructedPost | null {
+  const url = String(record.url ?? "");
+  if (!url) return null;
+  // body：优先压缩字段解码，其次明文字段
+  const compressed = record[compressedField];
+  let body: string;
+  if (compressed && typeof compressed === "object") {
+    const decoded = decodeRawBody(compressed as CompressedBody);
+    if (decoded === null) return null;
+    body = decoded;
+  } else if (typeof record[bodyField] === "string") {
+    body = record[bodyField] as string;
+  } else {
+    return null;
+  }
+  const headers = (record.headers as Record<string, string>) ?? {};
+  const method = String(record.method ?? "POST");
+  return { url, method, headers, body };
+}
+
+/**
+ * 直接重放一条 POST 日志记录（用注入的 fetch，默认全局 fetch）。
+ * 用于"重试结果"场景：从历史日志取出某次失败请求，原样重发。
+ * 注意：headers 里的 Authorization 等凭证会被原样重放，请确保记录来源可信。
+ */
+export async function replayPost(
+  record: Record<string, unknown>,
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const post = reconstructPost(record);
+  if (!post) throw new Error("无法从记录重建 POST（缺 url/body）");
+  return fetchImpl(post.url, { method: post.method, headers: post.headers, body: post.body, signal });
+}

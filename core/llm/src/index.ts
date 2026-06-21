@@ -31,6 +31,28 @@ export type {
   LLMEventType,
 } from './chat-session.js'
 
+// ─── stream / complete + Context（无状态核心 API，对标 pi-ai）─────────────────
+export { stream, complete, StreamResult } from './stream.js'
+// ─── SSE 桥接（LLM 流 → 浏览器，Server-Sent Events）──────────────────────────
+export { streamToSSE, encodeSSEFrame, collectSSE, SSE_HEADERS } from './sse.js'
+export type { SSEOptions } from './sse.js'
+export type {
+  Context,
+  Message,
+  UserMessage,
+  AssistantMessage,
+  ToolResultMessage,
+  TextContent,
+  ImageContent,
+  ThinkingContent,
+  ToolCallBlock,
+  Usage,
+  StopReason,
+  StreamModel,
+  StreamOptions,
+  StreamEvent,
+} from './stream.js'
+
 // ─── LLMConfig（统一 LLM 配置管理：内置目录 + 自定义 + 配置文件）─────────────
 export { LLMConfig, DEFAULT_CONFIG_PATH } from './llm-config.js'
 export type { CustomPreset, LLMConfigFile, LLMConfigOptions } from './llm-config.js'
@@ -96,10 +118,12 @@ export {
   decodeRawBody,
   decodeRawBodyAsObject,
   transparentDecodeField,
+  reconstructPost,
+  replayPost,
   RAW_CODEC_ALGO,
   RAW_CODEC_MIN_BYTES,
 } from './raw-codec.js'
-export type { CompressedBody } from './raw-codec.js'
+export type { CompressedBody, ReconstructedPost } from './raw-codec.js'
 
 // ─── 成本计算 ───────────────────────────────────────────────────────────────
 export { computeCost, formatCost } from './compute-cost.js'
@@ -123,6 +147,9 @@ export type {
   ModelPricing,
   InputModality,
   OutputModality,
+  Model,
+  KnownProvider,
+  KnownModelId,
 } from './registry/index.js'
 
 // ─── 图片生成（对标 pi-ai generateImages / getImageModel）───────────────────
@@ -199,6 +226,12 @@ export { getEnvApiKey, findEnvKeys, hasEnvKey, PROVIDER_ENV_KEYS } from './env.j
 // ─── 上下文溢出检测（对标 pi-ai overflow detection，覆盖 20+ 厂商）───────────
 export { detectContextOverflow, extractTokenCount } from './overflow.js'
 
+export { estimateTokens, estimateContextTokens, checkContextFit } from './token-count.js'
+export { ConcurrencyLimiter, RateLimiter, withLimiters } from './rate-limit.js'
+// ─── 账户能力：余额查询 + 跨协议模型扫描（best-effort）────────────────────────
+export { queryBalance, scanModels } from './account.js'
+export type { BalanceResult, ScannedModel } from './account.js'
+
 // ─── WebSocket 传输（对标 pi-ai websocket/websocket-cached；经 fetchImpl 注入）──
 export { createWebSocketFetch } from './transport.js'
 export type { WebSocketFetchOptions } from './transport.js'
@@ -206,6 +239,10 @@ export type { WebSocketFetchOptions } from './transport.js'
 // ─── Stealth 工具名伪装（对标 pi-ai stealth mode）──────────────────────────
 export { createStealthMapper, CLAUDE_CODE_TOOL_MAP } from './stealth.js'
 export type { StealthMapper } from './stealth.js'
+
+// ─── compat 兼容标志矩阵（OpenAI 兼容厂商；对标 pi-ai OpenAICompat）──────────
+export type { OpenAICompat, AnthropicCompat, ThinkingFormat, StructuredOutputCompat } from './adapters/compat.js'
+export { detectCompat, resolveCompat } from './adapters/compat.js'
 
 // ─── 跨运行时环境（Node / Bun / 浏览器安全）──────────────────────────────────
 export { readEnv, hasEnvAccess, isBrowserLike } from './runtime-env.js'

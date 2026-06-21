@@ -20,6 +20,7 @@ import { ProtocolGateway } from "./adapters/router.js";
 import { resolveAzureDeployment, resolveAzureApiVersion } from "./adapters/azure-openai.js";
 import { resolveCloudflareUrl } from "./adapters/cloudflare.js";
 import { takeFauxResponse } from "./faux.js";
+import { detectContextOverflow } from "./overflow.js";
 import { normalizePostLogRecord, type NormalizePostLogOptions } from "./post-logger.js";
 // 注意：@smithy/core/event-streams 仅 Bedrock 二进制流需要，改为动态 import（见 _readBedrockEventStream），
 // 避免把它带进浏览器静态依赖图。
@@ -144,6 +145,31 @@ export interface LLMClientOptions {
   onPayload?: (ctx: PayloadHookContext) => void | PayloadHookOverride;
   /** 收到响应后拦截（只读，用于埋点/审计；不改响应体） */
   onResponse?: (ctx: ResponseHookContext) => void;
+  /** 重试策略配置（覆盖默认指数退避）：次数/退避基数/上限/抖动/可重试状态码 */
+  retry?: RetryPolicy;
+  /**
+   * 自定义错误处理钩子：每次出错调用，返回决策 retry/fail/{delayMs}。
+   * 可降级错误、加熔断、上报、自定义重试节奏。
+   */
+  onError?: (ctx: ErrorHookContext) => "retry" | "fail" | { delayMs: number };
+}
+
+/** 重试策略 */
+export interface RetryPolicy {
+  maxRetries?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+  jitter?: number;
+  retryableStatuses?: number[];
+}
+
+/** onError 钩子上下文 */
+export interface ErrorHookContext {
+  attempt: number;
+  error: Error | { status: number; body: string };
+  category: "network" | "timeout" | "rate_limit" | "auth" | "bad_request" | "server_error" | "context_overflow" | "unknown";
+  waitedMs: number;
+  abortSignal?: AbortSignal;
 }
 
 /** onPayload 上下文 */
@@ -185,6 +211,8 @@ export class LLMClient {
   private _fetch: typeof fetch;
   private _onPayload: LLMClientOptions["onPayload"] | null;
   private _onResponse: LLMClientOptions["onResponse"] | null;
+  private _retry: Required<RetryPolicy>;
+  private _onError: LLMClientOptions["onError"] | null;
 
   constructor(options?: LLMClientOptions) {
     this._logger = options?.logger ?? null;
@@ -193,6 +221,14 @@ export class LLMClient {
     this._fetch = options?.fetchImpl ?? fetch;
     this._onPayload = options?.onPayload ?? null;
     this._onResponse = options?.onResponse ?? null;
+    this._retry = {
+      maxRetries: options?.retry?.maxRetries ?? MAX_RETRIES,
+      baseDelayMs: options?.retry?.baseDelayMs ?? BASE_RETRY_DELAY,
+      maxDelayMs: options?.retry?.maxDelayMs ?? 30_000,
+      jitter: options?.retry?.jitter ?? 0.2,
+      retryableStatuses: options?.retry?.retryableStatuses ?? [429, 500, 502, 503, 504],
+    };
+    this._onError = options?.onError ?? null;
   }
 
   /** 运行时注入日志记录器（用于延迟初始化） */
@@ -1123,6 +1159,47 @@ export class LLMClient {
   }
 
   /**
+   * 计算第 attempt 次重试的等待 ms（指数退避 + 上限 + 抖动）。
+   */
+  private _computeBackoff(attempt: number): number {
+    const { baseDelayMs, maxDelayMs, jitter } = this._retry;
+    const exp = baseDelayMs * Math.pow(2, attempt);
+    const capped = Math.min(exp, maxDelayMs);
+    const j = jitter > 0 ? capped * jitter * (Math.random() * 2 - 1) : 0;
+    return Math.max(0, Math.round(capped + j));
+  }
+
+  /** 判断某状态码/错误是否可重试（先按策略，再让 onError 覆盖） */
+  private _decideRetry(ctx: ErrorHookContext): "retry" | "fail" | { delayMs: number } {
+    if (this._onError) return this._onError(ctx);
+    // 默认：retryableStatuses 命中或网络错误 → retry；其余 fail
+    const e = ctx.error;
+    if ("status" in e) {
+      return this._retry.retryableStatuses.includes(e.status) ? "retry" : "fail";
+    }
+    return ctx.category === "network" || ctx.category === "timeout" ? "retry" : "fail";
+  }
+
+  /** 错误 → 分类（复用 post-logger 的分类逻辑） */
+  private _categorize(err: Error | { status: number; body: string }): ErrorHookContext["category"] {
+    if ("status" in err) {
+      const s = err.status;
+      if (s === 429) return "rate_limit";
+      if (s === 401 || s === 403) return "auth";
+      if (s === 413) return "context_overflow";
+      if (s === 400 || s === 422) {
+        return detectContextOverflow(err.body, s) ? "context_overflow" : "bad_request";
+      }
+      if (s >= 500) return "server_error";
+      return "unknown";
+    }
+    const msg = err.message.toLowerCase();
+    if (msg.includes("timeout") || msg.includes("timed out")) return "timeout";
+    if (msg.includes("econnrefused") || msg.includes("enotfound") || msg.includes("fetch failed") || msg.includes("network")) return "network";
+    return "unknown";
+  }
+
+  /**
    * 带指数退避和 429 限流处理的 fetch。
    * abortSignal 收到时立即抛出 AbortError，不重试。
    */
@@ -1130,11 +1207,12 @@ export class LLMClient {
     url: string,
     headers: Record<string, string>,
     body: string,
-    maxRetries = MAX_RETRIES,
+    maxRetries = this._retry.maxRetries,
     abortSignal?: AbortSignal,
   ): Promise<Response> {
     let lastError: Error | null = null;
     const retryHistory: string[] = [];
+    let waitedMs = 0;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       // 进入每次尝试前先检查中断信号
@@ -1152,15 +1230,20 @@ export class LLMClient {
 
         if (response.status === 429) {
           const retryAfter = response.headers.get("retry-after");
-          const waitMs = retryAfter
-            ? parseInt(retryAfter, 10) * 1000
-            : BASE_RETRY_DELAY * Math.pow(2, attempt);
-
-          // 记录本次 429 重试信息
           const detail429 = await response.text().catch(() => "");
-          retryHistory.push(`attempt ${attempt + 1}: 429 (wait ${waitMs}ms) ${detail429.slice(0, 200)}`);
-
-          if (attempt < maxRetries) {
+          // 统一走 _decideRetry（尊重 onError 钩子 + retryableStatuses）
+          const decision = this._decideRetry({
+            attempt, error: { status: 429, body: detail429 },
+            category: "rate_limit", waitedMs, abortSignal,
+          });
+          retryHistory.push(`attempt ${attempt + 1}: 429 (decision ${decision}) ${detail429.slice(0, 200)}`);
+          const waitMs = decision === "fail"
+            ? 0
+            : retryAfter && decision === "retry"
+              ? parseInt(retryAfter, 10) * 1000
+              : typeof decision === "object" ? decision.delayMs : this._computeBackoff(attempt);
+          if (decision !== "fail" && attempt < maxRetries) {
+            waitedMs += waitMs;
             await sleep(waitMs);
             continue;
           }
@@ -1169,22 +1252,19 @@ export class LLMClient {
 
         if (!response.ok) {
           const detail = await response.text().catch(() => "");
-
-          // 网关瞬时错误（502/503/504）：短重试最多 3 次，指数退避
-          const isGatewayTransient =
-            response.status === 502 ||
-            response.status === 503 ||
-            response.status === 504;
-          const maxGatewayRetries = 3;
-          if (isGatewayTransient && attempt < maxGatewayRetries) {
-            const waitMs = BASE_RETRY_DELAY * Math.pow(2, attempt); // 1s, 2s, 4s
-            retryHistory.push(
-              `attempt ${attempt + 1}: HTTP ${response.status} (retry in ${waitMs}ms) ${detail.slice(0, 120)}`,
-            );
+          const category = this._categorize({ status: response.status, body: detail });
+          // 统一走 _decideRetry
+          const decision = this._decideRetry({
+            attempt, error: { status: response.status, body: detail },
+            category, waitedMs, abortSignal,
+          });
+          retryHistory.push(`attempt ${attempt + 1}: HTTP ${response.status} [${category}] (decision ${decision}) ${detail.slice(0, 120)}`);
+          if (decision !== "fail" && attempt < maxRetries) {
+            const waitMs = typeof decision === "object" ? decision.delayMs : this._computeBackoff(attempt);
+            waitedMs += waitMs;
             await sleep(waitMs);
             continue;
           }
-
           throw new Error(`API Error ${response.status}: ${detail}`);
         }
 
@@ -1207,7 +1287,7 @@ export class LLMClient {
 
         // 网络错误，重试
         if (attempt < maxRetries) {
-          const waitMs = BASE_RETRY_DELAY * Math.pow(2, attempt);
+          const waitMs = this._computeBackoff(attempt);
           await sleep(waitMs);
           continue;
         }

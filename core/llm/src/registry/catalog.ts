@@ -10,7 +10,7 @@
 
 import type { ProviderSpec } from "./types.js";
 
-export const CATALOG: ProviderSpec[] = [
+export const CATALOG = [
   // ── OpenAI ──
   {
     id: "openai",
@@ -279,4 +279,72 @@ export const CATALOG: ProviderSpec[] = [
       },
     ],
   },
-];
+
+  // ── 国产厂商（OpenAI 兼容端点，手写补充；models.dev 未收录 tool-capable 项）
+  //   均走 protocol:"openai"，定价多为 CNY 故不内置（避免混币种）；contextWindow 为公开值。
+  //   百度文心（千帆 v2 OpenAI 兼容）
+  {
+    id: "ernie",
+    name: "百度文心 (ERNIE/Qianfan)",
+    protocol: "openai",
+    baseUrl: "https://qianfan.baidubce.com/v2/chat/completions",
+    envKey: "ERNIE_API_KEY",
+    models: [
+      { id: "ernie-4.0-8k-latest", provider: "ernie", name: "ERNIE 4.0", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 8_192 },
+      { id: "ernie-4.5-turbo-128k", provider: "ernie", name: "ERNIE 4.5 Turbo", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 128_000 },
+      { id: "ernie-speed-128k", provider: "ernie", name: "ERNIE Speed 128k", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 128_000 },
+      { id: "deepseek-r1-ernie", provider: "ernie", name: "DeepSeek-R1 (千帆)", protocol: "openai", input: ["text"], output: ["text"], reasoning: true, toolCall: true, contextWindow: 64_000 },
+    ],
+  },
+  //   讯飞星火（spark-api-open OpenAI 兼容）
+  {
+    id: "spark",
+    name: "讯飞星火 (iFlytek Spark)",
+    protocol: "openai",
+    baseUrl: "https://spark-api-open.xf-yun.com/v1/chat/completions",
+    envKey: "SPARK_API_KEY",
+    models: [
+      { id: "4.0Ultra", provider: "spark", name: "Spark 4.0 Ultra", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 8_192 },
+      { id: "generalv3.5", provider: "spark", name: "Spark 3.5", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 8_192 },
+      { id: "general-r1", provider: "spark", name: "Spark R1 (推理)", protocol: "openai", input: ["text"], output: ["text"], reasoning: true, toolCall: true, contextWindow: 64_000 },
+    ],
+  },
+  //   字节豆包（火山方舟 Ark，OpenAI 兼容；model 用 ep- 开头的 endpoint id）
+  {
+    id: "doubao",
+    name: "字节豆包 (Doubao/Volcengine Ark)",
+    protocol: "openai",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    envKey: "ARK_API_KEY",
+    models: [
+      { id: "doubao-pro-32k", provider: "doubao", name: "Doubao Pro 32k", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 32_768 },
+      { id: "doubao-pro-128k", provider: "doubao", name: "Doubao Pro 128k", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 128_000 },
+      { id: "doubao-1-5-thinking-pro", provider: "doubao", name: "Doubao 1.5 Thinking", protocol: "openai", input: ["text"], output: ["text"], reasoning: true, toolCall: true, contextWindow: 128_000 },
+      { id: "deepseek-r1-ark", provider: "doubao", name: "DeepSeek-R1 (Ark)", protocol: "openai", input: ["text"], output: ["text"], reasoning: true, toolCall: true, contextWindow: 64_000 },
+    ],
+  },
+  //   腾讯混元（OpenAI 兼容）
+  {
+    id: "hunyuan",
+    name: "腾讯混元 (Hunyuan)",
+    protocol: "openai",
+    baseUrl: "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+    envKey: "HUNYUAN_API_KEY",
+    models: [
+      { id: "hunyuan-turbos-latest", provider: "hunyuan", name: "Hunyuan Turbos", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 32_768 },
+      { id: "hunyuan-standard", provider: "hunyuan", name: "Hunyuan Standard", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 32_768 },
+      { id: "hunyuan-t1", provider: "hunyuan", name: "Hunyuan T1 (推理)", protocol: "openai", input: ["text"], output: ["text"], reasoning: true, toolCall: true, contextWindow: 64_000 },
+    ],
+  },
+  //   360 智脑（OpenAI 兼容）
+  {
+    id: "qihoo-360",
+    name: "360 智脑",
+    protocol: "openai",
+    baseUrl: "https://api.360.cn/v1/chat/completions",
+    envKey: "AI360_API_KEY",
+    models: [
+      { id: "360gpt2-pro", provider: "qihoo-360", name: "360GPT2 Pro", protocol: "openai", input: ["text"], output: ["text"], reasoning: false, toolCall: true, contextWindow: 8_192 },
+    ],
+  },
+] as const satisfies ProviderSpec[];

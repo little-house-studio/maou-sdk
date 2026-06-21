@@ -13,16 +13,50 @@
 import type { APIPreset } from "../adapters/types.js";
 import type { ModelSpec, ProviderSpec } from "./types.js";
 import { CATALOG } from "./catalog.js";
+// 优先用 models.dev 自动生成的目录（跑 scripts/generate-models.mjs 产出）；无则回退手写 catalog
+import { CATALOG_GENERATED } from "./catalog.generated.js";
 import { getEnvApiKey } from "../env.js";
 import { readEnv } from "../runtime-env.js";
 
 export type { ModelSpec, ProviderSpec, ModelPricing, InputModality, OutputModality } from "./types.js";
 
+/**
+ * 生效目录：generated（models.dev 实时数据）+ 手写 catalog **合并**。
+ * generated 覆盖主流厂商；手写 catalog 补充 generated 未收录的（如国产百度/讯飞/豆包/混元）。
+ * 同名 provider 时 generated 优先。
+ */
+const EFFECTIVE_CATALOG = (() => {
+  if (CATALOG_GENERATED.length === 0) return CATALOG;
+  const genIds = new Set(CATALOG_GENERATED.map((p) => p.id));
+  const handWrittenOnly = CATALOG.filter((p) => !genIds.has(p.id));
+  return [...CATALOG_GENERATED, ...handWrittenOnly];
+})();
+
 /** provider id → ProviderSpec（可被 registerProvider 扩展/覆盖） */
 const PROVIDERS = new Map<string, ProviderSpec>();
-for (const p of CATALOG) PROVIDERS.set(p.id, structuredClone(p));
+for (const p of EFFECTIVE_CATALOG) PROVIDERS.set(p.id, structuredClone(p));
 
 // ── 查询 ──
+
+/**
+ * 内置 provider id 字面量联合（编译期自动补全 + 校验）。
+ * 来源 catalog；Task #52 自动生成后会保持同步。
+ */
+export type KnownProvider = (typeof CATALOG)[number]["id"];
+/** 某 provider 下内置模型 id 的字面量联合 */
+export type KnownModelId<P extends KnownProvider> = Extract<
+  (typeof CATALOG)[number],
+  { id: P }
+>["models"][number]["id"];
+
+/**
+ * Model<TApi> —— 带 protocol 泛型的模型类型。
+ * getModel 返回时 TApi 推断为该模型的 protocol 字面量，
+ * 传给 stream/特定协议函数时编译期对齐（对标 pi 的 Model<TApi>）。
+ */
+export interface Model<TApi extends string = string> extends Omit<ModelSpec, "protocol"> {
+  protocol: TApi;
+}
 
 /** 列出所有 provider */
 export function getProviders(): ProviderSpec[] {
@@ -39,7 +73,16 @@ export function getModels(provider: string): ModelSpec[] {
   return PROVIDERS.get(provider)?.models ?? [];
 }
 
-/** 取某个 provider 下指定 id 的模型 */
+/**
+ * 取某 provider 下指定 id 的模型。
+ * 泛型重载：传字面量 provider/id 时，返回的 Model.protocol 推断为对应字面量（编译期对齐）；
+ * 传普通 string 时回退到基础 ModelSpec。
+ */
+export function getModel<P extends KnownProvider, Id extends KnownModelId<P>>(
+  provider: P,
+  id: Id,
+): Model<Extract<Extract<(typeof CATALOG)[number], { id: P }>["models"][number], { id: Id }>["protocol"]>;
+export function getModel(provider: string, id: string): ModelSpec | null;
 export function getModel(provider: string, id: string): ModelSpec | null {
   const p = PROVIDERS.get(provider);
   if (!p) return null;

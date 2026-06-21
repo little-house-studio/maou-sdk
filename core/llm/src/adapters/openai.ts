@@ -14,6 +14,7 @@ import type {
   StreamEvent,
 } from "./types.js";
 import { parseToolArguments, normalizeToolParametersSchema, MAX_TOKENS_CAP, coerceText } from "./shared.js";
+import { resolveCompat } from "./compat.js";
 
 /** 从文本中提取 JSON 候选（从 reasoning_content 中） */
 function extractJsonCandidateFromReasoning(
@@ -64,28 +65,77 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
    *   budget_tokens ≤ 2048 → low, ≤ 8192 → medium, > 8192 → high
    * - thinking: {type:'disabled'} → 不注入（移除 reasoning）
    * - 已是 reasoning_effort 字符串 → 原样保留
+  /**
+   * 规范化 reasoning_params，按 compat.thinkingFormat 映射到各厂商字段。
+   * 规范形：thinking = { type: 'enabled'|'disabled', budget_tokens }
+   * 各 format 的输出（对标 pi 的 10 种 thinkingFormat）：
+   *   openai          → reasoning_effort: minimal/low/medium/high
+   *   openrouter      → reasoning: { effort }
+   *   deepseek/together→ 走 reasoning_content（请求侧无需字段，模型自带；这里不注入）
+   *   zai             → thinking: { type:'enabled' }
+   *   qwen            → enable_thinking: true
+   *   chat-template   → chat_template_kwargs: { thinking: { enabled } }
+   *   qwen-chat-template → chat_template_kwargs: { enable_thinking: true }
+   *   string-thinking → 不注入（靠 <think> 标签）
+   *   ant-ling        → 厂商自定义，透传 thinking
    */
-  private _normalizeReasoningParamsForOpenAI(params: Record<string, unknown>): Record<string, unknown> {
+  private _normalizeReasoningParamsForOpenAI(
+    params: Record<string, unknown>,
+    format: import("./compat.js").ThinkingFormat = "openai",
+  ): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(params)) {
       if (k === "thinking" && v && typeof v === "object") {
         const thinking = v as Record<string, unknown>;
-        if (thinking.type === "disabled") {
-          // 关闭思考，不注入
-          continue;
-        }
+        if (thinking.type === "disabled") continue; // 关闭，不注入
         if (thinking.type === "enabled") {
           const budget = Number(thinking.budget_tokens ?? 0);
-          // 5 级映射：≤1024 minimal / ≤2048 low / ≤8192 medium / 其余 high
-          result.reasoning_effort =
-            budget <= 1024 ? "minimal" : budget <= 2048 ? "low" : budget <= 8192 ? "medium" : "high";
+          const effort = budget <= 1024 ? "minimal" : budget <= 2048 ? "low" : budget <= 8192 ? "medium" : "high";
+          this._injectByFormat(result, format, effort, thinking);
           continue;
         }
       }
-      // reasoning_effort 等已符合 OpenAI 规范的字段原样保留
+      // reasoning_effort 等已符合规范的字段原样保留
       result[k] = v;
     }
     return result;
+  }
+
+  /** 按 format 把 effort 注入到 result 的对应字段 */
+  private _injectByFormat(
+    result: Record<string, unknown>,
+    format: import("./compat.js").ThinkingFormat,
+    effort: string,
+    thinking: Record<string, unknown>,
+  ): void {
+    switch (format) {
+      case "openai":
+        result.reasoning_effort = effort;
+        break;
+      case "openrouter":
+        result.reasoning = { effort };
+        break;
+      case "zai":
+      case "ant-ling":
+        result.thinking = { type: "enabled" };
+        break;
+      case "qwen":
+        result.enable_thinking = true;
+        break;
+      case "qwen-chat-template":
+        result.chat_template_kwargs = { enable_thinking: true };
+        break;
+      case "chat-template":
+        result.chat_template_kwargs = { thinking: { enabled: true } };
+        break;
+      case "deepseek":
+      case "together":
+      case "string-thinking":
+        // 模型自带 reasoning_content（输出侧解析），请求侧无需字段
+        break;
+      default:
+        result.reasoning_effort = effort;
+    }
   }
 
   buildRequestPayload(params: {
@@ -98,12 +148,20 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
     structuredOutputSchema?: Record<string, unknown> | null;
   }): Record<string, unknown> {
     const { preset, messages, stream, toolSchemas, nativeToolCalling, jsonSettings } = params;
+    const compat = resolveCompat(preset);
+    const maxTokensField = compat.maxTokensField ?? "max_tokens";
     const payload: Record<string, unknown> = {
       model: preset.model,
-      max_tokens: Math.min(Number(preset.maxTokens ?? 65536) || 65536, MAX_TOKENS_CAP),
+      [maxTokensField]: Math.min(Number(preset.maxTokens ?? 65536) || 65536, MAX_TOKENS_CAP),
       messages,
       stream,
     };
+    // supportsDeveloperRole：把 system 角色改成 developer（OpenAI 较新）；默认不改
+    if (compat.supportsDeveloperRole) {
+      for (const m of messages) {
+        if ((m as Record<string, unknown>).role === "system") (m as Record<string, unknown>).role = "developer";
+      }
+    }
     if (stream) {
       payload.stream_options = { include_usage: true };
     }
@@ -139,19 +197,18 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
         payload.response_format = { type: "json_object" };
       }
     }
-    // 注入 reasoning_params（规范化 Anthropic 风格 thinking → OpenAI reasoning_effort）
+    // 注入 reasoning_params：按 compat.thinkingFormat 映射到各厂商字段
     const reasoningParams = preset.reasoning_params;
     if (reasoningParams && typeof reasoningParams === "object") {
-      const normalized = this._normalizeReasoningParamsForOpenAI(reasoningParams);
+      const normalized = this._normalizeReasoningParamsForOpenAI(reasoningParams, compat.thinkingFormat);
       for (const [k, v] of Object.entries(normalized)) {
         if (!(k in payload)) {
           payload[k] = v;
         }
       }
     }
-    // OpenRouter 路由偏好：preset.openrouterRouting → 注入 provider/models/route/transforms
-    // （OpenRouter 专属；其他 OpenAI 兼容端点会忽略这些未知字段）
-    const routing = preset.openrouterRouting;
+    // OpenRouter 路由偏好：compat.openRouterRouting → 注入 provider/models/route/transforms
+    const routing = compat.openRouterRouting ?? preset.openrouterRouting;
     if (routing && typeof routing === "object") {
       const r = routing as Record<string, unknown>;
       for (const field of ["provider", "models", "route", "transforms"]) {

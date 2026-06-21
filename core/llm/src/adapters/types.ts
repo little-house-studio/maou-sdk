@@ -102,6 +102,15 @@ export interface APIPreset {
   oauth?: boolean;
   /** 追加/覆盖的请求头（在适配器构建的头之上合并） */
   extraHeaders?: Record<string, string>;
+  /**
+   * OpenAI 兼容厂商的兼容标志矩阵（见 adapters/compat.ts）。
+   * 缺省时按 url 自动检测（detectCompat）。
+   */
+  compat?: import("./compat.js").OpenAICompat;
+  /** 思考格式简写（compat.thinkingFormat 的便捷别名） */
+  compatFormat?: import("./compat.js").ThinkingFormat;
+  /** 缓存保留：none/short(默认)/long(Anthropic 1h TTL) */
+  cacheRetention?: "none" | "short" | "long";
   [key: string]: unknown;
 }
 
