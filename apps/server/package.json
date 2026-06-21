@@ -15,7 +15,7 @@
     "@little-house-studio/llm": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/context": "workspace:*",
-    "@little-house-studio/agent-harness": "workspace:*",
+    "@little-house-studio/agent": "workspace:*",
     "express": "^4.21.0",
     "pino": "^9.0.0",
     "pino-pretty": "^11.0.0"

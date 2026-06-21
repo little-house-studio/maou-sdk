@@ -75,7 +75,7 @@ export { buildMessages } from "./message-builder.js";
 export { maybeCompress } from "./compressor.js";
 export type { CompressionZone, CompressionResult, TaskSummary } from "./compressor.js";
 
-// 注：compileDynamicContext / formatAgentStatus 已上移到 @little-house-studio/agent-harness（需要 AgentRegistry）；
+// 注：compileDynamicContext / formatAgentStatus 已上移到 @little-house-studio/agent（需要 AgentRegistry）；
 //     SkillScanner / SkillContextManager 已下放到 @little-house-studio/tools。
 
 // 项目上下文注入

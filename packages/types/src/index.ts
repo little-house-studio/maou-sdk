@@ -7,7 +7,7 @@
  * - 流式事件（StreamEvent）
  *
  * 这些类型原本散落在 core（被工具污染）和 llm（重复定义），统一收敛到此，
- * 让 core/llm/tools/agent-harness 都从这里进口，打破循环依赖、消除重复定义。
+ * 让 core/llm/tools/agent 都从这里进口，打破循环依赖、消除重复定义。
  *
  * 注意：本包不依赖任何 @little-house-studio 包，也不依赖 LLM 细节。
  * StreamEvent.usage 故意用 Record<string, unknown>（而非 LLMUsage），

@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { Message, AgentEvent } from "@little-house-studio/agent-harness";
+import type { Message, AgentEvent } from "@little-house-studio/agent";
 
 /** 消息监听函数 */
 export type MessageListener = (message: Message) => void;

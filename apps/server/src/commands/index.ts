@@ -4,7 +4,7 @@
  * 提供 CommandRunner 接口，cli、web、feishu 等均可调用。
  */
 
-import type { AgentRegistry } from '@little-house-studio/agent-harness'
+import type { AgentRegistry } from '@little-house-studio/agent'
 import type { SessionStore } from '@little-house-studio/context'
 import type { ToolRegistry } from '@little-house-studio/tools'
 

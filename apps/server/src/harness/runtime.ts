@@ -17,7 +17,7 @@
  * 自动压缩：token 达到 70% 阈值时压缩（保留 25% 近期消息）。
  */
 
-import { PromptCompiler } from "@little-house-studio/agent-harness";
+import { PromptCompiler } from "@little-house-studio/agent";
 import { SessionStore, SessionManager, MemoryStore, CheckpointStore, extractMemories } from "@little-house-studio/context";
 import {
   buildMessages,
@@ -26,9 +26,9 @@ import {
   DEFAULT_AGENT_ROUND_LIMIT,
   DEFAULT_LOOP_THRESHOLD,
 } from "@little-house-studio/context";
-import { compileDynamicContext } from "@little-house-studio/agent-harness";
-import { TokenTracker } from "@little-house-studio/agent-harness";
-import { AgentRegistry, initMainAgent } from "@little-house-studio/agent-harness";
+import { compileDynamicContext } from "@little-house-studio/agent";
+import { TokenTracker } from "@little-house-studio/agent";
+import { AgentRegistry, initMainAgent } from "@little-house-studio/agent";
 import { ModelCaller, type ModelCallResult, type CallerStreamEvent } from "@little-house-studio/llm";
 import type { LLMToolCall, LLMUsage, APIPreset } from "@little-house-studio/llm";
 import { ToolExecutor } from "@little-house-studio/tools";
@@ -45,7 +45,7 @@ import { existsSync, mkdirSync, cpSync, readdirSync, rmSync, statSync, readFileS
 import { join } from "node:path";
 import { FeishuBridge } from "../stubs/feishu-bridge.js";
 import { getProjectsList, addProject, removeProject } from "@little-house-studio/core";
-import { GitWatcher } from "@little-house-studio/agent-harness";
+import { GitWatcher } from "@little-house-studio/agent";
 
 // ─── Runtime 配置 ──────────────────────────────────────────────────────────
 
@@ -461,7 +461,7 @@ export class AgentRuntime {
 
       // 记录 token 用量
       if (result.usage) {
-        const tokenUsage = result.usage as unknown as import("@little-house-studio/agent-harness").TokenUsage;
+        const tokenUsage = result.usage as unknown as import("@little-house-studio/agent").TokenUsage;
         yield { type: "model.usage", usage: tokenUsage } as unknown as StreamEvent;
         try {
           const tracker = new TokenTracker(maouRoot, agentName, preset as unknown as Record<string, unknown>);
@@ -1032,7 +1032,7 @@ export class Runtime {
   /** 列出所有 agent */
   async listAgents(): Promise<Record<string, unknown>[]> {
     try {
-      const { AgentRegistry } = await import("@little-house-studio/agent-harness");
+      const { AgentRegistry } = await import("@little-house-studio/agent");
       const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
       return registry.list();
     } catch {
@@ -1043,7 +1043,7 @@ export class Runtime {
   /** 初始化新 agent */
   async initAgent(name: string): Promise<Record<string, unknown>> {
     try {
-      const { initMainAgent } = await import("@little-house-studio/agent-harness");
+      const { initMainAgent } = await import("@little-house-studio/agent");
       initMainAgent(this.maouRoot);
       return { ok: true, name };
     } catch (err) {
@@ -1054,7 +1054,7 @@ export class Runtime {
   /** 获取 Agent 工厂预设 */
   async getAgentFactoryPresets(): Promise<Record<string, unknown>> {
     try {
-      const { AgentFactory } = await import("@little-house-studio/agent-harness");
+      const { AgentFactory } = await import("@little-house-studio/agent");
       const factory = new AgentFactory(this.maouRoot, process.cwd());
       return { presets: factory.listPresets() };
     } catch {

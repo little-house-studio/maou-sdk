@@ -44,7 +44,7 @@ import {
   MAOU_VERSION,
 } from '@little-house-studio/core'
 import { detectExpression } from '@little-house-studio/core'
-import { PLUGIN_METADATA } from '@little-house-studio/agent-harness'
+import { PLUGIN_METADATA } from '@little-house-studio/agent'
 // import { PetEventBroadcaster, SSEClientManager } from '../plugins/pet/broadcaster.js'
 // import { registerPetRoutes } from '../plugins/pet/routes.js'
 import { getProjectsList, addProject, removeProject } from '@little-house-studio/core'

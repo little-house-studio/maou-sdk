@@ -23,7 +23,7 @@ export {
   createMessage,
   createAgentEvent,
   createDeviceInfo,
-} from '@little-house-studio/agent-harness'
+} from '@little-house-studio/agent'
 export type {
   AgentEventType,
   Message,
@@ -31,26 +31,26 @@ export type {
   ToolCall,
   ToolResult,
   DeviceInfo,
-} from '@little-house-studio/agent-harness'
+} from '@little-house-studio/agent'
 
 // ─── 事件总线（已移至 core/agent_factory/event-bus.ts）───────────────────────
-export { EventBus } from '@little-house-studio/agent-harness'
-export type { EventHandler } from '@little-house-studio/agent-harness'
+export { EventBus } from '@little-house-studio/agent'
+export type { EventHandler } from '@little-house-studio/agent'
 
 // ─── 插件系统（已移至 core/agent_factory/plugin.ts）──────────────────────────
-export { PluginBase, discoverPlugins } from '@little-house-studio/agent-harness'
+export { PluginBase, discoverPlugins } from '@little-house-studio/agent'
 
 // ─── 技能系统（已移至 core/agent_factory/skill.ts）───────────────────────────
 export {
   SkillRegistry,
   parseSkillFile,
   renderSkill,
-} from '@little-house-studio/agent-harness'
-export type { Skill } from '@little-house-studio/agent-harness'
+} from '@little-house-studio/agent'
+export type { Skill } from '@little-house-studio/agent'
 
 // ─── 钩子系统（已移至 core/agent/hooks.ts）────────────────────────────────────
-export { Hooks, ALL_HOOKS } from '@little-house-studio/agent-harness'
-export type { HookHandler, HookName } from '@little-house-studio/agent-harness'
+export { Hooks, ALL_HOOKS } from '@little-house-studio/agent'
+export type { HookHandler, HookName } from '@little-house-studio/agent'
 
 // ─── 客户端（已移至 hub/client.ts）───────────────────────────────────────────
 export { ClientBase, HubClient } from '../hub/client.js'
@@ -69,5 +69,5 @@ export type {
 } from '@little-house-studio/context'
 
 // ─── Git（已移至 core/agent_factory/git-watcher.ts）──────────────────────────
-export { GitWatcher } from '@little-house-studio/agent-harness'
-export type { DiffMeta, RollbackResult } from '@little-house-studio/agent-harness'
+export { GitWatcher } from '@little-house-studio/agent'
+export type { DiffMeta, RollbackResult } from '@little-house-studio/agent'

@@ -1,0 +1,14 @@
+{
+  "name": "example-minimal-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "@little-house-studio/llm": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.0.0"
+  }
+}
