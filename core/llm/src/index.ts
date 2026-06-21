@@ -31,9 +31,9 @@ export type {
   LLMEventType,
 } from './chat-session.js'
 
-// ─── PresetManager（API 预设管理）───────────────────────────────────────────
-export { PresetManager } from './preset-manager.js'
-export type { PresetConfig } from './preset-manager.js'
+// ─── LLMConfig（统一 LLM 配置管理：内置目录 + 自定义 + 配置文件）─────────────
+export { LLMConfig, DEFAULT_CONFIG_PATH } from './llm-config.js'
+export type { CustomPreset, LLMConfigFile, LLMConfigOptions } from './llm-config.js'
 
 // ─── StreamJsonAccumulator（流式 JSON 提取）─────────────────────────────────
 export { StreamJsonAccumulator } from './stream-parser.js'
@@ -167,6 +167,9 @@ export type {
   AgentLoopEvent,
   AgentLoopResult,
   AgentLoopStopReason,
+  AgentLoopHooks,
+  AgentLoopContext,
+  AgentLoopStepResult,
 } from './agent-loop.js'
 
 // ─── 跨厂商交接（对标 pi-ai cross-provider handoff）─────────────────────────

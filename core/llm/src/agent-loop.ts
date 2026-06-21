@@ -60,6 +60,66 @@ export interface AgentLoopParams {
   continueOnToolError?: boolean;
   /** 伪装为 Claude Code 工具名（Bash/Read/Edit…）发送；收到调用后自动还原查执行器 */
   stealth?: boolean;
+  /**
+   * 循环钩子 —— 让 agentLoop 既"极简"（不传 = 默认行为）又"灵活"（传了完全可控）。
+   * 每个钩子可选；返回 Promise 时循环会 await。可用于：自定义循环条件、
+   * 每步注入/改写消息、工具前后拦截、错误处理、状态追踪等。
+   */
+  hooks?: AgentLoopHooks;
+}
+
+/**
+ * Agent 循环钩子（全部可选）。
+ *
+ * 设计原则：默认 agentLoop 是最简的"调模型→执行工具→继续"循环；
+ * 任意钩子缺省时走默认逻辑，实现了哪个就接管哪一步。这让同一函数
+ * 既能开箱即用，又能被高级用户完全定制（plan/task/审批/限流等策略）。
+ */
+export interface AgentLoopHooks {
+  /**
+   * 是否开始下一步。默认：step <= maxSteps。
+   * 返回 false 则循环结束（stoppedReason 由调用方/最终 return 决定）。
+   * @param ctx 当前步上下文（step、累计消息、工具调用数等）
+   */
+  shouldContinue?(ctx: AgentLoopContext): boolean | Promise<boolean>;
+
+  /** 每步开始前（可改写即将发送的 messages，如注入上下文/压缩） */
+  beforeStep?(ctx: AgentLoopContext): void | Promise<void>;
+
+  /** 拿到模型回复、执行工具之前（可拦截/改写工具调用） */
+  onModelResponse?(ctx: AgentLoopContext, response: { content: string; toolCalls: LLMToolCall[] }): void | Promise<void>;
+
+  /** 单个工具执行前后（可改写参数、跳过、替换结果） */
+  beforeToolCall?(ctx: AgentLoopContext, call: LLMToolCall): LLMToolCall | null | Promise<LLMToolCall | null>;
+  afterToolCall?(ctx: AgentLoopContext, call: LLMToolCall, result: string, isError: boolean): string | Promise<string>;
+
+  /** 每步结束后（可用于记账、终止判定等） */
+  afterStep?(ctx: AgentLoopContext, stepResult: AgentLoopStepResult): void | Promise<void>;
+
+  /** 步内出错时（返回 true 则吞掉错误继续下一步；默认按 continueOnToolError 处理） */
+  onError?(ctx: AgentLoopContext, error: Error): boolean | Promise<boolean>;
+}
+
+/** 钩子可读写的循环上下文（每步刷新） */
+export interface AgentLoopContext {
+  /** 当前步数（从 1 开始） */
+  step: number;
+  /** 已累计步数 */
+  stepsTaken: number;
+  /** 当前消息历史（可被 beforeStep 改写） */
+  messages: Record<string, unknown>[];
+  /** 截至本步累计工具调用次数 */
+  toolCallCount: number;
+  /** 中断信号 */
+  abortSignal?: AbortSignal;
+}
+
+/** 单步结果（传给 afterStep） */
+export interface AgentLoopStepResult {
+  content: string;
+  toolCalls: LLMToolCall[];
+  /** 本步是否有工具调用 */
+  hasToolCalls: boolean;
 }
 
 /** agentLoop 流式事件 */
@@ -175,11 +235,29 @@ export async function* agentLoop(
 
   const usage: LLMUsage = {};
   let finalText = "";
+  let toolCallCount = 0;
+  const hooks = params.hooks ?? {};
 
   for (let step = 1; step <= maxSteps; step++) {
     if (params.abortSignal?.aborted) {
       return { messages, steps: step - 1, finalText, usage, stoppedReason: "aborted" };
     }
+
+    // 构建当前步上下文（hooks 可读写）
+    const ctx: AgentLoopContext = {
+      step,
+      stepsTaken: step - 1,
+      messages,
+      toolCallCount,
+      abortSignal: params.abortSignal,
+    };
+
+    // 钩子：shouldContinue（默认 step<=maxSteps，已在循环条件里；hook 可更严格）
+    if (hooks.shouldContinue && !(await hooks.shouldContinue(ctx))) {
+      return { messages, steps: step - 1, finalText, usage, stoppedReason: "done" };
+    }
+    // 钩子：beforeStep（可改写 messages）
+    if (hooks.beforeStep) await hooks.beforeStep(ctx);
 
     yield { type: "step_start", step };
 
@@ -210,11 +288,18 @@ export async function* agentLoop(
           yield { type: "thinking", delta: String(ev.data.delta), step };
         } else if (ev.type === "model.error") {
           yield { type: "error", error: String(ev.data.error), step };
+          if (hooks.onError && await hooks.onError(ctx, new Error(String(ev.data.error)))) {
+            continue;
+          }
         }
         it = await iter.next();
       }
       result = it.value;
     } catch (err) {
+      // 钩子：onError 可吞掉错误继续
+      if (hooks.onError && await hooks.onError(ctx, err instanceof Error ? err : new Error(String(err)))) {
+        continue;
+      }
       const isAbort = params.abortSignal?.aborted || (err instanceof DOMException && err.name === "AbortError");
       yield { type: "error", error: String(err), step };
       return {
@@ -228,7 +313,12 @@ export async function* agentLoop(
 
     accumulateUsage(usage, result.usage);
     finalText = result.content || content || finalText;
-    const toolCalls = result.nativeToolCalls ?? [];
+    let toolCalls = result.nativeToolCalls ?? [];
+
+    // 钩子：onModelResponse（拿到回复、执行工具前；可改写 toolCalls）
+    if (hooks.onModelResponse) {
+      await hooks.onModelResponse(ctx, { content: result.content ?? content, toolCalls });
+    }
 
     // 追加 assistant 消息（带 tool_calls 配对）
     const assistantMsg: Record<string, unknown> = {
@@ -252,8 +342,20 @@ export async function* agentLoop(
     }
 
     // 执行每个工具调用，结果喂回
-    for (const call of toolCalls) {
+    for (let call of toolCalls) {
+      // 钩子：beforeToolCall（可改写或返回 null 跳过该工具）
+      if (hooks.beforeToolCall) {
+        const replaced = await hooks.beforeToolCall(ctx, call);
+        if (replaced === null) {
+          // 跳过该工具，喂回"已跳过"
+          messages.push({ role: "tool", tool_call_id: call.id, content: "[skipped by beforeToolCall]" });
+          continue;
+        }
+        call = replaced;
+      }
       yield { type: "tool_call", tool: call, step };
+      toolCallCount += 1;
+      ctx.toolCallCount = toolCallCount;
 
       // 伪装模式下模型回传的是 Claude Code 名，还原回本项目名再查执行器
       const lookupName = stealth ? stealth.restoreName(call.name) : call.name;
@@ -293,8 +395,22 @@ export async function* agentLoop(
         }
       }
 
+      // 钩子：afterToolCall（可改写结果文本/错误标记）
+      if (hooks.afterToolCall) {
+        resultText = await hooks.afterToolCall(ctx, call, resultText, isError);
+      }
+
       messages.push({ role: "tool", tool_call_id: call.id, content: resultText });
       yield { type: "tool_result", name: call.name, id: call.id, result: resultText, isError, step };
+    }
+
+    // 钩子：afterStep（每步结束；可用于记账/终止判定）
+    if (hooks.afterStep) {
+      await hooks.afterStep(ctx, {
+        content: result.content ?? content,
+        toolCalls,
+        hasToolCalls: toolCalls.length > 0,
+      });
     }
   }
 
