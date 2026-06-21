@@ -34,7 +34,8 @@
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
     "dev:demo": "tsx src/demo.tsx",
-    "demo": "node dist/demo.js"
+    "demo": "node dist/demo.js",
+    "test:demo": "FORCE_COLOR=3 MAOU_DEMO_TEST=1 tsx scripts/smoke-demo.mjs"
   },
   "dependencies": {
     "@little-house-studio/agent": "workspace:*",

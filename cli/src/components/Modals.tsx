@@ -1,21 +1,10 @@
-/** 弹窗 —— 模型选择 / 命令面板 / 帮助（z-overlay 模态） */
+/** 弹窗 —— 模型选择 / 命令面板 / 帮助（不透明 Dialog + 投影，不透底） */
 import React, { useState, useMemo } from "react";
-import { Box, Text, useInput } from "ink";
 import { currentTheme } from "../theme.js";
 import { useStore } from "../state/store.js";
+import { useCleanInput } from "../hooks/useCleanInput.js";
+import { Dialog, type DialogRow } from "./Dialog.js";
 import { getProviders, getModels } from "@little-house-studio/llm";
-
-function Overlay({ title, children, width = 50 }: { title: string; children: React.ReactNode; width?: number }) {
-  const t = currentTheme;
-  return (
-    <Box position="absolute" marginLeft={4} marginTop={2}>
-      <Box flexDirection="column" borderStyle="double" borderColor={t.accent} paddingX={1} width={width}>
-        <Box marginTop={-1}><Text color={t.accent} bold> {title} </Text></Box>
-        {children}
-      </Box>
-    </Box>
-  );
-}
 
 export function ModelPicker() {
   const t = currentTheme;
@@ -32,7 +21,7 @@ export function ModelPicker() {
   const [sel, setSel] = useState(0);
   const [filter, setFilter] = useState("");
   const filtered = flat.filter((x) => (x.provider + x.model + x.name).toLowerCase().includes(filter.toLowerCase()));
-  useInput((input, key) => {
+  useCleanInput((input, key) => {
     if (key.escape) return setModal(null);
     if (key.upArrow) return setSel((s) => Math.max(0, s - 1));
     if (key.downArrow) return setSel((s) => Math.min(filtered.length - 1, s + 1));
@@ -42,26 +31,25 @@ export function ModelPicker() {
       return setModal(null);
     }
     if (key.backspace || key.delete) return setFilter((f) => f.slice(0, -1));
-    if (input && !key.ctrl) return setFilter((f) => f + input);
+    if (input && !key.ctrl) { setFilter((f) => f + input); setSel(0); }
   });
-  const window = filtered.slice(Math.max(0, sel - 4), Math.max(0, sel - 4) + 10);
-  const base = Math.max(0, sel - 4);
+  const base = Math.max(0, Math.min(sel - 4, Math.max(0, filtered.length - 10)));
+  const window = filtered.slice(base, base + 10);
+  const rows: DialogRow[] = [
+    [{ text: `🔍 ${filter || "（输入筛选）"}`, color: t.overlayFg }],
+    ...window.map((x) => [
+      { text: x.provider.padEnd(12), color: t.role.user },
+      { text: " " + x.name, color: t.overlayFg },
+    ]),
+  ];
   return (
-    <Overlay title="◆ 选择模型" width={56}>
-      <Text color={t.dim}>搜索: <Text color={t.fg}>{filter}</Text>▌</Text>
-      <Box flexDirection="column" marginTop={1}>
-        {window.map((x, i) => {
-          const idx = base + i;
-          const on = idx === sel;
-          return (
-            <Text key={idx} color={on ? t.bg : t.fg} backgroundColor={on ? t.accent : undefined}>
-              {on ? "▶ " : "  "}{x.provider.padEnd(12)} {x.name}
-            </Text>
-          );
-        })}
-      </Box>
-      <Text color={t.dim}>↑↓ 选择 · ↵ 确认 · Esc 取消 · {filtered.length} 个模型</Text>
-    </Overlay>
+    <Dialog
+      title="◆ 选择模型"
+      width={58}
+      rows={rows}
+      selected={sel - base + 1}
+      footer={`↑↓ 选 · ↵ 确认 · Esc 取消 · 共 ${filtered.length}`}
+    />
   );
 }
 
@@ -80,56 +68,44 @@ export function CommandPalette({ onRun }: { onRun: (id: string) => void }) {
   const [sel, setSel] = useState(0);
   const [filter, setFilter] = useState("");
   const filtered = COMMANDS.filter((c) => (c.label + c.desc).toLowerCase().includes(filter.toLowerCase()));
-  useInput((input, key) => {
+  useCleanInput((input, key) => {
     if (key.escape) return setModal(null);
     if (key.upArrow) return setSel((s) => Math.max(0, s - 1));
     if (key.downArrow) return setSel((s) => Math.min(filtered.length - 1, s + 1));
     if (key.return) { const c = filtered[sel]; if (c) onRun(c.id); return; }
     if (key.backspace || key.delete) return setFilter((f) => f.slice(0, -1));
-    if (input && !key.ctrl) return setFilter((f) => f + input);
+    if (input && !key.ctrl) { setFilter((f) => f + input); setSel(0); }
   });
+  const rows: DialogRow[] = [
+    [{ text: `› ${filter}`, color: t.overlayFg }],
+    ...filtered.map((c) => [
+      { text: c.label.padEnd(8), color: t.overlayFg, bold: true },
+      { text: "  " + c.desc, color: t.dim },
+    ]),
+  ];
   return (
-    <Overlay title="⚡ 命令面板" width={50}>
-      <Text color={t.dim}>› <Text color={t.fg}>{filter}</Text>▌</Text>
-      <Box flexDirection="column" marginTop={1}>
-        {filtered.map((c, i) => (
-          <Box key={c.id} justifyContent="space-between">
-            <Text color={i === sel ? t.bg : t.fg} backgroundColor={i === sel ? t.accent : undefined}>{i === sel ? "▶ " : "  "}{c.label}</Text>
-            <Text color={t.dim}>{c.desc}</Text>
-          </Box>
-        ))}
-      </Box>
-    </Overlay>
+    <Dialog title="⚡ 命令面板" width={50} rows={rows} selected={sel + 1} footer="↑↓ 选 · ↵ 执行 · Esc 取消" />
   );
 }
 
 export function HelpModal() {
   const t = currentTheme;
   const setModal = useStore((s) => s.setModal);
-  useInput((_i, key) => { if (key.escape || key.return) setModal(null); });
-  const keys = [
-    ["↵ / Enter", "发送消息"],
+  useCleanInput((_i, key) => { if (key.escape || key.return) setModal(null); });
+  const keys: [string, string][] = [
+    ["↵ Enter", "发送消息"],
     ["Esc", "中断流式 / 关闭弹窗"],
     ["Ctrl+K", "命令面板"],
     ["Ctrl+M", "选择模型"],
     ["Ctrl+N", "新对话"],
-    ["Ctrl+B", "切换侧栏"],
-    ["Ctrl+G", "切换 HUD"],
+    ["Ctrl+B / Ctrl+G", "切换侧栏 / HUD"],
     ["Tab", "切换焦点面板"],
-    ["鼠标点击", "聚焦面板 / 输入框光标定位"],
+    ["` (反引号)", "开/关鼠标（关=可拖选复制）"],
     ["Ctrl+C", "退出"],
   ];
-  return (
-    <Overlay title="? 快捷键" width={44}>
-      <Box flexDirection="column">
-        {keys.map(([k, d], i) => (
-          <Box key={i} justifyContent="space-between">
-            <Text color={t.accent} bold>{k}</Text>
-            <Text color={t.fg}>{d}</Text>
-          </Box>
-        ))}
-      </Box>
-      <Text color={t.dim}>按 Esc 关闭</Text>
-    </Overlay>
-  );
+  const rows: DialogRow[] = keys.map(([k, d]) => [
+    { text: k.padEnd(16), color: t.accent, bold: true },
+    { text: d, color: t.overlayFg },
+  ]);
+  return <Dialog title="? 快捷键" width={48} rows={rows} footer="Esc 关闭" />;
 }

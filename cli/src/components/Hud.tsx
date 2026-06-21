@@ -81,7 +81,7 @@ export function Hud({ frame, angle }: { frame: number; angle: number }) {
   );
 }
 
-export function StatusBar({ mode, input }: { mode: string; input: string }) {
+export function StatusBar({ mode, input, mouse }: { mode: string; input: string; mouse?: boolean }) {
   const t = currentTheme;
   const { streaming } = useStore();
   return (
@@ -90,7 +90,10 @@ export function StatusBar({ mode, input }: { mode: string; input: string }) {
         <Text backgroundColor={t.accent} color={t.bg} bold> {mode} </Text>
         <Text color={t.dim}> {streaming ? "⏸ Esc 中断" : "↵ 发送"} · Ctrl+K 命令 · Tab 切换 · Ctrl+C 退出</Text>
       </Box>
-      <Text color={t.dim}>{streaming ? "● 流式" : "○ 空闲"}</Text>
+      <Box>
+        <Text color={mouse ? t.status.ok : t.dim}>🖱 {mouse ? "ON" : "OFF(可拖选)"} </Text>
+        <Text color={t.dim}>{streaming ? "● 流式" : "○ 空闲"}</Text>
+      </Box>
     </Box>
   );
 }

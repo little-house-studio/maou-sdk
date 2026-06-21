@@ -60,10 +60,8 @@ export function Message({ msg, frame }: { msg: ChatMessage; frame: number }) {
   );
 }
 
-export function ChatView({ messages, frame, maxRows }: { messages: ChatMessage[]; frame: number; maxRows: number }) {
+export function ChatView({ messages, frame, maxRows, offset = 0 }: { messages: ChatMessage[]; frame: number; maxRows: number; offset?: number }) {
   const t = currentTheme;
-  // 只渲染最近的消息（按估算行数裁剪，避免溢出）
-  const visible = messages.slice(-12);
   if (messages.length === 0) {
     return (
       <Box flexDirection="column" justifyContent="center" alignItems="center" flexGrow={1}>
@@ -74,9 +72,16 @@ export function ChatView({ messages, frame, maxRows }: { messages: ChatMessage[]
       </Box>
     );
   }
+  // 按消息粒度滚动：offset=0 显示最新；向上滚 offset 增大
+  const N = Math.max(4, Math.floor((maxRows > 0 ? maxRows : 12) / 2));
+  const end = Math.max(1, messages.length - offset);
+  const start = Math.max(0, end - N);
+  const visible = messages.slice(start, end);
   return (
     <Box flexDirection="column" flexGrow={1}>
+      {start > 0 && <Text color={t.dim}>▲ 上方还有 {start} 条（↑ / 滚轮）</Text>}
       {visible.map((m) => <Message key={m.id} msg={m} frame={frame} />)}
+      {offset > 0 && <Text color={t.accent}>▼ 回到最新（↓ / 滚轮）</Text>}
     </Box>
   );
 }
