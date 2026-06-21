@@ -45,11 +45,12 @@ export function InputBox({ value, cursor, focused, placeholder = "输入消息�
           {chars.map((ch, i) => {
             const inSel = hasSel && i >= s && i < e;
             const isCursor = focused && i === cursor && !hasSel;
-            if (isCursor) return <Text key={i} backgroundColor={t.accent} color={t.bg}>{ch}</Text>;
+            // 光标用 inverse 反显（任意终端都醒目）
+            if (isCursor) return <Text key={i} inverse bold>{ch}</Text>;
             if (inSel) return <Text key={i} backgroundColor={t.selectionBg} color={t.overlayFg}>{ch}</Text>;
             return <Text key={i} color={t.fg}>{ch}</Text>;
           })}
-          {focused && cursor >= chars.length && !hasSel && <Text backgroundColor={t.accent} color={t.bg}> </Text>}
+          {focused && cursor >= chars.length && !hasSel && <Text inverse bold> </Text>}
         </Text>
       )}
     </Box>

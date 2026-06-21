@@ -102,6 +102,11 @@ async function main() {
   const mouseOk = latestScreen().includes("ON");
   // 拖选复制：useMouse 监听真实 process.stdin，所以鼠标 SGR 发到 process.stdin
   const mseq = (b, c, r, tail) => Buffer.from(`\x1b[<${b};${c};${r}${tail}`, "latin1");
+  // 纯单击移光标（down+up 同列，无 drag）→ 光标到点击处
+  process.stdin.emit("data", mseq(0, 10, 20, "M")); await sleep(45);
+  process.stdin.emit("data", mseq(0, 10, 20, "m")); await sleep(70);
+  const clickCursor = Number((latestScreen().match(/光标索引\s*(\d+)/) || [])[1] ?? -1);
+  const clickCursorWorks = clickCursor === 1; // 列10→rel2→字符索引1
   process.stdin.emit("data", mseq(0, 8, 20, "M"));   await sleep(45); // down @列8 → 字符0(锚)
   process.stdin.emit("data", mseq(32, 14, 20, "M")); await sleep(45); // drag @列14
   process.stdin.emit("data", mseq(0, 18, 20, "m"));  await sleep(110); // up @列18 → OSC52 复制
@@ -135,6 +140,7 @@ async function main() {
     modalBgFillSGR: bgFill,
     inputDeleteWorks: deleteWorks,
     mouseToggleWorks: mouseOk,
+    clickMovesCursor: clickCursorWorks,
     osc52CopyWorks: osc52Works,
     osc52CopiedText: copiedText,
     missedTitles: seen.filter((s) => !s.probe).map((s) => s.page),
@@ -145,7 +151,7 @@ async function main() {
   // bgFill 需 FORCE_COLOR；未强制色彩时跳过该断言
   const colorOn = Boolean(process.env.FORCE_COLOR);
   const opaqueOk = colorOn ? bgFill >= 15 : modalOk;
-  const pass = headerOk >= 15 && probeOk >= 15 && rendered && modalOk && opaqueOk && deleteWorks && mouseOk && osc52Works && errors.length === 0;
+  const pass = headerOk >= 15 && probeOk >= 15 && rendered && modalOk && opaqueOk && deleteWorks && mouseOk && clickCursorWorks && osc52Works && errors.length === 0;
   console.log(pass ? "\nSMOKE: PASS ✅" : "\nSMOKE: FAIL ❌");
   process.exit(pass ? 0 : 1);
 }

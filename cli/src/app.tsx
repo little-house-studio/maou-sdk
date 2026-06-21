@@ -32,6 +32,7 @@ export function App() {
   const [chatOffset, setChatOffset] = useState(0); // 对话滚动（消息粒度，0=最新）
   const [sel, setSel] = useState<[number, number] | null>(null); // 输入框选区
   const selAnchor = useRef<number | null>(null);
+  const dragged = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const cols = term.cols;
@@ -56,18 +57,19 @@ export function App() {
       if (inInputRow) {
         setFocus("input");
         const idx = colToCharIndex(input, Math.max(0, e.col - inputColOffset));
-        selAnchor.current = idx; setSel([idx, idx]); setCursor(idx);
+        selAnchor.current = idx; dragged.current = false; setSel(null); setCursor(idx);
       } else if (e.col <= sidebarW) setFocus("sidebar");
       else if (e.col >= cols - hudW) setFocus("hud");
       else setFocus("chat");
     } else if (e.type === "drag" && selAnchor.current != null) {
+      dragged.current = true;
       const idx = colToCharIndex(input, Math.max(0, e.col - inputColOffset));
       setSel([selAnchor.current, idx]); setCursor(idx);
     } else if (e.type === "up" && selAnchor.current != null) {
       const a = selAnchor.current, b = colToCharIndex(input, Math.max(0, e.col - inputColOffset));
       selAnchor.current = null;
-      if (a !== b) { const s = Math.min(a, b), en = Math.max(a, b); setSel([s, en]); const text = input.slice(s, en); if (text && stdout) { stdout.write(osc52(text)); store.toastMsg(`已复制 ${[...text].length} 字`, "ok"); } }
-      else setSel(null);
+      if (dragged.current && a !== b) { const s = Math.min(a, b), en = Math.max(a, b); setSel([s, en]); setCursor(en); const text = input.slice(s, en); if (text && stdout) { stdout.write(osc52(text)); store.toastMsg(`已复制 ${[...text].length} 字`, "ok"); } }
+      else { setCursor(a); setSel(null); } // 纯单击：光标到按下处
     } else if (e.type === "wheelUp") {
       setChatOffset((o) => Math.min(Math.max(0, store.messages.length - 1), o + 1));
     } else if (e.type === "wheelDown") {

@@ -122,6 +122,7 @@ export function Demo() {
   const [sel, setSel] = useState<[number, number] | null>(null);
   const [copied, setCopied] = useState("");
   const selAnchor = useRef<number | null>(null);
+  const dragged = useRef(false);
   const { stdout } = useStdout();
   const store = useStore();
   const t = currentTheme;
@@ -144,12 +145,12 @@ export function Demo() {
     // 第13页：点击=移光标，拖动=选区，松手=OSC52 复制（无修饰键同时拥有两者）
     if (page === 12) {
       const idx = colToCharIndex(input, Math.max(0, e.col - 8)); // 估算输入框文本起始列
-      if (e.type === "down") { selAnchor.current = idx; setSel([idx, idx]); setCursor(idx); setCopied(""); }
-      else if (e.type === "drag" && selAnchor.current != null) { setSel([selAnchor.current, idx]); setCursor(idx); }
+      if (e.type === "down") { selAnchor.current = idx; dragged.current = false; setCursor(idx); setSel(null); setCopied(""); }
+      else if (e.type === "drag" && selAnchor.current != null) { dragged.current = true; setSel([selAnchor.current, idx]); setCursor(idx); }
       else if (e.type === "up" && selAnchor.current != null) {
-        const a = selAnchor.current, b = idx; selAnchor.current = null;
-        if (a !== b) { const s = Math.min(a, b), en = Math.max(a, b); setSel([s, en]); doCopy(input.slice(s, en)); }
-        else setSel(null);
+        const a = selAnchor.current; selAnchor.current = null;
+        if (dragged.current && a !== idx) { const s = Math.min(a, idx), en = Math.max(a, idx); setSel([s, en]); setCursor(en); doCopy(input.slice(s, en)); }
+        else { setCursor(a); setSel(null); } // 纯单击：光标移到按下处（不受松手抖动影响）
       }
     }
     if (page === 9) {
