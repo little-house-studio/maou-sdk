@@ -1,7 +1,7 @@
 {
   "name": "@little-house-studio/types",
   "version": "0.1.0",
-  "description": "Maou SDK 跨层共享类型（工具/会话/流式事件领域类型，零依赖底层）",
+  "description": "Maou SDK 基础层（共享领域类型 + 应用配置 + ConfigStore/项目管理/工具函数/表情检测）",
   "type": "module",
   "license": "MIT",
   "main": "dist/index.js",
@@ -18,8 +18,12 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
-  "dependencies": {},
+  "dependencies": {
+    "jsonc-parser": "^3.3.0",
+    "zod": "^3.23.0"
+  },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
   },
   "engines": {

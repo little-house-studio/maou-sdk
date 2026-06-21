@@ -1,0 +1,30 @@
+{
+  "name": "@little-house-studio/cli",
+  "version": "0.1.0",
+  "description": "Maou SDK 最小 CLI（对标 pi 的 `pi` 命令）——交互式 agent REPL",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "maou": "./dist/index.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@little-house-studio/agent": "workspace:*",
+    "@little-house-studio/llm": "workspace:*",
+    "@little-house-studio/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

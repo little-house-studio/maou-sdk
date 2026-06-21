@@ -1,6 +1,6 @@
 /**
  * @little-house-studio/tools — 工具层
- * 工具基础类型从 @little-house-studio/core 引入（见 base.ts）。
+ * 工具基础类型从 @little-house-studio/types 引入（见 base.ts）。
  */
 
 export { Tool, createToolResponse } from './base.js'

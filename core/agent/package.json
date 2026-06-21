@@ -19,7 +19,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@little-house-studio/core": "workspace:*",
     "@little-house-studio/types": "workspace:*",
     "@little-house-studio/llm": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
