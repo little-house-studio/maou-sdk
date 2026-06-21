@@ -81,7 +81,7 @@ async function main() {
     await sleep(70);
   }
 
-  // 用 goto 确定性导航到弹窗页（index 13）
+  // 验证输入框删除：到第13页(index12)，打字→记录索引→退格→索引应-1
   async function goto(target) {
     for (let k = 0; k < 25; k++) {
       const m = (latestScreen().match(/\[(\d+)\/17\]/) || [])[1];
@@ -90,6 +90,14 @@ async function main() {
     }
     return false;
   }
+  await goto(12); await sleep(60);
+  key("Z"); await sleep(60);
+  const cIdxAfterType = Number((latestScreen().match(/索引\s*(\d+)/) || [])[1] ?? -1);
+  key("\x7f"); await sleep(60); // DEL = 退格
+  const cIdxAfterDel = Number((latestScreen().match(/索引\s*(\d+)/) || [])[1] ?? -1);
+  const deleteWorks = cIdxAfterType >= 1 && cIdxAfterDel === cIdxAfterType - 1;
+
+  // 用 goto 确定性导航到弹窗页（index 13）
   const onModalPage = await goto(13);
   key("k"); await sleep(120);
   const modalOk = latestScreen().includes("命令面板");
@@ -116,6 +124,7 @@ async function main() {
     reachedModalPage: onModalPage,
     commandModalOpaque: modalOk,
     modalBgFillSGR: bgFill,
+    inputDeleteWorks: deleteWorks,
     mouseToggleWorks: mouseOk,
     missedTitles: seen.filter((s) => !s.probe).map((s) => s.page),
     errors,
@@ -125,7 +134,7 @@ async function main() {
   // bgFill 需 FORCE_COLOR；未强制色彩时跳过该断言
   const colorOn = Boolean(process.env.FORCE_COLOR);
   const opaqueOk = colorOn ? bgFill >= 15 : modalOk;
-  const pass = headerOk >= 15 && probeOk >= 15 && rendered && modalOk && opaqueOk && mouseOk && errors.length === 0;
+  const pass = headerOk >= 15 && probeOk >= 15 && rendered && modalOk && opaqueOk && deleteWorks && mouseOk && errors.length === 0;
   console.log(pass ? "\nSMOKE: PASS ✅" : "\nSMOKE: FAIL ❌");
   process.exit(pass ? 0 : 1);
 }

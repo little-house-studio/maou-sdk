@@ -158,22 +158,38 @@ export function Demo() {
 
   useCleanInput((char, key) => {
     if (store.modal) return;
-    if (char === "q" || (key.ctrl && char === "c")) { exit(); return; }
+    if (key.ctrl && char === "c") { exit(); return; }
     if (char === "`") return setMouseOn((m) => !m);
-    if (key.rightArrow || char === "n") return setPage((p) => (p + 1) % PAGES.length);
-    if (key.leftArrow || char === "p") return setPage((p) => (p - 1 + PAGES.length) % PAGES.length);
+    // 翻页：方向键始终可用（输入页也能用 ← → 离开）
+    if (key.rightArrow) return setPage((p) => (p + 1) % PAGES.length);
+    if (key.leftArrow) return setPage((p) => (p - 1 + PAGES.length) % PAGES.length);
+
+    // —— 输入框页：完整编辑（删除键 char 为空，必须在 char 判空之外处理）——
+    if (page === 12) {
+      if (key.backspace || key.delete) {
+        if (cursor > 0) { setInput((v) => v.slice(0, cursor - 1) + v.slice(cursor)); setCursor((c) => c - 1); }
+        return;
+      }
+      if (key.upArrow) return setCursor(0);
+      if (key.downArrow) return setCursor(input.length);
+      if (char && !key.ctrl && !key.meta && !key.return) {
+        setInput((v) => v.slice(0, cursor) + char + v.slice(cursor)); setCursor((c) => c + 1);
+        return;
+      }
+      return; // 输入页吞掉其余键，避免误触发翻页
+    }
+
+    if (char === "q") { exit(); return; }
+    if (char === "n") return setPage((p) => (p + 1) % PAGES.length);
+    if (char === "p") return setPage((p) => (p - 1 + PAGES.length) % PAGES.length);
     const num = "1234567890".indexOf(char);
     if (char && num >= 0) return setPage(num);
-    // —— 页内交互 ——
+    // —— 其余页内交互 ——
     if (page === 4 && char === "m") setWireModel((w) => (w === "crystal" ? "cube" : "crystal"));
     if (page === 6 && char === "m") setImgMode((m) => (m === "block" ? "braille" : m === "braille" ? "ramp" : m === "ramp" ? "half" : "block"));
     if (page === 9) { if (key.upArrow) chat.scrollBy(-1); if (key.downArrow) chat.scrollBy(1); }
     if (page === 10 && (char === "c" || char === " ")) setSidebarOpen((s) => !s);
     if (page === 11 && key.tab) setFocusIdx((f) => (f + 1) % 3);
-    if (page === 12 && char && !key.ctrl && !key.tab && !key.return) {
-      if (key.backspace || key.delete) { if (cursor > 0) { setInput((v) => v.slice(0, cursor - 1) + v.slice(cursor)); setCursor((c) => c - 1); } }
-      else { setInput((v) => v.slice(0, cursor) + char + v.slice(cursor)); setCursor((c) => c + 1); }
-    }
     if (page === 13) {
       if (char === "k") return store.setModal("command");
       if (char === "o") return store.setModal("model");
