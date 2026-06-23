@@ -12,23 +12,19 @@
     - Before_user区
     - 增量注入区
     - user消息区
+- 需求：
+    - 工具：注入系统提示词
+        - 注入before_user
+    - 文件锁定：
+        - 系统提示词注入
 
-## 提示词解析
-由 `core/context/message-builder.ts` 按固定槽位顺序组装：
-1. `system_pre`（可注入）
-2. `System.md`（主系统提示词，由 `core/agent/prompt-compiler.ts` 编译）
-3. `system_post`（可注入）
-4. `baked_context`（烘焙区，见下文）
-5. 项目/平台/记忆等 system 消息
-6. `compressed_summary`（来自 `maybeCompress` 的 `droppedSummary`）
-7. 历史消息（HarnessMessage → LLMMessage 降级）
-8. `before_user` / `dynamic_injections` / `user_message`
+
 
 ## 上下文压缩算法
     - [嵌入结构区] ->不变区域，除非大变
         - 非烘培区例如用户偏好，项目信息，环境信息，别的自定义嵌入文本信息
         - 烘焙上下文区：这里固定，动态区会增量注入
-    - [死区]->第二次大压缩直接剩下任务块摘要+ID了，需要原始记录就去读取
+    - [归档区]->第二次大压缩直接剩下任务块摘要+ID了，需要原始记录就去读取
         - 剩下任务块极简摘要+ID路径+任务并行结构图了
     - [大压缩] -> 第一次大压缩，压缩后剩下过去却的任务摘要
         - 原数据：[事件id-b开始位置]{👨，消息群},{🤖,消息集群}{👨，消息群},{🤖,消息集群}[事件id-b结束位置]
@@ -61,15 +57,6 @@
 - **动态区**（`dynamic_injections`）：每轮变化的状态，由 `compileDynamicContext` 生成。
 - **静态区**（`static_zone`）：压缩算法中永不参与压缩的部分，包括 `system` 消息与 `pinned` 消息。
 
-## 会话管理
-- `SessionStore`（`core/context/session-store.ts`）：JSONL 持久化会话消息（`SessionMessage` 格式）。
-- `SessionManager`（`core/context/session-manager.ts`）：多会话并发、滚动摘要、活跃会话状态。
-- `HarnessSessionStore`（`core/context/harness-session-store.ts`）：
-  - 当前上下文 `harness_session.json` + 压缩前备份 `harness_session_backup.json`
-  - 压缩区独立落盘 `compressed_zone.json`（zone/summary/taskBlocks）
-  - `getBySeqId(id)`：按消息 ID 回溯
-- `CheckpointStore`（`core/context/checkpoint-store.ts`）：自动快照（压缩前、关键节点）。
-- `TaskSessionStore`（`core/context/task-session-store.ts`）：大压缩/归档时产出的任务块存储（`<task_id>.jsonl`）。
 
 ## 消息结构体
 - 原始排序：
@@ -96,22 +83,34 @@
         - 第二次压缩的时候就要根据标注点增量更新task_session的llm_message上下文和内部的任务摘要简介,任务流程大纲。
         - 写入时使用llm_message消息结构体，不需要用harness_message。因为harness_message是maou-agent的harness层的消息结构体，包含很多压缩优化标注，目的是灵活解析没必要。
         - 而llm_message是llm层的消息结构体，原生message结构体状态，目的是llm层发送post消息，以及方便上下文解析和缓存。
-- 任务块harness_task_block
-    - 任务块ID
-    - 任务摘要
-    - 任务流程大纲
-    - 属于任务的上下文数组
+- [x] 任务块taskBlock
+    - 任务块ID（ai分配，上一次没有分配就延续，0号为普通对话，注入一次到任务开始上下文）
+    - 父任务id（可选，用作嵌套，注入一次到任务开始上下文）
+    - 任务摘要（任务目标的简介，注入一次到任务开始上下文）
+    - 任务目标（任务的具体目标，注入一次到任务开始上下文）
+    - 任务背景信息（任务的背景信息，注入一次到任务开始上下文）
+    - 任务经验（把经验记录下来，在before_user中动态显示）
+    - 任务流程大纲（任务的流程大纲，不注入上下文只有在压缩到归档区的时候才写，并且加入到任务块存储的元数据中）
+    - 任务依赖的文件/网页列表元数据（不注入上下文，根据任务期间使用的工具pin下来的文件/网页列表，在加入到任务块存储的元数据时候加入）
+        - 包含路径，引用片段。
+    - 属于任务的上下文数组（下面就是全部任务内的记录，不记录子任务）
         - llm_message结构体，包含顺序id，解析后非保留到上下文的内容。
 
-- 消息块harness_message
+- [ ] 消息块harness_message
     - 存储到当前结构会话上下文文件中，方便随时解析
     - 消息顺序id（系统分配，ai输出无需填写）
     - 所属任务id数组
     - 不存储
     - 消息harness_content
-    - 是否压缩后保留
     - 微压缩配置
+        - 是否微压缩（默认false）
+        - 微压缩后变成的摘要信息/占位符（前提是「是」微压缩）
     - 消息分类
+    - 案例：
+        - 增量+用户消息
+        - 飞书用户消息
+        - 工具返回消息
+        - ai调用工具消息
 
 - 内容块harness_content
     - 文本内容
@@ -119,6 +118,7 @@
         - 是否微压缩（默认false）
         - 微压缩后变成的摘要信息/占位符（前提是「是」微压缩）
     - 是否换行（默认false）
+    - 是否进入上下文历史（默认true）
 
 - 文本结构体
     - xml包裹文本：{xml标签，xml属性，内容}
@@ -127,7 +127,7 @@
 
 
 - 层级
-    - 任务块harness_task_message
+    - 任务块taskBlock
         - 消息块harness_message -> 解析成：消息块
             - 内容块harness_content -> 解析成：消息块内的内容，多消息自动拼接。
 
@@ -142,14 +142,50 @@
         - 工具结果结构体
             - 摘要信息(下dui一轮)
         - ai工具消息
-        - 压缩消息
+        - 多种压缩后消息（内部）
+            - user案例：{role:"user",content:{},micro_compress:{}}
+                - 消息类型user，上下文（系统前缀内容微压缩设置为去掉），微压缩配置(是否微压缩，微压缩后变成的摘要信息/占位符)，任务信息（任务id（ai分配），父任务id数组，任务摘要），消息信息（消息编号（系统自动分配），消息摘要），
+            - 原始消息：
+            - 
+            
         - diff增量消息
+            -diffFile 文件diff监听类
+                - 结构体：
+                    - const bakefile = new BakeFile(){tag:"config",path:"config.xml",hint:"项目配置文件",mode:"diff_placeholder"}
+                - diffFile difffile
+                - difffile.init：[xml名称，文件路劲（绝对或者相对都行），提示词，预设方案(仅监听，diff占位符，diff完整注入))]
+                - difffile.hasChanges：文件距离上次commit是否有增量（函数）
+                - difffile.commit：做上次diff的标记
+                - difffile.read：读取文件完整内容（函数）
+                - difffile.diff：返回文件diff内容，（函数）
+                - difffile.path：获取文件路径（函数）
+                - bake快速版
+                    - difffile.bake() 相当于commit后返回完整文件内容，带xml。可以直接add到bakeblock
+                    - difffile.update() 相当于返回本次diff内容后commit，带xml。可以直接add到before_user
+            - bake傻瓜式简易版：
+                - agent.bakeLink("xml","文件路劲", "提示词")     //后续自动会在压缩等情况下自动渲染，并且每次user发送时自动注入更新内容
+                - 这个无需其他配置，直接用一条就可以完成烘培文件绑定，相当于进行了下面的一套操作并自动add到bakeblock和before_user
+                - 默认模式为链式diff，并且间隔参数为3，也就是每3条diff返回，就会返回一次完整文件内容
+                - 可以通过setInterval函数来设置间隔参数
+
+            - 案例：
+                - 每次发送检查是否有更新：
+                    - message.bakeblock.add(bakefile.read) //添加完整文件到烘焙区
+                    - bakefile.snapshot()//标记
+                    - 过了很久。。。
+                    - message.before_user.add(bakefile.getDiff(),history_back:true) //增量消息，返回文件变化内容到user前，并且会返回上下文中
+                    - message.send() //发送完整消息
+                    - bakefile.snapshot()//更新文件最新标记
+                    - 简易版：
+                        - const file = bake("xml","文件路劲", "提示词")     //后续自动会在压缩等情况下自动渲染，并且每次user自动注入更新内容
+
+                
         - 烘焙消息
         - 用户消息
         - 系统消息
         - ai消息
         - 自定义结构体
-- add({meaagse,micro_compact,summary})
+
 
 - {
     char* role,

@@ -10,7 +10,7 @@ import type { CompressionZone } from "./types/compression.js";
 export type {
   HarnessContent,
   HarnessMessage,
-  HarnessTaskBlock,
+  TaskBlock,
   LLMMessage,
   LLMToolCall,
 } from "./types/message.js";

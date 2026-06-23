@@ -3,6 +3,8 @@
  * 命名采用描述性长名称，便于理解和后续修改
  */
 
+import type { TaskStatus } from "./message.js";
+
 // 压缩区域类型
 type CompressionZone =
   | 'static_zone'      // 嵌入结构区：固定不变，包含用户偏好、项目信息等
@@ -34,13 +36,23 @@ interface CompressionResult {
   task_blocks?: string[]; // 任务块 ID 列表
 }
 
-// 任务摘要
+// 任务摘要（对齐 TaskBlock 核心字段）
 interface TaskSummary {
   task_id: string;
+  parent_task_id?: string;
+  status: TaskStatus;
+  summary: string;
+  goal?: string;
+  context?: string;
+  outline: string[];
+  notes?: string[];
+  progress?: number;
+  current_step?: string;
+  dependencies?: string[];
+  related_files?: string[];
+  tags?: string[];
   start_time: string;
   end_time?: string;
-  summary: string;
-  outline: string[];
 }
 
 export type {

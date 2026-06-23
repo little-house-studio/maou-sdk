@@ -60,8 +60,6 @@ export interface SessionMessage {
   role: string;
   content: string;
   created_at: string;
-  /** 优先级 */
-  priority?: string;
   /** 是否固定 */
   pinned?: boolean;
   /** 来源 */
@@ -463,7 +461,6 @@ export class SessionStore {
       role,
       content,
       created_at: nowIso(),
-      priority: role === "system" ? "critical" : "normal",
       ...metadata,
     };
     this.appendLine(sessionId, item);
@@ -879,8 +876,8 @@ export class SessionStore {
   /**
    * 设置消息优先级
    */
-  setPriority(sessionId: string, messageIndex: number, priority: string): boolean {
-    return this._updateMessageField(sessionId, messageIndex, { priority });
+  setPinned(sessionId: string, messageIndex: number, pinned: boolean): boolean {
+    return this._updateMessageField(sessionId, messageIndex, { pinned });
   }
 
   // ─── HarnessMessage 支持 ───────────────────────────────────────────────────
@@ -936,7 +933,7 @@ export class SessionStore {
     this.appendLine(sessionId, { type: "message", ...sessionMsg });
 
     if (hmsg.category === "user") {
-      this.maybeUpdateTitle(sessionId, hmsg.content.text_content);
+      this.maybeUpdateTitle(sessionId, hmsg.contents.map(c => c.text_content).join('\n'));
     }
 
     return this.load(sessionId) ?? this.create();

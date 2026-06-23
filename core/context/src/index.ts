@@ -19,7 +19,12 @@ export type { SessionData, SessionMeta, SessionMessage, SessionListItem, Session
 export type {
   HarnessContent,
   HarnessMessage,
-  HarnessTaskBlock,
+  HarnessMeta,
+  TaskBlock,
+  TaskStatus,
+  CompactMessage,
+  MessageMeta,
+  PinnedSnippet,
   LLMMessage,
 } from "./types/message.js";
 export {
@@ -72,8 +77,15 @@ export {
 export { buildMessages } from "./message-builder.js";
 
 // 上下文压缩
-export { maybeCompress } from "./compressor.js";
-export type { CompressionZone, CompressionResult, TaskSummary } from "./compressor.js";
+export { maybeCompress, compressHarness, assignTaskIds } from "./compressor.js";
+export type { Summarizer, CompressOptions, CompressHarnessResult, CompressionZone, CompressionResult, TaskSummary } from "./compressor.js";
+
+// Token 估算
+export { estimateTokens, estimateTokensFromText } from "./token-estimate.js";
+
+// ContextEngine（编排压缩 + 持久化闭环）
+export { ContextEngine } from "./context-engine.js";
+export type { ContextEngineOptions, CompressReport } from "./context-engine.js";
 
 // 注：compileDynamicContext / formatAgentStatus 已上移到 @little-house-studio/agent（需要 AgentRegistry）；
 //     SkillScanner / SkillContextManager 已下放到 @little-house-studio/tools。
@@ -91,4 +103,7 @@ export type { HarnessSessionStoreOptions } from "./harness-session-store.js";
 
 // 任务块存储
 export { TaskSessionStore } from "./task-session-store.js";
-export type { TaskBlock } from "./task-session-store.js";
+
+// BakeFile 文件 diff 监听与增量注入
+export { BakeFile, bake } from "./bake-file.js";
+export type { BakeFileOptions, BakeMode } from "./bake-file.js";

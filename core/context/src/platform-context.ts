@@ -105,7 +105,7 @@ export interface BuildPlatformContextOptions {
 export function buildPlatformContext(opts: BuildPlatformContextOptions): string {
   const chatLabel = opts.chatType === 'group' ? '群聊' : '私聊';
 
-  let ctx = `<platform>
+  let ctx = `<platform_context>
 当前你运行在${opts.platformName}${chatLabel}环境中。
 
 <reply_mechanism>
@@ -130,7 +130,7 @@ export function buildPlatformContext(opts: BuildPlatformContextOptions): string 
     ctx += `\n\n<extra>\n${opts.extraInstructions}\n</extra>`;
   }
 
-  ctx += `\n\n当前时间：${nowBeijing()}\n</platform>`;
+  ctx += `\n\n当前时间：${nowBeijing()}\n</platform_context>`;
 
   return ctx;
 }

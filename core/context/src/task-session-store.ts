@@ -21,18 +21,40 @@ import {
   readdirSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
-import type { LLMMessage } from "./types/message.js";
+import type { LLMMessage, TaskStatus } from "./types/message.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
-/** 任务块数据结构 */
+/** AI 主动 pin 的引用片段 */
+export interface PinnedSnippet {
+  path: string;
+  snippet: string;
+  reason: string;
+}
+
+/** 任务块数据结构（对齐 message.ts TaskBlock） */
 export interface TaskBlock {
   taskId: string;
+  parentTaskId?: string;
+  status: TaskStatus;
   summary: string;
+  goal: string;
+  context?: string;
   outline: string[];
-  messages: LLMMessage[];
+  notes?: string[];
+  progress?: number;
+  currentStep?: string;
+  dependencies?: string[];
+  relatedFiles?: string[];
+  pinnedSnippets?: PinnedSnippet[];
+  tags?: string[];
   createdAt: string;
   updatedAt: string;
+  completedAt?: string;
+  messageCount?: number;
+  toolCallCount?: number;
+  tokenUsage?: number;
+  messages: LLMMessage[];
 }
 
 /** JSONL 文件中的条目类型 */
@@ -94,7 +116,7 @@ export class TaskSessionStore {
   /**
    * 创建任务块
    *
-   * 写入一个 type="block" 的条目，包含 task_id、summary、outline。
+   * 写入一个 type="block" 的条目，包含全部 TaskBlock 字段。
    * 如果文件已存在则覆盖。
    */
   createTaskBlock(
@@ -102,6 +124,13 @@ export class TaskSessionStore {
     taskId: string,
     summary: string,
     outline: string[],
+    options?: {
+      parentTaskId?: string;
+      status?: TaskStatus;
+      goal?: string;
+      context?: string;
+      tags?: string[];
+    },
   ): TaskBlock {
     const filePath = this.taskFilePath(sessionId, taskId);
     const ts = nowIso();
@@ -110,8 +139,13 @@ export class TaskSessionStore {
       type: "block",
       data: {
         task_id: taskId,
+        parent_task_id: options?.parentTaskId,
+        status: options?.status ?? "running",
         summary,
+        goal: options?.goal ?? "",
+        context: options?.context,
         outline,
+        tags: options?.tags,
       },
       created_at: ts,
     };
@@ -121,8 +155,13 @@ export class TaskSessionStore {
 
     return {
       taskId,
+      parentTaskId: options?.parentTaskId,
+      status: options?.status ?? "running",
       summary,
+      goal: options?.goal ?? "",
+      context: options?.context,
       outline,
+      tags: options?.tags,
       messages: [],
       createdAt: ts,
       updatedAt: ts,
@@ -170,7 +209,12 @@ export class TaskSessionStore {
     const lines = content.split("\n");
 
     let summary = "";
+    let goal = "";
+    let context_ = "";
+    let parentTaskId: string | undefined;
+    let status: TaskStatus = "running";
     let outline: string[] = [];
+    let tags: string[] = [];
     let createdAt = "";
     let updatedAt = "";
     const messages: LLMMessage[] = [];
@@ -183,11 +227,21 @@ export class TaskSessionStore {
         if (entry.type === "block") {
           const data = entry.data as {
             task_id?: string;
+            parent_task_id?: string;
+            status?: string;
             summary?: string;
+            goal?: string;
+            context?: string;
             outline?: string[];
+            tags?: string[];
           };
           summary = data.summary ?? "";
+          goal = data.goal ?? "";
+          context_ = data.context ?? "";
+          parentTaskId = data.parent_task_id;
+          status = (data.status as TaskStatus) ?? "running";
           outline = data.outline ?? [];
+          tags = data.tags ?? [];
           createdAt = entry.created_at;
           updatedAt = entry.created_at;
         } else if (entry.type === "message") {
@@ -205,8 +259,13 @@ export class TaskSessionStore {
 
     return {
       taskId,
+      parentTaskId,
+      status,
       summary,
+      goal,
+      context: context_,
       outline,
+      tags,
       messages,
       createdAt,
       updatedAt,
@@ -224,6 +283,15 @@ export class TaskSessionStore {
     taskId: string,
     summary: string,
     outline: string[],
+    options?: {
+      goal?: string;
+      context?: string;
+      status?: TaskStatus;
+      progress?: number;
+      currentStep?: string;
+      notes?: string[];
+      tags?: string[];
+    },
   ): TaskBlock | null {
     const filePath = this.taskFilePath(sessionId, taskId);
     if (!existsSync(filePath)) return null;
@@ -255,7 +323,14 @@ export class TaskSessionStore {
       data: {
         task_id: taskId,
         summary,
+        goal: options?.goal ?? "",
+        context: options?.context,
+        status: options?.status,
+        progress: options?.progress,
+        current_step: options?.currentStep,
+        notes: options?.notes,
         outline,
+        tags: options?.tags,
       },
       created_at: createdAt || ts,
     };
@@ -271,7 +346,14 @@ export class TaskSessionStore {
     return {
       taskId,
       summary,
+      goal: options?.goal ?? "",
+      context: options?.context,
+      status: options?.status ?? "running",
+      progress: options?.progress,
+      currentStep: options?.currentStep,
+      notes: options?.notes,
       outline,
+      tags: options?.tags,
       messages: messageLines.map((line) => JSON.parse(line).data as unknown as LLMMessage),
       createdAt: createdAt || ts,
       updatedAt: ts,

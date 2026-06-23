@@ -184,8 +184,7 @@ function repairOrphanedToolCalls(messages: Record<string, unknown>[]): void {
 
 /**
  * 注入用户上下文：BEFORE_USER / 动态注入 / 实际用户消息。
- * 首轮作为 user 消息插入在最后一条 user 消息前面；
- * 后续轮次作为 system 消息追加在末尾。
+ * 动态区始终合并为单条 user 消息——不连续发送多条 user。
  */
 function injectUserContext(
   messages: Record<string, unknown>[],
@@ -193,21 +192,34 @@ function injectUserContext(
   userOpts?: UserMessageOptions,
 ): void {
   if (roundCount === 0 && userOpts?.userMessage) {
-    // 首轮：作为 user 消息注入在用户消息前面
     const lastMsg = messages[messages.length - 1];
     const isLastUser = lastMsg && lastMsg.role === "user";
     if (isLastUser) messages.pop();
 
-    if (userOpts.beforeUserContent) {
-      messages.push({ role: "user", content: userOpts.beforeUserContent.trim() });
-    }
-    if (userOpts.dynamicInjections) {
-      messages.push({ role: "user", content: userOpts.dynamicInjections.trim() });
-    }
+    const injectedText = [
+      userOpts.beforeUserContent?.trim() || "",
+      userOpts.dynamicInjections?.trim() || "",
+    ].filter(Boolean).join("\n\n");
 
-    if (isLastUser) messages.push(lastMsg);
-  } else if (roundCount > 0 && userOpts?.dynamicInjections) {
-    // 后续轮次：作为 system 消息注入在末尾
-    messages.push({ role: "system", content: userOpts.dynamicInjections.trim() });
+    if (isLastUser) {
+      const c = (lastMsg as Record<string, unknown>).content;
+      if (typeof c === "string") {
+        const content = injectedText ? `${injectedText}\n\n${c}` : c;
+        messages.push({ role: "user", content });
+      } else if (Array.isArray(c)) {
+        const arr: Array<Record<string, unknown>> = [];
+        if (injectedText) arr.push({ type: "text", text: injectedText });
+        arr.push(...(c as Array<Record<string, unknown>>));
+        messages.push({ role: "user", content: arr });
+      } else {
+        messages.push(lastMsg as Record<string, unknown>);
+      }
+    } else if (injectedText || userOpts.userMessage?.trim()) {
+      const content = [injectedText, userOpts.userMessage?.trim() || ""]
+        .filter(Boolean).join("\n\n");
+      messages.push({ role: "user", content });
+    }
+  } else if (roundCount > 0 && userOpts?.dynamicInjections?.trim()) {
+    messages.push({ role: "user", content: userOpts.dynamicInjections.trim() });
   }
 }
