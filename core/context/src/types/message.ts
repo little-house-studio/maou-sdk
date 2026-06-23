@@ -1,5 +1,5 @@
 /**
- * Harness 层消息结构体
+ * Maou 层消息结构体
  * 依赖 Context 层，用于灵活解析和压缩优化
  */
 
@@ -8,40 +8,40 @@ import type { SessionMessage } from "../session-store.js";
 /**
  * 内容块
  */
-export interface HarnessContent {
-  text_content: string;
-  micro_compact?: {
+export interface MaouContent {
+  text: string;
+  microCompact?: {
     enabled: boolean;
     summary?: string; // 微压缩后的摘要
   };
-  new_line?: boolean;
+  break?: boolean;
 }
 
 /**
- * 消息块 - Harness 层使用的结构化消息
- * 支持 seq_id 用于排序和追踪
+ * 消息块 - Maou 层使用的结构化消息
+ * 支持 seqId 用于排序和追踪
  */
-export interface HarnessMessage {
+export interface MaouMessage {
   /** 系统分配的顺序ID，用于排序和追踪 */
-  seq_id: number;
+  seqId: number;
   /** 所属任务ID数组 */
-  task_ids: string[];
+  taskIds: string[];
   /** 内容块数组（支持一条消息多个段，各段独立压缩配置） */
-  contents: HarnessContent[];
+  contents: MaouContent[];
   /** 压缩后是否保留 */
-  keep_after_compress: boolean;
+  keepAfterCompress: boolean;
   /** 消息类别 */
   category: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'system' | 'injected' | 'compact' | 'diff' | 'baked';
   /** 创建时间 (ISO string) */
-  created_at?: string;
+  createdAt?: string;
   /** 是否固定 (压缩时永不丢弃) */
   pinned?: boolean;
   /** 原始 role (兼容 LLM API) */
-  original_role?: 'user' | 'assistant' | 'tool' | 'system';
+  originalRole?: 'user' | 'assistant' | 'tool' | 'system';
   /** 工具调用 ID (tool_result 类别时使用) */
-  tool_call_id?: string;
+  toolCallId?: string;
   /** 工具调用列表 (tool_call 类别时使用) */
-  tool_calls?: LLMToolCall[];
+  toolCalls?: LLMToolCall[];
   /** 来源标识 */
   source?: string;
   /** 消息级元数据 */
@@ -58,7 +58,7 @@ export interface HarnessMessage {
  */
 export interface CompactMessage {
   /** 压缩类型 */
-  compactType: "micro" | "major" | "dead";
+  type: "micro" | "major" | "dead";
   /** 压缩后的摘要文本 */
   summary: string;
   /** 被压缩的原始消息 ID 列表（回溯用） */
@@ -74,11 +74,11 @@ export interface CompactMessage {
  */
 export interface MessageMeta {
   /** 消息顺序ID（系统自动分配） */
-  msgId: string;
+  magId: string;
   /** 消息角色 */
   role: "user" | "assistant" | "tool" | "system";
   /** 消息分类 */
-  type: 'user' | 'ai' | 'tool_result' | 'compact' | 'diff' | 'baked' | 'system' | 'custom';
+  category: 'user' | 'ai' | 'tool_result' | 'compact' | 'diff' | 'baked' | 'system' | 'custom';
   /** 本条消息摘要（压缩时使用） */
   summary?: string;
   /** 微压缩配置 */
@@ -89,7 +89,7 @@ export interface MessageMeta {
     action: "remove" | "replace" | "keep";
   };
   /** 上下文前缀（如系统注入的动态信息） */
-  contextPrefix?: {
+  prefix?: {
     enabled: boolean;
     /** 微压缩时默认去掉前缀 */
     compactAction: "remove";
@@ -126,9 +126,9 @@ export type TaskStatus = "pending" | "running" | "paused" | "done" | "failed" | 
 /**
  * 任务块 — 多条消息共享的任务级元数据
  *
- * 命名从原 taskMeta 改为 TaskBlock，体现它是完整结构体而非仅元数据。
+ * 命名从原 taskMeta 改为 MaouTaskBlock，体现它是完整结构体而非仅元数据。
  */
-export interface TaskBlock {
+export interface MaouTaskBlock {
   // ── 身份 ──
   /** 任务ID（AI分配，0号为普通对话） */
   taskId: string;
@@ -143,7 +143,7 @@ export interface TaskBlock {
   /** 任务具体目标 */
   goal: string;
   /** 任务背景——为什么有这个任务 */
-  context?: string;
+  background?: string;
   /** 任务流程大纲（不注入上下文，只在死区压缩时写入） */
   outline: string[];
 
@@ -163,7 +163,7 @@ export interface TaskBlock {
   /** 任务期间工具自动 pin 下来的文件/网页路径（不注入上下文） */
   relatedFiles?: string[];
   /** AI 主动 pin 的重要引用片段 */
-  pinnedSnippets?: PinnedSnippet[];
+  pins?: Pin[];
   /** 标签（如 "bugfix", "feature", "refactor"） */
   tags?: string[];
 
@@ -186,7 +186,7 @@ export interface TaskBlock {
 }
 
 /** AI 主动 pin 的引用片段 */
-export interface PinnedSnippet {
+export interface Pin {
   /** 文件路径 */
   path: string;
   /** 引用片段内容 */
@@ -198,30 +198,31 @@ export interface PinnedSnippet {
 // ─── 转换函数 ─────────────────────────────────────────────────────────────
 
 /**
- * harness 注解持久化载体。
- * 存入 SessionMessage._harness_meta，恢复时无损回填到 HarnessMessage。
+ * Maou 注解持久化载体。
+ * 存入 SessionMessage._maouMeta，恢复时无损回填到 MaouMessage。
+ * 旧数据可能使用 _harness_meta 字段名，读取时通过 _maouMeta ?? _harness_meta 兼容。
  */
-export interface HarnessMeta {
-  seq_id: number;
-  task_ids: string[];
-  category: HarnessMessage['category'];
-  keep_after_compress: boolean;
+export interface MaouMeta {
+  seqId: number;
+  taskIds: string[];
+  category: MaouMessage['category'];
+  keepAfterCompress: boolean;
   /** 内容块的微压缩配置（按数组索引对应） */
-  contents_micro_compact?: Array<HarnessContent['micro_compact']>;
+  contentsMicroCompact?: Array<MaouContent['microCompact']>;
   meta?: MessageMeta;
   compact?: CompactMessage;
 }
 
 /**
- * 将 HarnessMessage 转换为 LLMMessage 格式
+ * 将 MaouMessage 转换为 LLMMessage 格式
  * 用于发送给 LLM API
  */
-export function harnessToLLMMessage(hmsg: HarnessMessage): LLMMessage {
+export function maouToLLMMessage(mmsg: MaouMessage): LLMMessage {
   let role: LLMMessage['role'];
-  if (hmsg.original_role) {
-    role = hmsg.original_role;
+  if (mmsg.originalRole) {
+    role = mmsg.originalRole;
   } else {
-    switch (hmsg.category) {
+    switch (mmsg.category) {
       case 'user':
       case 'injected':
       case 'diff':
@@ -246,11 +247,11 @@ export function harnessToLLMMessage(hmsg: HarnessMessage): LLMMessage {
 
   // 拼接所有内容块（微压缩启用时用摘要）
   const contentParts: string[] = [];
-  for (const c of hmsg.contents) {
-    if (c.micro_compact?.enabled && c.micro_compact.summary) {
-      contentParts.push(c.micro_compact.summary);
+  for (const c of mmsg.contents) {
+    if (c.microCompact?.enabled && c.microCompact.summary) {
+      contentParts.push(c.microCompact.summary);
     } else {
-      contentParts.push(c.text_content);
+      contentParts.push(c.text);
     }
   }
 
@@ -259,83 +260,83 @@ export function harnessToLLMMessage(hmsg: HarnessMessage): LLMMessage {
     content: contentParts.join('\n'),
   };
 
-  if (hmsg.category === 'tool_result' && hmsg.tool_call_id) {
-    llmMsg.tool_call_id = hmsg.tool_call_id;
+  if (mmsg.category === 'tool_result' && mmsg.toolCallId) {
+    llmMsg.tool_call_id = mmsg.toolCallId;
   }
 
-  if (hmsg.tool_calls && hmsg.tool_calls.length > 0) {
-    llmMsg.tool_calls = hmsg.tool_calls;
+  if (mmsg.toolCalls && mmsg.toolCalls.length > 0) {
+    llmMsg.tool_calls = mmsg.toolCalls;
   }
 
   return llmMsg;
 }
 
 /**
- * 将 HarnessMessage 转换为 SessionMessage 格式
- * 用于持久化存储。harness 注解通过 _harness_meta 字段无损保留。
+ * 将 MaouMessage 转换为 SessionMessage 格式
+ * 用于持久化存储。Maou 注解通过 _maouMeta 字段无损保留。
  */
-export function harnessToSessionMessage(hmsg: HarnessMessage): SessionMessage {
+export function maouToSessionMessage(mmsg: MaouMessage): SessionMessage {
   // 拼接所有内容块的文本用于存储
-  const fullText = hmsg.contents.map(c => c.text_content).join('\n');
+  const fullText = mmsg.contents.map(c => c.text).join('\n');
 
   const sessionMsg: SessionMessage = {
-    role: hmsg.original_role ?? (hmsg.category === 'tool_result' ? 'tool' : hmsg.category),
+    role: mmsg.originalRole ?? (mmsg.category === 'tool_result' ? 'tool' : mmsg.category),
     content: fullText,
-    created_at: hmsg.created_at ?? new Date().toISOString(),
-    pinned: hmsg.pinned ?? false,
-    source: hmsg.source,
+    createdAt: mmsg.createdAt ?? new Date().toISOString(),
+    pinned: mmsg.pinned ?? false,
+    source: mmsg.source,
   };
 
-  if (hmsg.tool_call_id) {
-    sessionMsg.tool_call_id = hmsg.tool_call_id;
+  if (mmsg.toolCallId) {
+    sessionMsg.toolCallId = mmsg.toolCallId;
   }
 
-  if (hmsg.tool_calls && hmsg.tool_calls.length > 0) {
-    sessionMsg.native_tool_calls = hmsg.tool_calls.map(tc => ({
+  if (mmsg.toolCalls && mmsg.toolCalls.length > 0) {
+    sessionMsg.toolCalls = mmsg.toolCalls.map(tc => ({
       id: tc.id,
       type: 'function',
       name: tc.name,
-      parameters: tc.arguments,
+      arguments: tc.arguments,
     }));
   }
 
-  // harness 注解无损持久化
-  const meta: HarnessMeta = {
-    seq_id: hmsg.seq_id,
-    task_ids: hmsg.task_ids,
-    category: hmsg.category,
-    keep_after_compress: hmsg.keep_after_compress,
+  // Maou 注解无损持久化
+  const meta: MaouMeta = {
+    seqId: mmsg.seqId,
+    taskIds: mmsg.taskIds,
+    category: mmsg.category,
+    keepAfterCompress: mmsg.keepAfterCompress,
   };
   // 保存各内容块的微压缩配置
-  const microCompacts = hmsg.contents
-    .map(c => c.micro_compact)
+  const microCompacts = mmsg.contents
+    .map(c => c.microCompact)
     .filter(Boolean);
   if (microCompacts.length > 0) {
-    meta.contents_micro_compact = microCompacts as NonNullable<HarnessContent['micro_compact']>[];
+    meta.contentsMicroCompact = microCompacts as NonNullable<MaouContent['microCompact']>[];
   }
-  if (hmsg.meta) {
-    meta.meta = hmsg.meta;
+  if (mmsg.meta) {
+    meta.meta = mmsg.meta;
   }
-  if (hmsg.compact) {
-    meta.compact = hmsg.compact;
+  if (mmsg.compact) {
+    meta.compact = mmsg.compact;
   }
-  sessionMsg._harness_meta = meta;
+  sessionMsg._maouMeta = meta;
 
-  if (hmsg.metadata) {
-    Object.assign(sessionMsg, hmsg.metadata);
+  if (mmsg.metadata) {
+    Object.assign(sessionMsg, mmsg.metadata);
   }
 
   return sessionMsg;
 }
 
 /**
- * 将 SessionMessage 转换为 HarnessMessage 格式
- * 优先从 _harness_meta 恢复注解；缺失时退化为推断默认值。
+ * 将 SessionMessage 转换为 MaouMessage 格式
+ * 优先从 _maouMeta 恢复注解；缺失时退化为推断默认值。
  */
-export function sessionToHarnessMessage(smsg: SessionMessage, seqId: number): HarnessMessage {
-  const meta = smsg._harness_meta as HarnessMeta | undefined;
+export function sessionToMaouMessage(smsg: SessionMessage, seqId: number): MaouMessage {
+  const meta = (smsg._maouMeta ?? smsg._harness_meta) as MaouMeta | undefined;
 
-  let category: HarnessMessage['category'];
+  let category: MaouMessage['category'];
   if (meta?.category) {
     category = meta.category;
   } else {
@@ -343,7 +344,7 @@ export function sessionToHarnessMessage(smsg: SessionMessage, seqId: number): Ha
     if (role === 'tool') {
       category = 'tool_result';
     } else if (role === 'assistant') {
-      const hasToolCalls = smsg.native_tool_calls && smsg.native_tool_calls.length > 0;
+      const hasToolCalls = smsg.toolCalls && smsg.toolCalls.length > 0;
       category = hasToolCalls ? 'tool_call' : 'assistant';
     } else if (role === 'system') {
       category = 'system';
@@ -354,70 +355,70 @@ export function sessionToHarnessMessage(smsg: SessionMessage, seqId: number): Ha
     }
   }
 
-  // content + micro_compact（从 meta 恢复或构造默认）
-  const contents: HarnessContent[] = [];
-  const content: HarnessContent = {
-    text_content: smsg.content ?? '',
+  // content + microCompact（从 meta 恢复或构造默认）
+  const contents: MaouContent[] = [];
+  const content: MaouContent = {
+    text: smsg.content ?? '',
   };
   // 从 meta 恢复第一个内容块的微压缩配置
-  if (meta?.contents_micro_compact && meta.contents_micro_compact.length > 0) {
-    content.micro_compact = meta.contents_micro_compact[0];
+  if (meta?.contentsMicroCompact && meta.contentsMicroCompact.length > 0) {
+    content.microCompact = meta.contentsMicroCompact[0];
     // 如果有多个内容块的微压缩配置，恢复其余的
-    for (let i = 1; i < meta.contents_micro_compact.length; i++) {
+    for (let i = 1; i < meta.contentsMicroCompact.length; i++) {
       contents.push({
-        text_content: '', // 已合并到第一个块，这里仅保留微压缩配置索引
-        micro_compact: meta.contents_micro_compact[i],
+        text: '', // 已合并到第一个块，这里仅保留微压缩配置索引
+        microCompact: meta.contentsMicroCompact[i],
       });
     }
   }
   contents.unshift(content);
 
-  const hmsg: HarnessMessage = {
-    seq_id: meta?.seq_id ?? seqId,
-    task_ids: meta?.task_ids ?? [],
+  const mmsg: MaouMessage = {
+    seqId: meta?.seqId ?? seqId,
+    taskIds: meta?.taskIds ?? [],
     contents,
-    keep_after_compress: meta?.keep_after_compress ?? (smsg.pinned ?? false),
+    keepAfterCompress: meta?.keepAfterCompress ?? (smsg.pinned ?? false),
     category,
-    created_at: smsg.created_at,
+    createdAt: smsg.createdAt,
     pinned: smsg.pinned ?? false,
-    original_role: smsg.role as HarnessMessage['original_role'],
+    originalRole: smsg.role as MaouMessage['originalRole'],
     source: smsg.source,
   };
 
   // 恢复 meta 和 compact
   if (meta?.meta) {
-    hmsg.meta = meta.meta;
+    mmsg.meta = meta.meta;
   }
   if (meta?.compact) {
-    hmsg.compact = meta.compact;
+    mmsg.compact = meta.compact;
   }
 
-  if (smsg.tool_call_id) {
-    hmsg.tool_call_id = smsg.tool_call_id;
+  if (smsg.toolCallId) {
+    mmsg.toolCallId = smsg.toolCallId;
   }
 
-  if (smsg.native_tool_calls && smsg.native_tool_calls.length > 0) {
-    hmsg.tool_calls = smsg.native_tool_calls.map(tc => ({
+  if (smsg.toolCalls && smsg.toolCalls.length > 0) {
+    mmsg.toolCalls = smsg.toolCalls.map(tc => ({
       id: tc.id,
       name: tc.name,
-      arguments: tc.parameters ?? {},
+      arguments: tc.arguments ?? {},
     }));
   }
 
-  return hmsg;
+  return mmsg;
 }
 
 /**
- * 批量转换 SessionMessage 数组为 HarnessMessage 数组
- * 自动分配 seq_id
+ * 批量转换 SessionMessage 数组为 MaouMessage 数组
+ * 自动分配 seqId
  */
-export function sessionMessagesToHarness(msgs: SessionMessage[]): HarnessMessage[] {
-  return msgs.map((m, idx) => sessionToHarnessMessage(m, idx));
+export function sessionMessagesToMaou(msgs: SessionMessage[]): MaouMessage[] {
+  return msgs.map((m, idx) => sessionToMaouMessage(m, idx));
 }
 
 /**
- * 批量转换 HarnessMessage 数组为 LLMMessage 数组
+ * 批量转换 MaouMessage 数组为 LLMMessage 数组
  */
-export function harnessMessagesToLLM(hmsgs: HarnessMessage[]): LLMMessage[] {
-  return hmsgs.map(harnessToLLMMessage);
+export function maouMessagesToLLM(mmsgs: MaouMessage[]): LLMMessage[] {
+  return mmsgs.map(maouToLLMMessage);
 }

@@ -6,7 +6,7 @@
  * 比全局 chars/3 更准确（中英混合文本偏差从 ~40% 降到 ~15%）。
  */
 
-import type { HarnessMessage } from "./types/message.js";
+import type { MaouMessage } from "./types/message.js";
 
 const CJK_RANGES =
   /[⺀-鿿豈-﫿︰-﹏\u{20000}-\u{2FA1F}]/u;
@@ -24,16 +24,16 @@ export function estimateTokensFromText(text: string): number {
   return cjk + Math.ceil(ascii / 4);
 }
 
-export function estimateTokens(messages: HarnessMessage[]): number {
+export function estimateTokens(messages: MaouMessage[]): number {
   let total = 0;
   for (const m of messages) {
     let text = '';
     for (const c of m.contents) {
-      text += (c.micro_compact?.enabled && c.micro_compact.summary ? c.micro_compact.summary : c.text_content) + '\n';
+      text += (c.microCompact?.enabled && c.microCompact.summary ? c.microCompact.summary : c.text) + '\n';
     }
     total += estimateTokensFromText(text);
-    if (m.tool_calls) {
-      for (const tc of m.tool_calls) {
+    if (m.toolCalls) {
+      for (const tc of m.toolCalls) {
         total += estimateTokensFromText(tc.name);
         total += estimateTokensFromText(JSON.stringify(tc.arguments));
       }

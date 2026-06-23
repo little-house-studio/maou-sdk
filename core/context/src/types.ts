@@ -3,14 +3,14 @@
  */
 
 import type { SessionData } from "./session-store.js";
-import type { CompressionZone } from "./types/compression.js";
+import type { CompressionStage } from "./types/compression.js";
 
-// ─── Harness 层消息结构体 ────────────────────────────────────────
+// ─── Maou 层消息结构体 ────────────────────────────────────────
 
 export type {
-  HarnessContent,
-  HarnessMessage,
-  TaskBlock,
+  MaouContent,
+  MaouMessage,
+  MaouTaskBlock,
   LLMMessage,
   LLMToolCall,
 } from "./types/message.js";
@@ -18,7 +18,7 @@ export type {
 // ─── 压缩区域类型 ────────────────────────────────────────────────
 
 export type {
-  CompressionZone,
+  CompressionStage,
   CompressionConfig,
   MicroCompactConfig,
   CompressionResult,
@@ -67,8 +67,8 @@ export interface CompressResult {
   messages: Record<string, unknown>[];
   compressed: boolean;
   droppedSummary: string;
-  /** 本轮实际到达的压缩区域（active/compact/summary/archive） */
-  zone: CompressionZone;
+  /** 本轮实际到达的压缩阶段（active/compact/summary/archive） */
+  stage: CompressionStage;
   /** 压缩前估算 token */
   originalTokens: number;
   /** 压缩后估算 token */

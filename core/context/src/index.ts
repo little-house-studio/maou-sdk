@@ -15,24 +15,24 @@
 export { SessionStore } from "./session-store.js";
 export type { SessionData, SessionMeta, SessionMessage, SessionListItem, SessionTrace } from "./session-store.js";
 
-// Harness 层消息结构体与转换函数
+// Maou 层消息结构体与转换函数
 export type {
-  HarnessContent,
-  HarnessMessage,
-  HarnessMeta,
-  TaskBlock,
+  MaouContent,
+  MaouMessage,
+  MaouMeta,
+  MaouTaskBlock,
   TaskStatus,
   CompactMessage,
   MessageMeta,
-  PinnedSnippet,
+  Pin,
   LLMMessage,
 } from "./types/message.js";
 export {
-  harnessToLLMMessage,
-  harnessToSessionMessage,
-  sessionToHarnessMessage,
-  sessionMessagesToHarness,
-  harnessMessagesToLLM,
+  maouToLLMMessage,
+  maouToSessionMessage,
+  sessionToMaouMessage,
+  sessionMessagesToMaou,
+  maouMessagesToLLM,
 } from "./types/message.js";
 
 // 多会话管理
@@ -77,8 +77,8 @@ export {
 export { buildMessages } from "./message-builder.js";
 
 // 上下文压缩
-export { maybeCompress, compressHarness, assignTaskIds } from "./compressor.js";
-export type { Summarizer, CompressOptions, CompressHarnessResult, CompressionZone, CompressionResult, TaskSummary } from "./compressor.js";
+export { maybeCompress, compressMaou, assignTaskIds } from "./compressor.js";
+export type { Summarizer, CompressOptions, CompressMaouResult, CompressionStage, CompressionResult, TaskSummary } from "./compressor.js";
 
 // Token 估算
 export { estimateTokens, estimateTokensFromText } from "./token-estimate.js";
@@ -107,3 +107,21 @@ export { TaskSessionStore } from "./task-session-store.js";
 // BakeFile 文件 diff 监听与增量注入
 export { BakeFile, bake } from "./bake-file.js";
 export type { BakeFileOptions, BakeMode } from "./bake-file.js";
+
+// 自动压缩
+export {
+  AutoCompressSession,
+  TokenThresholdPolicy,
+  resolveAutoCompressConfig,
+  DEFAULT_AUTO_COMPRESS_CONFIG,
+  DEFAULT_SUMMARIZER_PROMPT,
+} from "./auto-compress.js";
+export type {
+  AutoCompressConfig,
+  AutoCompressResult,
+  CompressPolicy,
+  CompressMode,
+  LegacyCompressConfig,
+  StagedCompressConfig,
+  SummaryModelConfig,
+} from "./auto-compress.js";

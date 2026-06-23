@@ -14,8 +14,8 @@ import {
   renameSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { HarnessMessage } from "./types/message.js";
-import type { CompressionZone } from "./types/compression.js";
+import type { MaouMessage } from "./types/message.js";
+import type { CompressionStage } from "./types/compression.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
@@ -78,7 +78,7 @@ export class HarnessSessionStore {
   /**
    * 保存当前上下文
    */
-  saveCurrent(sessionId: string, context: HarnessMessage[]): void {
+  saveCurrent(sessionId: string, context: MaouMessage[]): void {
     const filePath = this.currentPath(sessionId);
     const data = {
       sessionId,
@@ -109,14 +109,14 @@ export class HarnessSessionStore {
   /**
    * 获取当前上下文
    */
-  getCurrent(sessionId: string): HarnessMessage[] | null {
+  getCurrent(sessionId: string): MaouMessage[] | null {
     const filePath = this.currentPath(sessionId);
     try {
       if (!existsSync(filePath)) return null;
       const raw = JSON.parse(readFileSync(filePath, "utf-8")) as {
         sessionId: string;
         updatedAt: string;
-        context: HarnessMessage[];
+        context: MaouMessage[];
       };
       return raw.context ?? null;
     } catch {
@@ -127,14 +127,14 @@ export class HarnessSessionStore {
   /**
    * 获取备份上下文（用于回溯）
    */
-  getBackup(sessionId: string): HarnessMessage[] | null {
+  getBackup(sessionId: string): MaouMessage[] | null {
     const filePath = this.backupPath(sessionId);
     try {
       if (!existsSync(filePath)) return null;
       const raw = JSON.parse(readFileSync(filePath, "utf-8")) as {
         sessionId: string;
         updatedAt: string;
-        context: HarnessMessage[];
+        context: MaouMessage[];
       };
       return raw.context ?? null;
     } catch {
@@ -169,7 +169,7 @@ export class HarnessSessionStore {
    */
   saveCompressedZone(
     sessionId: string,
-    zone: CompressionZone,
+    zone: CompressionStage,
     summary: string,
     taskBlocks: string[],
   ): void {
@@ -186,7 +186,7 @@ export class HarnessSessionStore {
 
   /** 读取最近一次压缩区数据 */
   getCompressedZone(sessionId: string): {
-    zone: CompressionZone;
+    zone: CompressionStage;
     summary: string;
     taskBlocks: string[];
     compressedAt: string;
@@ -195,7 +195,7 @@ export class HarnessSessionStore {
     try {
       if (!existsSync(filePath)) return null;
       const raw = JSON.parse(readFileSync(filePath, "utf-8")) as {
-        zone: CompressionZone;
+        zone: CompressionStage;
         summary: string;
         taskBlocks: string[];
         compressedAt: string;
@@ -209,15 +209,15 @@ export class HarnessSessionStore {
   // ── 按消息 ID 回溯 ──
 
   /**
-   * 按 seq_id 回溯上下文：返回该 id 及之前的所有 HarnessMessage。
+   * 按 seqId 回溯上下文：返回该 id 及之前的所有 MaouMessage。
    * 优先从备份读取（压缩前），找不到则回退到当前上下文。
    */
-  getBySeqId(sessionId: string, seqId: number): HarnessMessage[] | null {
+  getBySeqId(sessionId: string, seqId: number): MaouMessage[] | null {
     const backup = this.getBackup(sessionId);
     const current = this.getCurrent(sessionId);
     const source = backup ?? current;
     if (!source) return null;
-    return source.filter((m) => m.seq_id <= seqId);
+    return source.filter((m) => m.seqId <= seqId);
   }
 
 }

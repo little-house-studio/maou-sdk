@@ -213,12 +213,12 @@ export class CheckpointStore {
   }
 
   private _computeDiff(from: SessionMessage[], to: SessionMessage[]): CheckpointDiff {
-    // 用 created_at + role 作为粗略匹配键
-    const fromKeys = new Set(from.map(m => `${m.created_at}|${m.role}`));
-    const toKeys = new Set(to.map(m => `${m.created_at}|${m.role}`));
+    // 用 createdAt + role 作为粗略匹配键
+    const fromKeys = new Set(from.map(m => `${m.createdAt}|${m.role}`));
+    const toKeys = new Set(to.map(m => `${m.createdAt}|${m.role}`));
 
-    const added = to.filter(m => !fromKeys.has(`${m.created_at}|${m.role}`));
-    const removed = from.filter(m => !toKeys.has(`${m.created_at}|${m.role}`));
+    const added = to.filter(m => !fromKeys.has(`${m.createdAt}|${m.role}`));
+    const removed = from.filter(m => !toKeys.has(`${m.createdAt}|${m.role}`));
 
     const snippets = added.slice(0, 10).map(m => {
       const content = String(m.content ?? "").trim();

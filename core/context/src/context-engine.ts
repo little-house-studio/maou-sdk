@@ -1,19 +1,19 @@
 /**
  * ContextEngine —— 编排 assignTaskIds + compress + persist + toLLMHistory。
  *
- * 把 HarnessSessionStore / TaskSessionStore / compressHarness 接成闭环：
+ * 把 HarnessSessionStore / TaskSessionStore / compressMaou 接成闭环：
  *   sync(新消息) → assignTaskIds → compress → persist → toLLMHistory
  *   restoreTask(taskId)  → 从 TaskSessionStore 恢复原文
  *   getBySeqId(seqId)    → 从 HarnessSessionStore 回溯
  */
 
-import type { HarnessMessage, LLMMessage } from "./types/message.js";
-import { harnessToLLMMessage, sessionToHarnessMessage, harnessToSessionMessage } from "./types/message.js";
+import type { MaouMessage, LLMMessage } from "./types/message.js";
+import { maouToLLMMessage, sessionToMaouMessage, maouToSessionMessage } from "./types/message.js";
 import type { HarnessSessionStore } from "./harness-session-store.js";
-import type { TaskSessionStore, TaskBlock } from "./task-session-store.js";
-import { compressHarness, assignTaskIds } from "./compressor.js";
-import type { Summarizer, CompressHarnessResult } from "./compressor.js";
-import type { CompressionZone } from "./types/compression.js";
+import type { TaskSessionStore, MaouTaskBlock } from "./task-session-store.js";
+import { compressMaou, assignTaskIds } from "./compressor.js";
+import type { Summarizer, CompressMaouResult } from "./compressor.js";
+import type { CompressionStage } from "./types/compression.js";
 
 export interface ContextEngineOptions {
   sessionId: string;
@@ -23,7 +23,7 @@ export interface ContextEngineOptions {
 }
 
 export interface CompressReport {
-  zone: CompressionZone;
+  stage: CompressionStage;
   originalTokens: number;
   compressedTokens: number;
   taskBlocks: string[];
@@ -35,7 +35,7 @@ export class ContextEngine {
   private harnessStore: HarnessSessionStore;
   private taskStore: TaskSessionStore;
   private summarizer?: Summarizer;
-  private history: HarnessMessage[] = [];
+  private history: MaouMessage[] = [];
   private nextSeqId = 0;
   private lastCompressReport: CompressReport | null = null;
 
@@ -48,13 +48,13 @@ export class ContextEngine {
 
   /**
    * 从 HarnessSessionStore 加载已有上下文（冷启动 / 恢复会话）。
-   * 若 store 里没有，返回空——调用方应从 SessionStore.loadHarnessMessages 初始化。
+   * 若 store 里没有，返回空——调用方应从 SessionStore.loadMaouMessages 初始化。
    */
-  load(): HarnessMessage[] {
+  load(): MaouMessage[] {
     const existing = this.harnessStore.getCurrent(this.sessionId);
     if (existing && existing.length > 0) {
       this.history = existing;
-      this.nextSeqId = Math.max(...existing.map(m => m.seq_id)) + 1;
+      this.nextSeqId = Math.max(...existing.map(m => m.seqId)) + 1;
     }
     return this.history;
   }
@@ -62,8 +62,8 @@ export class ContextEngine {
   /**
    * 从原始 SessionMessage 数组初始化（旧会话首次进入引擎）。
    */
-  initFromSessionMessages(sessionMessages: Array<Record<string, unknown>>): HarnessMessage[] {
-    this.history = sessionMessages.map((sm, idx) => sessionToHarnessMessage(sm as any, idx));
+  initFromSessionMessages(sessionMessages: Array<Record<string, unknown>>): MaouMessage[] {
+    this.history = sessionMessages.map((sm, idx) => sessionToMaouMessage(sm as any, idx));
     this.history = assignTaskIds(this.history);
     this.nextSeqId = this.history.length;
     return this.history;
@@ -71,11 +71,11 @@ export class ContextEngine {
 
   /**
    * 同步新增消息到工作上下文。
-   * 给消息分配 seq_id，然后 assignTaskIds。
+   * 给消息分配 seqId，然后 assignTaskIds。
    */
-  sync(newMessages: HarnessMessage[]): void {
+  sync(newMessages: MaouMessage[]): void {
     for (const m of newMessages) {
-      m.seq_id = this.nextSeqId++;
+      m.seqId = this.nextSeqId++;
     }
     this.history.push(...newMessages);
     this.history = assignTaskIds(this.history);
@@ -90,7 +90,7 @@ export class ContextEngine {
     this.harnessStore.backupBeforeCompress(this.sessionId);
 
     // 2. 压缩
-    const result: CompressHarnessResult = await compressHarness(this.history, {
+    const result: CompressMaouResult = await compressMaou(this.history, {
       maxTokens,
       summarizer: this.summarizer,
       sessionId: this.sessionId,
@@ -99,7 +99,7 @@ export class ContextEngine {
     // 3. 将被折叠的任务块原文写入 TaskSessionStore
     for (const [taskId, originals] of result.perTaskOriginals) {
       if (taskId === "__no_task__") continue;
-      const llmMsgs = originals.map(harnessToLLMMessage);
+      const llmMsgs = originals.map(maouToLLMMessage);
       this.taskStore.createTaskBlock(this.sessionId, taskId, "", []);
       for (const msg of llmMsgs) {
         this.taskStore.appendMessage(this.sessionId, taskId, msg);
@@ -110,18 +110,18 @@ export class ContextEngine {
     this.history = result.history;
     this.harnessStore.saveCurrent(this.sessionId, this.history);
 
-    // 5. 写 compressed_zone
-    if (result.zone !== "active_zone") {
+    // 5. 写 compressedStage
+    if (result.stage !== "activeStage") {
       this.harnessStore.saveCompressedZone(
         this.sessionId,
-        result.zone,
+        result.stage,
         result.droppedSummary,
         result.taskBlocks,
       );
     }
 
     this.lastCompressReport = {
-      zone: result.zone,
+      stage: result.stage,
       originalTokens: result.originalTokens,
       compressedTokens: result.compressedTokens,
       taskBlocks: result.taskBlocks,
@@ -135,13 +135,13 @@ export class ContextEngine {
    * 将当前工作上下文转为 LLMMessage[]，供 buildMessages 使用。
    */
   toLLMHistory(): LLMMessage[] {
-    return this.history.map(harnessToLLMMessage);
+    return this.history.map(maouToLLMMessage);
   }
 
   /**
-   * 获取当前工作上下文（HarnessMessage[]）。
+   * 获取当前工作上下文（MaouMessage[]）。
    */
-  getHistory(): HarnessMessage[] {
+  getHistory(): MaouMessage[] {
     return this.history;
   }
 
@@ -162,14 +162,14 @@ export class ContextEngine {
   /**
    * 恢复指定任务的原文（从 TaskSessionStore 读取）。
    */
-  restoreTask(taskId: string): TaskBlock | null {
+  restoreTask(taskId: string): MaouTaskBlock | null {
     return this.taskStore.getTaskBlock(this.sessionId, taskId);
   }
 
   /**
-   * 按 seq_id 回溯上下文。
+   * 按 seqId 回溯上下文。
    */
-  getBySeqId(seqId: number): HarnessMessage[] | null {
+  getBySeqId(seqId: number): MaouMessage[] | null {
     return this.harnessStore.getBySeqId(this.sessionId, seqId);
   }
 

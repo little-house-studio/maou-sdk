@@ -15,10 +15,10 @@ import {
   renameSync,
 } from "node:fs";
 import { join, basename, dirname } from "node:path";
-import type { HarnessMessage } from "./types/message.js";
+import type { MaouMessage } from "./types/message.js";
 import {
-  harnessToSessionMessage,
-  sessionToHarnessMessage,
+  maouToSessionMessage,
+  sessionToMaouMessage,
 } from "./types/message.js";
 
 function escapeRegExp(s: string): string {
@@ -44,8 +44,8 @@ export interface SessionData {
   title: string;
   agentName: string;
   messages: SessionMessage[];
-  /** Harness 层结构化消息（可选，与 messages 互斥或共存） */
-  harnessMessages?: HarnessMessage[];
+  /** Maou 层结构化消息（可选，与 messages 互斥或共存） */
+  maouMessages?: MaouMessage[];
   trace: SessionTrace[];
   createdAt: string;
   updatedAt: string;
@@ -59,24 +59,28 @@ export interface SessionData {
 export interface SessionMessage {
   role: string;
   content: string;
-  created_at: string;
+  createdAt: string;
   /** 是否固定 */
   pinned?: boolean;
   /** 来源 */
   source?: string;
   /** 工具调用 ID */
-  tool_call_id?: string;
+  toolCallId?: string;
   /** 原生工具调用（适配 OpenAI 格式） */
-  native_tool_calls?: Array<{
+  toolCalls?: Array<{
     id: string;
     type: string;
     name: string;
-    parameters: Record<string, unknown>;
+    arguments: Record<string, unknown>;
   }>;
   /** 工具名称 */
   tool_name?: string;
   /** 图片数据 */
   images?: Array<{ mimeType: string; data: string }>;
+  /** Maou 层注解元数据（旧数据可能为 _harness_meta） */
+  _maouMeta?: unknown;
+  /** @deprecated 兼容旧 JSONL 数据，读取时回退到 _maouMeta */
+  _harness_meta?: unknown;
   [key: string]: unknown;
 }
 
@@ -262,7 +266,7 @@ export class SessionStore {
             if (event.type === "message") {
               messageCount++;
               if (event.role === "user") {
-                lastMsgTime = event.created_at || lastMsgTime;
+              lastMsgTime = event.createdAt || event.created_at || lastMsgTime;
               }
             }
           } catch {
@@ -298,18 +302,18 @@ export class SessionStore {
       if (seen.has(sessionId)) continue;
       seen.add(sessionId);
 
-      const msgs = (data.messages as SessionMessage[]) ?? [];
+      const msgs = (data.messages as Record<string, unknown>[]) ?? [];
       let lastMsgTime = "";
       for (let i = msgs.length - 1; i >= 0; i--) {
         if (msgs[i].role === "user") {
-          lastMsgTime = msgs[i].created_at ?? "";
+          lastMsgTime = (msgs[i].createdAt ?? msgs[i].created_at) as string ?? "";
           break;
         }
       }
       if (!lastMsgTime) {
         lastMsgTime =
           msgs.length > 0
-            ? msgs[msgs.length - 1].created_at ?? ""
+            ? (msgs[msgs.length - 1].createdAt ?? msgs[msgs.length - 1].created_at) as string ?? ""
             : (data.created_at as string) ?? "";
       }
 
@@ -460,7 +464,7 @@ export class SessionStore {
       type: "message",
       role,
       content,
-      created_at: nowIso(),
+      createdAt: nowIso(),
       ...metadata,
     };
     this.appendLine(sessionId, item);
@@ -765,7 +769,7 @@ export class SessionStore {
         const event = JSON.parse(line);
         if (event.type === "message") {
           const { type: _, ...msg } = event;
-          messages.push(msg);
+          messages.push(this.migrateSessionMessage(msg));
         } else if (event.type === "trace") {
           trace.push(event.data ?? {});
         } else if (event.type === "meta_update") {
@@ -783,7 +787,8 @@ export class SessionStore {
 
   private loadLegacyJson(filePath: string): SessionData {
     const session = JSON.parse(readFileSync(filePath, "utf-8"));
-    const messages: SessionMessage[] = session.messages ?? [];
+    const rawMessages: SessionMessage[] = session.messages ?? [];
+    const messages = rawMessages.map(m => this.migrateSessionMessage(m));
     const meta: SessionMeta = {
       id: session.id ?? "",
       title: session.title ?? "新对话",
@@ -822,6 +827,41 @@ export class SessionStore {
       JSON.stringify(item) + "\n",
       "utf-8",
     );
+  }
+
+  /**
+   * 将旧字段名的 SessionMessage 迁移为新字段名。
+   * 兼容磁盘上已有的 JSONL 数据（created_at / tool_call_id / native_tool_calls / _harness_meta）。
+   */
+  private migrateSessionMessage(msg: Record<string, unknown>): SessionMessage {
+    const m = { ...msg } as Record<string, unknown>;
+    // created_at → createdAt
+    if (!m.createdAt && m.created_at) {
+      m.createdAt = m.created_at;
+      delete m.created_at;
+    }
+    // tool_call_id → toolCallId
+    if (!m.toolCallId && m.tool_call_id) {
+      m.toolCallId = m.tool_call_id;
+      delete m.tool_call_id;
+    }
+    // native_tool_calls → toolCalls（内部 parameters → arguments）
+    if (!m.toolCalls && m.native_tool_calls) {
+      const raw = m.native_tool_calls as Array<Record<string, unknown>>;
+      m.toolCalls = raw.map(tc => ({
+        id: tc.id,
+        type: tc.type,
+        name: tc.name,
+        arguments: tc.arguments ?? tc.parameters,
+      }));
+      delete m.native_tool_calls;
+    }
+    // _harness_meta → _maouMeta
+    if (!m._maouMeta && m._harness_meta) {
+      m._maouMeta = m._harness_meta;
+      // 保留 _harness_meta 不删除，以便后续读取仍可兼容
+    }
+    return m as unknown as SessionMessage;
   }
 
   private migrateLegacy(sessionId: string): void {
@@ -880,36 +920,36 @@ export class SessionStore {
     return this._updateMessageField(sessionId, messageIndex, { pinned });
   }
 
-  // ─── HarnessMessage 支持 ───────────────────────────────────────────────────
+  // ─── MaouMessage 支持 ───────────────────────────────────────────────────
 
   /**
-   * 加载会话的 HarnessMessage 格式消息
-   * 自动从 SessionMessage 转换，支持 seq_id 追踪
+   * 加载会话的 MaouMessage 格式消息
+   * 自动从 SessionMessage 转换，支持 seqId 追踪
    */
-  loadHarnessMessages(sessionId: string): HarnessMessage[] {
+  loadMaouMessages(sessionId: string): MaouMessage[] {
     const session = this.load(sessionId);
     if (!session) return [];
 
-    // 如果会话已有 harnessMessages，直接返回
-    if (session.harnessMessages && session.harnessMessages.length > 0) {
-      return session.harnessMessages;
+    // 如果会话已有 maouMessages，直接返回
+    if (session.maouMessages && session.maouMessages.length > 0) {
+      return session.maouMessages;
     }
 
     // 否则从 messages 转换
-    return session.messages.map((m, idx) => sessionToHarnessMessage(m, idx));
+    return session.messages.map((m, idx) => sessionToMaouMessage(m, idx));
   }
 
   /**
-   * 以 HarnessMessage 格式追加消息
-   * 自动转换为 SessionMessage 存储，同时保留 Harness 层元数据
+   * 以 MaouMessage 格式追加消息
+   * 自动转换为 SessionMessage 存储，同时保留 Maou 层元数据
    */
-  appendHarnessMessage(
+  appendMaouMessage(
     sessionId: string,
-    hmsg: HarnessMessage,
+    hmsg: MaouMessage,
     metadata?: Record<string, unknown>,
   ): SessionData {
-    // 将 HarnessMessage 转换为 SessionMessage 进行存储
-    const sessionMsg = harnessToSessionMessage(hmsg);
+    // 将 MaouMessage 转换为 SessionMessage 进行存储
+    const sessionMsg = maouToSessionMessage(hmsg);
 
     // 合并额外 metadata
     if (metadata) {
@@ -933,17 +973,17 @@ export class SessionStore {
     this.appendLine(sessionId, { type: "message", ...sessionMsg });
 
     if (hmsg.category === "user") {
-      this.maybeUpdateTitle(sessionId, hmsg.contents.map(c => c.text_content).join('\n'));
+      this.maybeUpdateTitle(sessionId, hmsg.contents.map(c => c.text).join('\n'));
     }
 
     return this.load(sessionId) ?? this.create();
   }
 
   /**
-   * 保存 HarnessMessage 数组到会话
-   * 将 Harness 层消息持久化为 SessionMessage 格式
+   * 保存 MaouMessage 数组到会话
+   * 将 Maou 层消息持久化为 SessionMessage 格式
    */
-  saveHarnessMessages(sessionId: string, hmsgs: HarnessMessage[]): void {
+  saveMaouMessages(sessionId: string, hmsgs: MaouMessage[]): void {
     const session = this.load(sessionId);
     if (!session) {
       throw new Error(`会话不存在: ${sessionId}`);
@@ -952,9 +992,9 @@ export class SessionStore {
     // 清空现有 JSONL
     writeFileSync(this.jsonlPath(sessionId), "", "utf-8");
 
-    // 将 HarnessMessage 转换为 SessionMessage 写入
+    // 将 MaouMessage 转换为 SessionMessage 写入
     for (const hmsg of hmsgs) {
-      const sessionMsg = harnessToSessionMessage(hmsg);
+      const sessionMsg = maouToSessionMessage(hmsg);
       this.appendLine(sessionId, { type: "message", ...sessionMsg });
     }
 
@@ -967,12 +1007,12 @@ export class SessionStore {
   }
 
   /**
-   * 获取下一个可用的 seq_id
+   * 获取下一个可用的 seqId
    */
   nextSeqId(sessionId: string): number {
-    const hmsgs = this.loadHarnessMessages(sessionId);
+    const hmsgs = this.loadMaouMessages(sessionId);
     if (hmsgs.length === 0) return 0;
-    return Math.max(...hmsgs.map(m => m.seq_id)) + 1;
+    return Math.max(...hmsgs.map(m => m.seqId)) + 1;
   }
 
   // ─── 内部方法 ──────────────────────────────────────────────────────────────

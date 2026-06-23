@@ -1,16 +1,16 @@
 /**
- * 上下文压缩器 —— 五区分阶段自动压缩。
+ * 上下文压缩器 —— 五阶段分阶段自动压缩。
  *
  * 两个入口：
- *   compressHarness()  — async，操作 HarnessMessage[]，支持可插拔 Summarizer（LLM 摘要）。
+ *   compressMaou()    — async，操作 MaouMessage[]，支持可插拔 Summarizer（LLM 摘要）。
  *   maybeCompress()    — sync compat shim（truncate-only），保持旧签名兼容。
  *
  * 压缩阶段（按 token 占比逐步升级）：
- *   active_zone  : < 70% maxTokens，不压缩。
- *   compact_zone : >= 70%，微压缩——对标注过或单条超长的消息生成摘要。
- *   summary_zone : 微压缩后仍 >= 80%，大压缩——按 task_id 生成摘要，原文落盘。
- *   archive_zone : 大压缩后仍 >= 90%，归档——只保留 task_id + 极简摘要。
- *   static_zone  : 静态区不参与压缩。
+ *   activeStage  : < 70% maxTokens，不压缩。
+ *   compactStage : >= 70%，微压缩——对标注过或单条超长的消息生成摘要。
+ *   summaryStage : 微压缩后仍 >= 80%，大压缩——按 task_id 生成摘要，原文落盘。
+ *   archiveStage : 大压缩后仍 >= 90%，归档——只保留 task_id + 极简摘要。
+ *   staticStage  : 静态阶段不参与压缩。
  */
 
 import {
@@ -25,12 +25,12 @@ import {
 } from "./constants.js";
 import type { CompressResult } from "./types.js";
 import type {
-  CompressionZone,
+  CompressionStage,
   CompressionResult,
   TaskSummary,
 } from "./types/compression.js";
-import type { HarnessMessage, LLMMessage } from "./types/message.js";
-import { harnessToLLMMessage } from "./types/message.js";
+import type { MaouMessage, MaouContent, LLMMessage } from "./types/message.js";
+import { maouToLLMMessage } from "./types/message.js";
 import { estimateTokens, estimateTokensFromText } from "./token-estimate.js";
 
 // ─── 可插拔摘要器 ────────────────────────────────────────────────────────────
@@ -45,30 +45,44 @@ export interface CompressOptions {
   maxTokens: number;
   summarizer?: Summarizer;
   sessionId?: string;
+  /** 最大压缩阶段（逐级递进时限制只压到某一级） */
+  maxStage?: CompressionStage;
 }
 
-export interface CompressHarnessResult {
-  history: HarnessMessage[];
-  zone: CompressionZone;
+export interface CompressMaouResult {
+  history: MaouMessage[];
+  stage: CompressionStage;
   droppedSummary: string;
   taskBlocks: string[];
-  perTaskOriginals: Map<string, HarnessMessage[]>;
+  perTaskOriginals: Map<string, MaouMessage[]>;
   originalTokens: number;
   compressedTokens: number;
 }
 
-// ─── 新主入口（async，操作 HarnessMessage[]） ─────────────────────────────────
+// ─── 新主入口（async，操作 MaouMessage[]） ─────────────────────────────────
 
-export async function compressHarness(
-  history: HarnessMessage[],
+const STAGE_ORDER: CompressionStage[] = [
+  "activeStage",
+  "compactStage",
+  "summaryStage",
+  "archiveStage",
+];
+
+function stageIndex(s: CompressionStage): number {
+  return STAGE_ORDER.indexOf(s);
+}
+
+export async function compressMaou(
+  history: MaouMessage[],
   opts: CompressOptions,
-): Promise<CompressHarnessResult> {
+): Promise<CompressMaouResult> {
   const threshold = opts.maxTokens > 0 ? opts.maxTokens : 65536;
   const originalTokens = estimateTokens(history);
+  const maxStageIdx = opts.maxStage ? stageIndex(opts.maxStage) : STAGE_ORDER.length - 1;
 
-  const noChange = (): CompressHarnessResult => ({
+  const noChange = (): CompressMaouResult => ({
     history,
-    zone: "active_zone",
+    stage: "activeStage",
     droppedSummary: "",
     taskBlocks: [],
     perTaskOriginals: new Map(),
@@ -76,18 +90,19 @@ export async function compressHarness(
     compressedTokens: originalTokens,
   });
 
-  // active_zone
+  // activeStage
   if (originalTokens < Math.floor((threshold * MICRO_TRIGGER_PERCENT) / 100)) {
     return noChange();
   }
 
-  // compact_zone（微压缩）
+  // compactStage（微压缩）
+  if (maxStageIdx < stageIndex("compactStage")) return noChange();
   const afterMicro = await microCompactAll(history, opts.summarizer);
   const microTokens = estimateTokens(afterMicro);
   if (microTokens < Math.floor((threshold * SUMMARY_TRIGGER_PERCENT) / 100)) {
     return {
       history: afterMicro,
-      zone: "compact_zone",
+      stage: "compactStage",
       droppedSummary: "",
       taskBlocks: [],
       perTaskOriginals: new Map(),
@@ -96,13 +111,25 @@ export async function compressHarness(
     };
   }
 
-  // summary_zone（大压缩）
+  // summaryStage（大压缩）
+  if (maxStageIdx < stageIndex("summaryStage")) {
+    // maxStage 限制在 compactStage，到此为止
+    return {
+      history: afterMicro,
+      stage: "compactStage",
+      droppedSummary: "",
+      taskBlocks: [],
+      perTaskOriginals: new Map(),
+      originalTokens,
+      compressedTokens: microTokens,
+    };
+  }
   const afterSummary = await summaryCompressHarness(afterMicro, opts.summarizer);
   const summaryTokens = estimateTokens(afterSummary.messages);
   if (summaryTokens < Math.floor((threshold * ARCHIVE_TRIGGER_PERCENT) / 100)) {
     return {
       history: afterSummary.messages,
-      zone: "summary_zone",
+      stage: "summaryStage",
       droppedSummary: afterSummary.summary,
       taskBlocks: afterSummary.taskBlocks,
       perTaskOriginals: afterSummary.perTaskOriginals,
@@ -111,11 +138,23 @@ export async function compressHarness(
     };
   }
 
-  // archive_zone（死区）
+  // archiveStage（归档阶段）
+  if (maxStageIdx < stageIndex("archiveStage")) {
+    // maxStage 限制在 summaryStage，到此为止
+    return {
+      history: afterSummary.messages,
+      stage: "summaryStage",
+      droppedSummary: afterSummary.summary,
+      taskBlocks: afterSummary.taskBlocks,
+      perTaskOriginals: afterSummary.perTaskOriginals,
+      originalTokens,
+      compressedTokens: summaryTokens,
+    };
+  }
   const afterArchive = archiveCompressHarness(afterSummary);
   return {
     history: afterArchive.messages,
-    zone: "archive_zone",
+    stage: "archiveStage",
     droppedSummary: afterArchive.summary,
     taskBlocks: afterArchive.taskBlocks,
     perTaskOriginals: afterSummary.perTaskOriginals,
@@ -130,88 +169,105 @@ export function maybeCompress(
   messages: Record<string, unknown>[],
   maxTokens: number,
 ): CompressResult {
-  const harness = messages.map((m, i) => rawToHarness(m, i));
-  const originalTokens = estimateTokens(harness);
+  const maou = messages.map((m, i) => rawToMaou(m, i));
+  const originalTokens = estimateTokens(maou);
   const threshold = maxTokens > 0 ? maxTokens : 65536;
 
   if (originalTokens < Math.floor((threshold * MICRO_TRIGGER_PERCENT) / 100)) {
-    return { messages, compressed: false, droppedSummary: "", zone: "active_zone", originalTokens, compressedTokens: originalTokens };
+    return { messages, compressed: false, droppedSummary: "", stage: "activeStage", originalTokens, compressedTokens: originalTokens };
   }
 
-  const afterMicro = microCompactAllSync(harness);
+  const afterMicro = microCompactAllSync(maou);
   const microTokens = estimateTokens(afterMicro);
   if (microTokens < Math.floor((threshold * SUMMARY_TRIGGER_PERCENT) / 100)) {
-    return buildLegacyResult(afterMicro, originalTokens, "compact_zone");
+    return buildLegacyResult(afterMicro, originalTokens, "compactStage");
   }
 
   const afterSummary = summaryCompressSync(afterMicro);
   const summaryTokens = estimateTokens(afterSummary.messages);
   if (summaryTokens < Math.floor((threshold * ARCHIVE_TRIGGER_PERCENT) / 100)) {
-    return buildLegacyResult(afterSummary.messages, originalTokens, "summary_zone", afterSummary.summary, afterSummary.taskBlocks);
+    return buildLegacyResult(afterSummary.messages, originalTokens, "summaryStage", afterSummary.summary, afterSummary.taskBlocks);
   }
 
   const afterArchive = archiveCompressHarness(afterSummary);
-  return buildLegacyResult(afterArchive.messages, originalTokens, "archive_zone", afterArchive.summary, afterArchive.taskBlocks);
+  return buildLegacyResult(afterArchive.messages, originalTokens, "archiveStage", afterArchive.summary, afterArchive.taskBlocks);
 }
 
-// ─── 微压缩 ──────────────────────────────────────────────────────────────────
+// ─── 微压缩（滑动窗口：从最新往前保留 N 条，超出的旧消息按标注压缩） ──────
 
-async function microCompactAll(messages: HarnessMessage[], summarizer?: Summarizer): Promise<HarnessMessage[]> {
-  const result: HarnessMessage[] = [];
-  for (const m of messages) {
+/**
+ * 微压缩 = 滑动窗口，不需要 LLM。
+ *
+ * 原理（对标 Claude Code Microcompact）：
+ *   1. 从最新消息往前数，保留最近 N 条消息在动态区
+ *   2. 超出窗口的旧消息，按标注（microCompact）压缩
+ *   3. 没有标注的超长消息（>MICRO_SINGLE_MSG_CHARS）也自动压缩
+ *   4. system/pinned/keepAfterCompress 的消息永远不压缩
+ *
+ * 方向：从末尾（最新）往前看，超出的部分压缩——和大压缩（从最老往前看）相反
+ */
+async function microCompactAll(messages: MaouMessage[], summarizer?: Summarizer): Promise<MaouMessage[]> {
+  // 找到动态区边界：从末尾往前，累计 token 不超过阈值
+  const activeBudget = Math.floor(messages.length * 0.4); // 保留最近 40% 的消息
+  const boundary = Math.max(0, messages.length - activeBudget);
+
+  const result: MaouMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    // 动态区内的消息不压缩
+    if (i >= boundary) { result.push(m); continue; }
+    // system/pinned/keepAfterCompress 永远不压缩
     if (shouldSkipCompress(m)) { result.push(m); continue; }
-    // 检查是否已有微压缩摘要
-    const hasSummary = m.contents.some(c => c.micro_compact?.enabled && c.micro_compact.summary);
+    // 已有微压缩摘要的跳过
+    const hasSummary = m.contents.some(c => c.microCompact?.enabled && c.microCompact.summary);
     if (hasSummary) { result.push(m); continue; }
-    const fullText = m.contents.map(c => c.text_content).join('\n');
+
+    const fullText = m.contents.map(c => c.text).join('\n');
     const hasMetaCompact = m.meta?.microCompact?.enabled === true;
     const shouldAutoCompact = hasMetaCompact || fullText.length > MICRO_SINGLE_MSG_CHARS;
     if (!shouldAutoCompact) { result.push(m); continue; }
 
-    let summary: string;
-    if (summarizer) {
-      try {
-        summary = await summarizer({ kind: 'micro', messages: [harnessToLLMMessage(m)] });
-      } catch { summary = compactByCategory(m); }
-    } else {
-      summary = compactByCategory(m);
-    }
-    // 对第一个内容块设置微压缩摘要
+    // 按标注压缩（不需要 LLM，直接用规则）
+    const summary = compactByCategory(m);
     const newContents = [...m.contents];
     if (newContents.length > 0) {
-      newContents[0] = { ...newContents[0], micro_compact: { enabled: true, summary } };
+      newContents[0] = { ...newContents[0], microCompact: { enabled: true, summary } };
     }
     result.push({ ...m, contents: newContents });
   }
   return result;
 }
 
-function microCompactAllSync(messages: HarnessMessage[]): HarnessMessage[] {
-  return messages.map(m => {
+function microCompactAllSync(messages: MaouMessage[]): MaouMessage[] {
+  const activeBudget = Math.floor(messages.length * 0.4);
+  const boundary = Math.max(0, messages.length - activeBudget);
+
+  return messages.map((m, i) => {
+    if (i >= boundary) return m;
     if (shouldSkipCompress(m)) return m;
-    const hasSummary = m.contents.some(c => c.micro_compact?.enabled && c.micro_compact.summary);
+    const hasSummary = m.contents.some(c => c.microCompact?.enabled && c.microCompact.summary);
     if (hasSummary) return m;
-    const fullText = m.contents.map(c => c.text_content).join('\n');
+    const fullText = m.contents.map(c => c.text).join('\n');
     const hasMetaCompact = m.meta?.microCompact?.enabled === true;
     const shouldAutoCompact = hasMetaCompact || fullText.length > MICRO_SINGLE_MSG_CHARS;
     if (!shouldAutoCompact) return m;
     const summary = compactByCategory(m);
     const newContents = [...m.contents];
     if (newContents.length > 0) {
-      newContents[0] = { ...newContents[0], micro_compact: { enabled: true, summary } };
+      newContents[0] = { ...newContents[0], microCompact: { enabled: true, summary } };
     }
     return { ...m, contents: newContents };
   });
 }
 
-function shouldSkipCompress(m: HarnessMessage): boolean {
+function shouldSkipCompress(m: MaouMessage): boolean {
   if (m.category === "system") return true;
-  if (m.pinned || m.keep_after_compress) return true;
+  if (m.pinned || m.keepAfterCompress) return true;
   return false;
 }
 
-function compactByCategory(m: HarnessMessage): string {
-  const text = m.contents.map(c => c.text_content).join('\n');
+function compactByCategory(m: MaouMessage): string {
+  const text = m.contents.map(c => c.text).join('\n');
   switch (m.category) {
     case "user": return `[用户] ${truncate(text, MICRO_SUMMARY_MAX_CHARS)}`;
     case "assistant": {
@@ -228,25 +284,25 @@ function compactByCategory(m: HarnessMessage): string {
 // ─── 大压缩 ──────────────────────────────────────────────────────────────────
 
 interface SummaryCompressResult {
-  messages: HarnessMessage[];
+  messages: MaouMessage[];
   summary: string;
   taskBlocks: string[];
-  perTaskOriginals: Map<string, HarnessMessage[]>;
+  perTaskOriginals: Map<string, MaouMessage[]>;
 }
 
-async function summaryCompressHarness(messages: HarnessMessage[], summarizer?: Summarizer): Promise<SummaryCompressResult> {
+async function summaryCompressHarness(messages: MaouMessage[], summarizer?: Summarizer): Promise<SummaryCompressResult> {
   const { systemMsgs, pinnedOrCritical, recentToolChain, compressible, recentToolMsgs } = partitionMessages(messages);
   const groups = groupByTask(compressible);
   const taskBlocks: string[] = [];
   const summaryLines: string[] = [];
-  const perTaskOriginals = new Map<string, HarnessMessage[]>();
+  const perTaskOriginals = new Map<string, MaouMessage[]>();
 
   for (const [taskId, msgs] of groups) {
     perTaskOriginals.set(taskId, msgs);
     let taskSummaryText: string;
     if (summarizer) {
       try {
-        const llmMsgs = msgs.map(harnessToLLMMessage);
+        const llmMsgs = msgs.map(maouToLLMMessage);
         taskSummaryText = await summarizer({ kind: 'task', taskId, messages: llmMsgs });
       } catch { taskSummaryText = summarizeTaskFallback(taskId, msgs).summary; }
     } else {
@@ -257,25 +313,25 @@ async function summaryCompressHarness(messages: HarnessMessage[], summarizer?: S
   }
 
   const summary = summaryLines.join("\n\n");
-  const result: HarnessMessage[] = [...systemMsgs, ...pinnedOrCritical, ...recentToolMsgs];
+  const result: MaouMessage[] = [...systemMsgs, ...pinnedOrCritical, ...recentToolMsgs];
   if (summary.trim()) {
     result.splice(systemMsgs.length, 0, makeSummaryMessage(summary));
   }
 
   return {
-    messages: result.sort((a, b) => a.seq_id - b.seq_id),
+    messages: result.sort((a, b) => a.seqId - b.seqId),
     summary: buildDroppedSummary(compressible, summary),
     taskBlocks,
     perTaskOriginals,
   };
 }
 
-function summaryCompressSync(messages: HarnessMessage[]): SummaryCompressResult {
+function summaryCompressSync(messages: MaouMessage[]): SummaryCompressResult {
   const { systemMsgs, pinnedOrCritical, recentToolMsgs, compressible } = partitionMessages(messages);
   const groups = groupByTask(compressible);
   const taskBlocks: string[] = [];
   const summaryLines: string[] = [];
-  const perTaskOriginals = new Map<string, HarnessMessage[]>();
+  const perTaskOriginals = new Map<string, MaouMessage[]>();
 
   for (const [taskId, msgs] of groups) {
     perTaskOriginals.set(taskId, msgs);
@@ -284,65 +340,65 @@ function summaryCompressSync(messages: HarnessMessage[]): SummaryCompressResult 
   }
 
   const summary = summaryLines.join("\n\n");
-  const result: HarnessMessage[] = [...systemMsgs, ...pinnedOrCritical, ...recentToolMsgs];
+  const result: MaouMessage[] = [...systemMsgs, ...pinnedOrCritical, ...recentToolMsgs];
   if (summary.trim()) {
     result.splice(systemMsgs.length, 0, makeSummaryMessage(summary));
   }
 
   return {
-    messages: result.sort((a, b) => a.seq_id - b.seq_id),
+    messages: result.sort((a, b) => a.seqId - b.seqId),
     summary: buildDroppedSummary(compressible, summary),
     taskBlocks,
     perTaskOriginals,
   };
 }
 
-function partitionMessages(messages: HarnessMessage[]) {
-  const systemMsgs: HarnessMessage[] = [];
-  const pinnedOrCritical: HarnessMessage[] = [];
-  const compressible: HarnessMessage[] = [];
+function partitionMessages(messages: MaouMessage[]) {
+  const systemMsgs: MaouMessage[] = [];
+  const pinnedOrCritical: MaouMessage[] = [];
+  const compressible: MaouMessage[] = [];
 
   const protectedToolCallIds = new Set<string>();
   for (const m of messages) {
-    if (m.tool_calls) for (const tc of m.tool_calls) if (tc.id) protectedToolCallIds.add(tc.id);
+    if (m.toolCalls) for (const tc of m.toolCalls) if (tc.id) protectedToolCallIds.add(tc.id);
   }
   const recentToolChain = collectRecentToolChain(messages, protectedToolCallIds);
 
   for (const m of messages) {
     if (m.category === "system") systemMsgs.push(m);
-    else if (m.pinned || m.keep_after_compress) pinnedOrCritical.push(m);
-    else if (recentToolChain.has(m.seq_id)) { /* handled below */ }
+    else if (m.pinned || m.keepAfterCompress) pinnedOrCritical.push(m);
+    else if (recentToolChain.has(m.seqId)) { /* handled below */ }
     else compressible.push(m);
   }
 
-  const recentToolMsgs = messages.filter(m => recentToolChain.has(m.seq_id));
+  const recentToolMsgs = messages.filter(m => recentToolChain.has(m.seqId));
   return { systemMsgs, pinnedOrCritical, recentToolChain, compressible, recentToolMsgs };
 }
 
-function collectRecentToolChain(messages: HarnessMessage[], protectedIds: Set<string>): Set<number> {
+function collectRecentToolChain(messages: MaouMessage[], protectedIds: Set<string>): Set<number> {
   const seqIds = new Set<number>();
   const RECENT_PAIRS = 2;
   let pairs = 0;
   for (let i = messages.length - 1; i >= 0 && pairs < RECENT_PAIRS; i--) {
     const m = messages[i];
     if (m.category === "tool_result") {
-      seqIds.add(m.seq_id);
+      seqIds.add(m.seqId);
       for (let j = i - 1; j >= 0; j--) {
         const prev = messages[j];
         if (prev.category !== "tool_call") continue;
-        const matched = prev.tool_calls?.some(tc => tc.id && protectedIds.has(tc.id) && tc.id === m.tool_call_id);
-        if (matched) { seqIds.add(prev.seq_id); pairs++; break; }
+        const matched = prev.toolCalls?.some(tc => tc.id && protectedIds.has(tc.id) && tc.id === m.toolCallId);
+        if (matched) { seqIds.add(prev.seqId); pairs++; break; }
       }
     }
   }
   return seqIds;
 }
 
-// ─── 死区归档 ────────────────────────────────────────────────────────────────
+// ─── 死阶段归档 ────────────────────────────────────────────────────────────────
 
-function archiveCompressHarness(input: SummaryCompressResult): { messages: HarnessMessage[]; summary: string; taskBlocks: string[] } {
+function archiveCompressHarness(input: SummaryCompressResult): { messages: MaouMessage[]; summary: string; taskBlocks: string[] } {
   const systemMsgs = input.messages.filter(m => m.category === "system");
-  const pinned = input.messages.filter(m => m.pinned || m.keep_after_compress);
+  const pinned = input.messages.filter(m => m.pinned || m.keepAfterCompress);
   const archiveText = `[已归档任务: ${input.taskBlocks.length} 个]\n${input.taskBlocks.map(id => `- ${id}`).join("\n")}`;
   return {
     messages: [...systemMsgs, makeSummaryMessage(archiveText), ...pinned],
@@ -353,29 +409,29 @@ function archiveCompressHarness(input: SummaryCompressResult): { messages: Harne
 
 // ─── task_id 赋值（供 ContextEngine 调用） ──────────────────────────────────
 
-export function assignTaskIds(messages: HarnessMessage[]): HarnessMessage[] {
+export function assignTaskIds(messages: MaouMessage[]): MaouMessage[] {
   let currentTaskId = "";
   return messages.map(m => {
     if (m.category === "user" && m.source !== "hook" && m.source !== "injected") {
-      currentTaskId = `t${m.seq_id}`;
+      currentTaskId = `t${m.seqId}`;
     }
     if (!currentTaskId) return m;
-    if (m.task_ids.length > 0) return m;
-    return { ...m, task_ids: [currentTaskId] };
+    if (m.taskIds.length > 0) return m;
+    return { ...m, taskIds: [currentTaskId] };
   });
 }
 
 // ─── 辅助 ────────────────────────────────────────────────────────────────────
 
-function groupByTask(messages: HarnessMessage[]): Map<string, HarnessMessage[]> {
-  const groups = new Map<string, HarnessMessage[]>();
+function groupByTask(messages: MaouMessage[]): Map<string, MaouMessage[]> {
+  const groups = new Map<string, MaouMessage[]>();
   for (const m of messages) {
-    if (m.task_ids.length === 0) {
+    if (m.taskIds.length === 0) {
       const arr = groups.get("__no_task__") ?? [];
       arr.push(m);
       groups.set("__no_task__", arr);
     } else {
-      for (const tid of m.task_ids) {
+      for (const tid of m.taskIds) {
         const arr = groups.get(tid) ?? [];
         arr.push(m);
         groups.set(tid, arr);
@@ -385,14 +441,14 @@ function groupByTask(messages: HarnessMessage[]): Map<string, HarnessMessage[]> 
   return groups;
 }
 
-function summarizeTaskFallback(taskId: string, msgs: HarnessMessage[]): TaskSummary {
+function summarizeTaskFallback(taskId: string, msgs: MaouMessage[]): TaskSummary {
   const userInputs: string[] = [];
   const assistantResponses: string[] = [];
   let toolCallCount = 0;
   let toolResultCount = 0;
 
   for (const m of msgs) {
-    const text = m.contents.map(c => c.text_content).join('\n');
+    const text = m.contents.map(c => c.text).join('\n');
     switch (m.category) {
       case "user": userInputs.push(truncate(text, 100)); break;
       case "assistant": assistantResponses.push(truncate(text, 150)); break;
@@ -408,16 +464,16 @@ function summarizeTaskFallback(taskId: string, msgs: HarnessMessage[]): TaskSumm
   if (toolResultCount > 0) parts.push(`工具结果(${toolResultCount})`);
 
   return {
-    task_id: taskId,
+    taskId,
     status: "done",
-    start_time: msgs[0]?.created_at ?? new Date().toISOString(),
+    startTime: msgs[0]?.createdAt ?? new Date().toISOString(),
     summary: truncate(`[${taskId}] ${parts.join(" | ")}`, SUMMARY_MAX_CHARS),
     goal: "",
-    outline: msgs.slice(0, 10).map(m => `- [${m.category}] ${truncate(m.contents.map(c => c.text_content).join('\n'), 50)}`),
+    outline: msgs.slice(0, 10).map(m => `- [${m.category}] ${truncate(m.contents.map(c => c.text).join('\n'), 50)}`),
   };
 }
 
-function buildDroppedSummary(dropped: HarnessMessage[], taskSummary: string): string {
+function buildDroppedSummary(dropped: MaouMessage[], taskSummary: string): string {
   if (dropped.length === 0) return "";
   const userSnippets: string[] = [];
   const assistantSnippets: string[] = [];
@@ -425,7 +481,7 @@ function buildDroppedSummary(dropped: HarnessMessage[], taskSummary: string): st
   let assistantCount = 0;
 
   for (const m of dropped) {
-    const text = m.contents.map(c => c.text_content).join('\n').trim();
+    const text = m.contents.map(c => c.text).join('\n').trim();
     if (!text) continue;
     if (m.category === "user") {
       userCount++;
@@ -452,20 +508,20 @@ function buildDroppedSummary(dropped: HarnessMessage[], taskSummary: string): st
   return lines.join("\n");
 }
 
-function makeSummaryMessage(summary: string): HarnessMessage {
+function makeSummaryMessage(summary: string): MaouMessage {
   return {
-    seq_id: -1,
-    task_ids: [],
+    seqId: -1,
+    taskIds: [],
     contents: [{
-      text_content:
+      text:
         `<prior_context_summary>\n` +
         `以下是此前对话中被压缩掉的摘要，供参考以保持上下文连贯性：\n\n` +
         `${summary}\n` +
         `</prior_context_summary>`,
     }],
-    keep_after_compress: true,
+    keepAfterCompress: true,
     category: "injected",
-    original_role: "user",
+    originalRole: "user",
   };
 }
 
@@ -476,12 +532,12 @@ function truncate(text: string, maxLength: number): string {
 
 // ─── 旧签名辅助 ─────────────────────────────────────────────────────────────
 
-function rawToHarness(raw: Record<string, unknown>, seqId: number): HarnessMessage {
+function rawToMaou(raw: Record<string, unknown>, seqId: number): MaouMessage {
   const role = String(raw.role ?? "user");
   const content = extractText(raw.content);
   const pinned = Boolean(raw.pinned ?? false);
 
-  let category: HarnessMessage["category"];
+  let category: MaouMessage["category"];
   if (role === "system") category = "system";
   else if (role === "assistant") {
     const tc = raw.tool_calls as Array<Record<string, unknown>> | undefined;
@@ -493,14 +549,14 @@ function rawToHarness(raw: Record<string, unknown>, seqId: number): HarnessMessa
     ? normalizeToolCalls(raw.tool_calls as Array<Record<string, unknown>> | undefined)
     : undefined;
 
-  const hmsg: HarnessMessage = {
-    seq_id: seqId, task_ids: [], contents: [{ text_content: content }],
-    keep_after_compress: pinned, category, pinned,
-    original_role: role as HarnessMessage["original_role"],
+  const mmsg: MaouMessage = {
+    seqId, taskIds: [], contents: [{ text: content }],
+    keepAfterCompress: pinned, category, pinned,
+    originalRole: role as MaouMessage["originalRole"],
   };
-  if (typeof raw.tool_call_id === "string") hmsg.tool_call_id = raw.tool_call_id;
-  if (toolCalls && toolCalls.length > 0) hmsg.tool_calls = toolCalls;
-  return hmsg;
+  if (typeof raw.tool_call_id === "string") mmsg.toolCallId = raw.tool_call_id;
+  if (toolCalls && toolCalls.length > 0) mmsg.toolCalls = toolCalls;
+  return mmsg;
 }
 
 function extractText(content: unknown): string {
@@ -515,7 +571,7 @@ function extractText(content: unknown): string {
   return "";
 }
 
-function normalizeToolCalls(calls: Array<Record<string, unknown>> | undefined): HarnessMessage["tool_calls"] {
+function normalizeToolCalls(calls: Array<Record<string, unknown>> | undefined): MaouMessage["toolCalls"] {
   if (!calls || calls.length === 0) return undefined;
   return calls.map(c => {
     const fn = (c.function ?? c) as Record<string, unknown>;
@@ -529,24 +585,24 @@ function normalizeToolCalls(calls: Array<Record<string, unknown>> | undefined): 
   }).filter(c => c.id && c.name);
 }
 
-function harnessToRaw(hmsg: HarnessMessage): Record<string, unknown> {
-  const fullText = hmsg.contents.map(c => {
-    if (c.micro_compact?.enabled && c.micro_compact.summary) return c.micro_compact.summary;
-    return c.text_content;
+function maouToRaw(mmsg: MaouMessage): Record<string, unknown> {
+  const fullText = mmsg.contents.map(c => {
+    if (c.microCompact?.enabled && c.microCompact.summary) return c.microCompact.summary;
+    return c.text;
   }).join('\n');
   const out: Record<string, unknown> = {
-    role: hmsg.original_role ?? categoryToRole(hmsg.category),
+    role: mmsg.originalRole ?? categoryToRole(mmsg.category),
     content: fullText,
   };
-  if (hmsg.category === "tool_result" && hmsg.tool_call_id) out.tool_call_id = hmsg.tool_call_id;
-  if (hmsg.tool_calls && hmsg.tool_calls.length > 0) {
-    out.tool_calls = hmsg.tool_calls.map(tc => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } }));
+  if (mmsg.category === "tool_result" && mmsg.toolCallId) out.tool_call_id = mmsg.toolCallId;
+  if (mmsg.toolCalls && mmsg.toolCalls.length > 0) {
+    out.tool_calls = mmsg.toolCalls.map(tc => ({ id: tc.id, type: "function", function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } }));
   }
-  if (hmsg.pinned) out.pinned = true;
+  if (mmsg.pinned) out.pinned = true;
   return out;
 }
 
-function categoryToRole(c: HarnessMessage["category"]): string {
+function categoryToRole(c: MaouMessage["category"]): string {
   switch (c) {
     case "user": case "injected": return "user";
     case "assistant": case "tool_call": return "assistant";
@@ -556,16 +612,16 @@ function categoryToRole(c: HarnessMessage["category"]): string {
   }
 }
 
-function buildLegacyResult(harnessOut: HarnessMessage[], originalTokens: number, zone: CompressionZone, summary = "", taskBlocks: string[] = []): CompressResult {
-  const rawOut = harnessOut.map(harnessToRaw);
-  const compressedTokens = estimateTokens(harnessOut);
+function buildLegacyResult(maouOut: MaouMessage[], originalTokens: number, stage: CompressionStage, summary = "", taskBlocks: string[] = []): CompressResult {
+  const rawOut = maouOut.map(maouToRaw);
+  const compressedTokens = estimateTokens(maouOut);
   return {
-    messages: rawOut, compressed: zone !== "active_zone", droppedSummary: summary,
-    zone, originalTokens, compressedTokens, taskBlocks: taskBlocks.length > 0 ? taskBlocks : undefined,
+    messages: rawOut, compressed: stage !== "activeStage", droppedSummary: summary,
+    stage, originalTokens, compressedTokens, taskBlocks: taskBlocks.length > 0 ? taskBlocks : undefined,
   };
 }
 
 // ─── 对外透出 ────────────────────────────────────────────────────────────────
 
-export type { CompressionZone, CompressionResult, TaskSummary };
+export type { CompressionStage, CompressionResult, TaskSummary };
 export { estimateTokens, estimateTokensFromText } from "./token-estimate.js";

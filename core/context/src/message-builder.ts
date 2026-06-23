@@ -97,19 +97,19 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
       role: msg.role,
       content: msg.content,
     };
-    const nativeToolCalls = msg.native_tool_calls as Array<Record<string, unknown>> | undefined;
+    const nativeToolCalls = msg.toolCalls as Array<Record<string, unknown>> | undefined;
     if (nativeToolCalls && nativeToolCalls.length > 0) {
       entry.tool_calls = nativeToolCalls.map(tc => ({
         id: tc.id,
         type: tc.type || "function",
         function: {
           name: tc.name,
-          arguments: JSON.stringify(tc.parameters ?? {}),
+          arguments: JSON.stringify(tc.arguments ?? {}),
         },
       }));
     }
-    if (msg.tool_call_id) {
-      entry.tool_call_id = msg.tool_call_id;
+    if (msg.toolCallId) {
+      entry.tool_call_id = msg.toolCallId;
     }
     messages.push(entry);
 

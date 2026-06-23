@@ -21,19 +21,12 @@ import {
   readdirSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
-import type { LLMMessage, TaskStatus } from "./types/message.js";
+import type { LLMMessage, TaskStatus, Pin } from "./types/message.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
-/** AI 主动 pin 的引用片段 */
-export interface PinnedSnippet {
-  path: string;
-  snippet: string;
-  reason: string;
-}
-
-/** 任务块数据结构（对齐 message.ts TaskBlock） */
-export interface TaskBlock {
+/** 任务块数据结构（对齐 message.ts MaouTaskBlock） */
+export interface MaouTaskBlock {
   taskId: string;
   parentTaskId?: string;
   status: TaskStatus;
@@ -46,7 +39,7 @@ export interface TaskBlock {
   currentStep?: string;
   dependencies?: string[];
   relatedFiles?: string[];
-  pinnedSnippets?: PinnedSnippet[];
+  pins?: Pin[];
   tags?: string[];
   createdAt: string;
   updatedAt: string;
@@ -116,7 +109,7 @@ export class TaskSessionStore {
   /**
    * 创建任务块
    *
-   * 写入一个 type="block" 的条目，包含全部 TaskBlock 字段。
+   * 写入一个 type="block" 的条目，包含全部 MaouTaskBlock 字段。
    * 如果文件已存在则覆盖。
    */
   createTaskBlock(
@@ -131,7 +124,7 @@ export class TaskSessionStore {
       context?: string;
       tags?: string[];
     },
-  ): TaskBlock {
+  ): MaouTaskBlock {
     const filePath = this.taskFilePath(sessionId, taskId);
     const ts = nowIso();
 
@@ -198,10 +191,10 @@ export class TaskSessionStore {
   /**
    * 获取任务块
    *
-   * 读取 JSONL 文件，解析 block 和 message 条目，组装成 TaskBlock。
+   * 读取 JSONL 文件，解析 block 和 message 条目，组装成 MaouTaskBlock。
    * 如果文件不存在返回 null。
    */
-  getTaskBlock(sessionId: string, taskId: string): TaskBlock | null {
+  getTaskBlock(sessionId: string, taskId: string): MaouTaskBlock | null {
     const filePath = this.taskFilePath(sessionId, taskId);
     if (!existsSync(filePath)) return null;
 
@@ -292,7 +285,7 @@ export class TaskSessionStore {
       notes?: string[];
       tags?: string[];
     },
-  ): TaskBlock | null {
+  ): MaouTaskBlock | null {
     const filePath = this.taskFilePath(sessionId, taskId);
     if (!existsSync(filePath)) return null;
 
