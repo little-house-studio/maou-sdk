@@ -49,6 +49,15 @@ export type {
   DailySummary,
 } from "./token-tracker.js";
 
+// ── Agent 运行时 ───────────────────────────────────────────────────────────
+
+export { AgentRuntime } from "./runtime.js";
+export type {
+  RuntimeOptions,
+  ModelCallParams,
+  RunOptions,
+} from "./runtime.js";
+
 // ── Agent 注册表与工厂 ─────────────────────────────────────────────────────
 
 export { AgentRegistry, initMainAgent } from "./registry.js";

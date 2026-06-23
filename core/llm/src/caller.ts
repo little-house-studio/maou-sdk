@@ -512,4 +512,21 @@ export class ModelCaller {
       data: { session_id: sessionId, ...data },
     };
   }
+
+  // ── 工厂方法 ──
+
+  /** 创建错误调用结果（供 harness 层使用，避免自行拼装 ModelCallResult） */
+  static createErrorResult(error: string): ModelCallResult {
+    return {
+      rawResponse: `[API Error: ${error}]`,
+      content: "",
+      retryIndex: 0,
+      validationError: error,
+      attemptDiagnostics: [],
+      nativeToolCalls: [],
+      usage: null,
+      rawRequest: null,
+      rawSSEEvents: [],
+    };
+  }
 }

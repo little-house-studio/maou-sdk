@@ -163,6 +163,73 @@ export function transparentDecodeField(
   return entry;
 }
 
+// ─── POST 日志记录解码 ──────────────────────────────────────────────────────
+
+/**
+ * 按 POST 日志记录类型解码压缩字段。
+ *
+ * 支持三种记录格式：
+ *   - llm.post 记录（event === "llm.post"）
+ *   - llm_request 记录（type === "llm_request"）
+ *   - llm_response 记录（type === "llm_response"）
+ *
+ * 每条独立解码，无状态。
+ */
+export function decodePostLogEntry(
+  entry: Record<string, unknown>,
+): Record<string, unknown> {
+  // llm.post 记录
+  if (entry.event === "llm.post") {
+    const req = entry.request as Record<string, unknown> | undefined;
+    if (req?.body_full && typeof req.body_full === "object") {
+      const decoded = decodeRawBody(req.body_full as CompressedBody);
+      if (decoded !== null) req.body_full = decoded;
+    }
+    const resp = entry.response as Record<string, unknown> | undefined;
+    if (resp?.payload_compressed && typeof resp.payload_compressed === "object") {
+      const decoded = decodeRawBody(resp.payload_compressed as CompressedBody);
+      if (decoded !== null) {
+        try {
+          const parsed = JSON.parse(decoded) as { raw_text?: string; events?: string[] };
+          if (parsed.raw_text !== undefined) resp.raw_text = parsed.raw_text;
+          if (parsed.events !== undefined) resp.events = parsed.events;
+          delete resp.payload_compressed;
+        } catch { /* 解析失败保留压缩载体 */ }
+        }
+    }
+    return entry;
+  }
+
+  // type-based 记录
+  const type = entry.type as string | undefined;
+  if (!type) return entry;
+  const data = entry.data as Record<string, unknown> | undefined;
+  if (!data) return entry;
+
+  if (type === "llm_request") {
+    if (data.body_compressed && typeof data.body_compressed === "object") {
+      const decoded = decodeRawBody(data.body_compressed as CompressedBody);
+      if (decoded !== null) {
+        data.body = decoded;
+        delete data.body_compressed;
+      }
+    }
+  } else if (type === "llm_response") {
+    if (data.payload_compressed && typeof data.payload_compressed === "object") {
+      const decoded = decodeRawBody(data.payload_compressed as CompressedBody);
+      if (decoded !== null) {
+        try {
+          const parsed = JSON.parse(decoded) as { content?: string; sse_events?: string[] };
+          if (parsed.content !== undefined) data.content = parsed.content;
+          if (parsed.sse_events !== undefined) data.sse_events = parsed.sse_events;
+          delete data.payload_compressed;
+        } catch { /* 解析失败保留压缩载体 */ }
+        }
+    }
+  }
+  return entry;
+}
+
 // ─── POST ↔ 结构体 双向：重建可发的原始 POST / 直接重放 ─────────────────────
 
 /** 重建出的完整 POST 请求（可直接交给 fetch 发出） */

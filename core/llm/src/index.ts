@@ -118,6 +118,7 @@ export {
   decodeRawBody,
   decodeRawBodyAsObject,
   transparentDecodeField,
+  decodePostLogEntry,
   reconstructPost,
   replayPost,
   RAW_CODEC_ALGO,

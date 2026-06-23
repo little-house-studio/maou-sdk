@@ -715,6 +715,95 @@ export class SessionStore {
     });
   }
 
+  /**
+   * 获取会话最近 token 用量（从 trace 和 messages 反向查找）
+   */
+  getLatestUsage(sessionId: string): { usage: Record<string, number>; model: string } {
+    const trace = this.getTrace(sessionId);
+    const usage: Record<string, number> = {};
+    let model = "";
+
+    // 从 trace 反向查找
+    for (let i = trace.length - 1; i >= 0; i--) {
+      const item = trace[i] as Record<string, unknown>;
+      const tt = String(item.type ?? "");
+      if (tt === "model.usage" && Object.keys(usage).length === 0) {
+        const u = item.usage as Record<string, unknown> | undefined;
+        if (u && typeof u === "object") {
+          for (const [k, v] of Object.entries(u)) {
+            if (typeof v === "number") usage[k] = v;
+          }
+        }
+      }
+      if (tt === "model.request" && !model) {
+        const body = (item.request_body ?? item.payload ?? {}) as Record<string, unknown>;
+        model = String(body.model ?? "");
+      }
+    }
+
+    // trace 没找到，从 messages 反向查找
+    if (Object.keys(usage).length === 0) {
+      const session = this.load(sessionId);
+      if (session) {
+        const msgs = session.messages ?? [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i] as Record<string, unknown>;
+          const u = m.usage as Record<string, unknown> | undefined;
+          if (u && typeof u === "object") {
+            for (const [k, v] of Object.entries(u)) {
+              if (typeof v === "number") usage[k] = v;
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    return { usage, model };
+  }
+
+  /**
+   * 检测未完成的工具调用，注入中断结果
+   * 返回 true 表示注入了中断消息
+   */
+  injectPendingToolInterrupts(sessionId: string): boolean {
+    const session = this.load(sessionId);
+    if (!session) return false;
+    const msgs = session.messages ?? [];
+    if (msgs.length === 0) return false;
+
+    const last = msgs[msgs.length - 1] as Record<string, unknown>;
+    if (last.role !== "assistant") return false;
+
+    const nativeToolCalls = (last.toolCalls ?? last.native_tool_calls ?? []) as Record<string, unknown>[];
+    if (nativeToolCalls.length === 0) return false;
+
+    // 找出没有配对 tool_result 的 tool_call
+    const pendingIds = new Set(nativeToolCalls.map(tc => String(tc.id ?? "")));
+    for (let i = msgs.length - 2; i >= 0; i--) {
+      const m = msgs[i] as Record<string, unknown>;
+      if (m.role === "tool") {
+        const tid = String(m.toolCallId ?? m.tool_call_id ?? "");
+        pendingIds.delete(tid);
+      }
+    }
+    if (pendingIds.size === 0) return false;
+
+    // 注入中断结果
+    for (const tc of nativeToolCalls) {
+      const callId = String(tc.id ?? "");
+      if (!pendingIds.has(callId)) continue;
+      const toolName = String(tc.name ?? "?");
+      this.appendMessage(sessionId, "tool", `工具 ${toolName} 已被用户打断`, {
+        toolCallId: callId,
+        tool_name: toolName,
+        tool_call: { name: toolName, parameters: tc.arguments ?? tc.parameters ?? {}, id: callId },
+        interrupted: true,
+      });
+    }
+    return true;
+  }
+
   // ── 内部方法 ──
 
   private rotateRawLogIfNeeded(filePath: string): void {

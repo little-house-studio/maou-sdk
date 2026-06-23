@@ -83,6 +83,19 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  core/hub:
+    dependencies:
+      '@little-house-studio/agent':
+        specifier: workspace:*
+        version: link:../agent
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   core/llm:
     dependencies:
       '@sinclair/typebox':

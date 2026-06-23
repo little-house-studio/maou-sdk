@@ -42,6 +42,7 @@ export * from "./agent_factory/event-bus.js";
 export * from "./agent_factory/skill.js";
 export * from "./agent_factory/git-watcher.js";
 export * from "./agent_factory/plugin.js";
+export * from "./agent_factory/plugin-types.js";
 export * from "./agent_factory/types.js";
 
 // 动态上下文编译（团队 Agent 状态 + 终端状态面板）
