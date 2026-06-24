@@ -151,7 +151,7 @@ export class MistralAdapter implements ProtocolAdapter {
     return messages;
   }
 
-  parseNonstreamResponse(data: Record<string, unknown>): ParsedLLMResponse {
+  parseNonstreamResponse(data: Record<string, unknown>, preset?: APIPreset): ParsedLLMResponse {
     const choices = (data.choices as Record<string, unknown>[]) ?? [{}];
     const choice = choices[0] ?? {};
     const delta = (choice.delta as Record<string, unknown>) ?? {};
@@ -161,9 +161,18 @@ export class MistralAdapter implements ProtocolAdapter {
     let usedReasoning = false;
     let reasoningContent = "";
 
-    // 提取思考/推理内容（Mistral magistral 模型使用 thinking 字段）
+    // 提取思考/推理内容（支持自定义字段映射）
+    const reasoningFields = preset?.responseFields?.reasoning ?? [
+      "reasoning_content",
+      "thinking",
+      "thinking_content",
+    ];
     const collectReasoning = (src: Record<string, unknown>): string => {
-      return coerceText(src.reasoning_content) || coerceText(src.thinking) || coerceText(src.thinking_content);
+      for (const field of reasoningFields) {
+        const r = coerceText(src[field]);
+        if (r) return r;
+      }
+      return "";
     };
 
     const deltaReasoningRaw = collectReasoning(delta);
@@ -172,43 +181,74 @@ export class MistralAdapter implements ProtocolAdapter {
     reasoningContent = deltaReasoningRaw || messageReasoningRaw || choiceReasoningRaw;
     if (reasoningContent) usedReasoning = true;
 
-    // 提取正文 content
-    const deltaContent = coerceText(delta.content);
+    // 提取正文 content（支持自定义字段映射）
+    const contentFields = preset?.responseFields?.content ?? ["content", "text"];
+    const extractContent = (src: Record<string, unknown>): string => {
+      for (const field of contentFields) {
+        const r = coerceText(src[field]);
+        if (r) return r;
+      }
+      return "";
+    };
+    const deltaContent = extractContent(delta);
     if (deltaContent) {
       body = deltaContent;
     } else {
-      const messageContent = coerceText(message.content);
+      const messageContent = extractContent(message);
       if (messageContent) {
         body = messageContent;
       } else {
-        const choiceText = coerceText(choice.text);
+        const choiceText = extractContent(choice);
         if (choiceText) {
           body = choiceText;
         }
       }
     }
 
-    // 解析 tool_calls（Mistral 与 OpenAI 格式一致）
-    const rawCalls = (message.tool_calls as Record<string, unknown>[]) ?? [];
+    // 解析 tool_calls（支持自定义字段映射）
+    const toolCallsField = preset?.responseFields?.toolCalls ?? "tool_calls";
+    const rawCalls = (message[toolCallsField] as Record<string, unknown>[]) ?? [];
     const toolCalls: LLMToolCall[] = [];
     for (let i = 0; i < rawCalls.length; i++) {
       const rawCall = rawCalls[i];
       if (!rawCall || typeof rawCall !== "object") continue;
-      const fnPayload = (rawCall.function as Record<string, unknown>) ?? rawCall;
-      const name = String(fnPayload.name ?? "").trim();
+      
+      const toolCallNamePath = preset?.responseFields?.toolCallName ?? "function.name";
+      const toolCallArgsPath = preset?.responseFields?.toolCallArgs ?? "function.arguments";
+      const toolCallIdField = preset?.responseFields?.toolCallId ?? "id";
+      
+      let name = "";
+      let args: unknown;
+      
+      if (toolCallNamePath === "name") {
+        name = String(rawCall.name ?? "").trim();
+        args = rawCall.arguments;
+      } else {
+        const fnPayload = (rawCall.function as Record<string, unknown>) ?? rawCall;
+        name = String(fnPayload.name ?? "").trim();
+        args = fnPayload.arguments;
+      }
+      
       if (!name) continue;
       toolCalls.push({
-        id: String(rawCall.id ?? `tool_call_${i}`),
+        id: String(rawCall[toolCallIdField] ?? `tool_call_${i}`),
         name,
-        parameters: this.parseToolArguments(fnPayload.arguments),
+        parameters: this.parseToolArguments(args),
         provider: "mistral",
         type: String(rawCall.type ?? "function"),
       });
     }
 
-    const finishReasonRaw = choice.finish_reason;
-    const finishReason =
-      typeof finishReasonRaw === "string" && finishReasonRaw ? finishReasonRaw : null;
+    // 提取结束原因（支持自定义字段映射）
+    const finishReasonFields = preset?.responseFields?.finishReason ?? ["finish_reason", "stop_reason"];
+    let finishReason: string | null = null;
+    for (const field of finishReasonFields) {
+      const raw = choice[field];
+      if (typeof raw === "string" && raw) {
+        finishReason = raw;
+        break;
+      }
+    }
 
     return { content: body, toolCalls, finishReason, usedReasoning, reasoningContent: reasoningContent || undefined };
   }
@@ -216,6 +256,7 @@ export class MistralAdapter implements ProtocolAdapter {
   parseStreamEvent(
     data: Record<string, unknown>,
     toolChunks: Map<number, { id: string; name: string; arguments: string }>,
+    preset?: APIPreset,
   ): StreamEvent {
     // 流内错误检测
     if (data.error) {
@@ -257,17 +298,53 @@ export class MistralAdapter implements ProtocolAdapter {
       return { delta: "", finishReason: null, usedReasoning: false };
     }
 
-    // 提取 content delta
-    const delta = coerceText(deltaPayload.content);
+    // 提取 content delta（支持自定义字段映射）
+    const contentFields = preset?.responseFields?.content ?? ["content", "text"];
+    let delta = "";
+    for (const field of contentFields) {
+      const r = coerceText(deltaPayload[field]);
+      if (r) {
+        delta = r;
+        break;
+      }
+    }
 
-    // 提取思考/推理内容增量
-    const thinking = coerceText(deltaPayload.reasoning_content)
-      || coerceText(deltaPayload.thinking)
-      || coerceText(deltaPayload.thinking_content);
+    // 回退到 choice 顶层（vLLM 模式）
+    if (!delta && preset?.streamOptions?.fallbackToChoiceTopLevel !== false) {
+      for (const field of contentFields) {
+        const r = coerceText(choice[field]);
+        if (r) {
+          delta = r;
+          break;
+        }
+      }
+    }
 
-    const finishReasonRaw = choice.finish_reason;
-    const finishReason =
-      typeof finishReasonRaw === "string" && finishReasonRaw ? finishReasonRaw : null;
+    // 提取思考/推理内容增量（支持自定义字段映射）
+    const reasoningFields = preset?.responseFields?.reasoning ?? [
+      "reasoning_content",
+      "thinking",
+      "thinking_content",
+    ];
+    let thinking = "";
+    for (const field of reasoningFields) {
+      const r = coerceText(deltaPayload[field]);
+      if (r) {
+        thinking = r;
+        break;
+      }
+    }
+
+    // 提取结束原因（支持自定义字段映射）
+    const finishReasonFields = preset?.responseFields?.finishReason ?? ["finish_reason", "stop_reason"];
+    let finishReason: string | null = null;
+    for (const field of finishReasonFields) {
+      const raw = choice[field];
+      if (typeof raw === "string" && raw) {
+        finishReason = raw;
+        break;
+      }
+    }
 
     return { delta, finishReason, usedReasoning: !!thinking, thinking: thinking || undefined };
   }

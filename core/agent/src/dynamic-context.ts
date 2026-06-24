@@ -1,13 +1,54 @@
 /**
- * 动态上下文编译 —— 编译 board 看板状态、待处理上下文、团队 Agent 状态。
- * 对应 Python: runtime._compile_before_user_dynamic()
+ * 动态上下文编译 —— agent 层入口
+ *
+ * 从 @little-house-studio/prompt 层调用纯模板编译，
+ * agent 层负责提供 PersonaStatusProvider 和 TerminalStatusProvider 实现。
  */
 
 import { AgentRegistry } from "./agent/registry.js";
-import { TERMINAL_REGISTRY } from "@little-house-studio/tools";
+import { getTerminalStatusPanel } from "@little-house-studio/tools";
+import {
+  compileDynamicContextTemplate,
+  formatAgentStatus,
+} from "@little-house-studio/prompt";
+import type {
+  PersonaStatus,
+  PersonaStatusProvider,
+  TerminalStatusProvider,
+} from "@little-house-studio/prompt";
+
+/**
+ * AgentRegistry 适配器 —— 实现 PersonaStatusProvider 接口
+ */
+class AgentRegistryStatusProvider implements PersonaStatusProvider {
+  constructor(private registry: AgentRegistry) {}
+
+  getStatus(): PersonaStatus[] {
+    return this.registry.list().map((a) => ({
+      name: a.name,
+      role: a.role,
+      status: a.status,
+      team: a.team,
+      description: a.description,
+      parent: a.parent,
+    }));
+  }
+}
+
+/**
+ * 终端引擎适配器 —— 实现 TerminalStatusProvider 接口
+ */
+class TerminalRegistryStatusProvider implements TerminalStatusProvider {
+  agentStatusPanel(agentName: string): string | null {
+    const panel = getTerminalStatusPanel(agentName);
+    return panel || null;
+  }
+}
 
 /**
  * 编译动态注入内容：Agent 状态、终端状态面板。
+ *
+ * agent 层负责组装 provider，模板编译委托给 prompt 层。
  */
 export function compileDynamicContext(maouRoot: string, agentName?: string): string {
   const parts: string[] = [];
@@ -15,7 +56,8 @@ export function compileDynamicContext(maouRoot: string, agentName?: string): str
   // Agent 状态注入
   try {
     const registry = new AgentRegistry(maouRoot);
-    const agentsText = formatAgentStatus(registry);
+    const provider = new AgentRegistryStatusProvider(registry);
+    const agentsText = formatAgentStatus(provider);
     if (agentsText) parts.push(agentsText);
   } catch {
     // 读取失败跳过
@@ -23,7 +65,8 @@ export function compileDynamicContext(maouRoot: string, agentName?: string): str
 
   // 终端状态面板
   if (agentName) {
-    const panel = TERMINAL_REGISTRY.agentStatusPanel(agentName);
+    const terminalProvider = new TerminalRegistryStatusProvider();
+    const panel = terminalProvider.agentStatusPanel(agentName);
     if (panel) {
       parts.push(`<terminal_status>\n${panel}\n</terminal_status>`);
     }
@@ -32,18 +75,6 @@ export function compileDynamicContext(maouRoot: string, agentName?: string): str
   return parts.join("\n\n");
 }
 
-/**
- * 格式化团队 Agent 状态列表。
- */
-export function formatAgentStatus(registry: AgentRegistry): string {
-  try {
-    const agents = registry.list();
-    const lines = agents
-      .filter((a) => a.name !== "main")
-      .map((a) => `- ${a.name}: ${a.description || a.role || "无描述"}`);
-    if (lines.length === 0) return "";
-    return `<agent_status>\n${lines.join("\n")}\n</agent_status>`;
-  } catch {
-    return "";
-  }
-}
+// re-export prompt 层的纯模板函数（供外部直接使用）
+export { compileDynamicContextTemplate, formatAgentStatus };
+export type { PersonaStatusProvider, TerminalStatusProvider };

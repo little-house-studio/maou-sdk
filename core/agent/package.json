@@ -22,7 +22,8 @@
     "@little-house-studio/types": "workspace:*",
     "@little-house-studio/llm": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
-    "@little-house-studio/context": "workspace:*"
+    "@little-house-studio/context": "workspace:*",
+    "@little-house-studio/prompt": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

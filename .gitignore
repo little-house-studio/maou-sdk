@@ -1,8 +1,50 @@
-node_modules/
-dist/
-.DS_Store
-*.tsbuildinfo
-*.log
+# ─── 环境与配置 ───
 .env
 .env.*
+.env.local
+.env.backup
+
+# ─── 运行时数据 ───
+.maou/
+
+# ─── 编译产物 ───
+dist/
+build/
+*.tsbuildinfo
+*.map
+
+# ─── Node.js ───
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 *.tgz
+
+# ─── Rust / napi-rs ───
+terminal-engine/target/
+terminal-engine/index.js
+terminal-engine/index.d.ts
+terminal-engine/*.node
+
+# ─── IDE / 编辑器 ───
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── AI 工具 / Agent 配置 ───
+.claude/
+.trae/
+.agents/
+.qoder/
+
+# ─── 临时文件 ───
+*.tmp
+*.bak
+*.orig
+*.log
+logs/

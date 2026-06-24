@@ -1,64 +1,55 @@
 /**
- * 模型注册表 SDK
+ * 模型注册表 SDK —— 纯动态，无硬编码
  *
- * 对标 pi-ai：getProviders / getModels / getModel —— 内置一张带能力与定价的模型目录，
- * 省去手填 preset；并提供 toAPIPreset 一键把目录项转成 LLMClient 用的 APIPreset。
+ * 所有厂商和模型都通过 registerProvider/registerModel 动态注册，
+ * 不依赖内置硬编码目录。
  *
  * @example
- * import { getModel, toAPIPreset } from "core/llm/registry"
- * const preset = toAPIPreset("anthropic", "claude-sonnet-4-5")  // key 自动从 ANTHROPIC_API_KEY 读
+ * import { registerProvider, getModel, toAPIPreset } from "core/llm/registry"
+ *
+ * // 注册厂商
+ * registerProvider({
+ *   id: "openai",
+ *   name: "OpenAI",
+ *   protocol: "openai",
+ *   baseUrl: "https://api.openai.com/v1/chat/completions",
+ *   envKey: "OPENAI_API_KEY",
+ *   models: [
+ *     { id: "gpt-4o", provider: "openai", name: "GPT-4o", protocol: "openai",
+ *       input: ["text", "image"], output: ["text"], reasoning: false, toolCall: true,
+ *       contextWindow: 128_000, maxTokens: 16_384 },
+ *   ],
+ * });
+ *
+ * // 查询
+ * const preset = toAPIPreset("openai", "gpt-4o")
  * await new ChatSession({ preset }).send("hi")
  */
 
 import type { APIPreset } from "../adapters/types.js";
 import type { ModelSpec, ProviderSpec } from "./types.js";
-import { CATALOG } from "./catalog.js";
-// 优先用 models.dev 自动生成的目录（跑 scripts/generate-models.mjs 产出）；无则回退手写 catalog
-import { CATALOG_GENERATED } from "./catalog.generated.js";
 import { getEnvApiKey } from "../env.js";
 import { readEnv } from "../runtime-env.js";
 
 export type { ModelSpec, ProviderSpec, ModelPricing, InputModality, OutputModality } from "./types.js";
 
-/**
- * 生效目录：generated（models.dev 实时数据）+ 手写 catalog **合并**。
- * generated 覆盖主流厂商；手写 catalog 补充 generated 未收录的（如国产百度/讯飞/豆包/混元）。
- * 同名 provider 时 generated 优先。
- */
-const EFFECTIVE_CATALOG = (() => {
-  if (CATALOG_GENERATED.length === 0) return CATALOG;
-  const genIds = new Set(CATALOG_GENERATED.map((p) => p.id));
-  const handWrittenOnly = CATALOG.filter((p) => !genIds.has(p.id));
-  return [...CATALOG_GENERATED, ...handWrittenOnly];
-})();
-
-/** provider id → ProviderSpec（可被 registerProvider 扩展/覆盖） */
+/** provider id → ProviderSpec（纯运行时注册） */
 const PROVIDERS = new Map<string, ProviderSpec>();
-for (const p of EFFECTIVE_CATALOG) PROVIDERS.set(p.id, structuredClone(p));
 
-// ── 查询 ──
-
-/**
- * 内置 provider id 字面量联合（编译期自动补全 + 校验）。
- * 来源 catalog；Task #52 自动生成后会保持同步。
- */
-export type KnownProvider = (typeof CATALOG)[number]["id"];
-/** 某 provider 下内置模型 id 的字面量联合 */
-export type KnownModelId<P extends KnownProvider> = Extract<
-  (typeof CATALOG)[number],
-  { id: P }
->["models"][number]["id"];
+// ── 类型 ──
 
 /**
  * Model<TApi> —— 带 protocol 泛型的模型类型。
  * getModel 返回时 TApi 推断为该模型的 protocol 字面量，
- * 传给 stream/特定协议函数时编译期对齐（对标 pi 的 Model<TApi>）。
+ * 传给 stream/特定协议函数时编译期对齐。
  */
 export interface Model<TApi extends string = string> extends Omit<ModelSpec, "protocol"> {
   protocol: TApi;
 }
 
-/** 列出所有 provider */
+// ── 查询 ──
+
+/** 列出所有已注册的 provider */
 export function getProviders(): ProviderSpec[] {
   return [...PROVIDERS.values()];
 }
@@ -73,23 +64,14 @@ export function getModels(provider: string): ModelSpec[] {
   return PROVIDERS.get(provider)?.models ?? [];
 }
 
-/**
- * 取某 provider 下指定 id 的模型。
- * 泛型重载：传字面量 provider/id 时，返回的 Model.protocol 推断为对应字面量（编译期对齐）；
- * 传普通 string 时回退到基础 ModelSpec。
- */
-export function getModel<P extends KnownProvider, Id extends KnownModelId<P>>(
-  provider: P,
-  id: Id,
-): Model<Extract<Extract<(typeof CATALOG)[number], { id: P }>["models"][number], { id: Id }>["protocol"]>;
-export function getModel(provider: string, id: string): ModelSpec | null;
+/** 取某 provider 下指定 id 的模型 */
 export function getModel(provider: string, id: string): ModelSpec | null {
   const p = PROVIDERS.get(provider);
   if (!p) return null;
   return p.models.find((m) => m.id === id) ?? null;
 }
 
-/** 跨 provider 按模型 id 查找（返回首个命中；可选限定 provider 前缀） */
+/** 跨 provider 按模型 id 查找（返回首个命中） */
 export function findModel(id: string): ModelSpec | null {
   for (const p of PROVIDERS.values()) {
     const m = p.models.find((mm) => mm.id === id);
@@ -105,7 +87,7 @@ export function getAllModels(): ModelSpec[] {
   return out;
 }
 
-// ── 扩展 ──
+// ── 注册 ──
 
 /** 注册/覆盖一个 provider（含其模型） */
 export function registerProvider(spec: ProviderSpec): void {
@@ -124,10 +106,15 @@ export function registerModel(provider: string, model: ModelSpec): void {
   else p.models.push({ ...model });
 }
 
+/** 清空所有注册（测试用） */
+export function clearProviders(): void {
+  PROVIDERS.clear();
+}
+
 // ── 桥接到 LLMClient ──
 
 /**
- * 把目录中的一个模型转成 APIPreset。
+ * 把注册表中的模型转成 APIPreset。
  * key 解析顺序：opts.key → 环境变量（provider.envKey）→ 空。
  *
  * @param provider provider id

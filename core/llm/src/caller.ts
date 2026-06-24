@@ -13,6 +13,7 @@ import { normalizeApiProtocol } from "./adapters/types.js";
 import type { LLMClient } from "./client.js";
 import { detectToolCallFromPartialJson } from "./protocol/json-scan.js";
 import { extractJsonCandidate } from "./protocol/json-extract.js";
+import { validateParsedResponse } from "./protocol/json-validation.js";
 
 /** 模型调用结果 */
 export interface ModelCallResult {
@@ -160,7 +161,7 @@ export class ModelCaller {
     sessionId: string;
     roundIndex: number;
     preset: APIPreset;
-    messages: Record<string, string>[];
+    messages: Record<string, unknown>[];
     autoFormat: boolean;
     jsonSettings: Record<string, unknown> | null;
     stream: boolean;
@@ -428,27 +429,49 @@ export class ModelCaller {
         };
       }
 
-      // auto_format 模式：应用 JSON 修复/补全
+      // auto_format 模式：应用 JSON 验证 + 字段级修复（仅修复不重试）
       let repairedContent = lastResponse;
       let repairsApplied: string[] = [];
+      let validationError = "";
       if (jsonSettings && lastResponse) {
         try {
-          const extraction = extractJsonCandidate(
+          const result = validateParsedResponse(
             lastResponse,
             (jsonSettings ?? {}) as Record<string, unknown>,
           );
-          if (extraction.repairsApplied.length > 0) {
-            repairsApplied = [...extraction.repairsApplied];
+
+          if (result.formatted) {
+            // 验证通过或修复成功
+            repairedContent = result.formatted;
+            const diag = result.diagnostic as Record<string, unknown>;
+            const repairInfo = diag.repair as Record<string, unknown> | undefined;
+            if (repairInfo && Array.isArray(repairInfo.repairs_applied)) {
+              repairsApplied = [...(repairInfo.repairs_applied as string[])];
+            }
+            if (repairsApplied.length > 0) {
+              this.emitLog("info", `[MODEL] JSON 修复: ${repairsApplied.join(", ")}`);
+            }
+            if (!result.valid && result.error) {
+              validationError = result.error;
+              this.emitLog("warn", `[MODEL] JSON 验证警告: ${result.error}（已修复，不重试）`);
+            }
+          } else if (result.error) {
+            // 验证失败且无法修复
+            validationError = result.error;
+            this.emitLog("warn", `[MODEL] JSON 验证失败: ${result.error}`);
+            // 回退到 extractJsonCandidate 做基础修复
+            const extraction = extractJsonCandidate(
+              lastResponse,
+              (jsonSettings ?? {}) as Record<string, unknown>,
+            );
             if (extraction.candidateText) {
-              // 尝试解析修复后的 JSON，确保是有效 JSON
               try {
                 const parsed = JSON.parse(extraction.candidateText);
                 repairedContent = JSON.stringify(parsed);
-                this.emitLog("info", `[MODEL] JSON 修复: ${repairsApplied.join(", ")}`);
+                repairsApplied = [...extraction.repairsApplied];
               } catch {
-                // 解析失败，使用修复后的原始文本
                 repairedContent = extraction.candidateText;
-                this.emitLog("warn", `[MODEL] JSON 修复后仍无法解析: ${repairsApplied.join(", ")}`);
+                repairsApplied = [...extraction.repairsApplied];
               }
             }
           }
@@ -460,9 +483,9 @@ export class ModelCaller {
       const diagnostic: Record<string, unknown> = {
         attempt: retry + 1,
         retry,
-        valid: true,
+        valid: !validationError,
         can_retry: false,
-        error: "",
+        error: validationError,
         raw_length: lastResponse.length,
         content_length: repairedContent.length,
         repairs_applied: repairsApplied,
@@ -476,7 +499,7 @@ export class ModelCaller {
         content: repairedContent,
         reasoningContent: lastModelResponse?.reasoningContent,
         retryIndex: retry,
-        validationError: "",
+        validationError,
         attemptDiagnostics,
         nativeToolCalls: [],
         usage: lastUsage,

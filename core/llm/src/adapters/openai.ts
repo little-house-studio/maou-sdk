@@ -89,9 +89,13 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
         const thinking = v as Record<string, unknown>;
         if (thinking.type === "disabled") continue; // 关闭，不注入
         if (thinking.type === "enabled") {
-          const budget = Number(thinking.budget_tokens ?? 0);
-          const effort = budget <= 1024 ? "minimal" : budget <= 2048 ? "low" : budget <= 8192 ? "medium" : "high";
-          this._injectByFormat(result, format, effort, thinking);
+          // 优先使用 effort 字符串（正规值：none/low/medium/high/xhigh）
+          const effort = thinking.effort as string | undefined;
+          // effort: "none" 等同于关闭思考
+          if (effort === "none") continue;
+          // 其次使用 budget_tokens 数字（Anthropic 风格）
+          const budgetTokens = thinking.budget_tokens as number | undefined;
+          this._injectByFormat(result, format, effort, budgetTokens);
           continue;
         }
       }
@@ -101,19 +105,25 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
     return result;
   }
 
-  /** 按 format 把 effort 注入到 result 的对应字段 */
+  /** 按 format 把 effort 或 budget_tokens 注入到 result 的对应字段 */
   private _injectByFormat(
     result: Record<string, unknown>,
     format: import("./compat.js").ThinkingFormat,
-    effort: string,
-    thinking: Record<string, unknown>,
+    effort: string | undefined,
+    budgetTokens: number | undefined,
   ): void {
+    // budget_tokens → effort 的降级映射（兼容旧逻辑）
+    const fallbackEffort = budgetTokens !== undefined
+      ? (budgetTokens <= 1024 ? "minimal" : budgetTokens <= 2048 ? "low" : budgetTokens <= 8192 ? "medium" : "high")
+      : undefined;
+    const resolvedEffort = effort ?? fallbackEffort;
+
     switch (format) {
       case "openai":
-        result.reasoning_effort = effort;
+        if (resolvedEffort) result.reasoning_effort = resolvedEffort;
         break;
       case "openrouter":
-        result.reasoning = { effort };
+        if (resolvedEffort) result.reasoning = { effort: resolvedEffort };
         break;
       case "zai":
       case "ant-ling":
@@ -134,7 +144,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
         // 模型自带 reasoning_content（输出侧解析），请求侧无需字段
         break;
       default:
-        result.reasoning_effort = effort;
+        if (resolvedEffort) result.reasoning_effort = resolvedEffort;
     }
   }
 
@@ -174,9 +184,11 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
       }
     }
     // jsonSettings → 注入 response_format 强制 JSON 输出
-    if (jsonSettings && !hasTools) {
+    // 受 preset.output_format 配置控制
+    const outputFormat = String(preset.output_format ?? "auto");
+    if (outputFormat !== "none" && jsonSettings && !hasTools) {
       const schemaStr = jsonSettings.schema_template ?? jsonSettings.schema;
-      if (schemaStr) {
+      if (outputFormat === "json_schema" || (outputFormat === "auto" && schemaStr)) {
         let schemaObj: unknown;
         try {
           schemaObj = typeof schemaStr === "string" ? JSON.parse(schemaStr) : schemaStr;
@@ -193,7 +205,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
         } else {
           payload.response_format = { type: "json_object" };
         }
-      } else {
+      } else if (outputFormat === "json_object" || outputFormat === "auto") {
         payload.response_format = { type: "json_object" };
       }
     }
@@ -222,7 +234,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
     return messages;
   }
 
-  parseNonstreamResponse(data: Record<string, unknown>): ParsedLLMResponse {
+  parseNonstreamResponse(data: Record<string, unknown>, preset?: APIPreset): ParsedLLMResponse {
     const choices = (data.choices as Record<string, unknown>[]) ?? [{}];
     const choice = choices[0] ?? {};
     const delta = (choice.delta as Record<string, unknown>) ?? {};
@@ -232,15 +244,20 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
     let usedReasoning = false;
     let reasoningContent = "";
 
-    // 提取思考/推理内容（reasoning_content / thinking / reasoning / reasoning_details 字段）——独立保留，不混入 body
-    // 覆盖多厂商措辞：deepseek/qwen/zai 用 reasoning_content；openrouter 用 reasoning / reasoning_details
+    // 提取思考/推理内容（支持自定义字段映射）
+    const reasoningFields = preset?.responseFields?.reasoning ?? [
+      "reasoning_content",
+      "thinking",
+      "thinking_content",
+      "reasoning",
+      "reasoning_details",
+    ];
     const collectReasoning = (src: Record<string, unknown>): string => {
-      const r = coerceText(src.reasoning_content)
-        || coerceText(src.thinking)
-        || coerceText(src.thinking_content)
-        || coerceText(src.reasoning)
-        || coerceText(src.reasoning_details);
-      return r;
+      for (const field of reasoningFields) {
+        const r = coerceText(src[field]);
+        if (r) return r;
+      }
+      return "";
     };
 
     const deltaReasoningRaw = collectReasoning(delta);
@@ -249,16 +266,24 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
     reasoningContent = deltaReasoningRaw || messageReasoningRaw || choiceReasoningRaw;
     if (reasoningContent) usedReasoning = true;
 
-    // 提取正文 content
-    const deltaContent = coerceText(delta.content);
+    // 提取正文 content（支持自定义字段映射）
+    const contentFields = preset?.responseFields?.content ?? ["content", "text"];
+    const extractContent = (src: Record<string, unknown>): string => {
+      for (const field of contentFields) {
+        const r = coerceText(src[field]);
+        if (r) return r;
+      }
+      return "";
+    };
+    const deltaContent = extractContent(delta);
     if (deltaContent) {
       body = deltaContent;
     } else {
-      const messageContent = coerceText(message.content);
+      const messageContent = extractContent(message);
       if (messageContent) {
         body = messageContent;
       } else {
-        const choiceText = coerceText(choice.text);
+        const choiceText = extractContent(choice);
         if (choiceText) {
           body = choiceText;
         } else if (reasoningContent) {
@@ -269,27 +294,52 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
       }
     }
 
-    // 解析 tool_calls
-    const rawCalls = (message.tool_calls as Record<string, unknown>[]) ?? [];
+    // 解析 tool_calls（支持自定义字段映射）
+    const toolCallsField = preset?.responseFields?.toolCalls ?? "tool_calls";
+    const rawCalls = (message[toolCallsField] as Record<string, unknown>[]) ?? [];
     const toolCalls: LLMToolCall[] = [];
     for (let i = 0; i < rawCalls.length; i++) {
       const rawCall = rawCalls[i];
       if (!rawCall || typeof rawCall !== "object") continue;
-      const fnPayload = (rawCall.function as Record<string, unknown>) ?? rawCall;
-      const name = String(fnPayload.name ?? "").trim();
+      
+      // 支持自定义工具调用字段路径
+      const toolCallNamePath = preset?.responseFields?.toolCallName ?? "function.name";
+      const toolCallArgsPath = preset?.responseFields?.toolCallArgs ?? "function.arguments";
+      const toolCallIdField = preset?.responseFields?.toolCallId ?? "id";
+      
+      let name = "";
+      let args: unknown;
+      
+      if (toolCallNamePath === "name") {
+        name = String(rawCall.name ?? "").trim();
+        args = rawCall.arguments;
+      } else {
+        // 默认 function.name / function.arguments
+        const fnPayload = (rawCall.function as Record<string, unknown>) ?? rawCall;
+        name = String(fnPayload.name ?? "").trim();
+        args = fnPayload.arguments;
+      }
+      
       if (!name) continue;
       toolCalls.push({
-        id: String(rawCall.id ?? `tool_call_${i}`),
+        id: String(rawCall[toolCallIdField] ?? `tool_call_${i}`),
         name,
-        parameters: this.parseToolArguments(fnPayload.arguments),
+        parameters: this.parseToolArguments(args),
         provider: "openai",
         type: String(rawCall.type ?? "function"),
       });
     }
 
-    const finishReasonRaw = choice.finish_reason;
-    const finishReason =
-      typeof finishReasonRaw === "string" && finishReasonRaw ? finishReasonRaw : null;
+    // 提取结束原因（支持自定义字段映射）
+    const finishReasonFields = preset?.responseFields?.finishReason ?? ["finish_reason", "stop_reason"];
+    let finishReason: string | null = null;
+    for (const field of finishReasonFields) {
+      const raw = choice[field];
+      if (typeof raw === "string" && raw) {
+        finishReason = raw;
+        break;
+      }
+    }
 
     return { content: body, toolCalls, finishReason, usedReasoning, reasoningContent: reasoningContent || undefined };
   }
@@ -297,6 +347,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
   parseStreamEvent(
     data: Record<string, unknown>,
     toolChunks: Map<number, { id: string; name: string; arguments: string }>,
+    preset?: APIPreset,
   ): StreamEvent {
     // 流内错误检测：OpenAI 流式错误格式 data: {"error": {...}}
     if (data.error) {
@@ -339,54 +390,79 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
       return { delta: "", finishReason: null, usedReasoning: false };
     }
 
-    // 提取 content delta
-    const delta = this._extractStreamContent(data, false);
+    // 提取 content delta（支持自定义字段映射）
+    const delta = this._extractStreamContent(data, false, preset);
     // 提取思考/推理内容增量（独立字段，不混入 delta）
-    const thinking = this._extractStreamThinking(data);
-    const finishReasonRaw = choice.finish_reason;
-    const finishReason =
-      typeof finishReasonRaw === "string" && finishReasonRaw ? finishReasonRaw : null;
+    const thinking = this._extractStreamThinking(data, preset);
+    
+    // 提取结束原因（支持自定义字段映射）
+    const finishReasonFields = preset?.responseFields?.finishReason ?? ["finish_reason", "stop_reason"];
+    let finishReason: string | null = null;
+    for (const field of finishReasonFields) {
+      const raw = choice[field];
+      if (typeof raw === "string" && raw) {
+        finishReason = raw;
+        break;
+      }
+    }
 
     return { delta, finishReason, usedReasoning: !!thinking, thinking: thinking || undefined };
   }
 
-  /** 提取流式思考/推理内容增量（reasoning_content / thinking / thinking_content） */
-  private _extractStreamThinking(data: Record<string, unknown>): string {
+  /** 提取流式思考/推理内容增量（支持自定义字段映射） */
+  private _extractStreamThinking(data: Record<string, unknown>, preset?: APIPreset): string {
     const choices = (data.choices as Record<string, unknown>[]) ?? [{}];
     const choice = choices[0] ?? {};
     const delta = (choice.delta as Record<string, unknown>) ?? {};
     const message = (choice.message as Record<string, unknown>) ?? {};
 
-    return coerceText(delta.reasoning_content)
-      || coerceText(delta.thinking)
-      || coerceText(delta.thinking_content)
-      || coerceText(delta.reasoning)
-      || coerceText(delta.reasoning_details)
-      || coerceText(message.reasoning_content)
-      || coerceText(message.thinking)
-      || coerceText(message.reasoning)
-      || coerceText(choice.reasoning_content)
-      || coerceText(choice.thinking)
-      || coerceText(choice.reasoning)
-      || "";
+    // 支持自定义思考字段
+    const reasoningFields = preset?.responseFields?.reasoning ?? [
+      "reasoning_content",
+      "thinking",
+      "thinking_content",
+      "reasoning",
+      "reasoning_details",
+    ];
+    
+    for (const field of reasoningFields) {
+      const r = coerceText(delta[field]) || coerceText(message[field]) || coerceText(choice[field]);
+      if (r) return r;
+    }
+    return "";
   }
 
-  private _extractStreamContent(data: Record<string, unknown>, hasAccumulatedBody: boolean): string {
+  private _extractStreamContent(data: Record<string, unknown>, hasAccumulatedBody: boolean, preset?: APIPreset): string {
     const choices = (data.choices as Record<string, unknown>[]) ?? [{}];
     const choice = choices[0] ?? {};
     const delta = (choice.delta as Record<string, unknown>) ?? {};
 
-    // 正文只从 delta.content 取，绝不从 reasoning_content 里凑。
-    // reasoning_content 由 _extractStreamThinking 独立处理，避免思考内容污染正文。
-    const deltaContent = coerceText(delta.content);
-    if (deltaContent) return deltaContent;
+    // 支持自定义正文字段
+    const contentFields = preset?.responseFields?.content ?? ["content", "text"];
+    
+    // 优先从 delta 提取
+    for (const field of contentFields) {
+      const r = coerceText(delta[field]);
+      if (r) return r;
+    }
 
-    const message = (choice.message as Record<string, unknown>) ?? {};
-    const messageContent = coerceText(message.content);
-    if (messageContent) return hasAccumulatedBody ? "" : messageContent;
+    // 检查是否启用回退到 choice 顶层（vLLM 模式）
+    const fallbackEnabled = preset?.streamOptions?.fallbackToChoiceTopLevel !== false; // 默认启用
+    
+    if (fallbackEnabled) {
+      // 从 message 提取
+      const message = (choice.message as Record<string, unknown>) ?? {};
+      for (const field of contentFields) {
+        const r = coerceText(message[field]);
+        if (r) return hasAccumulatedBody ? "" : r;
+      }
 
-    const choiceText = coerceText(choice.text);
-    if (choiceText) return hasAccumulatedBody ? "" : choiceText;
+      // 从 choice 顶层提取（vLLM 模式）
+      for (const field of contentFields) {
+        const r = coerceText(choice[field]);
+        if (r) return hasAccumulatedBody ? "" : r;
+      }
+    }
 
     return "";
   }

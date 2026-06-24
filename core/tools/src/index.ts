@@ -10,9 +10,33 @@ export { ToolRegistry } from './registry.js'
 export { ToolExecutor } from './executor.js'
 export { registerBuiltins } from './impls/index.js'
 
-// 终端注册表（harness/agent 运行时需要）
-export { TERMINAL_REGISTRY } from './terminal/registry.js'
+// 终端引擎（Rust 驱动，harness/agent 运行时需要）
+export {
+  initTerminalEngine,
+  shutdownTerminalEngine,
+  cleanupAgentTerminals,
+  getTerminalStatusPanel,
+  setTerminalFilter,
+  setTerminalSandbox,
+  setTerminalPersistPath,
+  listTerminals,
+  getTerminalLogs,
+} from './terminal/use_terminal/tool.js'
 
 // 技能管理（从 context 下放到此；context 包会从这里再导出）
 export { SkillScanner, SkillContextManager } from './skill-context.js'
 export type { SkillEntry, SkillChange, SkillContextResult } from './skill-context.js'
+
+// ── 文件即工具 API（对标 Vercel Eve） ──
+export { defineTool, DefinedToolAdapter, approval } from './define-tool.js'
+export type {
+  DefineToolConfig,
+  ApprovalPredicate,
+  ApprovalDecision,
+  ToModelOutput,
+  ModelOutputValue,
+} from './define-tool.js'
+
+// ── 动态工具加载器 ──
+export { DynamicToolLoader } from './dynamic-tool-loader.js'
+export type { DynamicToolLoadResult } from './dynamic-tool-loader.js'

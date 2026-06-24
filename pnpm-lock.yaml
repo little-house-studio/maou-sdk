@@ -60,6 +60,9 @@ importers:
       '@little-house-studio/llm':
         specifier: workspace:*
         version: link:../llm
+      '@little-house-studio/prompt':
+        specifier: workspace:*
+        version: link:../prompt
       '@little-house-studio/tools':
         specifier: workspace:*
         version: link:../tools
@@ -75,6 +78,10 @@ importers:
         version: 5.9.3
 
   core/context:
+    dependencies:
+      '@little-house-studio/prompt':
+        specifier: workspace:*
+        version: link:../prompt
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -134,8 +141,24 @@ importers:
         specifier: ^6.27.0
         version: 6.27.0
 
+  core/prompt:
+    dependencies:
+      '@little-house-studio/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   core/tools:
     dependencies:
+      '@little-house-studio/terminal-engine':
+        specifier: file:../../terminal-engine
+        version: file:terminal-engine
       '@little-house-studio/types':
         specifier: workspace:*
         version: link:../types
@@ -580,6 +603,9 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
+
+  '@little-house-studio/terminal-engine@file:terminal-engine':
+    resolution: {directory: terminal-engine, type: directory}
 
   '@nodable/entities@2.2.0':
     resolution: {integrity: sha512-9uGyhaQavEUMC8AIddIjau4NsnsXhou+j5sBAGojCM1oxmQpVKTWR/9JxABD6UAv12vpIms55fPZKFQEhG6uBg==}
@@ -1644,6 +1670,8 @@ snapshots:
     optional: true
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
+
+  '@little-house-studio/terminal-engine@file:terminal-engine': {}
 
   '@nodable/entities@2.2.0':
     optional: true

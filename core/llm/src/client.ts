@@ -260,7 +260,7 @@ export class LLMClient {
    */
   private async _buildRequest(params: {
     preset: APIPreset;
-    messages: Record<string, string>[];
+    messages: Record<string, unknown>[];
     stream: boolean;
     jsonSettings?: Record<string, unknown> | null;
     toolSchemas?: Record<string, unknown>[] | null;
@@ -302,6 +302,14 @@ export class LLMClient {
       jsonSettings: jsonSettings ?? null,
       nativeToolCalling: nativeToolCalling ?? false,
     });
+
+    // 合并 extraBody（用于厂商特有参数，如小米的 thinking: { type: "disabled" }）
+    // extraBody 优先级高于 reasoning_params，直接覆盖同名字段
+    if (preset.extraBody && typeof preset.extraBody === "object") {
+      for (const [key, value] of Object.entries(preset.extraBody)) {
+        payload[key] = value;
+      }
+    }
 
     let body = JSON.stringify(payload);
 
@@ -509,7 +517,7 @@ export class LLMClient {
    */
   async *chatStream(params: {
     preset: APIPreset;
-    messages: Record<string, string>[];
+    messages: Record<string, unknown>[];
     jsonSettings?: Record<string, unknown> | null;
     toolSchemas?: Record<string, unknown>[] | null;
     nativeToolCalling?: boolean;
@@ -597,7 +605,7 @@ export class LLMClient {
                 if (eventJson !== "[DONE]") {
                   try {
                     const tailData = JSON.parse(eventJson);
-                    const tailEvent = adapter.parseStreamEvent(tailData, toolChunks);
+                    const tailEvent = adapter.parseStreamEvent(tailData, toolChunks, preset);
                     if (tailEvent.delta) responseBody += tailEvent.delta;
                     if (tailEvent.thinking) reasoningContent += tailEvent.thinking;
                     if (tailEvent.finishReason) finishReason = tailEvent.finishReason;
@@ -649,7 +657,12 @@ export class LLMClient {
               continue;
             }
 
-            const event = adapter.parseStreamEvent(data, toolChunks);
+            // 应用 transformResponse 钩子（用于 truly weird 的厂商格式）
+            if (preset.transformResponse && typeof preset.transformResponse === "function") {
+              try { data = preset.transformResponse(data); } catch { /* 转换失败不影响主流程 */ }
+            }
+
+            const event = adapter.parseStreamEvent(data, toolChunks, preset);
             if ((event.delta || event.thinking) && firstOutputMs === null) {
               firstOutputMs = Date.now() - startedAt;
               firstOutputSeconds = Math.round(firstOutputMs / 1000);
@@ -741,7 +754,7 @@ export class LLMClient {
       const text = await response.text();
       rawEvents.push(text);
       const data = JSON.parse(text);
-      const parsed = adapter.parseNonstreamResponse(data);
+      const parsed = adapter.parseNonstreamResponse(data, preset);
       responseBody = parsed.content;
       reasoningContent = parsed.reasoningContent ?? "";
       toolCalls = parsed.toolCalls;
@@ -806,7 +819,7 @@ export class LLMClient {
    */
   async chat(params: {
     preset: APIPreset;
-    messages: Record<string, string>[];
+    messages: Record<string, unknown>[];
     jsonSettings?: Record<string, unknown> | null;
     toolSchemas?: Record<string, unknown>[] | null;
     nativeToolCalling?: boolean;
@@ -882,7 +895,7 @@ export class LLMClient {
                 if (eventJson !== "[DONE]") {
                   try {
                     const tailData = JSON.parse(eventJson);
-                    const tailEvent = adapter.parseStreamEvent(tailData, toolChunks);
+                    const tailEvent = adapter.parseStreamEvent(tailData, toolChunks, preset);
                     if (tailEvent.delta) responseBody += tailEvent.delta;
                     if (tailEvent.thinking) reasoningContent += tailEvent.thinking;
                     if (tailEvent.finishReason) finishReason = tailEvent.finishReason;
@@ -925,7 +938,7 @@ export class LLMClient {
               continue;
             }
 
-            const event = adapter.parseStreamEvent(data, toolChunks);
+            const event = adapter.parseStreamEvent(data, toolChunks, preset);
             if ((event.delta || event.thinking) && firstOutputMs === null) {
               firstOutputMs = Date.now() - startedAt;
               firstOutputSeconds = Math.round(firstOutputMs / 1000);
@@ -985,7 +998,7 @@ export class LLMClient {
       const text = await response.text();
       rawEvents.push(text);
       const data = JSON.parse(text);
-      const parsed = adapter.parseNonstreamResponse(data);
+      const parsed = adapter.parseNonstreamResponse(data, preset);
       responseBody = parsed.content;
       reasoningContent = parsed.reasoningContent ?? "";
       toolCalls = parsed.toolCalls;

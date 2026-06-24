@@ -23,6 +23,8 @@ interface SchemaWithPath {
 export class ToolRegistry {
   private _tools = new Map<string, Tool>();
   private _schemasDir: string | null = null;
+  /** Agent 级工具目录（文件即 Agent 约定） */
+  private _agentToolsDirs: string[] = [];
 
   /**
    * Set schema directory path (core/tools/)
@@ -30,6 +32,23 @@ export class ToolRegistry {
    */
   setSchemasDir(dir: string | null): void {
     this._schemasDir = dir;
+  }
+
+  /**
+   * 添加 Agent 级工具目录（如 ~/.maou/agents/<name>/tools/）
+   * 目录下的 schema.json 文件会被自动发现并合并到工具列表
+   */
+  addAgentToolsDir(dir: string): void {
+    if (existsSync(dir) && !this._agentToolsDirs.includes(dir)) {
+      this._agentToolsDirs.push(dir);
+    }
+  }
+
+  /**
+   * 清空 Agent 级工具目录
+   */
+  clearAgentToolsDirs(): void {
+    this._agentToolsDirs = [];
   }
 
   /**
@@ -89,7 +108,7 @@ export class ToolRegistry {
    * @param whitelist optional whitelist of path patterns (e.g. "terminal/use_terminal")
    *                   "*" means all allowed
    *
-   * Priority: schema dir > TOOL.jsonc > Tool class definition
+   * Priority: schema dir > agent tools dirs > TOOL.jsonc > Tool class definition
    */
   nativeToolSchemas(whitelist?: Set<string>): JsonSchema[] {
     const schemas: JsonSchema[] = [];
@@ -112,7 +131,19 @@ export class ToolRegistry {
       }
     }
 
-    // 2. Fallback to registered tool definitions
+    // 2. Load from agent tools directories (文件即 Agent 约定)
+    for (const agentDir of this._agentToolsDirs) {
+      const agentSchemas = this._loadSchemasFromDir(agentDir);
+      for (const item of agentSchemas) {
+        const name = String(item.schema.name ?? "").trim();
+        if (!name || seenNames.has(name)) continue;
+        if (effectiveWhitelist && !this._matchesWhitelist(item.path, name, effectiveWhitelist)) continue;
+        seenNames.add(name);
+        schemas.push(item.schema);
+      }
+    }
+
+    // 3. Fallback to registered tool definitions
     const seenTools = new Set<number>();
     for (const tool of this._tools.values()) {
       const toolId = getObjectUid(tool);
@@ -154,11 +185,12 @@ export class ToolRegistry {
    * Recursively load schemas from directory
    * Returns schemas with their relative paths for whitelist matching
    */
-  private _loadSchemasFromDir(): SchemaWithPath[] {
+  private _loadSchemasFromDir(dir?: string): SchemaWithPath[] {
     const schemas: SchemaWithPath[] = [];
-    if (!this._schemasDir || !existsSync(this._schemasDir)) return schemas;
+    const scanDir = dir ?? this._schemasDir;
+    if (!scanDir || !existsSync(scanDir)) return schemas;
 
-    this._scanDirRecursive(this._schemasDir, "", schemas);
+    this._scanDirRecursive(scanDir, "", schemas);
     return schemas;
   }
 

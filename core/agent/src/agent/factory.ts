@@ -27,11 +27,14 @@ export interface AgentFactoryConfig {
   notes?: string;
   scope?: string;
   customSoul?: string;
+  /** 使用"文件即 Agent"约定模式（生成 instructions.md + tools/ + channels/ + schedules/） */
+  conventionMode?: boolean;
 }
 
 export interface AgentCreateResult {
   success: boolean;
   agentName: string;
+  /** Agent 目录（约定模式下是 agent 根目录，兼容模式下也是 agent 根目录） */
   roleDir: string;
   filesCreated: string[];
   message: string;
@@ -97,69 +100,125 @@ export class AgentFactory {
   }
 
   /**
-   * 创建 agent：注册到 Registry + 初始化 ROLE 目录
+   * 创建 agent：注册到 Registry + 初始化目录结构
+   *
+   * 两种模式：
+   * - conventionMode=false（默认）：兼容现有逻辑，生成 ROLE/ 目录 + agent.json
+   * - conventionMode=true：生成 Eve 风格的约定目录（instructions.md + tools/ + channels/ + schedules/）
    */
   createAgent(config: AgentFactoryConfig): AgentCreateResult {
     try {
       const resolved = this.mergePresets(config);
-      const roleDir = join(this.maouRoot, "agents", config.name, "ROLE");
-      mkdirSync(roleDir, { recursive: true });
+      const agentDir = join(this.maouRoot, "agents", config.name);
+      mkdirSync(agentDir, { recursive: true });
       const filesCreated: string[] = [];
 
-      // 复制模板脚本
-      for (const script of TEMPLATE_SCRIPTS) {
-        const src = join(this.defaultRoleDir, script);
-        const dst = join(roleDir, script);
-        if (existsSync(src)) {
-          mkdirSync(join(dst, ".."), { recursive: true });
-          copyFileSync(src, dst);
-          filesCreated.push(script);
+      if (config.conventionMode) {
+        // ── 约定模式：instructions.md + tools/ + channels/ + schedules/ ──
+
+        // instructions.md — 入口文件，系统提示词
+        const instructionsContent = this.buildInstructionsMd(resolved);
+        writeFileSync(join(agentDir, "instructions.md"), instructionsContent, "utf-8");
+        filesCreated.push("instructions.md");
+
+        // tools/ — 工具目录（空，放 .gitkeep 保持目录）
+        const toolsDir = join(agentDir, "tools");
+        mkdirSync(toolsDir, { recursive: true });
+        writeFileSync(join(toolsDir, ".gitkeep"), "", "utf-8");
+        filesCreated.push("tools/.gitkeep");
+
+        // channels/ — 消息通道目录
+        const channelsDir = join(agentDir, "channels");
+        mkdirSync(channelsDir, { recursive: true });
+        writeFileSync(join(channelsDir, ".gitkeep"), "", "utf-8");
+        filesCreated.push("channels/.gitkeep");
+
+        // schedules/ — 定时任务目录
+        const schedulesDir = join(agentDir, "schedules");
+        mkdirSync(schedulesDir, { recursive: true });
+        writeFileSync(join(schedulesDir, ".gitkeep"), "", "utf-8");
+        filesCreated.push("schedules/.gitkeep");
+
+        // PERMISSION.jsonc — 放在 agent 根目录（约定模式下不放在 ROLE/ 里）
+        const permissionData = this.getPermission(config.permission ?? "full");
+        writeFileSync(
+          join(agentDir, "PERMISSION.jsonc"),
+          JSON.stringify(permissionData, null, 2),
+          "utf-8",
+        );
+        filesCreated.push("PERMISSION.jsonc");
+
+        // OUTPUT.jsonc — 输出格式
+        const outputContent = this.buildOutputJsonc(config.preset);
+        writeFileSync(join(agentDir, "OUTPUT.jsonc"), outputContent, "utf-8");
+        filesCreated.push("OUTPUT.jsonc");
+
+        // README.md — 说明文件，让目录结构一目了然
+        const readmeContent = this.buildReadmeMd(config.name);
+        writeFileSync(join(agentDir, "README.md"), readmeContent, "utf-8");
+        filesCreated.push("README.md");
+
+      } else {
+        // ── 兼容模式：现有 ROLE/ 目录结构 ──
+
+        const roleDir = join(agentDir, "ROLE");
+        mkdirSync(roleDir, { recursive: true });
+
+        // 复制模板脚本
+        for (const script of TEMPLATE_SCRIPTS) {
+          const src = join(this.defaultRoleDir, script);
+          const dst = join(roleDir, script);
+          if (existsSync(src)) {
+            mkdirSync(join(dst, ".."), { recursive: true });
+            copyFileSync(src, dst);
+            filesCreated.push(script);
+          }
         }
+
+        // SOUL.md
+        const soulContent = config.customSoul ?? this.buildSoulMd(resolved);
+        writeFileSync(join(roleDir, "SOUL.md"), soulContent, "utf-8");
+        filesCreated.push("SOUL.md");
+
+        // IDENTITY.md
+        const identityContent = this.buildIdentityMd(resolved);
+        writeFileSync(join(roleDir, "IDENTITY.md"), identityContent, "utf-8");
+        filesCreated.push("IDENTITY.md");
+
+        // SYSTEM.md
+        const systemContent = this.buildSystemMd();
+        writeFileSync(join(roleDir, "SYSTEM.md"), systemContent, "utf-8");
+        filesCreated.push("SYSTEM.md");
+
+        // BEFORE_USER.md
+        const beforeUserContent = this.buildBeforeUserMd();
+        writeFileSync(join(roleDir, "BEFORE_USER.md"), beforeUserContent, "utf-8");
+        filesCreated.push("BEFORE_USER.md");
+
+        // RULE.md
+        const ruleContent = this.buildRuleMd(resolved.professionRules);
+        writeFileSync(join(roleDir, "RULE.md"), ruleContent, "utf-8");
+        filesCreated.push("RULE.md");
+
+        // OUTPUT.jsonc
+        const outputContent = this.buildOutputJsonc(config.preset);
+        writeFileSync(join(roleDir, "OUTPUT.jsonc"), outputContent, "utf-8");
+        filesCreated.push("OUTPUT.jsonc");
+
+        // PERMISSION.jsonc
+        const permissionData = this.getPermission(config.permission ?? "full");
+        writeFileSync(
+          join(roleDir, "PERMISSION.jsonc"),
+          JSON.stringify(permissionData, null, 2),
+          "utf-8",
+        );
+        filesCreated.push("PERMISSION.jsonc");
+
+        // NOTES.md
+        const notesContent = config.notes ?? "（暂无备注）";
+        writeFileSync(join(roleDir, "NOTES.md"), notesContent + "\n", "utf-8");
+        filesCreated.push("NOTES.md");
       }
-
-      // SOUL.md
-      const soulContent = config.customSoul ?? this.buildSoulMd(resolved);
-      writeFileSync(join(roleDir, "SOUL.md"), soulContent, "utf-8");
-      filesCreated.push("SOUL.md");
-
-      // IDENTITY.md
-      const identityContent = this.buildIdentityMd(resolved);
-      writeFileSync(join(roleDir, "IDENTITY.md"), identityContent, "utf-8");
-      filesCreated.push("IDENTITY.md");
-
-      // SYSTEM.md
-      const systemContent = this.buildSystemMd();
-      writeFileSync(join(roleDir, "SYSTEM.md"), systemContent, "utf-8");
-      filesCreated.push("SYSTEM.md");
-
-      // BEFORE_USER.md
-      const beforeUserContent = this.buildBeforeUserMd();
-      writeFileSync(join(roleDir, "BEFORE_USER.md"), beforeUserContent, "utf-8");
-      filesCreated.push("BEFORE_USER.md");
-
-      // RULE.md
-      const ruleContent = this.buildRuleMd(resolved.professionRules);
-      writeFileSync(join(roleDir, "RULE.md"), ruleContent, "utf-8");
-      filesCreated.push("RULE.md");
-
-      // OUTPUT.jsonc
-      const outputContent = this.buildOutputJsonc(config.preset);
-      writeFileSync(join(roleDir, "OUTPUT.jsonc"), outputContent, "utf-8");
-      filesCreated.push("OUTPUT.jsonc");
-
-      // PERMISSION.jsonc
-      const permissionData = this.getPermission(config.permission ?? "full");
-      writeFileSync(
-        join(roleDir, "PERMISSION.jsonc"),
-        JSON.stringify(permissionData, null, 2),
-        "utf-8",
-      );
-      filesCreated.push("PERMISSION.jsonc");
-
-      // NOTES.md
-      const notesContent = config.notes ?? "（暂无备注）";
-      writeFileSync(join(roleDir, "NOTES.md"), notesContent + "\n", "utf-8");
-      filesCreated.push("NOTES.md");
 
       // 注册到 AgentRegistry
       const reg = new AgentRegistry(this.maouRoot);
@@ -185,7 +244,7 @@ export class AgentFactory {
       return {
         success: true,
         agentName: config.name,
-        roleDir,
+        roleDir: agentDir,
         filesCreated,
         message,
       };
@@ -371,5 +430,68 @@ export class AgentFactory {
       },
     };
     return permissions[level] ?? permissions.full;
+  }
+
+  // ── 约定模式构建方法 ──
+
+  private buildInstructionsMd(resolved: {
+    name: string;
+    role: string;
+    personality: string;
+    raceStyle: string;
+    team: string;
+    description: string;
+    professionRules: string;
+  }): string {
+    const lines = [
+      `# ${resolved.name}`,
+      "",
+      `你是一个${resolved.role}。`,
+      "",
+    ];
+    if (resolved.personality) {
+      lines.push(`## 性格`, resolved.personality, "");
+    }
+    if (resolved.team) {
+      lines.push(`## 团队`, resolved.team, "");
+    }
+    if (resolved.description) {
+      lines.push(`## 描述`, resolved.description, "");
+    }
+    if (resolved.professionRules) {
+      lines.push(`## 规则`, resolved.professionRules, "");
+    }
+    lines.push("", "## 工具使用", "", "根据用户需求，合理使用可用工具完成任务。", "");
+    return lines.join("\n");
+  }
+
+  private buildReadmeMd(name: string): string {
+    return [
+      `# Agent: ${name}`,
+      "",
+      "此目录定义了一个 AI Agent，遵循「文件即 Agent」约定。",
+      "",
+      "## 目录结构",
+      "",
+      "```",
+      `${name}/`,
+      "├── instructions.md    # 系统提示词（Agent 的「大脑」）",
+      "├── tools/             # Agent 专属工具（每个 .json 文件自动注册为工具）",
+      "├── channels/          # 消息通道（每个 .json 文件定义一个通道适配）",
+      "├── schedules/         # 定时任务（每个 .json 文件定义一个 cron 触发）",
+      "├── PERMISSION.jsonc   # 工具权限白名单",
+      "├── OUTPUT.jsonc       # 输出格式定义",
+      "└── README.md          # 本文件",
+      "```",
+      "",
+      "## 约定规则",
+      "",
+      "- **instructions.md** 是 Agent 的系统提示词入口，支持 `{{file.md}}` 包含语法",
+      "- **tools/** 下的 `schema.json` 自动注册为可用工具（路径即工具名）",
+      "- **channels/** 下的 `.json` 文件自动注册为消息通道",
+      "- **schedules/** 下的 `.json` 文件自动注册为定时任务",
+      "- 添加文件 = 添加能力，删除文件 = 移除能力，重命名文件 = 重命名",
+      "",
+    ].join("\n");
   }
 }

@@ -16,7 +16,7 @@
  * 自动压缩：token 达到 70% 阈值时压缩（保留 25% 近期消息）。
  */
 
-import { PromptCompiler } from "./prompt-compiler.js";
+import { PromptCompiler } from "@little-house-studio/prompt";
 import { SessionStore, SessionManager, MemoryStore, CheckpointStore, extractMemories } from "@little-house-studio/context";
 import {
   buildMessages,
@@ -31,11 +31,10 @@ import type { TokenUsage } from "./token-tracker.js";
 import { AgentRegistry, initMainAgent } from "./registry.js";
 import { ModelCaller, type ModelCallResult, type CallerStreamEvent } from "@little-house-studio/llm";
 import type { LLMToolCall, APIPreset } from "@little-house-studio/llm";
-import { ToolExecutor } from "@little-house-studio/tools";
-import type { ToolRegistry } from "@little-house-studio/tools";
-import { TERMINAL_REGISTRY } from "@little-house-studio/tools";
+import { deriveJsonSettings, StreamJsonAccumulator } from "@little-house-studio/llm";
+import type { ToolRegistry, ToolExecutor } from "@little-house-studio/tools";
+import { cleanupAgentTerminals, listTerminals, getTerminalLogs } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
-import { deriveJsonSettings } from "@little-house-studio/llm";
 import { existsSync, mkdirSync, cpSync, readdirSync, rmSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -152,8 +151,10 @@ export class AgentRuntime {
     const maouRoot = this.maouRoot;
     initMainAgent(maouRoot);
 
-    // ── 从 agent.json 读取 round_limit ──
+    // ── 从 agent.json 读取 round_limit + 约定扫描 promptRoot/entrypoint ──
     let effectiveRoundLimit = this.agentRoundLimit;
+    let agentPromptRoot: string | null = null;
+    let agentEntrypoint: string | null = null;
     try {
       const registry = new AgentRegistry(maouRoot, this.projectRoot);
       const agentEntry = registry.get(agentName);
@@ -161,6 +162,9 @@ export class AgentRuntime {
         effectiveRoundLimit = agentEntry.round_limit;
         this.log("info", `[RUN] agent=${agentName} round_limit=${effectiveRoundLimit}`);
       }
+      // 文件即 Agent：使用约定目录的 promptRoot 和 entrypoint
+      agentPromptRoot = registry.getPromptRoot(agentName);
+      agentEntrypoint = registry.getPromptEntrypoint(agentName);
     } catch {
       // 读取失败使用默认值
     }
@@ -177,10 +181,8 @@ export class AgentRuntime {
 
     // ── 1a2. 清理常驻终端 ──
     try {
-      const termCleaned = TERMINAL_REGISTRY.cleanupAgent(agentName);
-      if (termCleaned > 0) {
-        this.log("info", `[CLEANUP] ${termCleaned} 个常驻终端已终止并释放`);
-      }
+      cleanupAgentTerminals(agentName);
+      this.log("info", `[CLEANUP] 常驻终端已终止并释放`);
     } catch (err) {
       this.log("warning", `[CLEANUP] 终端清理失败: ${err}`);
     }
@@ -195,12 +197,23 @@ export class AgentRuntime {
     yield this.event("status", { text: "编译 Prompt..." });
     yield this.logEvent("info", "开始编译 Prompt");
 
+    // 文件即 Agent：如果有约定目录，临时切换 compiler 的 promptRoot
     let systemPrompt: string;
+    const origPromptRoot = this.compiler.promptRoot;
+    const origEntrypoint = (this.compiler as any).entrypoint;
     try {
+      if (agentPromptRoot && agentEntrypoint) {
+        this.compiler.configure(agentPromptRoot, agentEntrypoint);
+      }
       systemPrompt = this.compiler.compile();
     } catch (err) {
       systemPrompt = `[Prompt 编译失败: ${err}]`;
       this.log("warning", `Prompt 编译失败: ${err}`);
+    } finally {
+      // 恢复原始配置
+      if (agentPromptRoot && agentEntrypoint) {
+        this.compiler.configure(origPromptRoot, origEntrypoint);
+      }
     }
     yield this.logEvent("info", `Prompt 编译完成，长度=${systemPrompt.length}`);
 
@@ -217,13 +230,20 @@ export class AgentRuntime {
     const dynamicInjections = compileDynamicContext(maouRoot, agentName);
 
     // ── 2c. 加载 OUTPUT.jsonc 派生 jsonSettings（用于 response_format 强制 JSON 输出） ──
+    // 文件即 Agent：OUTPUT.jsonc 可在 agent 根目录或 ROLE/ 下
     let outputJsonSettings: Record<string, unknown> | null = null;
     try {
-      const outputFile = join(this.compiler.promptRoot, "OUTPUT.jsonc");
-      if (existsSync(outputFile)) {
-        const outputText = readFileSync(outputFile, "utf-8");
-        outputJsonSettings = deriveJsonSettings(outputText) as unknown as Record<string, unknown>;
-        yield this.logEvent("info", "OUTPUT.jsonc 已加载，启用 JSON 结构化输出");
+      const outputPaths = [
+        join(this.compiler.promptRoot, "OUTPUT.jsonc"),
+        join(maouRoot, "agents", agentName, "OUTPUT.jsonc"),
+      ];
+      for (const outputFile of outputPaths) {
+        if (existsSync(outputFile)) {
+          const outputText = readFileSync(outputFile, "utf-8");
+          outputJsonSettings = deriveJsonSettings(outputText) as unknown as Record<string, unknown>;
+          yield this.logEvent("info", "OUTPUT.jsonc 已加载，启用 JSON 结构化输出");
+          break;
+        }
       }
     } catch (err) {
       yield this.logEvent("warning", `OUTPUT.jsonc 加载失败: ${err}`);
@@ -241,14 +261,28 @@ export class AgentRuntime {
     );
 
     // ── 初始化工具调用依赖 ──
+    // 文件即 Agent：加载 agent 级工具目录
+    this.tools.clearAgentToolsDirs();
+    try {
+      const agentToolsDir = join(maouRoot, "agents", agentName, "tools");
+      this.tools.addAgentToolsDir(agentToolsDir);
+    } catch { /* ignore */ }
+
     // 合并白名单：PERMISSION.jsonc ∩ agent.json tools
+    // 文件即 Agent：PERMISSION.jsonc 可在 agent 根目录或 ROLE/ 下
     let toolWhitelist: Set<string> | undefined;
     try {
-      const permFile = join(this.compiler.promptRoot, "PERMISSION.jsonc");
-      if (existsSync(permFile)) {
-        const perm = JSON.parse(readFileSync(permFile, "utf-8"));
-        if (Array.isArray(perm.tool_whitelist)) {
-          toolWhitelist = new Set(perm.tool_whitelist);
+      const permPaths = [
+        join(this.compiler.promptRoot, "PERMISSION.jsonc"),
+        join(maouRoot, "agents", agentName, "PERMISSION.jsonc"),
+      ];
+      for (const permFile of permPaths) {
+        if (existsSync(permFile)) {
+          const perm = JSON.parse(readFileSync(permFile, "utf-8"));
+          if (Array.isArray(perm.tool_whitelist)) {
+            toolWhitelist = new Set(perm.tool_whitelist);
+            break;
+          }
         }
       }
     } catch { /* ignore */ }
@@ -292,18 +326,18 @@ export class AgentRuntime {
 
       // ── 3a-pre. 注入后台终端完成/超时通知 ──
       {
-        const bgTerminals = TERMINAL_REGISTRY.list(agentName);
+        const bgTerminals = listTerminals(agentName);
         for (const t of bgTerminals) {
           if (notifiedBgCompletions.has(t.id)) continue;
-          if (t.state === "running" && !t.timedOut) continue;
+          if (t.state === "running") continue;
           if (t.state === "interrupted") continue;
 
           notifiedBgCompletions.add(t.id);
-          const output = t.tailChars(2000);
+          const output = await getTerminalLogs(t.id, agentName, 2000);
           const status =
-            t.timedOut ? "超时" :
+            t.state === "killed" ? "已终止" :
             t.exitCode === 0 ? "已完成" :
-            `已失败(退出码${t.exitCode})`;
+            t.exitCode != null ? `已失败(退出码${t.exitCode})` : "已结束";
           const content =
             `<terminal-message>\n` +
             `终端「${t.description}」(ID: ${t.id}) ${status}。\n` +
@@ -313,7 +347,6 @@ export class AgentRuntime {
             source: "terminal-notification",
             terminal_id: t.id,
           });
-          TERMINAL_REGISTRY.persist();
         }
       }
 
@@ -417,14 +450,47 @@ export class AgentRuntime {
           abortSignal: options.abortSignal,
         });
 
+        // 字段级流式提取：每轮创建新 accumulator（每轮重置）
+        // - JSON 模式下提取结构化输出字段（field_complete / field_streaming）
+        // - 工具调用模式下做早期检测（与 nativeToolCalling 并存）
+        // - 原始 assistant_delta 仍然 yield，保证下游兼容
+        const jsonAcc = new StreamJsonAccumulator();
+
         let iterResult = await callGen.next();
         while (!iterResult.done) {
-          // yield 每个流式事件（assistant_delta 等）
           const streamEvent = iterResult.value as CallerStreamEvent;
+
+          // 先 yield 原始事件（assistant_delta 等）
           yield {
             type: streamEvent.type,
             ...streamEvent.data,
           };
+
+          // assistant_delta → 喂入 accumulator，提取字段级事件
+          if (streamEvent.type === "assistant_delta" && streamEvent.data.delta) {
+            jsonAcc.feed(String(streamEvent.data.delta));
+
+            // 新完成的字段 → field_complete
+            for (const field of jsonAcc.getNewFields()) {
+              yield {
+                type: "field_complete",
+                fieldName: field.name,
+                fieldValue: field.value,
+                rawValue: field.rawValue,
+              } as StreamEvent;
+            }
+
+            // 流式中的字段 → field_streaming
+            for (const [, field] of jsonAcc.getStreamingFields()) {
+              yield {
+                type: "field_streaming",
+                fieldName: field.name,
+                content: field.content,
+                delta: field.delta,
+              } as StreamEvent;
+            }
+          }
+
           iterResult = await callGen.next();
         }
         result = iterResult.value;

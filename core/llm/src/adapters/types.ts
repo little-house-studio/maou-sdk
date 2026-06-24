@@ -84,6 +84,47 @@ export interface ModelDelta {
   thinking?: string;
 }
 
+/** 响应字段映射配置（用于自定义奇葩厂商的响应格式） */
+export interface ResponseFieldMapping {
+  /** 正文字段（按优先级顺序尝试，默认 ["content", "text"]） */
+  content?: string[];
+  /** 思考/推理字段（按优先级顺序尝试，默认 ["reasoning_content", "thinking", "thinking_content", "reasoning", "reasoning_details"]） */
+  reasoning?: string[];
+  /** 工具调用数组字段名（默认 "tool_calls"，也支持单数 "tool_call" 或 "function_call"） */
+  toolCalls?: string;
+  /** 工具调用 ID 字段名（默认 "id"） */
+  toolCallId?: string;
+  /** 工具调用名称路径（默认 "function.name"，也支持 "name"） */
+  toolCallName?: string;
+  /** 工具调用参数路径（默认 "function.arguments"，也支持 "arguments"） */
+  toolCallArgs?: string;
+  /** 结束原因字段（按优先级顺序尝试，默认 ["finish_reason", "stop_reason"]） */
+  finishReason?: string[];
+  /** usage 字段映射 */
+  usage?: {
+    promptTokens?: string;
+    completionTokens?: string;
+    totalTokens?: string;
+  };
+}
+
+/** 流式解析选项（用于处理非标准流式格式） */
+export interface StreamParseOptions {
+  /**
+   * 流式终止信号模式（默认 "standard"）：
+   * - "standard": 检测 data: [DONE]
+   * - "empty_line": 空行结束
+   * - "finish_reason": finish_reason 出现即结束
+   * - "none": 不检测终止信号（连接关闭即结束）
+   */
+  terminationMode?: "standard" | "empty_line" | "finish_reason" | "none";
+  /**
+   * 当 delta 层为空时，是否从 choice 顶层回退提取内容（vLLM 模式）
+   * 默认 true（自动回退）
+   */
+  fallbackToChoiceTopLevel?: boolean;
+}
+
 /** API 预设配置 */
 export interface APIPreset {
   name?: string;
@@ -103,6 +144,16 @@ export interface APIPreset {
   /** 追加/覆盖的请求头（在适配器构建的头之上合并） */
   extraHeaders?: Record<string, string>;
   /**
+   * 追加到请求体的自定义字段（用于厂商特有参数）
+   * 例如：小米模型需要 { thinking: { type: "disabled" } }
+   */
+  extraBody?: Record<string, unknown>;
+  /**
+   * 响应转换钩子（在适配器解析前执行）
+   * 用于处理 truly weird 的厂商格式，允许完全自定义响应结构
+   */
+  transformResponse?: (raw: Record<string, unknown>) => Record<string, unknown>;
+  /**
    * OpenAI 兼容厂商的兼容标志矩阵（见 adapters/compat.ts）。
    * 缺省时按 url 自动检测（detectCompat）。
    */
@@ -111,6 +162,18 @@ export interface APIPreset {
   compatFormat?: import("./compat.js").ThinkingFormat;
   /** 缓存保留：none/short(默认)/long(Anthropic 1h TTL) */
   cacheRetention?: "none" | "short" | "long";
+  /** 自定义响应字段映射（用于奇葩厂商的响应格式） */
+  responseFields?: ResponseFieldMapping;
+  /** 流式解析选项（用于处理非标准流式格式） */
+  streamOptions?: StreamParseOptions;
+  /**
+   * 输出格式化模式：
+   * - "auto"（默认）：有 jsonSettings 时自动启用结构化输出
+   * - "json_schema"：强制使用 JSON Schema strict mode
+   * - "json_object"：使用 JSON object mode（不强制 schema）
+   * - "none"：禁用结构化输出
+   */
+  output_format?: "auto" | "json_schema" | "json_object" | "none";
   [key: string]: unknown;
 }
 
@@ -136,12 +199,13 @@ export interface ProtocolAdapter {
   normalizeMessages(messages: Record<string, unknown>[]): Record<string, unknown>[];
 
   /** 解析非流式响应 */
-  parseNonstreamResponse(data: Record<string, unknown>): ParsedLLMResponse;
+  parseNonstreamResponse(data: Record<string, unknown>, preset?: APIPreset): ParsedLLMResponse;
 
   /** 解析流式事件 */
   parseStreamEvent(
     data: Record<string, unknown>,
     toolChunks: Map<number, { id: string; name: string; arguments: string }>,
+    preset?: APIPreset,
   ): StreamEvent;
 
   /** 从累积的 tool chunks 收集完整的工具调用 */

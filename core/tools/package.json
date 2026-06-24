@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@little-house-studio/types": "workspace:*",
+    "@little-house-studio/terminal-engine": "file:../../terminal-engine",
     "zod": "^3.23.0",
     "zod-to-json-schema": "^3.24.6"
   },

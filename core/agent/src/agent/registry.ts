@@ -20,6 +20,42 @@ import { join } from "node:path";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
+/** 消息通道定义（channels/ 目录下的 .json 文件） */
+export interface ChannelEntry {
+  /** 通道类型：http / feishu / slack / discord / webhook */
+  type: string;
+  /** 通道名称（文件名去掉扩展名） */
+  name: string;
+  /** 通道配置 */
+  config: Record<string, unknown>;
+  /** 来源路径 */
+  sourcePath: string;
+}
+
+/** 定时任务定义（schedules/ 目录下的 .json 文件） */
+export interface ScheduleEntry {
+  /** cron 表达式 */
+  cron: string;
+  /** 任务名称（文件名去掉扩展名） */
+  name: string;
+  /** 触发时要执行的指令 */
+  instruction: string;
+  /** 附加配置 */
+  config: Record<string, unknown>;
+  /** 来源路径 */
+  sourcePath: string;
+}
+
+/** Agent 目录中自动发现的工具 schema */
+export interface AgentToolEntry {
+  /** 工具名（从 schema.json 读取或从目录名推断） */
+  name: string;
+  /** 工具 schema（供 LLM 使用） */
+  schema: Record<string, unknown>;
+  /** 相对路径（用于白名单匹配） */
+  path: string;
+}
+
 export interface AgentEntry {
   name: string;
   display_name: string;
@@ -38,6 +74,8 @@ export interface AgentEntry {
   tools?: string[];
   /** agent 轮次上限（可选），0=无限 */
   round_limit?: number;
+  /** 模型配置（可选），覆盖 preset 中的 model */
+  model?: string;
   removal_request?: {
     reason: string;
     requested_by: string;
@@ -62,6 +100,8 @@ export interface CreateAgentOptions {
 // ─── 工具函数 ──────────────────────────────────────────────────────────────
 
 const AGENT_FILE = "agent.json";
+const AGENT_TS_FILE = "agent.ts";
+const INSTRUCTIONS_FILE = "instructions.md";
 
 function nowTs(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -105,6 +145,10 @@ export class AgentRegistry {
   /**
    * 加载所有 agent 配置（合并全局 + 项目级）
    * 项目级覆盖全局同名 agent
+   *
+   * 约定优先：目录名即 Agent 名。
+   * 有 agent.json → 读 JSON（现有逻辑不变）
+   * 无 agent.json 但有 instructions.md → 从文件推断 AgentEntry
    */
   private loadAll(): Record<string, AgentEntry> {
     const result: Record<string, AgentEntry> = {};
@@ -119,16 +163,8 @@ export class AgentRegistry {
         } catch {
           continue;
         }
-        const agentFile = join(dir, AGENT_FILE);
-        if (!existsSync(agentFile)) continue;
-        try {
-          const data = JSON.parse(readFileSync(agentFile, "utf-8"));
-          if (data && typeof data === "object" && "name" in data) {
-            result[data.name] = { ...data, _source: "global" };
-          }
-        } catch {
-          continue;
-        }
+        const agent = this.scanConvention(dir, entry, "global");
+        if (agent) result[agent.name] = agent;
       }
     }
 
@@ -142,20 +178,120 @@ export class AgentRegistry {
         } catch {
           continue;
         }
-        const agentFile = join(dir, AGENT_FILE);
-        if (!existsSync(agentFile)) continue;
-        try {
-          const data = JSON.parse(readFileSync(agentFile, "utf-8"));
-          if (data && typeof data === "object" && "name" in data) {
-            result[data.name] = { ...data, _source: "project" };
-          }
-        } catch {
-          continue;
-        }
+        const agent = this.scanConvention(dir, entry, "project");
+        if (agent) result[agent.name] = agent;
       }
     }
 
     return result;
+  }
+
+  /**
+   * 约定扫描：从目录结构推断 Agent 定义
+   *
+   * 规则：
+   * - 有 agent.json → 以 JSON 为准（现有逻辑），再用 instructions.md / tools/ 等补充
+   * - 无 agent.json 但有 instructions.md → 自动推断 AgentEntry
+   * - 都没有 → 跳过（不是合法 Agent 目录）
+   */
+  private scanConvention(dir: string, dirName: string, source: string): AgentEntry | null {
+    const agentFile = join(dir, AGENT_FILE);
+    const agentTsFile = join(dir, AGENT_TS_FILE);
+    const instructionsFile = join(dir, INSTRUCTIONS_FILE);
+
+    // 1. 优先读 agent.json（现有逻辑不变）
+    if (existsSync(agentFile)) {
+      try {
+        const data = JSON.parse(readFileSync(agentFile, "utf-8"));
+        if (data && typeof data === "object" && "name" in data) {
+          return { ...data, _source: source };
+        }
+      } catch {
+        // JSON 解析失败，继续
+      }
+    }
+
+    // 2. 有 agent.ts（defineAgent 约定）→ 标记为 defineAgent 模式
+    //    注意：agent.ts 的实际 import 在运行时做，这里先标记
+    if (existsSync(agentTsFile)) {
+      const now = nowTs();
+      let displayName = dirName;
+
+      // 尝试从 instructions.md 提取标题
+      if (existsSync(instructionsFile)) {
+        try {
+          const content = readFileSync(instructionsFile, "utf-8");
+          const titleMatch = content.match(/^#\s+(.+)/m);
+          if (titleMatch) displayName = titleMatch[1].trim();
+        } catch { /* ignore */ }
+      }
+
+      // 读取 agent.json 里可能有的额外字段
+      let extraFields: Record<string, unknown> = {};
+      if (existsSync(agentFile)) {
+        try {
+          extraFields = JSON.parse(readFileSync(agentFile, "utf-8"));
+        } catch { /* ignore */ }
+      }
+
+      return {
+        name: dirName,
+        display_name: displayName,
+        status: "idle",
+        role: "",
+        team: "",
+        parent: "",
+        personality: "",
+        scope: source,
+        description: "",
+        notes: "",
+        created_by: "",
+        created_at: now,
+        updated_at: now,
+        ...extraFields,
+        _source: source,
+        _hasAgentTs: true,
+      };
+    }
+
+    // 3. 无 agent.json 和 agent.ts，但有 instructions.md → 从目录约定推断
+    if (existsSync(instructionsFile)) {
+      const now = nowTs();
+      let displayName = dirName;
+      try {
+        const content = readFileSync(instructionsFile, "utf-8");
+        const titleMatch = content.match(/^#\s+(.+)/m);
+        if (titleMatch) displayName = titleMatch[1].trim();
+      } catch { /* ignore */ }
+
+      let extraFields: Record<string, unknown> = {};
+      if (existsSync(agentFile)) {
+        try {
+          extraFields = JSON.parse(readFileSync(agentFile, "utf-8"));
+        } catch { /* ignore */ }
+      }
+
+      return {
+        name: dirName,
+        display_name: displayName,
+        status: "idle",
+        role: "",
+        team: "",
+        parent: "",
+        personality: "",
+        scope: source,
+        description: "",
+        notes: "",
+        created_by: "",
+        created_at: now,
+        updated_at: now,
+        ...extraFields,
+        _source: source,
+      };
+    }
+
+    // 都没有 → 不是 Agent 目录
+    return null;
   }
 
   /**
@@ -167,38 +303,59 @@ export class AgentRegistry {
 
   /**
    * 获取单个 agent 配置（优先项目级）
+   * 支持约定扫描：无 agent.json 但有 instructions.md 也能发现
    */
   get(name: string): AgentEntry | null {
     // 优先项目级
     if (this.projectAgentsDir) {
-      const projectPath = join(this.projectAgentsDir, name, AGENT_FILE);
-      if (existsSync(projectPath)) {
-        try {
-          return { ...JSON.parse(readFileSync(projectPath, "utf-8")), _source: "project" };
-        } catch {
-          // 继续尝试全局
+      const projectDir = join(this.projectAgentsDir, name);
+      if (existsSync(projectDir)) {
+        // 先尝试 agent.json
+        const projectPath = join(projectDir, AGENT_FILE);
+        if (existsSync(projectPath)) {
+          try {
+            return { ...JSON.parse(readFileSync(projectPath, "utf-8")), _source: "project" };
+          } catch { /* 继续 */ }
         }
+        // 约定扫描
+        const agent = this.scanConvention(projectDir, name, "project");
+        if (agent) return agent;
       }
     }
 
     // 回退全局
-    const globalPath = join(this.agentsDir, name, AGENT_FILE);
-    if (!existsSync(globalPath)) return null;
-    try {
-      return { ...JSON.parse(readFileSync(globalPath, "utf-8")), _source: "global" };
-    } catch {
-      return null;
+    const globalDir = join(this.agentsDir, name);
+    if (!existsSync(globalDir)) return null;
+
+    // 先尝试 agent.json
+    const globalPath = join(globalDir, AGENT_FILE);
+    if (existsSync(globalPath)) {
+      try {
+        return { ...JSON.parse(readFileSync(globalPath, "utf-8")), _source: "global" };
+      } catch { /* 继续 */ }
     }
+
+    // 约定扫描
+    return this.scanConvention(globalDir, name, "global");
   }
 
   /**
    * 检查 agent 是否存在（检查全局和项目级）
+   * 支持约定扫描：有 instructions.md 也算存在
    */
   exists(name: string): boolean {
-    if (this.projectAgentsDir && existsSync(join(this.projectAgentsDir, name, AGENT_FILE))) {
-      return true;
+    // 检查项目级
+    if (this.projectAgentsDir) {
+      const projectDir = join(this.projectAgentsDir, name);
+      if (existsSync(projectDir)) {
+        if (existsSync(join(projectDir, AGENT_FILE))) return true;
+        if (existsSync(join(projectDir, INSTRUCTIONS_FILE))) return true;
+      }
     }
-    return existsSync(join(this.agentsDir, name, AGENT_FILE));
+    // 检查全局
+    const globalDir = join(this.agentsDir, name);
+    if (!existsSync(globalDir)) return false;
+    return existsSync(join(globalDir, AGENT_FILE)) || existsSync(join(globalDir, INSTRUCTIONS_FILE));
   }
 
   /**
@@ -310,6 +467,209 @@ export class AgentRegistry {
       return data as unknown as AgentEntry;
     } catch {
       return null;
+    }
+  }
+
+  // ── 文件即 Agent：channels / schedules / tools 自动发现 ──
+
+  /**
+   * 扫描 agent 的 channels/ 目录，发现消息通道配置
+   * 每个 .json 文件定义一个通道
+   */
+  loadChannels(name: string): ChannelEntry[] {
+    const dir = this.agentDir(name);
+    const channelsDir = join(dir, "channels");
+    if (!existsSync(channelsDir)) return [];
+
+    const channels: ChannelEntry[] = [];
+    try {
+      const entries = readdirSync(channelsDir).sort();
+      for (const entry of entries) {
+        if (!entry.endsWith(".json")) continue;
+        const fullPath = join(channelsDir, entry);
+        try {
+          const data = JSON.parse(readFileSync(fullPath, "utf-8"));
+          if (data && typeof data === "object" && "type" in data) {
+            channels.push({
+              type: String(data.type),
+              name: entry.replace(/\.json$/, ""),
+              config: data,
+              sourcePath: fullPath,
+            });
+          }
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* skip unreadable dir */ }
+
+    return channels;
+  }
+
+  /**
+   * 扫描 agent 的 schedules/ 目录，发现定时任务配置
+   * 每个 .json 文件定义一个定时任务
+   */
+  loadSchedules(name: string): ScheduleEntry[] {
+    const dir = this.agentDir(name);
+    const schedulesDir = join(dir, "schedules");
+    if (!existsSync(schedulesDir)) return [];
+
+    const schedules: ScheduleEntry[] = [];
+    try {
+      const entries = readdirSync(schedulesDir).sort();
+      for (const entry of entries) {
+        if (!entry.endsWith(".json")) continue;
+        const fullPath = join(schedulesDir, entry);
+        try {
+          const data = JSON.parse(readFileSync(fullPath, "utf-8"));
+          if (data && typeof data === "object" && "cron" in data) {
+            schedules.push({
+              cron: String(data.cron),
+              name: entry.replace(/\.json$/, ""),
+              instruction: String(data.instruction ?? ""),
+              config: data as Record<string, unknown>,
+              sourcePath: fullPath,
+            });
+          }
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* skip unreadable dir */ }
+
+    return schedules;
+  }
+
+  /**
+   * 扫描 agent 的 tools/ 目录，发现工具 schema
+   * 递归扫描 tools/ 下所有 schema.json 文件
+   */
+  loadAgentTools(name: string): AgentToolEntry[] {
+    const dir = this.agentDir(name);
+    const toolsDir = join(dir, "tools");
+    if (!existsSync(toolsDir)) return [];
+
+    const tools: AgentToolEntry[] = [];
+    this._scanToolDir(toolsDir, "", tools);
+    return tools;
+  }
+
+  /**
+   * 读取 agent 的 instructions.md（系统提示词）
+   * 如果不存在，回退到 ROLE/SYSTEM.md
+   */
+  loadInstructions(name: string): string | null {
+    const dir = this.agentDir(name);
+
+    // 优先 instructions.md
+    const instructionsFile = join(dir, INSTRUCTIONS_FILE);
+    if (existsSync(instructionsFile)) {
+      try {
+        return readFileSync(instructionsFile, "utf-8");
+      } catch { /* continue */ }
+    }
+
+    // 回退 ROLE/SYSTEM.md
+    const systemFile = join(dir, "ROLE", "SYSTEM.md");
+    if (existsSync(systemFile)) {
+      try {
+        return readFileSync(systemFile, "utf-8");
+      } catch { /* continue */ }
+    }
+
+    return null;
+  }
+
+  /**
+   * 获取 agent 的 prompt 根目录（用于 PromptCompiler）
+   * 优先 ROLE/（现有逻辑），如果不存在则回退到 agent 目录本身
+   * （instructions.md 在 agent 根目录下时，promptRoot 就是 agent 目录）
+   */
+  getPromptRoot(name: string): string {
+    const dir = this.agentDir(name);
+    const roleDir = join(dir, "ROLE");
+    if (existsSync(roleDir) && existsSync(join(roleDir, "SYSTEM.md"))) {
+      return roleDir;
+    }
+    // 有 instructions.md 时，agent 目录本身就是 prompt root
+    if (existsSync(join(dir, INSTRUCTIONS_FILE))) {
+      return dir;
+    }
+    // 默认回退 ROLE/
+    return roleDir;
+  }
+
+  /**
+   * 获取 agent 的 prompt 入口文件名
+   */
+  getPromptEntrypoint(name: string): string {
+    const dir = this.agentDir(name);
+    if (existsSync(join(dir, INSTRUCTIONS_FILE))) {
+      // 如果有 instructions.md 但没有 ROLE/SYSTEM.md
+      if (!existsSync(join(dir, "ROLE", "SYSTEM.md"))) {
+        return INSTRUCTIONS_FILE;
+      }
+    }
+    return "SYSTEM.md";
+  }
+
+  /**
+   * 加载 agent.ts 中的 defineAgent 配置（运行时调用）
+   * 如果目录下有 agent.ts 文件，动态 import 并返回 DefinedAgent 对象
+   */
+  async loadDefinedAgent(name: string): Promise<import("./define-agent.js").DefinedAgent | null> {
+    const dir = this.agentDir(name);
+    const agentTsPath = join(dir, AGENT_TS_FILE);
+    if (!existsSync(agentTsPath)) return null;
+
+    try {
+      const absolutePath = await import("node:path").then((m) => m.resolve(agentTsPath));
+      const module = await import(absolutePath);
+      const defaultExport = module.default;
+      if (defaultExport && defaultExport._type === "defineAgent") {
+        return defaultExport as import("./define-agent.js").DefinedAgent;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── 内部辅助 ──
+
+  private _scanToolDir(dir: string, relPath: string, tools: AgentToolEntry[]): void {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = join(dir, entry);
+      let stat;
+      try {
+        stat = statSync(fullPath);
+      } catch {
+        continue;
+      }
+
+      if (stat.isDirectory()) {
+        const subRelPath = relPath ? `${relPath}/${entry}` : entry;
+        this._scanToolDir(fullPath, subRelPath, tools);
+      } else if (entry === "schema.json") {
+        try {
+          const text = readFileSync(fullPath, "utf-8");
+          const data = JSON.parse(text);
+          const schemaPath = relPath || ".";
+          if (Array.isArray(data)) {
+            for (const s of data) {
+              if (s && typeof s === "object" && "name" in s) {
+                tools.push({ name: String(s.name), schema: s, path: schemaPath });
+              }
+            }
+          } else if (data && typeof data === "object" && "name" in data) {
+            tools.push({ name: String(data.name), schema: data, path: schemaPath });
+          }
+        } catch { /* skip malformed */ }
+      }
     }
   }
 }

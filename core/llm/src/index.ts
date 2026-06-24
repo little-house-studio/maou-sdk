@@ -149,8 +149,6 @@ export type {
   InputModality,
   OutputModality,
   Model,
-  KnownProvider,
-  KnownModelId,
 } from './registry/index.js'
 
 // ─── 图片生成（对标 pi-ai generateImages / getImageModel）───────────────────

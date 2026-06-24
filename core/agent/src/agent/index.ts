@@ -10,10 +10,10 @@
  * - agent 注册表与工厂
  */
 
-// ── 提示词与模板解析 ──────────────────────────────────────────────────────
+// ── 提示词与模板解析（已迁移到 @little-house-studio/prompt）─────────────
 
-export { PromptCompiler } from "./prompt-compiler.js";
-export type { PromptCompilerOptions } from "./prompt-compiler.js";
+export { PromptCompiler } from "@little-house-studio/prompt";
+export type { PromptCompilerOptions } from "@little-house-studio/prompt";
 
 // ── Agent-loop 接口 ────────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ export type {
 // ── Agent 注册表与工厂 ─────────────────────────────────────────────────────
 
 export { AgentRegistry, initMainAgent } from "./registry.js";
-export type { AgentEntry, CreateAgentOptions } from "./registry.js";
+export type { AgentEntry, CreateAgentOptions, ChannelEntry, ScheduleEntry, AgentToolEntry } from "./registry.js";
 
 export { AgentFactory } from "./factory.js";
 export type {
@@ -69,3 +69,72 @@ export type {
   AgentCreateResult,
   AgentPreview,
 } from "./factory.js";
+
+// ── defineAgent API（文件即 Agent 约定）──────────────────────────────────
+
+export { defineAgent } from "./define-agent.js";
+export type {
+  DefineAgentConfig,
+  DefinedAgent,
+  ModelFallback,
+  CompactionConfig,
+} from "./define-agent.js";
+
+// ── 消息通道注册表 ─────────────────────────────────────────────────────────
+
+export { ChannelRegistry } from "./channel-registry.js";
+export type { ChannelConfig } from "./channel-registry.js";
+
+// ── 定时任务注册表 ─────────────────────────────────────────────────────────
+
+export { ScheduleRegistry } from "./schedule-registry.js";
+export type { ScheduleConfig } from "./schedule-registry.js";
+
+// ── defineChannel API ──────────────────────────────────────────────────────
+
+export { defineChannel } from "./define-channel.js";
+export type {
+  ChannelType,
+  ChannelMessage,
+  ChannelResponse,
+  ChannelAdapter,
+  DefineChannelConfig,
+  DefinedChannel,
+} from "./define-channel.js";
+
+// ── defineSchedule API + CronScheduler ─────────────────────────────────────
+
+export { defineSchedule, CronScheduler } from "./define-schedule.js";
+export type {
+  DefineScheduleConfig,
+  DefinedSchedule,
+} from "./define-schedule.js";
+
+// ── defineConnection API + ConnectionRegistry ──────────────────────────────
+
+export { defineMcpConnection, defineOpenApiConnection, ConnectionRegistry } from "./define-connection.js";
+export type {
+  ConnectionAuth,
+  TokenAuth,
+  OAuthAuth,
+  ApiKeyAuth,
+  ConnectionType,
+  DefineMcpConnectionConfig,
+  DefineOpenApiConnectionConfig,
+  DefinedConnection,
+} from "./define-connection.js";
+
+// ── 子 Agent 注册表 ────────────────────────────────────────────────────────
+
+export { SubagentRegistry } from "./subagent-registry.js";
+export type { SubagentEntry } from "./subagent-registry.js";
+
+// ── defineEval API + EvalRunner ─────────────────────────────────────────────
+
+export { defineEval, EvalRunner, EvalContext, includes, notIncludes, matchesRegex, equals } from "./define-eval.js";
+export type {
+  DefineEvalConfig,
+  DefinedEval,
+  EvalCheckResult,
+  EvalRunResult,
+} from "./define-eval.js";

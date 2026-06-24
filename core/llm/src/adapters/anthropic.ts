@@ -29,6 +29,14 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter {
     if (retention === "long" || retention === "1h" || retention === "60m") {
       headers["anthropic-beta"] = "extended-cache-ttl-2025-04-11";
     }
+    // 结构化输出需要 beta 头（2025-11-13 公开 beta，2026 GA）
+    const outputFormat = String(preset.output_format ?? "auto");
+    if (outputFormat === "json_schema" || outputFormat === "auto") {
+      const beta = headers["anthropic-beta"];
+      headers["anthropic-beta"] = beta
+        ? `${beta},structured-outputs-2025-11-13`
+        : "structured-outputs-2025-11-13";
+    }
     return headers;
   }
 
@@ -194,7 +202,7 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter {
     nativeToolCalling?: boolean;
     structuredOutputSchema?: Record<string, unknown> | null;
   }): Record<string, unknown> {
-    const { preset, messages, stream, toolSchemas, nativeToolCalling } = params;
+    const { preset, messages, stream, toolSchemas, nativeToolCalling, jsonSettings } = params;
     const anthropicMessages = this.normalizeMessages(messages);
     const systemPrompt = this._extractSystemMessage(messages);
 
@@ -225,6 +233,26 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter {
         }
         payload.tools = tools;
         payload.tool_choice = { type: "auto" };
+      }
+    }
+
+    // 结构化输出：Anthropic output_format（2025-11-13 beta / 2026 GA）
+    // 仅当无工具调用时注入（避免与 tool_choice 冲突）
+    const outputFormat = String(preset.output_format ?? "auto");
+    if (outputFormat !== "none" && !nativeToolCalling && jsonSettings) {
+      const schemaStr = (jsonSettings as Record<string, unknown>).schema_template as string | undefined;
+      if (schemaStr && (outputFormat === "json_schema" || outputFormat === "auto")) {
+        try {
+          const schemaObj = JSON.parse(schemaStr);
+          if (schemaObj && typeof schemaObj === "object") {
+            payload.output_format = {
+              type: "json_schema",
+              schema: schemaObj,
+            };
+          }
+        } catch {
+          // schema 解析失败，回退到 prompt 强化（已通过 {{OUTPUT.jsonc}} 嵌入）
+        }
       }
     }
 

@@ -121,9 +121,25 @@ export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
  * 可以是 getModel() 返回的 ModelSpec，也可以是 LLMConfig.toAPIPreset() 的 APIPreset，
  * 还可以是手写的 { model, url, protocol, key } 字面量（对标 pi 的 custom Model）。
  */
+/**
+ * stream/complete 接受的"模型"配置。
+ * 可以是：
+ * - APIPreset（完整的预设配置）
+ * - 包含 model 字段的简化配置（url/protocol/key 可选）
+ */
 export type StreamModel =
   | APIPreset
-  | (Record<string, unknown> & { model: string; url?: string; protocol?: string });
+  | {
+      model: string;
+      url?: string;
+      protocol?: string;
+      key?: string;
+      maxTokens?: number;
+      maxContext?: number;
+      supportsVision?: boolean;
+      supportsReasoning?: boolean;
+      nativeToolCalling?: boolean;
+    };
 
 // ─── stream 选项 ─────────────────────────────────────────────────────────────
 
@@ -169,9 +185,19 @@ function contextToAdapterMessages(ctx: Context): Record<string, unknown>[] {
     if (msg.role === "user") {
       out.push({ role: "user", content: typeof msg.content === "string" ? msg.content : msg.content });
     } else if (msg.role === "assistant") {
-      const texts = msg.content.filter((c) => c.type === "text").map((c) => (c as TextContent).text).join("");
+      // 保留 thinking 内容到消息中，避免多轮对话后思考上下文消失
+      const thinkingBlocks = msg.content.filter((c) => c.type === "thinking").map((c) => (c as ThinkingContent).text);
+      const textBlocks = msg.content.filter((c) => c.type === "text").map((c) => (c as TextContent).text);
       const calls = msg.content.filter((c) => c.type === "toolCall") as ToolCallBlock[];
-      const entry: Record<string, unknown> = { role: "assistant", content: texts };
+
+      // 拼接 thinking + text，用 <thinking> 标签包裹思考内容
+      let content = "";
+      if (thinkingBlocks.length > 0) {
+        content += "<thinking>\n" + thinkingBlocks.join("\n") + "\n</thinking>\n\n";
+      }
+      content += textBlocks.join("");
+
+      const entry: Record<string, unknown> = { role: "assistant", content };
       if (calls.length) {
         entry.tool_calls = calls.map((c) => ({
           id: c.id, type: "function", function: { name: c.name, arguments: JSON.stringify(c.parameters ?? {}) },
@@ -276,7 +302,7 @@ export function stream(model: StreamModel, context: Context, options: StreamOpti
         sessionId: options.sessionId ?? "stream",
         roundIndex: 1,
         preset,
-        messages: adapterMessages as Record<string, string>[],
+        messages: adapterMessages,
         autoFormat: !!options.structuredOutput,
         jsonSettings: options.structuredOutput
           ? { schema: typeof options.structuredOutput === "string" ? options.structuredOutput : JSON.stringify(options.structuredOutput) }

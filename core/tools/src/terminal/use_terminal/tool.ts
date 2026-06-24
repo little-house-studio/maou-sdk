@@ -1,9 +1,18 @@
 /**
- * Terminal 工具 — 统一终端
+ * Terminal 工具 — 基于 Rust 终端引擎
  *
  * 3 种模式：
  *   1. run — 前台/后台运行命令
  *   2. manage — 终端管理 (list/rm/stop/logs)
+ *   3. write — 键盘输入模拟（交互式命令支持）
+ *
+ * 底层由 Rust terminal-engine 驱动：
+ * - 跨平台 PTY（portable-pty: Unix openpty + Windows ConPTY）
+ * - 命令过滤（黑白名单 + 预设危险命令拦截）
+ * - 200 并行上限
+ * - 原子持久化 + ring buffer
+ * - 结构化日志
+ * - V1 沙箱（路径限制）
  *
  * before_user 终端状态面板由 Runtime 层自动注入，无需 AI 主动调用。
  */
@@ -12,17 +21,9 @@ import { Tool } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { truncateMiddle, formatMetadata } from "../../browser/god_tool/use_browser/_util.js";
-import {
-  TERMINAL_REGISTRY,
-  generateAutoId,
-} from "../../terminal/registry.js";
-import { spawnPty, buildSafeEnv } from "../../terminal/pty.js";
 
-/** 后台任务快速等待时间（毫秒） */
-const BG_QUICK_WAIT_MS = 1000;
-
-/** 前台超时后 SIGTERM → SIGKILL 宽限期（毫秒） */
-const GRACE_PERIOD_MS = 3000;
+// Rust 终端引擎
+import * as engine from "@little-house-studio/terminal-engine";
 
 export class TerminalTool extends Tool {
   readonly definition: ToolDefinition = {
@@ -31,7 +32,8 @@ export class TerminalTool extends Tool {
     description:
       "执行 shell 命令或管理常驻终端。" +
       " action=run 运行命令（前台阻塞或后台运行）；" +
-      " action=manage 管理终端（list/rm/stop/logs）。" +
+      " action=manage 管理终端（list/rm/stop/logs）；" +
+      " action=write 向运行中的终端发送键盘输入（交互式命令确认/Ctrl+C 等）。" +
       " 不指定 id 为临时终端，执行完即销毁；指定 id 为持久终端，可反复操作。" +
       " 已存在的 id 会复用该终端执行新任务。",
     parameters: {
@@ -39,7 +41,7 @@ export class TerminalTool extends Tool {
       properties: {
         action: {
           type: "string",
-          enum: ["run", "manage"],
+          enum: ["run", "manage", "write"],
           description: "操作类型，默认 run",
         },
         id: {
@@ -77,6 +79,10 @@ export class TerminalTool extends Tool {
           type: "integer",
           description: "logs 查看字数（manage logs 时可选，默认 5000）",
         },
+        data: {
+          type: "string",
+          description: "要发送的键盘输入（write 时必填，如 'y\\n'、'\\x03' 表示 Ctrl+C）",
+        },
         reason: {
           type: "string",
           description: "为什么必须调用此工具",
@@ -95,7 +101,8 @@ export class TerminalTool extends Tool {
     const action = String(params.action ?? "run").trim();
     if (action === "run") return this._actionRun(params, ctx);
     if (action === "manage") return this._actionManage(params, ctx);
-    return createToolResponse(false, `未知 action: ${action}，可选: run, manage`);
+    if (action === "write") return this._actionWrite(params, ctx);
+    return createToolResponse(false, `未知 action: ${action}，可选: run, manage, write`);
   }
 
   // ─── run ────────────────────────────────────────────────────────────────────
@@ -110,7 +117,7 @@ export class TerminalTool extends Tool {
     const description = String(params.description ?? "").trim();
     if (!description) return createToolResponse(false, "run 操作缺少 description 参数（任务简介）");
 
-    const id = params.id ? String(params.id) : null;
+    const id = params.id ? String(params.id) : undefined;
     const background = Boolean(params.background);
     const cwd = params.cwd
       ? String(params.cwd)
@@ -118,29 +125,15 @@ export class TerminalTool extends Tool {
     const timeoutSec = params.timeout != null ? Number(params.timeout) : (background ? 0 : 120);
     const resultLimit = params.result_limit != null ? Number(params.result_limit) : 5000;
 
-    // 指定了 id → 检查是否已被占用
-    if (id) {
-      const existing = TERMINAL_REGISTRY.get(id);
-      if (existing && existing.agentName !== ctx.agentName) {
-        return createToolResponse(false, `终端 ${id} 属于另一个 Agent，无法操作`);
-      }
-      if (existing && existing.state === "running") {
-        return createToolResponse(
-          false,
-          `终端 ${id} 正在运行任务「${existing.description}」，如需执行新命令请先 stop 该终端或等待完成。`,
-        );
-      }
-    }
-
     if (background) {
       return this._runBackground(id, command, description, cwd, ctx, timeoutSec, resultLimit);
     }
     return this._runForeground(id, command, description, cwd, ctx, timeoutSec, resultLimit);
   }
 
-  /** 前台阻塞执行（临时终端 or 命名终端，超时自动转后台） */
-  private _runForeground(
-    id: string | null,
+  /** 前台阻塞执行 */
+  private async _runForeground(
+    id: string | undefined,
     command: string,
     description: string,
     cwd: string,
@@ -148,148 +141,93 @@ export class TerminalTool extends Tool {
     timeoutSec: number,
     resultLimit: number,
   ): Promise<ToolResponse> {
-    return new Promise((resolve) => {
-      const env = buildSafeEnv();
-      const pty = spawnPty("/bin/bash", ["-c", command], {
-        cwd, env, cols: 120, rows: 36,
-      });
+    const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 120_000;
 
-      let output = "";
-      let settled = false;
-
-      const finish = (resp: ToolResponse) => {
-        if (settled) return;
-        settled = true;
-        resolve(resp);
-      };
-
-      pty.onData((data) => { output += data; });
-
-      pty.onExit((e) => {
-        const truncated = applyResultLimit(output, resultLimit);
-        const ok = e.exitCode === 0;
-        const status = ok ? "完成" : `失败(退出码${e.exitCode})`;
-        const meta = formatMetadata({ exit_code: e.exitCode, cwd });
-        const body = truncated || (ok ? "（无输出）" : `命令${status}`);
-        finish(createToolResponse(ok, `${body}\n\n${meta}`, {
-          payload: { exit_code: e.exitCode, cwd, terminal_id: id ?? null },
-        }));
-      });
-
-      // 超时处理
-      if (timeoutSec > 0) {
-        setTimeout(() => {
-          if (settled) return;
-          pty.kill("SIGTERM");
-          setTimeout(() => {
-            if (settled) return;
-            pty.kill("SIGKILL");
-          }, GRACE_PERIOD_MS);
-
-          // 转后台
-          const bgId = id || generateAutoId();
-          try {
-            const { terminal } = TERMINAL_REGISTRY.createOrReuse({
-              agentName: ctx.agentName,
-              id: bgId,
-              command: "/bin/bash",
-              args: ["-c", command],
-              cwd,
-              description,
-              sessionId: ctx.sessionId,
-            });
-            const truncated = applyResultLimit(output, resultLimit);
-            const meta = formatMetadata({ terminal_id: bgId, pid: terminal.pid, cwd });
-            finish(createToolResponse(true,
-              `任务「${description}」因超时(${timeoutSec}s)已自动转入后台。\n` +
-              `终端 ID: ${bgId} (pid ${terminal.pid})\n` +
-              (truncated ? `\n已有输出:\n${truncated}\n` : "") +
-              `可用 manage stop/logs 查看或结束该任务。\n\n${meta}`,
-              { payload: { terminal_id: bgId, pid: terminal.pid, timed_out: true, cwd } },
-            ));
-            TERMINAL_REGISTRY.persist();
-          } catch {
-            const truncated = applyResultLimit(output, resultLimit);
-            finish(createToolResponse(false,
-              `任务「${description}」超时(${timeoutSec}s)且转后台失败。\n${truncated || ""}`,
-              { payload: { timed_out: true, cwd } },
-            ));
-          }
-        }, timeoutSec * 1000);
-      }
-    });
-  }
-
-  /** 后台执行：注册到 Registry，等待 1 秒看是否快速完成 */
-  private async _runBackground(
-    id: string | null,
-    command: string,
-    description: string,
-    cwd: string,
-    ctx: ToolContext,
-    timeoutSec: number,
-    resultLimit: number,
-  ): Promise<ToolResponse> {
-    const termId = id || generateAutoId();
-
-    let term;
     try {
-      const result = TERMINAL_REGISTRY.createOrReuse({
-        agentName: ctx.agentName,
-        id: termId,
-        command: "/bin/bash",
-        args: ["-c", command],
+      const result = await engine.run(
+        ctx.agentName,
+        command,
         cwd,
         description,
-        sessionId: ctx.sessionId,
-      });
-      term = result.terminal;
-    } catch (err: unknown) {
-      return createToolResponse(false, String(err instanceof Error ? err.message : err));
-    }
-
-    // 阻塞 1 秒等快速完成 / 迅速报错
-    await new Promise<void>((resolve) => {
-      let done = false;
-      const check = () => { if (!done) { done = true; resolve(); } };
-      term!.pty!.onExit(() => check());
-      setTimeout(check, BG_QUICK_WAIT_MS);
-    });
-
-    // 已完成
-    if (term.state === "exited") {
-      const ok = term.exitCode === 0;
-      const output = term.tailChars(Math.max(resultLimit, 1000));
-      const truncated = applyResultLimit(output, resultLimit);
-      const status = ok ? "已完成" : `已失败(退出码${term.exitCode})`;
-      const meta = formatMetadata({ terminal_id: termId, exit_code: term.exitCode, cwd });
-      TERMINAL_REGISTRY.persist();
-      return createToolResponse(ok,
-        `后台任务「${description}」${status}。\n${truncated ? `\n输出:\n${truncated}\n` : ""}\n${meta}`,
-        { payload: { terminal_id: termId, exit_code: term.exitCode, cwd } },
+        timeoutMs,
+        resultLimit,
       );
-    }
 
-    // 设置超时提醒标记
-    if (timeoutSec > 0) {
-      setTimeout(() => {
-        if (term.state === "running") {
-          term.timedOut = true;
-          TERMINAL_REGISTRY.persist();
-          // TODO: Runtime 层检测到此标记后注入 <terminal-message> 通知 AI
-        }
-      }, timeoutSec * 1000);
-    }
+      const ok = result.ok && result.exitCode === 0;
+      const status = result.exitCode === 0
+        ? "完成"
+        : result.exitCode != null
+          ? `失败(退出码${result.exitCode})`
+          : "超时";
+      const meta = formatMetadata({
+        exit_code: result.exitCode ?? null,
+        cwd,
+        terminal_id: result.terminalId,
+        duration_ms: Math.round(result.durationMs),
+      });
+      const body = result.output || (ok ? "（无输出）" : `命令${status}`);
 
-    TERMINAL_REGISTRY.persist();
-    const meta = formatMetadata({ terminal_id: termId, pid: term.pid, cwd });
-    return createToolResponse(true,
-      `任务「${description}」已在后台运行。\n` +
-      `终端 ID: ${termId} (pid ${term.pid})\n` +
-      (timeoutSec > 0 ? `超时: ${timeoutSec}秒后会提醒。\n` : "无超时限制。\n") +
-      `完成/失败/超时会自动提醒。\n\n${meta}`,
-      { background: true, payload: { terminal_id: termId, pid: term.pid, cwd } },
-    );
+      return createToolResponse(ok, `${body}\n\n${meta}`, {
+        payload: {
+          exit_code: result.exitCode ?? null,
+          cwd,
+          terminal_id: result.terminalId,
+          duration_ms: Math.round(result.durationMs),
+        },
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return createToolResponse(false, `终端执行失败: ${msg}`);
+    }
+  }
+
+  /** 后台执行 */
+  private async _runBackground(
+    id: string | undefined,
+    command: string,
+    description: string,
+    cwd: string,
+    ctx: ToolContext,
+    _timeoutSec: number,
+    resultLimit: number,
+  ): Promise<ToolResponse> {
+    try {
+      const result = await engine.runBackground(
+        ctx.agentName,
+        command,
+        cwd,
+        description,
+        id,
+      );
+
+      // 已快速完成
+      if (result.exitCode != null) {
+        const ok = result.exitCode === 0;
+        const status = ok ? "已完成" : `已失败(退出码${result.exitCode})`;
+        const truncated = applyResultLimit(result.output, resultLimit);
+        const meta = formatMetadata({
+          terminal_id: result.terminalId,
+          exit_code: result.exitCode,
+          cwd,
+        });
+        return createToolResponse(ok,
+          `后台任务「${description}」${status}。\n${truncated ? `\n输出:\n${truncated}\n` : ""}\n${meta}`,
+          { payload: { terminal_id: result.terminalId, exit_code: result.exitCode, cwd } },
+        );
+      }
+
+      // 仍在运行
+      const meta = formatMetadata({ terminal_id: result.terminalId, cwd });
+      return createToolResponse(true,
+        `任务「${description}」已在后台运行。\n` +
+        `终端 ID: ${result.terminalId}\n` +
+        `完成/失败/超时会自动提醒。\n\n${meta}`,
+        { background: true, payload: { terminal_id: result.terminalId, cwd } },
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return createToolResponse(false, `后台终端创建失败: ${msg}`);
+    }
   }
 
   // ─── manage ─────────────────────────────────────────────────────────────────
@@ -309,97 +247,114 @@ export class TerminalTool extends Tool {
     }
   }
 
-  private _manageList(ctx: ToolContext): Promise<ToolResponse> {
-    const panel = TERMINAL_REGISTRY.agentStatusPanel(ctx.agentName);
-    if (!panel) {
-      return Promise.resolve(createToolResponse(true, "当前没有终端。", {
+  private async _manageList(ctx: ToolContext): Promise<ToolResponse> {
+    const panel = engine.statusPanel(ctx.agentName);
+    const terminals = engine.list(ctx.agentName);
+    if (terminals.length === 0) {
+      return createToolResponse(true, "当前没有终端。", {
         payload: { count: 0 },
-      }));
+      });
     }
-    const terminals = TERMINAL_REGISTRY.list(ctx.agentName);
-    return Promise.resolve(createToolResponse(true, panel, {
+    return createToolResponse(true, panel, {
       payload: {
         count: terminals.length,
         terminals: terminals.map((t) => ({
           id: t.id, state: t.state, description: t.description,
-          exit_code: t.exitCode, timed_out: t.timedOut,
+          exit_code: t.exitCode ?? null,
         })),
       },
-    }));
+    });
   }
 
-  private _manageRm(
+  private async _manageRm(
     params: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResponse> {
     const id = params.id ? String(params.id) : "";
-    if (!id) return Promise.resolve(createToolResponse(false, "rm 操作缺少 id 参数"));
+    if (!id) return createToolResponse(false, "rm 操作缺少 id 参数");
 
-    const term = TERMINAL_REGISTRY.get(id);
-    if (!term || term.agentName !== ctx.agentName) {
-      return Promise.resolve(createToolResponse(false, `终端 ${id} 不存在`));
+    try {
+      await engine.remove(id, ctx.agentName);
+      return createToolResponse(true, `终端 ${id} 已删除。`, {
+        payload: { id },
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return createToolResponse(false, msg);
     }
-    if (term.state === "running") {
-      return Promise.resolve(createToolResponse(false,
-        `终端 ${id} 正在执行任务「${term.description}」，请先 stop 或等待完成再删除。`,
-      ));
-    }
-
-    TERMINAL_REGISTRY.remove(id, ctx.agentName);
-    TERMINAL_REGISTRY.persist();
-    return Promise.resolve(createToolResponse(true, `终端 ${id} 已删除。`, {
-      payload: { id },
-    }));
   }
 
-  private _manageStop(
+  private async _manageStop(
     params: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResponse> {
     const id = params.id ? String(params.id) : "";
-    if (!id) return Promise.resolve(createToolResponse(false, "stop 操作缺少 id 参数"));
+    if (!id) return createToolResponse(false, "stop 操作缺少 id 参数");
 
-    const term = TERMINAL_REGISTRY.get(id);
-    if (!term || term.agentName !== ctx.agentName) {
-      return Promise.resolve(createToolResponse(false, `终端 ${id} 不存在`));
+    try {
+      await engine.stop(id, ctx.agentName);
+      return createToolResponse(true, `已向终端 ${id} 发送终止信号。`, {
+        payload: { id },
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return createToolResponse(false, msg);
     }
-    if (term.state !== "running") {
-      return Promise.resolve(createToolResponse(false, `终端 ${id} 已退出(exit_code=${term.exitCode})`));
-    }
-
-    term.kill("SIGTERM");
-    return Promise.resolve(createToolResponse(true, `已向终端 ${id} 发送终止信号。`, {
-      payload: { id },
-    }));
   }
 
-  private _manageLogs(
+  private async _manageLogs(
     params: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResponse> {
     const id = params.id ? String(params.id) : "";
-    if (!id) return Promise.resolve(createToolResponse(false, "logs 操作缺少 id 参数"));
+    if (!id) return createToolResponse(false, "logs 操作缺少 id 参数");
 
     const limit = Math.max(0, Number(params.limit ?? 5000) || 5000);
-    const term = TERMINAL_REGISTRY.get(id);
-    if (!term || term.agentName !== ctx.agentName) {
-      return Promise.resolve(createToolResponse(false, `终端 ${id} 不存在`));
+
+    try {
+      const output = await engine.logs(id, ctx.agentName, limit);
+      const terminals = engine.list(ctx.agentName);
+      const term = terminals.find((t) => t.id === id);
+      const stateLabel = term
+        ? term.state === "running"
+          ? "运行中"
+          : term.state === "exited"
+            ? `已退出(${term.exitCode})`
+            : term.state
+        : "未知";
+      const meta = formatMetadata({ id, status: stateLabel });
+
+      return createToolResponse(true,
+        `${output || "（无输出）"}\n\n${meta}`,
+        { payload: { id, state: term?.state ?? "unknown", exit_code: term?.exitCode ?? null } },
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return createToolResponse(false, msg);
     }
+  }
 
-    term.lastViewedAt = new Date();
-    TERMINAL_REGISTRY.persist();
+  // ─── write（键盘输入模拟） ──────────────────────────────────────────────────
 
-    const output = limit > 0 ? term.tailChars(limit) : "";
-    const stateLabel =
-      term.state === "running"
-        ? term.timedOut ? "超时运行中" : "运行中"
-        : term.state === "exited" ? `已退出(${term.exitCode})` : "已中断";
-    const meta = formatMetadata({ id, status: stateLabel, pid: term.pid });
+  private async _actionWrite(
+    params: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<ToolResponse> {
+    const id = params.id ? String(params.id) : "";
+    if (!id) return createToolResponse(false, "write 操作缺少 id 参数");
 
-    return Promise.resolve(createToolResponse(true,
-      `${output || "（无输出）"}\n\n${meta}`,
-      { payload: { id, state: term.state, exit_code: term.exitCode } },
-    ));
+    const data = String(params.data ?? "");
+    if (!data) return createToolResponse(false, "write 操作缺少 data 参数");
+
+    try {
+      await engine.write(id, ctx.agentName, data);
+      return createToolResponse(true, `已向终端 ${id} 发送输入: ${JSON.stringify(data)}`, {
+        payload: { id, data },
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return createToolResponse(false, msg);
+    }
   }
 
   override onSessionStart(_sessionId: string): void {
@@ -414,4 +369,95 @@ function applyResultLimit(output: string, limit: number): string {
   if (limit === 0) return "";
   if (output.length <= limit) return output;
   return truncateMiddle(output, limit);
+}
+
+// ─── Rust 引擎初始化（模块加载时自动执行） ────────────────────────────────────
+
+let engineInitialized = false;
+
+/** 初始化 Rust 终端引擎（由 harness/server.ts 调用） */
+export function initTerminalEngine(logDir?: string, persistPath?: string): void {
+  if (engineInitialized) return;
+  engineInitialized = true;
+  try {
+    engine.initEngine(logDir);
+    if (persistPath) {
+      engine.setPersistPath(persistPath);
+    }
+  } catch {
+    // 引擎初始化失败时静默降级（可能 native module 未安装）
+    console.warn("[terminal-engine] Rust 引擎初始化失败，终端功能不可用");
+  }
+}
+
+/** 关闭所有终端（由 harness/server.ts 在进程退出时调用） */
+export function shutdownTerminalEngine(): void {
+  try {
+    engine.shutdown();
+  } catch {
+    // best effort
+  }
+}
+
+/** 清理 Agent 的所有终端（由 runtime.ts 在 session 开始时调用） */
+export function cleanupAgentTerminals(agentName: string): void {
+  try {
+    engine.cleanupAgent(agentName);
+  } catch {
+    // best effort
+  }
+}
+
+/** 获取终端状态面板（由 dynamic-context.ts 注入 prompt） */
+export function getTerminalStatusPanel(agentName: string): string {
+  try {
+    return engine.statusPanel(agentName);
+  } catch {
+    return "";
+  }
+}
+
+/** 设置命令过滤器配置 */
+export function setTerminalFilter(config: engine.FilterConfigNapi): void {
+  try {
+    engine.setFilter(config);
+  } catch {
+    // best effort
+  }
+}
+
+/** 设置沙箱配置 */
+export function setTerminalSandbox(config: engine.SandboxConfigNapi): void {
+  try {
+    engine.setSandbox(config);
+  } catch {
+    // best effort
+  }
+}
+
+/** 设置持久化路径 */
+export function setTerminalPersistPath(path: string): void {
+  try {
+    engine.setPersistPath(path);
+  } catch {
+    // best effort
+  }
+}
+
+/** 列出终端（供 runtime.ts 注入通知用） */
+export function listTerminals(agentName: string): engine.TerminalInfoNapi[] {
+  try {
+    return engine.list(agentName);
+  } catch {
+    return [];
+  }
+}
+
+/** 获取终端日志（供 runtime.ts 注入通知用） */
+export async function getTerminalLogs(id: string, agentName: string, lines: number): Promise<string> {
+  try {
+    return await engine.logs(id, agentName, lines);
+  } catch {
+    return "";
+  }
 }
