@@ -4,6 +4,7 @@
 
 import type { SessionData } from "./session-store.js";
 import type { CompressionStage } from "./types/compression.js";
+import type { LLMMessage as _LLMMessage } from "./types/message.js";
 
 // ─── Maou 层消息结构体 ────────────────────────────────────────
 
@@ -60,6 +61,12 @@ export interface BuildMessagesParams {
   structuredMemory?: string;
   /** 项目根目录（用于加载 .maou/context/） */
   projectRoot?: string;
+  /**
+   * 压缩后的历史段（来自 ContextEngine.toLLMHistory）。
+   * 传入时用它做历史段，替代 sessionMessages 下放循环；
+   * 不传则走原始 sessionMessages 路径（保留多模态图片旁路）。
+   */
+  compressedHistory?: _LLMMessage[];
 }
 
 /** 压缩结果 */

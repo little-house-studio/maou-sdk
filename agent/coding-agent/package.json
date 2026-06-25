@@ -1,7 +1,7 @@
 {
-  "name": "@little-house-studio/agent",
+  "name": "@little-house-studio/coding-agent",
   "version": "0.1.0",
-  "description": "Maou SDK Agent 层（agentLoop 极简循环 + IAgentLoop 可扩展接口 + 提示词编译/token追踪/注册表/事件总线/技能等扩展件）",
+  "description": "Maou SDK 编程 Agent —— 绑定项目目录后驻扎的编码服务。基于 @little-house-studio/agent-runtime，预设编程工具白名单 + 编程角色提示词 + CLI 调试接口。",
   "type": "module",
   "license": "MIT",
   "main": "dist/index.js",
@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli/index.d.ts",
+      "import": "./dist/cli/index.js"
     }
   },
   "files": ["dist", "README.md"],
@@ -23,9 +27,7 @@
     "@little-house-studio/llm": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/context": "workspace:*",
-    "@little-house-studio/prompt": "workspace:*",
-    "pino": "^9.0.0",
-    "pino-pretty": "^11.0.0"
+    "@little-house-studio/agent": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -26,6 +26,7 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
     rollingSummary,
     structuredMemory,
     projectRoot,
+    compressedHistory,
   } = params;
 
   const messages: Record<string, unknown>[] = [];
@@ -92,40 +93,65 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
   }
 
   // ── 历史消息 ──
-  for (const msg of sessionMessages) {
-    const entry: Record<string, unknown> = {
-      role: msg.role,
-      content: msg.content,
-    };
-    const nativeToolCalls = msg.toolCalls as Array<Record<string, unknown>> | undefined;
-    if (nativeToolCalls && nativeToolCalls.length > 0) {
-      entry.tool_calls = nativeToolCalls.map(tc => ({
-        id: tc.id,
-        type: tc.type || "function",
-        function: {
-          name: tc.name,
-          arguments: JSON.stringify(tc.arguments ?? {}),
-        },
-      }));
-    }
-    if (msg.toolCallId) {
-      entry.tool_call_id = msg.toolCallId;
-    }
-    messages.push(entry);
-
-    // 工具结果含图片：追加一条 user 消息携带多模态图片（OpenAI tool role 不支持多模态）
-    const msgImages = msg.images as Array<{ mimeType: string; data: string }> | undefined;
-    if (msg.role === "tool" && msgImages && msgImages.length > 0) {
-      const imageContentParts: Array<Record<string, unknown>> = [
-        { type: "text", text: `[以下是工具 ${msg.tool_name ?? "read"} 返回的图片]` },
-      ];
-      for (const img of msgImages) {
-        imageContentParts.push({
-          type: "image_url",
-          image_url: { url: `data:${img.mimeType};base64,${img.data}` },
-        });
+  // 传入 compressedHistory（来自 ContextEngine.toLLMHistory）时用它做历史段，
+  // 否则走原始 sessionMessages 路径（保留多模态图片旁路）。
+  if (compressedHistory && compressedHistory.length > 0) {
+    for (const msg of compressedHistory) {
+      const entry: Record<string, unknown> = {
+        role: msg.role,
+        content: msg.content,
+      };
+      if (msg.tool_calls && msg.tool_calls.length > 0) {
+        entry.tool_calls = msg.tool_calls.map(tc => ({
+          id: tc.id,
+          type: "function",
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments ?? {}),
+          },
+        }));
       }
-      messages.push({ role: "user", content: imageContentParts });
+      if (msg.tool_call_id) {
+        entry.tool_call_id = msg.tool_call_id;
+      }
+      messages.push(entry);
+    }
+  } else {
+    for (const msg of sessionMessages) {
+      const entry: Record<string, unknown> = {
+        role: msg.role,
+        content: msg.content,
+      };
+      const nativeToolCalls = msg.toolCalls as Array<Record<string, unknown>> | undefined;
+      if (nativeToolCalls && nativeToolCalls.length > 0) {
+        entry.tool_calls = nativeToolCalls.map(tc => ({
+          id: tc.id,
+          type: tc.type || "function",
+          function: {
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments ?? {}),
+          },
+        }));
+      }
+      if (msg.toolCallId) {
+        entry.tool_call_id = msg.toolCallId;
+      }
+      messages.push(entry);
+
+      // 工具结果含图片：追加一条 user 消息携带多模态图片（OpenAI tool role 不支持多模态）
+      const msgImages = msg.images as Array<{ mimeType: string; data: string }> | undefined;
+      if (msg.role === "tool" && msgImages && msgImages.length > 0) {
+        const imageContentParts: Array<Record<string, unknown>> = [
+          { type: "text", text: `[以下是工具 ${msg.tool_name ?? "read"} 返回的图片]` },
+        ];
+        for (const img of msgImages) {
+          imageContentParts.push({
+            type: "image_url",
+            image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+          });
+        }
+        messages.push({ role: "user", content: imageContentParts });
+      }
     }
   }
 

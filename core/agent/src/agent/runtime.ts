@@ -21,10 +21,14 @@ import { SessionStore, SessionManager, MemoryStore, CheckpointStore, extractMemo
 import {
   buildMessages,
   maybeCompress,
+  ContextEngine,
+  estimateTokens,
   MAX_ROUNDS,
   DEFAULT_AGENT_ROUND_LIMIT,
   DEFAULT_LOOP_THRESHOLD,
+  CONTEXT_THRESHOLD_PERCENT,
 } from "@little-house-studio/context";
+import type { HarnessSessionStore, TaskSessionStore, Summarizer, LLMMessage } from "@little-house-studio/context";
 import { compileDynamicContext } from "../dynamic-context.js";
 import { TokenTracker } from "./token-tracker.js";
 import type { TokenUsage } from "./token-tracker.js";
@@ -57,6 +61,15 @@ export interface RuntimeOptions {
   maouRoot?: string;
   /** 项目根目录 */
   projectRoot?: string;
+  /**
+   * ContextEngine 上下文压缩闭环（可选）。
+   * 同时注入 harnessStore + taskStore 时启用：每轮 sync→compress→toLLMHistory
+   * 替代旧的 maybeCompress（truncate）路径。缺省则回退旧路径。
+   */
+  harnessStore?: HarnessSessionStore;
+  taskStore?: TaskSessionStore;
+  /** 可插拔 LLM 摘要器（compress 时生成真摘要；缺省回退确定性 truncate）。 */
+  summarizer?: Summarizer;
 }
 
 export interface ModelCallParams {
@@ -113,6 +126,10 @@ export class AgentRuntime {
   private logFn: (level: string, message: string) => void;
   private maouRoot: string;
   private projectRoot: string;
+  /** ContextEngine 闭环依赖（可选） */
+  private harnessStore?: HarnessSessionStore;
+  private taskStore?: TaskSessionStore;
+  private summarizer?: Summarizer;
   /** 压缩回调（由外部注入，用于压缩区落盘） */
   onCompress?: (sessionId: string, stage: string, summary: string, taskBlocks: string[]) => void;
 
@@ -127,6 +144,9 @@ export class AgentRuntime {
     this.logFn = options.log ?? (() => {});
     this.maouRoot = options.maouRoot ?? join(process.env.HOME ?? '', '.maou');
     this.projectRoot = options.projectRoot ?? process.cwd();
+    this.harnessStore = options.harnessStore;
+    this.taskStore = options.taskStore;
+    this.summarizer = options.summarizer;
 
     // 初始化上下文管理层
     this.sessionManager = new SessionManager(this.sessions, this.maouRoot);
@@ -364,6 +384,61 @@ export class AgentRuntime {
       const memoryStore = new MemoryStore(this.maouRoot, agentName);
       const memoryResult = memoryStore.recall(userMessage, 5);
 
+      // 自动压缩检查
+      // 上下文压缩阈值应基于输入上下文上限（maxContext），而非输出上限（maxTokens）。
+      // 优先 maxContext，回退 maxTokens（兼容旧 preset），最后 65536 兜底。
+      const contextLimit = preset.maxContext ?? preset.maxTokens ?? 65536;
+
+      // ── ContextEngine 闭环路径（注入 stores 时启用）──
+      // 每轮从原始 session 重建工作集 → 超阈值则 compress（备份/任务块/zone 落盘）→ toLLMHistory。
+      // 仅在真正发生压缩（stage != activeStage）时用压缩历史替代原始历史，
+      // 否则保持原始 sessionMessages 路径（保留多模态图片旁路）。
+      let compressedHistory: LLMMessage[] | undefined;
+      const engineEnabled = Boolean(this.harnessStore && this.taskStore);
+      if (engineEnabled) {
+        try {
+          const engine = new ContextEngine({
+            sessionId: sessionId!,
+            harnessStore: this.harnessStore!,
+            taskStore: this.taskStore!,
+            summarizer: this.summarizer,
+          });
+          engine.initFromSessionMessages(sessionMessages as unknown as Array<Record<string, unknown>>);
+          const tokens = estimateTokens(engine.getHistory());
+          if (tokens >= contextLimit * (CONTEXT_THRESHOLD_PERCENT / 100)) {
+            if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
+              this.checkpointStore.createCheckpoint(
+                sessionId!, `auto_before_compression_round_${currentRound}`, true, "compression",
+              );
+            }
+            const report = await engine.compress(contextLimit);
+            if (report.stage !== "activeStage") {
+              compressedHistory = engine.toLLMHistory();
+              const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
+              const merged = existing && report.droppedSummary
+                ? `${existing}\n\n---\n\n${report.droppedSummary}`
+                : (report.droppedSummary || existing);
+              if (merged) {
+                this.sessionManager.setRollingSummary(sessionId!, merged);
+                this.sessionManager.saveState();
+              }
+              if (this.onCompress) {
+                try {
+                  this.onCompress(sessionId!, report.stage, report.droppedSummary, report.taskBlocks ?? []);
+                } catch { /* 落盘失败不影响主流程 */ }
+              }
+              yield this.logEvent(
+                "info",
+                `上下文已压缩 (engine, stage=${report.stage}，token: ${report.originalTokens} → ${report.compressedTokens})`,
+              );
+            }
+          }
+        } catch (err) {
+          this.log("warning", `[ContextEngine] 压缩失败，回退原始历史: ${err}`);
+          compressedHistory = undefined;
+        }
+      }
+
       const messages = buildMessages({
         systemPrompt,
         sessionMessages,
@@ -379,54 +454,58 @@ export class AgentRuntime {
         rollingSummary: this.sessionManager.getRollingSummary(sessionId!) ?? "",
         structuredMemory: memoryResult.formattedContext,
         projectRoot: this.projectRoot,
+        compressedHistory,
       });
 
-      // 自动压缩检查
-      // 上下文压缩阈值应基于输入上下文上限（maxContext），而非输出上限（maxTokens）。
-      // 优先 maxContext，回退 maxTokens（兼容旧 preset），最后 65536 兜底。
-      const contextLimit = preset.maxContext ?? preset.maxTokens ?? 65536;
-
-      // 压缩前自动快照
-      if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
-        this.checkpointStore.createCheckpoint(
-          sessionId!,
-          `auto_before_compression_round_${currentRound}`,
-          true,
-          "compression",
-        );
-      }
-
-      const compressResult = maybeCompress(messages, contextLimit);
-      const finalMessages = compressResult.messages;
-      const compressed = compressResult.compressed;
-      const droppedSummary = compressResult.droppedSummary;
-      if (compressed) {
-        // 把本轮新产生的摘要拼接到滚动摘要里，让后续轮次依然能看到被丢弃内容的线索
-        const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
-        const merged = existing
-          ? `${existing}\n\n---\n\n${droppedSummary}`
-          : droppedSummary;
-        this.sessionManager.setRollingSummary(sessionId!, merged);
-        this.sessionManager.saveState();
-
-        // 压缩区落盘：通过 onCompress 回调通知外部（由 MaouServer 注入 HarnessSessionStore）
-        if (this.onCompress) {
-          try {
-            this.onCompress(sessionId!, compressResult.stage, droppedSummary, compressResult.taskBlocks ?? []);
-          } catch {
-            // 落盘失败不影响主流程
-          }
+      // ── 历史段最终化 ──
+      let finalMessages: Record<string, unknown>[];
+      if (engineEnabled) {
+        // ContextEngine 已处理压缩，messages 即最终消息。
+        finalMessages = messages;
+      } else {
+        // 旧路径：maybeCompress（同步 truncate shim）。
+        // 压缩前自动快照
+        if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
+          this.checkpointStore.createCheckpoint(
+            sessionId!,
+            `auto_before_compression_round_${currentRound}`,
+            true,
+            "compression",
+          );
         }
 
-        const zoneName = compressResult.stage ?? "unknown";
-        const tokenStr =
-          compressResult.originalTokens && compressResult.compressedTokens
-            ? `，token: ${compressResult.originalTokens} → ${compressResult.compressedTokens}`
-            : "";
-        yield this.logEvent(
-          "info",
-          `上下文已压缩 (zone=${zoneName}${tokenStr})，消息数: ${sessionMessages.length}`,
-        );
+        const compressResult = maybeCompress(messages, contextLimit);
+        finalMessages = compressResult.messages;
+        const compressed = compressResult.compressed;
+        const droppedSummary = compressResult.droppedSummary;
+        if (compressed) {
+          // 把本轮新产生的摘要拼接到滚动摘要里，让后续轮次依然能看到被丢弃内容的线索
+          const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
+          const merged = existing
+            ? `${existing}\n\n---\n\n${droppedSummary}`
+            : droppedSummary;
+          this.sessionManager.setRollingSummary(sessionId!, merged);
+          this.sessionManager.saveState();
+
+          // 压缩区落盘：通过 onCompress 回调通知外部（由 MaouServer 注入 HarnessSessionStore）
+          if (this.onCompress) {
+            try {
+              this.onCompress(sessionId!, compressResult.stage, droppedSummary, compressResult.taskBlocks ?? []);
+            } catch {
+              // 落盘失败不影响主流程
+            }
+          }
+
+          const zoneName = compressResult.stage ?? "unknown";
+          const tokenStr =
+            compressResult.originalTokens && compressResult.compressedTokens
+              ? `，token: ${compressResult.originalTokens} → ${compressResult.compressedTokens}`
+              : "";
+          yield this.logEvent(
+            "info",
+            `上下文已压缩 (zone=${zoneName}${tokenStr})，消息数: ${sessionMessages.length}`,
+          );
+        }
       }
 
       yield this.event("agent_round", { round: currentRound, agentMode });
