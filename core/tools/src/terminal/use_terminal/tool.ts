@@ -114,8 +114,8 @@ export class TerminalTool extends Tool {
     const command = String(params.command ?? "").trim();
     if (!command) return createToolResponse(false, "run 操作缺少 command 参数");
 
-    const description = String(params.description ?? "").trim();
-    if (!description) return createToolResponse(false, "run 操作缺少 description 参数（任务简介）");
+    // description 缺失时用命令兜底（而非报错），减少模型多花一轮补参数。
+    const description = String(params.description ?? "").trim() || `执行命令: ${command.slice(0, 60)}`;
 
     const id = params.id ? String(params.id) : undefined;
     const background = Boolean(params.background);
@@ -465,7 +465,12 @@ export function listTerminals(agentName: string): engine.TerminalInfoNapi[] {
 /** 获取终端日志（供 runtime.ts 注入通知用） */
 export async function getTerminalLogs(id: string, agentName: string, lines: number): Promise<string> {
   try {
-    return await engine.logs(id, agentName, lines);
+    // 防御性超时：engine.logs（native addon）在某些状态下可能 async 挂起不返回，
+    // 用 5s 超时兜底，避免拖死 agent 循环（round 间读后台终端日志时）。
+    return await Promise.race([
+      engine.logs(id, agentName, lines),
+      new Promise<string>((resolve) => setTimeout(() => resolve(""), 5000)),
+    ]);
   } catch {
     return "";
   }

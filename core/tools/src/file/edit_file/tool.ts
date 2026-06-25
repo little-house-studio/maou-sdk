@@ -42,9 +42,9 @@ export class EditFileTool extends Tool {
     params: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResponse> {
-    const userPath = String(params.path ?? "").trim();
-    const oldText = String(params.old_text ?? "");
-    const newText = String(params.new_text ?? "");
+    const userPath = String(params.path ?? params.file_path ?? "").trim();
+    const oldText = String(params.old_text ?? params.old_string ?? params.oldText ?? "");
+    const newText = String(params.new_text ?? params.new_string ?? params.newText ?? "");
 
     if (!userPath) {
       return createToolResponse(false, "edit-file 缺少 path 参数");

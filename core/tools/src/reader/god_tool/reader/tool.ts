@@ -77,7 +77,7 @@ export class ReadTool extends Tool {
     params: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResponse> {
-    const filePath = String(params.path ?? "").trim();
+    const filePath = String(params.path ?? params.file_path ?? "").trim();
     if (!filePath) {
       return createToolResponse(false, "read 缺少 path 参数");
     }

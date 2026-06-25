@@ -152,6 +152,16 @@ export interface LLMClientOptions {
    * 可降级错误、加熔断、上报、自定义重试节奏。
    */
   onError?: (ctx: ErrorHookContext) => "retry" | "fail" | { delayMs: number };
+  /**
+   * 流式响应 stall 超时（ms）：服务器中途停滞、长时间无新数据超过此值则中止读取并抛错（交由上层重试），
+   * 避免请求无限挂起。默认 120000；设为 <=0 关闭。
+   */
+  streamStallMs?: number;
+  /**
+   * 连接/响应超时（ms）：fetch 连接阶段卡死（拿到响应头前长时间无响应）超过此值则中止本次尝试并重试。
+   * 与 streamStallMs 互补（前者守连接，后者守流式 body）。默认 60000；设为 <=0 关闭。
+   */
+  connectTimeoutMs?: number;
 }
 
 /** 重试策略 */
@@ -213,6 +223,8 @@ export class LLMClient {
   private _onResponse: LLMClientOptions["onResponse"] | null;
   private _retry: Required<RetryPolicy>;
   private _onError: LLMClientOptions["onError"] | null;
+  private _streamStallMs: number;
+  private _connectTimeoutMs: number;
 
   constructor(options?: LLMClientOptions) {
     this._logger = options?.logger ?? null;
@@ -229,6 +241,32 @@ export class LLMClient {
       retryableStatuses: options?.retry?.retryableStatuses ?? [429, 500, 502, 503, 504],
     };
     this._onError = options?.onError ?? null;
+    this._streamStallMs = options?.streamStallMs ?? 120_000;
+    this._connectTimeoutMs = options?.connectTimeoutMs ?? 60_000;
+  }
+
+  /**
+   * 读取一个流式分片，带 stall 超时保护。
+   * 服务器中途停滞（超过 _streamStallMs 无新数据）时不会无限挂起，
+   * 而是 cancel reader 并抛错，交由上层 catch/重试。
+   */
+  private async _readChunk(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+  ) {
+    const stallMs = this._streamStallMs;
+    if (!stallMs || stallMs <= 0) return reader.read();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stall = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reader.cancel(new Error("stream stall timeout")).catch(() => {});
+        reject(new Error(`流式响应停滞超过 ${stallMs}ms 无新数据，已中止`));
+      }, stallMs);
+    });
+    try {
+      return await Promise.race([reader.read(), stall]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** 运行时注入日志记录器（用于延迟初始化） */
@@ -591,7 +629,7 @@ export class LLMClient {
 
       try {
         while (true) {
-          const { done, value } = await reader.read();
+          const { done, value } = await this._readChunk(reader);
           if (done) {
             // 流结束：flush decoder 残留字节 + 处理 buffer 最后一行
             const tail = decoder.decode();
@@ -882,7 +920,7 @@ export class LLMClient {
 
       try {
         while (true) {
-          const { done, value } = await reader.read();
+          const { done, value } = await this._readChunk(reader);
           if (done) {
             // 流结束：flush decoder 残留字节 + 处理 buffer 最后一行
             const tail = decoder.decode();
@@ -1234,12 +1272,32 @@ export class LLMClient {
       }
 
       try {
-        const response = await this._fetch(url, {
-          method: "POST",
-          headers,
-          body,
-          signal: abortSignal,
-        });
+        // 连接/响应超时：fetch 连接阶段卡死（拿到响应头前长时间无响应）时主动中止本次尝试。
+        // 与调用方 abortSignal 合并到 attemptCtrl；拿到 headers 后清除连接计时器——
+        // 流式 body 的停滞由 _readChunk 的 stall 超时单独守护。
+        const attemptCtrl = new AbortController();
+        const onCallerAbort = () => attemptCtrl.abort();
+        if (abortSignal) {
+          if (abortSignal.aborted) attemptCtrl.abort();
+          else abortSignal.addEventListener("abort", onCallerAbort, { once: true });
+        }
+        const connectTimer = this._connectTimeoutMs > 0
+          ? setTimeout(
+              () => attemptCtrl.abort(new Error(`连接/响应超时 ${this._connectTimeoutMs}ms（未收到响应头）`)),
+              this._connectTimeoutMs,
+            )
+          : undefined;
+        let response: Response;
+        try {
+          response = await this._fetch(url, {
+            method: "POST",
+            headers,
+            body,
+            signal: attemptCtrl.signal,
+          });
+        } finally {
+          if (connectTimer) clearTimeout(connectTimer);
+        }
 
         if (response.status === 429) {
           const retryAfter = response.headers.get("retry-after");

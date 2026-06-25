@@ -246,6 +246,8 @@ function injectUserContext(
       messages.push({ role: "user", content });
     }
   } else if (roundCount > 0 && userOpts?.dynamicInjections?.trim()) {
-    messages.push({ role: "user", content: userOpts.dynamicInjections.trim() });
+    // 子轮（roundCount>0）的动态状态改为 system 注入：否则作为 user 消息时，
+    // 模型会把状态当成新的用户发言并复述（"收到状态信息...等待指令"），浪费 round 并跑偏。
+    messages.push({ role: "system", content: userOpts.dynamicInjections.trim() });
   }
 }

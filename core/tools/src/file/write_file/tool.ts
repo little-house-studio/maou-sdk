@@ -37,8 +37,8 @@ export class WriteFileTool extends Tool {
     params: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResponse> {
-    const userPath = String(params.path ?? "").trim();
-    const content = String(params.content ?? "");
+    const userPath = String(params.path ?? params.file_path ?? "").trim();
+    const content = String(params.content ?? params.text ?? "");
 
     if (!userPath) {
       return createToolResponse(false, "write-file 缺少 path 参数");
