@@ -12,7 +12,8 @@
  */
 
 import { Runtime } from "@little-house-studio/agent";
-import type { SessionStore } from "@little-house-studio/context";
+import { HarnessSessionStore, TaskSessionStore } from "@little-house-studio/context";
+import type { SessionStore, Summarizer } from "@little-house-studio/context";
 import type { ToolRegistry } from "@little-house-studio/tools";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { ConfigStore } from "@little-house-studio/types";
@@ -79,6 +80,10 @@ export interface CodingAgentOptions {
   toolWhitelist?: readonly string[];
   /** 强制重写已存在的 agent 定义（默认仅在缺失时创建）。 */
   forceMaterialize?: boolean;
+  /** 启用 ContextEngine 压缩闭环（默认 true）。关闭则回退 maybeCompress（truncate）。 */
+  enableCompression?: boolean;
+  /** 可插拔 LLM 摘要器（缺省回退确定性 truncate）。 */
+  summarizer?: Summarizer;
   // ── 基础设施依赖（由应用层装配后注入）──
   configStore: ConfigStore;
   sessionStore: SessionStore;
@@ -182,6 +187,11 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     force: opts.forceMaterialize,
   });
 
+  // ContextEngine 压缩闭环：默认启用，构造双 Store 注入 → AgentRuntime 每轮 sync→compress→落盘。
+  const compressionOn = opts.enableCompression !== false;
+  const harnessStore = compressionOn ? new HarnessSessionStore({ maouRoot }) : undefined;
+  const taskStore = compressionOn ? new TaskSessionStore(maouRoot, name) : undefined;
+
   const runtime = new Runtime({
     configStore: opts.configStore,
     sessionStore: opts.sessionStore,
@@ -189,6 +199,9 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     llmClient: opts.llmClient,
     maouRoot,
     projectRoot,
+    harnessStore,
+    taskStore,
+    summarizer: opts.summarizer,
   });
 
   const sessionStore = opts.sessionStore;

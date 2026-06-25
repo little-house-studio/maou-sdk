@@ -13,6 +13,7 @@
 
 import { PromptCompiler } from "@little-house-studio/prompt";
 import { SessionStore } from "@little-house-studio/context";
+import type { HarnessSessionStore, TaskSessionStore, Summarizer } from "@little-house-studio/context";
 import { ModelCaller } from "@little-house-studio/llm";
 import type { APIPreset } from "@little-house-studio/llm";
 import type { LLMClient } from "@little-house-studio/llm";
@@ -36,6 +37,11 @@ export interface AppRuntimeOptions {
   llmClient: LLMClient;
   maouRoot?: string;
   projectRoot?: string;
+  /** ContextEngine 压缩闭环（可选）；同时提供 harnessStore+taskStore 时激活。 */
+  harnessStore?: HarnessSessionStore;
+  taskStore?: TaskSessionStore;
+  /** 可插拔 LLM 摘要器（缺省回退确定性 truncate）。 */
+  summarizer?: Summarizer;
 }
 
 /**
@@ -49,6 +55,9 @@ export class Runtime {
   private llmClient: LLMClient;
   private maouRoot: string;
   private projectRoot: string;
+  private harnessStore?: HarnessSessionStore;
+  private taskStore?: TaskSessionStore;
+  private summarizer?: Summarizer;
   private agentRuntime: AgentRuntime | null = null;
   private appLogger = createAppLogger();
   /**
@@ -66,6 +75,9 @@ export class Runtime {
     this.llmClient = options.llmClient;
     this.maouRoot = options.maouRoot ?? join(process.env.HOME ?? '', '.maou');
     this.projectRoot = options.projectRoot ?? process.cwd();
+    this.harnessStore = options.harnessStore;
+    this.taskStore = options.taskStore;
+    this.summarizer = options.summarizer;
     this.gitWatcher = new GitWatcher(this.maouRoot, this.projectRoot);
   }
 
@@ -190,6 +202,9 @@ export class Runtime {
         log: (level, msg) => console[level === "error" ? "error" : "log"](`[Runtime] ${msg}`),
         maouRoot: this.maouRoot,
         projectRoot: this.projectRoot,
+        harnessStore: this.harnessStore,
+        taskStore: this.taskStore,
+        summarizer: this.summarizer,
       });
     }
     return this.agentRuntime;
