@@ -21,17 +21,18 @@ import { join } from "node:path";
 
 /**
  * 编程场景默认工具白名单。
- * 工具名对齐 @little-house-studio/tools 内置实现 + ROLE/default/PERMISSION.jsonc。
+ * 工具名对齐 @little-house-studio/tools 内置实现的真实 name 字段
+ * （reader/write_file/edit_file/glob/grep/find_code/use_terminal/search_internet/...）。
  */
 export const CODING_TOOL_WHITELIST = [
-  "read",
-  "write-file",
-  "edit-file",
+  "reader",
+  "write_file",
+  "edit_file",
   "glob",
   "grep",
-  "bash",
-  "terminal_manage",
-  "internet-search",
+  "find_code",
+  "use_terminal",
+  "search_internet",
   "use_skill",
   "find_skill",
   "task_finish",

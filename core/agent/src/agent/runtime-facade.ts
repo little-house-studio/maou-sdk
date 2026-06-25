@@ -72,7 +72,7 @@ export class Runtime {
   private getRuntime(): AgentRuntime {
     if (!this.agentRuntime) {
       const config = this.configStore.get();
-      const compiler = new PromptCompiler({ promptRoot: config.api.promptRoot, projectRoot: process.cwd() });
+      const compiler = new PromptCompiler({ promptRoot: config.api.promptRoot, projectRoot: this.projectRoot });
 
       // 注入 LLM POST 日志记录器 —— 每次 LLM 调用自动写入 raw.jsonl
       const sessionStore = this.sessionStore;
@@ -189,6 +189,7 @@ export class Runtime {
         }),
         log: (level, msg) => console[level === "error" ? "error" : "log"](`[Runtime] ${msg}`),
         maouRoot: this.maouRoot,
+        projectRoot: this.projectRoot,
       });
     }
     return this.agentRuntime;

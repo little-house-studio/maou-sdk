@@ -119,9 +119,18 @@ export class TerminalTool extends Tool {
 
     const id = params.id ? String(params.id) : undefined;
     const background = Boolean(params.background);
+    // cwd 解析：默认在项目工作目录（与 reader/glob/grep 等文件工具一致，操作真实项目）。
+    // 仅当显式 sandboxMode 为隔离模式时才落到 sandboxRoot；否则旧逻辑会把终端命令
+    // 永远困在 ~/.maou/sandbox/<session>（sandboxRoot 总有值），导致看不到项目文件。
+    const sandboxed =
+      ctx.sandboxMode === "sandbox" ||
+      ctx.sandboxMode === "strict" ||
+      ctx.sandboxMode === "isolated";
     const cwd = params.cwd
       ? String(params.cwd)
-      : ctx.sandboxRoot || ctx.workingDir;
+      : sandboxed
+        ? (ctx.sandboxRoot || ctx.workingDir || ctx.projectRoot)
+        : (ctx.workingDir || ctx.projectRoot || ctx.sandboxRoot);
     const timeoutSec = params.timeout != null ? Number(params.timeout) : (background ? 0 : 120);
     const resultLimit = params.result_limit != null ? Number(params.result_limit) : 5000;
 
