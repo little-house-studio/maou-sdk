@@ -19,6 +19,7 @@
 
 import { Tool } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
+import { compressTerminalOutput } from "../../compress/output-compressor.js";
 import { createToolResponse } from "../../base.js";
 import { truncateMiddle, formatMetadata } from "../../browser/god_tool/use_browser/_util.js";
 
@@ -174,7 +175,9 @@ export class TerminalTool extends Tool {
         terminal_id: result.terminalId,
         duration_ms: Math.round(result.durationMs),
       });
-      const body = result.output || (ok ? "（无输出）" : `命令${status}`);
+      // 摄入层压缩：测试输出只留失败+摘要、通用输出去噪去重超长截断（对标 RTK）。短输出不动。
+      const compressed = result.output ? compressTerminalOutput(command, result.output) : "";
+      const body = compressed || (ok ? "（无输出）" : `命令${status}`);
 
       return createToolResponse(ok, `${body}\n\n${meta}`, {
         payload: {

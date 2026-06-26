@@ -46,3 +46,16 @@ export type {
 // ── 动态工具加载器 ──
 export { DynamicToolLoader } from './dynamic-tool-loader.js'
 export type { DynamicToolLoadResult } from './dynamic-tool-loader.js'
+
+// ── 工具输出压缩器（摄入层 token 压缩，对标 RTK）──
+export {
+  compressOutput,
+  compressTerminalOutput,
+  compressTestOutput,
+  dedupeConsecutive,
+  truncateMiddle,
+  stripNoise,
+  extractSignatures,
+  groupGrepByFile,
+} from './compress/output-compressor.js'
+export type { CompressOptions } from './compress/output-compressor.js'

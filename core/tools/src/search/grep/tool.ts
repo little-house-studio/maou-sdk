@@ -10,6 +10,7 @@ import { resolve, relative, join, extname } from "node:path";
 import { Tool } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
+import { groupGrepByFile } from "../../compress/output-compressor.js";
 
 /** Node.js 降级方案用的跳过目录（rg 模式自动读 .gitignore） */
 const SKIP_DIRS = new Set([
@@ -90,8 +91,10 @@ function searchWithRg(opts: RgOptions): Promise<string> {
         return;
       }
       const lines = (stdout ?? "").split("\n").filter((l) => l.length > 0);
-      const limited = lines.slice(0, opts.headLimit).join("\n");
-      resolve(limited);
+      const sliced = lines.slice(0, opts.headLimit);
+      // content 模式按文件归组，去掉重复路径前缀（无损重组，省 token）。
+      const finalLines = opts.outputMode === "content" ? groupGrepByFile(sliced) : sliced;
+      resolve(finalLines.join("\n"));
     });
   });
 }

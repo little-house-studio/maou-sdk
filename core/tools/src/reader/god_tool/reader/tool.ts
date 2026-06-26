@@ -9,6 +9,7 @@ import { Tool } from "../../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../../base.js";
 import { createToolResponse } from "../../../base.js";
 import { safePath, errToString } from "../../../browser/god_tool/use_browser/_util.js";
+import { extractSignatures } from "../../../compress/output-compressor.js";
 
 const IMAGE_MIMES: Record<string, string> = {
   ".png": "image/png",
@@ -65,6 +66,11 @@ export class ReadTool extends Tool {
         max_chars: {
           type: "integer",
           description: "最大返回字符数。",
+        },
+        mode: {
+          type: "string",
+          enum: ["full", "signatures"],
+          description: "读取模式。signatures：只返回函数/类/接口签名（剥掉函数体），读大代码文件时极省 token；默认 full。",
         },
       },
       required: ["path"],
@@ -124,6 +130,22 @@ export class ReadTool extends Tool {
       let content = readFileSync(fullPath, "utf-8");
       const lines = content.split("\n");
       const totalLines = lines.length;
+
+      // 签名模式（对标 RTK -l aggressive）：只给函数/类/接口签名，剥掉函数体，省 token。
+      // 显式 mode/signatures/outline 触发；抽不到签名（非代码）则回退正常读取。
+      const sigMode =
+        params.mode === "signatures" || params.signatures === true || params.outline === true;
+      if (sigMode) {
+        const sigs = extractSignatures(content, extname(fullPath).toLowerCase());
+        if (sigs) {
+          const sigCount = sigs.split("\n").length;
+          return createToolResponse(
+            true,
+            `[path=${fullPath} | total_lines=${totalLines} | mode=signatures | ${sigCount} 个签名]\n${sigs}`,
+            { payload: { path: fullPath, total_lines: totalLines, mode: "signatures", signature_count: sigCount } },
+          );
+        }
+      }
 
       const startLine = params.start_line != null ? Number(params.start_line) : 1;
       const endLine = params.end_line != null ? Number(params.end_line) : totalLines;
