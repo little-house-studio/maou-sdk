@@ -315,12 +315,14 @@ impl TerminalRegistry {
 
     /// 持久化所有终端
     fn persist_all(&self) {
+        // try_lock：跳过当前被持有的 terminal，避免与持锁调用者（logs/write/kill 等在
+        // 持有 entry.lock() 时调用 persist_all）发生重入死锁——std::sync::Mutex 不可重入。
+        // 被跳过的 terminal 会在下次 persist（解锁后）写入，最终一致。
         let entries: Vec<PersistedTerminal> = self
             .terminals
             .iter()
-            .map(|entry| {
-                let terminal = entry.value().lock().unwrap();
-                terminal.to_persisted()
+            .filter_map(|entry| {
+                entry.value().try_lock().ok().map(|terminal| terminal.to_persisted())
             })
             .collect();
 
