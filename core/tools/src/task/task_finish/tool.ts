@@ -40,7 +40,7 @@ export class TaskFinishTool extends Tool {
     params: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResponse> {
-    const taskId = String(params.task_id ?? "").trim();
+    const taskId = String(params.task_id ?? params.taskId ?? params.id ?? "").trim();
     const summary = String(params.summary ?? "").trim();
 
     if (!taskId) {
