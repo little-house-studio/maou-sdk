@@ -58,4 +58,4 @@ export {
   extractSignatures,
   groupGrepByFile,
 } from './compress/output-compressor.js'
-export type { CompressOptions } from './compress/output-compressor.js'
+export type { CompressOptions, CompressLevel } from './compress/output-compressor.js'

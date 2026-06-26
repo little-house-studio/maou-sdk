@@ -60,6 +60,8 @@ export interface ToolContext {
   agentMode: string
   pluginSettings: Record<string, unknown>
   workingDir: string
+  /** 工具输出压缩级别：off=不压；normal=保守(默认)；aggressive=更激进。由 AgentRuntime 从 agent.json 注入。 */
+  compressionLevel?: "off" | "normal" | "aggressive"
 }
 export interface ToolResponse {
   ok: boolean
@@ -238,3 +240,5 @@ export {
   DEFAULT_HOST,
 } from './utils.js'
 export { detectExpression } from './expression.js'
+export { Profiler } from './profiler.js'
+export type { SpanRecord, SpanSummary, ProfileReport } from './profiler.js'

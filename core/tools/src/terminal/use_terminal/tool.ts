@@ -176,7 +176,10 @@ export class TerminalTool extends Tool {
         duration_ms: Math.round(result.durationMs),
       });
       // 摄入层压缩：测试输出只留失败+摘要、通用输出去噪去重超长截断（对标 RTK）。短输出不动。
-      const compressed = result.output ? compressTerminalOutput(command, result.output) : "";
+      // 级别由 ctx.compressionLevel（agent.json tool_compression）控制，off 时原样。
+      const compressed = result.output
+        ? compressTerminalOutput(command, result.output, ctx.compressionLevel ?? "normal")
+        : "";
       const body = compressed || (ok ? "（无输出）" : `命令${status}`);
 
       return createToolResponse(ok, `${body}\n\n${meta}`, {

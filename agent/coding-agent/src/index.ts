@@ -80,6 +80,8 @@ export interface CodingAgentOptions {
   toolWhitelist?: readonly string[];
   /** 强制重写已存在的 agent 定义（默认仅在缺失时创建）。 */
   forceMaterialize?: boolean;
+  /** 工具输出压缩级别（写进 agent.json tool_compression）：off/normal/aggressive。默认 normal。 */
+  toolCompression?: "off" | "normal" | "aggressive";
   /** 启用 ContextEngine 压缩闭环（默认 true）。关闭则回退 maybeCompress（truncate）。 */
   enableCompression?: boolean;
   /** 可插拔 LLM 摘要器（缺省回退确定性 truncate）。 */
@@ -121,7 +123,7 @@ export interface CodingAgent {
 export function materializeCodingAgent(
   name: string,
   maouRoot: string,
-  opts?: { roundLimit?: number; toolWhitelist?: readonly string[]; force?: boolean },
+  opts?: { roundLimit?: number; toolWhitelist?: readonly string[]; force?: boolean; toolCompression?: "off" | "normal" | "aggressive" },
 ): void {
   const dir = join(maouRoot, "agents", name);
   const roleDir = join(dir, "ROLE");
@@ -130,6 +132,7 @@ export function materializeCodingAgent(
   const permissionPath = join(dir, "PERMISSION.jsonc");
   const whitelist = opts?.toolWhitelist ?? CODING_TOOL_WHITELIST;
   const roundLimit = opts?.roundLimit ?? DEFAULT_CODING_ROUND_LIMIT;
+  const toolCompression = opts?.toolCompression ?? "normal";
   const force = opts?.force ?? false;
 
   mkdirSync(roleDir, { recursive: true });
@@ -149,6 +152,8 @@ export function materializeCodingAgent(
       notes: "",
       round_limit: roundLimit,
       tools: [...whitelist],
+      // 工具输出压缩级别（摄入层省 token）：off/normal/aggressive。可手动改本文件调整。
+      tool_compression: toolCompression,
       created_at: now,
       updated_at: now,
     };
@@ -185,6 +190,7 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     roundLimit: opts.roundLimit,
     toolWhitelist,
     force: opts.forceMaterialize,
+    toolCompression: opts.toolCompression,
   });
 
   // ContextEngine 压缩闭环：默认启用，构造双 Store 注入 → AgentRuntime 每轮 sync→compress→落盘。

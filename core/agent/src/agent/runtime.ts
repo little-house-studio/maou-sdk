@@ -39,6 +39,8 @@ import { deriveJsonSettings, StreamJsonAccumulator } from "@little-house-studio/
 import type { ToolRegistry, ToolExecutor } from "@little-house-studio/tools";
 import { cleanupAgentTerminals, listTerminals, getTerminalLogs } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
+import { Profiler } from "@little-house-studio/types";
+import type { Hooks } from "./hooks.js";
 import { existsSync, mkdirSync, cpSync, readdirSync, rmSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -70,6 +72,8 @@ export interface RuntimeOptions {
   taskStore?: TaskSessionStore;
   /** 可插拔 LLM 摘要器（compress 时生成真摘要；缺省回退确定性 truncate）。 */
   summarizer?: Summarizer;
+  /** 钩子管理器（可选）。注入后 agent 循环会在各生命周期点触发 hooks。 */
+  hooks?: Hooks;
 }
 
 export interface ModelCallParams {
@@ -132,6 +136,8 @@ export class AgentRuntime {
   private summarizer?: Summarizer;
   /** 压缩回调（由外部注入，用于压缩区落盘） */
   onCompress?: (sessionId: string, stage: string, summary: string, taskBlocks: string[]) => void;
+  /** 钩子管理器（可选） */
+  private hooks?: Hooks;
 
   constructor(options: RuntimeOptions) {
     this.compiler = options.compiler;
@@ -147,6 +153,7 @@ export class AgentRuntime {
     this.harnessStore = options.harnessStore;
     this.taskStore = options.taskStore;
     this.summarizer = options.summarizer;
+    this.hooks = options.hooks;
 
     // 初始化上下文管理层
     this.sessionManager = new SessionManager(this.sessions, this.maouRoot);
@@ -162,8 +169,11 @@ export class AgentRuntime {
     userMessage: string,
     options: RunOptions,
   ): AsyncGenerator<StreamEvent> {
+    // ── 性能埋点：本次 run 的 profiler（常驻、低开销，定位各阶段耗时）──
+    const prof = new Profiler(`run:${(sessionId ?? "new").slice(0, 8)}`);
+
     // ── 1. 确保 session 存在 ──
-    const session = this.sessions.ensure(sessionId ?? undefined);
+    const session = prof.sync("ensure_session", () => this.sessions.ensure(sessionId ?? undefined));
     sessionId = session.id;
     this.log("info", `[RUN] start session=${sessionId} msg_len=${userMessage.length}`);
 
@@ -175,6 +185,7 @@ export class AgentRuntime {
     let effectiveRoundLimit = this.agentRoundLimit;
     let agentPromptRoot: string | null = null;
     let agentEntrypoint: string | null = null;
+    let compressionLevel: "off" | "normal" | "aggressive" = "normal";
     try {
       const registry = new AgentRegistry(maouRoot, this.projectRoot);
       const agentEntry = registry.get(agentName);
@@ -182,6 +193,9 @@ export class AgentRuntime {
         effectiveRoundLimit = agentEntry.round_limit;
         this.log("info", `[RUN] agent=${agentName} round_limit=${effectiveRoundLimit}`);
       }
+      // 工具输出压缩级别（agent.json tool_compression）
+      const tc = (agentEntry as { tool_compression?: string } | null)?.tool_compression;
+      if (tc === "off" || tc === "normal" || tc === "aggressive") compressionLevel = tc;
       // 文件即 Agent：使用约定目录的 promptRoot 和 entrypoint
       agentPromptRoot = registry.getPromptRoot(agentName);
       agentEntrypoint = registry.getPromptEntrypoint(agentName);
@@ -212,6 +226,7 @@ export class AgentRuntime {
 
     // yield session 事件
     yield this.event("session", { sessionId });
+    this.hooks?.sessionStart(sessionId!);
 
     // ── 2. 编译 prompt ──
     yield this.event("status", { text: "编译 Prompt..." });
@@ -221,9 +236,20 @@ export class AgentRuntime {
     let systemPrompt: string;
     const origPromptRoot = this.compiler.promptRoot;
     const origEntrypoint = (this.compiler as any).entrypoint;
+    // 仅当 agent 约定目录的入口文件真实存在时才切换 promptRoot；
+    // 否则保持 config 全局 promptRoot（如 ROLE/default）。
+    // 修复：getPromptRoot 在无 SYSTEM.md/instructions.md 时会回退到不存在的约定路径，
+    // 导致 compile() ENOENT、系统提示静默退化为错误字符串、persona 丢失。
+    const useAgentRoot = Boolean(
+      agentPromptRoot && agentEntrypoint && existsSync(join(agentPromptRoot, agentEntrypoint)),
+    );
+    if (agentPromptRoot && agentEntrypoint && !useAgentRoot) {
+      this.log("warning", `agent=${agentName} 约定 prompt 入口缺失（${join(agentPromptRoot, agentEntrypoint)}），回退全局 promptRoot=${origPromptRoot}`);
+    }
+    const endCompile = prof.start("compile_prompt");
     try {
-      if (agentPromptRoot && agentEntrypoint) {
-        this.compiler.configure(agentPromptRoot, agentEntrypoint);
+      if (useAgentRoot) {
+        this.compiler.configure(agentPromptRoot!, agentEntrypoint!);
       }
       systemPrompt = this.compiler.compile();
     } catch (err) {
@@ -231,23 +257,27 @@ export class AgentRuntime {
       this.log("warning", `Prompt 编译失败: ${err}`);
     } finally {
       // 恢复原始配置
-      if (agentPromptRoot && agentEntrypoint) {
+      if (useAgentRoot) {
         this.compiler.configure(origPromptRoot, origEntrypoint);
       }
+      endCompile();
     }
     yield this.logEvent("info", `Prompt 编译完成，长度=${systemPrompt.length}`);
 
     // ── 2a. 编译 BEFORE_USER.md ──
     let beforeUserContent = "";
+    const endBeforeUser = prof.start("compile_before_user");
     try {
       beforeUserContent = this.compiler.compile("BEFORE_USER.md");
       yield this.logEvent("info", `BEFORE_USER 编译完成，长度=${beforeUserContent.length}`);
     } catch {
       // BEFORE_USER.md 可能不存在，静默跳过
+    } finally {
+      endBeforeUser();
     }
 
     // ── 2b. 编译动态注入内容（board / pending / agents 状态） ──
-    const dynamicInjections = compileDynamicContext(maouRoot, agentName);
+    const dynamicInjections = prof.sync("dynamic_context", () => compileDynamicContext(maouRoot, agentName));
 
     // ── 2c. 加载 OUTPUT.jsonc 派生 jsonSettings（用于 response_format 强制 JSON 输出） ──
     // 文件即 Agent：OUTPUT.jsonc 可在 agent 根目录或 ROLE/ 下
@@ -328,6 +358,7 @@ export class AgentRuntime {
 
     // ── 将用户消息写入 session（供后续请求回溯历史） ──
     this.sessions.appendMessage(sessionId!, "user", userMessage);
+    this.hooks?.preMessage({ role: "user", content: userMessage } as any);
 
     // ── 3. Agent 循环 ──
     let roundCount = 0;
@@ -338,11 +369,13 @@ export class AgentRuntime {
       // 检查中断信号
       if (options.abortSignal?.aborted) {
         this.log("info", `[RUN] session=${sessionId} 收到中断信号，停止循环`);
+        this.hooks?.abort("用户中断");
         yield this.event("info", { message: "已中断" });
         break;
       }
 
       this.log("info", `[RUN] round ${roundCount + 1} start`);
+      this.hooks?.agentStart(roundCount + 1);
 
       // ── 3a-pre. 注入后台终端完成/超时通知 ──
       {
@@ -381,8 +414,10 @@ export class AgentRuntime {
         roundCount === 0 ? dynamicInjections : compileDynamicContext(maouRoot, agentName);
 
       // ── 3a. 构建消息数组 ──
-      const memoryStore = new MemoryStore(this.maouRoot, agentName);
-      const memoryResult = memoryStore.recall(userMessage, 5);
+      const memoryResult = prof.sync("memory_recall", () => {
+        const memoryStore = new MemoryStore(this.maouRoot, agentName);
+        return memoryStore.recall(userMessage, 5);
+      }, { round: currentRound });
 
       // 自动压缩检查
       // 上下文压缩阈值应基于输入上下文上限（maxContext），而非输出上限（maxTokens）。
@@ -395,6 +430,7 @@ export class AgentRuntime {
       // 否则保持原始 sessionMessages 路径（保留多模态图片旁路）。
       let compressedHistory: LLMMessage[] | undefined;
       const engineEnabled = Boolean(this.harnessStore && this.taskStore);
+      const endCompress = prof.start("context_compress", { round: currentRound, path: engineEnabled ? "engine" : "legacy" });
       if (engineEnabled) {
         try {
           const engine = new ContextEngine({
@@ -406,6 +442,7 @@ export class AgentRuntime {
           engine.initFromSessionMessages(sessionMessages as unknown as Array<Record<string, unknown>>);
           const tokens = estimateTokens(engine.getHistory());
           if (tokens >= contextLimit * (CONTEXT_THRESHOLD_PERCENT / 100)) {
+            this.hooks?.preCompact();
             if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
               this.checkpointStore.createCheckpoint(
                 sessionId!, `auto_before_compression_round_${currentRound}`, true, "compression",
@@ -431,6 +468,7 @@ export class AgentRuntime {
                 "info",
                 `上下文已压缩 (engine, stage=${report.stage}，token: ${report.originalTokens} → ${report.compressedTokens})`,
               );
+              this.hooks?.postCompact(report.compressedTokens ?? 0);
             }
           }
         } catch (err) {
@@ -438,8 +476,9 @@ export class AgentRuntime {
           compressedHistory = undefined;
         }
       }
+      endCompress();
 
-      const messages = buildMessages({
+      const messages = prof.sync("build_messages", () => buildMessages({
         systemPrompt,
         sessionMessages,
         roundCount,
@@ -455,7 +494,7 @@ export class AgentRuntime {
         structuredMemory: memoryResult.formattedContext,
         projectRoot: this.projectRoot,
         compressedHistory,
-      });
+      }), { round: currentRound });
 
       // ── 历史段最终化 ──
       let finalMessages: Record<string, unknown>[];
@@ -465,6 +504,7 @@ export class AgentRuntime {
       } else {
         // 旧路径：maybeCompress（同步 truncate shim）。
         // 压缩前自动快照
+        this.hooks?.preCompact();
         if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
           this.checkpointStore.createCheckpoint(
             sessionId!,
@@ -474,7 +514,7 @@ export class AgentRuntime {
           );
         }
 
-        const compressResult = maybeCompress(messages, contextLimit);
+        const compressResult = prof.sync("context_compress_legacy", () => maybeCompress(messages, contextLimit), { round: currentRound });
         finalMessages = compressResult.messages;
         const compressed = compressResult.compressed;
         const droppedSummary = compressResult.droppedSummary;
@@ -505,6 +545,7 @@ export class AgentRuntime {
             "info",
             `上下文已压缩 (zone=${zoneName}${tokenStr})，消息数: ${sessionMessages.length}`,
           );
+          this.hooks?.postCompact(compressResult.compressedTokens ?? 0);
         }
       }
 
@@ -512,9 +553,12 @@ export class AgentRuntime {
       yield this.logEvent("info", `开始第 ${currentRound} 轮`);
       yield this.event("status", { text: "调用模型..." });
       yield this.logEvent("info", `调用模型: ${preset.model}`);
+      this.hooks?.agentThinking();
+      this.hooks?.responseStart();
 
       // ── 3b. 调用 LLM（流式） ──
       let result: ModelCallResult;
+      const endLlm = prof.start("llm_call", { round: currentRound, model: preset.model });
       try {
         const callGen = this.callModelFn({
           preset,
@@ -576,6 +620,15 @@ export class AgentRuntime {
       } catch (err) {
         this.log("warning", `[RUN] model call failed: ${err}`);
         result = this.errorCallResult(String(err));
+      } finally {
+        endLlm();
+      }
+
+      // 桥接 LLM 内部细分计时（首字节/生成）到 profiler，区分"网络等待"与"生成"
+      if (result.timing) {
+        const t = result.timing as { firstByteMs?: number; generationMs?: number; totalMs?: number };
+        if (typeof t.firstByteMs === "number") prof.record("llm_first_byte", t.firstByteMs, { round: currentRound });
+        if (typeof t.generationMs === "number") prof.record("llm_generation", t.generationMs, { round: currentRound });
       }
 
       // 保存原始响应
@@ -622,6 +675,8 @@ export class AgentRuntime {
         nativeToolCalls: result.nativeToolCalls.length > 0 ? result.nativeToolCalls : undefined,
         timing: result.timing,
       });
+      this.hooks?.responseEnd(contentToUse);
+      this.hooks?.postMessage({ role: "assistant", content: contentToUse } as any);
 
       // ── 3d/3e. 处理工具调用 ──
       if (result.nativeToolCalls.length > 0 && agentMode) {
@@ -633,15 +688,19 @@ export class AgentRuntime {
           result.nativeToolCalls,
           sandboxMode,
           agentName,
+          prof,
+          compressionLevel,
         );
 
         if (shouldContinue) {
+          this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
         }
       }
 
       // 无工具调用 → 退出循环
+      this.hooks?.agentStop(currentRound);
       break;
     }
 
@@ -653,6 +712,7 @@ export class AgentRuntime {
     }
 
     // ── 5. 后处理：提取记忆 + 持久化摘要 ──
+    const endPost = prof.start("post_processing");
     try {
       const finalSession = this.sessions.load(sessionId!);
       if (finalSession && finalSession.messages.length > 0) {
@@ -672,8 +732,16 @@ export class AgentRuntime {
       this.sessionManager.saveState();
     } catch (e) {
       this.log("warn", `[RUN] post-processing failed: ${e}`);
+    } finally {
+      endPost();
     }
 
+    // ── 性能报告：emit profile 事件 + 日志汇总（定位慢/异常环节）──
+    const report = prof.report();
+    this.log("info", `[PROFILE]\n${prof.renderText()}`);
+    yield this.event("profile", { report });
+
+    this.hooks?.sessionEnd(sessionId!);
     yield this.event("done", {
       sessionId,
       rounds: roundCount,
@@ -693,6 +761,8 @@ export class AgentRuntime {
     toolCalls: LLMToolCall[],
     sandboxMode: string,
     agentName: string,
+    prof?: Profiler,
+    compressionLevel: "off" | "normal" | "aggressive" = "normal",
   ): AsyncGenerator<StreamEvent, boolean> {
     // 工具调用前自动快照
     if (this.checkpointStore.shouldAutoCheckpoint("tool_call")) {
@@ -714,6 +784,7 @@ export class AgentRuntime {
       agentMode: "execute",
       pluginSettings: {},
       workingDir: this.projectRoot,
+      compressionLevel,
     };
 
     for (const toolCall of toolCalls) {
@@ -737,7 +808,27 @@ export class AgentRuntime {
       });
       yield this.logEvent("info", `执行工具: ${toolCall.name}`);
 
+      // ── pre_tool_use hook：返回 false 可拦截工具执行 ──
+      if (this.hooks) {
+        const allowed = this.hooks.preToolUse({ id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters });
+        if (!allowed) {
+          const blockedMsg = `工具 ${toolCall.name} 被钩子拦截`;
+          this.sessions.appendRawEntry(sessionId, {
+            type: "tool_result",
+            round,
+            created_at: new Date().toISOString(),
+            data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: blockedMsg, ok: false },
+          });
+          yield this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: blockedMsg, ok: false, round });
+          this.sessions.appendMessage(sessionId, "tool", blockedMsg, {
+            round, toolCallId: toolCall.id, tool_name: toolCall.name,
+          });
+          continue;
+        }
+      }
+
       try {
+        const endTool = prof?.start(`tool:${toolCall.name}`, { round });
         const result = await this.toolExecutor.executeSingle(
           {
             id: toolCall.id,
@@ -746,6 +837,7 @@ export class AgentRuntime {
           },
           context,
         );
+        endTool?.();
 
         const toolResultContent = result.result.message ?? JSON.stringify(result.result);
         const toolImages = result.result.images;
@@ -771,6 +863,10 @@ export class AgentRuntime {
           round,
         });
         yield this.logEvent("info", `工具 ${toolCall.name} 完成: ok=${result.result.ok}`);
+        this.hooks?.postToolUse(
+          { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters },
+          { toolCallId: toolCall.id, name: toolCall.name, output: toolResultContent, success: result.result.ok, error: "", elapsed: 0 },
+        );
 
         // 追加 tool 结果到 session（含图片数据供多模态 LLM 使用）
         const toolMeta: Record<string, unknown> = {
@@ -787,6 +883,7 @@ export class AgentRuntime {
         this.sessions.appendMessage(sessionId, "tool", toolResultContent, toolMeta);
       } catch (err) {
         const errorMsg = `工具执行失败: ${err}`;
+        this.hooks?.toolError({ id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters }, errorMsg);
 
         // 失败也落盘 tool_result
         this.sessions.appendRawEntry(sessionId, {

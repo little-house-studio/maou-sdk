@@ -25,6 +25,21 @@ export interface CompressOptions {
   dedupe?: boolean;
   /** 去除 ANSI 转义码（默认 true）。 */
   stripAnsiCodes?: boolean;
+  /** 压缩级别；覆盖 maxLines/headLines/tailLines 的级别预设。默认 normal。 */
+  level?: CompressLevel;
+}
+
+/** 压缩级别：off=不压缩；normal=保守；aggressive=更激进（更低阈值）。 */
+export type CompressLevel = "off" | "normal" | "aggressive";
+
+/** 各级别的截断阈值；off 返回 null 表示不压缩。 */
+function levelThresholds(level: CompressLevel): { maxLines: number; headLines: number; tailLines: number } | null {
+  switch (level) {
+    case "off": return null;
+    case "aggressive": return { maxLines: 20, headLines: 12, tailLines: 6 };
+    case "normal":
+    default: return { maxLines: 40, headLines: 30, tailLines: 10 };
+  }
 }
 
 /** 去 ANSI 转义码 + 回车覆盖噪声。 */
@@ -64,14 +79,16 @@ export function truncateMiddle(text: string, headLines: number, tailLines: numbe
 
 /** 通用输出压缩：去噪 → 去重 → 超长截断头尾。短输出原样返回。 */
 export function compressOutput(text: string, opts: CompressOptions = {}): string {
+  if (!text) return text;
+  const th = levelThresholds(opts.level ?? "normal");
+  if (!th) return text; // off：原样返回
   const {
-    maxLines = 40,
-    headLines = 30,
-    tailLines = 10,
+    maxLines = th.maxLines,
+    headLines = th.headLines,
+    tailLines = th.tailLines,
     dedupe = true,
     stripAnsiCodes = true,
   } = opts;
-  if (!text) return text;
   let s = stripAnsiCodes ? stripNoise(text) : text;
   if (dedupe) s = dedupeConsecutive(s);
   if (s.split("\n").length > maxLines) s = truncateMiddle(s, headLines, tailLines);
@@ -88,14 +105,16 @@ const SUMMARY_RE = /(test result:|tests?\s+(passed|failed|run)|passed|failed|ski
  * 测试输出压缩：只保留失败相关行 + 摘要行，丢弃通过详情。
  * 若没检测到失败信号（可能全过或非标准格式），回退通用压缩，避免误删。
  */
-export function compressTestOutput(text: string): string {
+export function compressTestOutput(text: string, level: CompressLevel = "normal"): string {
+  if (level === "off") return text;
+  const th = levelThresholds(level)!;
   const lines = stripNoise(text).split("\n");
-  if (lines.length <= 40) return dedupeConsecutive(lines.join("\n"));
+  if (lines.length <= th.maxLines) return dedupeConsecutive(lines.join("\n"));
 
   const hasFailure = lines.some((l) => FAIL_RE.test(l));
   if (!hasFailure) {
     // 全过 / 无明显失败：保留摘要 + 头尾即可
-    return compressOutput(text);
+    return compressOutput(text, { level });
   }
 
   const kept: string[] = [];
@@ -116,12 +135,12 @@ export function compressTestOutput(text: string): string {
 }
 
 /** 终端输出语义压缩：按命令类型选策略。 */
-export function compressTerminalOutput(command: string, output: string): string {
-  if (!output) return output;
+export function compressTerminalOutput(command: string, output: string, level: CompressLevel = "normal"): string {
+  if (!output || level === "off") return output;
   const cmd = command.trim().toLowerCase();
-  if (TEST_CMD_RE.test(cmd)) return compressTestOutput(output);
+  if (TEST_CMD_RE.test(cmd)) return compressTestOutput(output, level);
   // git 与其它命令走通用（去噪+去重+超长截断），diff/log 过长时保留头尾
-  return compressOutput(output);
+  return compressOutput(output, { level });
 }
 
 // ─── 代码签名抽取（reader 签名模式，对标 RTK -l aggressive）──────────────────
