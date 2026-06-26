@@ -1,0 +1,18 @@
+{
+  "name": "@little-house-studio/lsp-engine",
+  "version": "0.1.0",
+  "description": "Headless LSP 客户端引擎 — 诊断/跳转/引用/类型/重命名/补全，多语言可扩展",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "README.md"],
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc --noEmit", "clean": "rm -rf dist" },
+  "dependencies": {
+    "vscode-jsonrpc": "^8.2.0",
+    "vscode-languageserver-protocol": "^3.17.5"
+  },
+  "devDependencies": { "@types/node": "^22.0.0", "typescript": "^5.7.0" },
+  "engines": { "node": ">=20" }
+}

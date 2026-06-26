@@ -4,16 +4,18 @@ import { Box, Text } from "ink";
 import { gaugeBar, sparkline, renderWireframe, CUBE, CRYSTAL, type WireModel } from "../canvas/primitives.js";
 import { currentTheme } from "../theme.js";
 
-// ── Gauge：血条/魔条 ─────────────────────────────────────────────────────────
+// ── Gauge：血条/魔条（VFD 荧光分段风格 · 密集）─────────────────────────────
 export function Gauge({ label, value, max, width = 16, color }: { label: string; value: number; max: number; width?: number; color?: string }) {
   const ratio = max > 0 ? value / max : 0;
   const t = currentTheme;
   const c = color ?? (ratio > 0.85 ? t.status.err : ratio > 0.6 ? t.status.warn : t.gauge[1]!);
+  const pct = Math.round(ratio * 100);
   return (
     <Box>
-      <Text color={t.dim}>{label.padEnd(5)} </Text>
+      {/* 标签反色填色 —— VFD 七段数码风格 */}
+      <Text backgroundColor={c} color={t.bg} bold> {label.padEnd(4)} </Text>
       <Text color={c}>{gaugeBar(ratio, width)}</Text>
-      <Text color={t.dim}> {Math.round(ratio * 100)}%</Text>
+      <Text color={t.dim}> {pct}%</Text>
     </Box>
   );
 }

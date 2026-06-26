@@ -11,7 +11,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { render, Box, Text, useApp, useStdout } from "ink";
 import { currentTheme, setTheme, THEMES } from "./theme.js";
-import { Panel } from "./components/Panel.js";
+import { Panel, VfdTag, Divider } from "./components/Panel.js";
 import { Gauge, Spark, Wireframe, AsciiArt, Spinner } from "./components/graphics.js";
 import { Message } from "./components/Chat.js";
 import { InputBox, colToCharIndex } from "./components/InputBox.js";
@@ -36,7 +36,7 @@ import { join } from "node:path";
 
 const PAGES = [
   "① 多分割框 + 响应式布局（缩放终端实时重排）",
-  "② Gauge 血条/魔条",
+  "② Gauge 血条/魔条（VFD 反色标签）",
   "③ Sparkline 彩色函数曲线",
   "④ 渐变：逐字/横条/竖块/对角场",
   "⑤ 3D 旋转线框（水晶/立方体）",
@@ -51,7 +51,8 @@ const PAGES = [
   "⑭ 不透明弹窗（命令/模型/帮助）",
   "⑮ 鼠标 SGR 实时事件（需开鼠标）",
   "⑯ 动画 spinner + 表情 + 主题切换",
-  "⑰ 验收清单总览",
+  "⑰ VFD 反色填色框 + 密集布局展示",
+  "⑱ 验收清单总览",
 ];
 
 const TRANSCRIPT: { who: string; c: "user" | "assistant" | "system"; text: string }[] = [
@@ -67,7 +68,7 @@ const TRANSCRIPT: { who: string; c: "user" | "assistant" | "system"; text: strin
   { who: "你", c: "user", text: "帮我订 Day1 的清水寺门票" },
   { who: "Vampire", c: "assistant", text: "清水寺无需预约，现场购票 ¥400" },
   { who: "你", c: "user", text: "好，谢谢" },
-  { who: "Vampire", c: "assistant", text: "祝旅途愉快 🦇 需要随时叫我" },
+  { who: "Vampire", c: "assistant", text: "祝旅途愉快 ◆ 需要随时叫我" },
   { who: "系统", c: "system", text: "本轮 3 工具调用 · 1.2k tokens · ¥0.01" },
 ];
 
@@ -76,9 +77,9 @@ const MD_SAMPLE = `# 角色卡：Vampire
 **Maou** 是一个 *prompt-first* 的 AI Agent，支持 \`工具调用\` 与多模型切换。
 
 ## 核心能力
-- 🩸 多 LLM provider（<b>25+</b> 厂商）
-- 🦇 工具系统 <i>完全可插拔</i>
-- 🌙 文档见 [SDK](https://example.com)
+- ● 多 LLM provider（<b>25+</b> 厂商）
+- ◆ 工具系统 <i>完全可插拔</i>
+- ○ 文档见 [SDK](https://example.com)
 
 > 设计原则：插件就该长成插件的样子。
 
@@ -115,7 +116,7 @@ export function Demo() {
   const [cursor, setCursor] = useState(0);
   const [imgMode, setImgMode] = useState<"block" | "braille" | "ramp" | "half">("block");
   const [lastMouse, setLastMouse] = useState("（还没事件）");
-  const [themeName, setThemeName] = useState("vampire");
+  const [themeName, setThemeName] = useState("acid");
   const [mouseOn, setMouseOn] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [focusIdx, setFocusIdx] = useState(0);
@@ -129,10 +130,14 @@ export function Demo() {
   const img = ensureTestImage();
   const chat = useScroll(TRANSCRIPT.length, 9);
 
+  // 动画 interval —— 鼠标关闭时暂停（让终端原生框选不被重绘打断）
+  // 鼠标开启时才动画；关闭时静态，方便框选复制
+  const animatedPages = [4, 8, 11, 15]; // 3D线框/消息流spinner/聚焦流光/spinner
   useEffect(() => {
-    const id = setInterval(() => { setFrame((f) => f + 1); setAngle((a) => a + 0.12); }, 90);
+    if (!mouseOn || !animatedPages.includes(page)) return;
+    const id = setInterval(() => { setFrame((f) => f + 1); setAngle((a) => a + 0.12); }, 120);
     return () => clearInterval(id);
-  }, []);
+  }, [mouseOn, page]);
 
   const doCopy = (text: string) => {
     if (text && stdout) stdout.write(osc52(text));
@@ -222,36 +227,38 @@ export function Demo() {
   const Hint = ({ children }: { children: React.ReactNode }) => <Text color={t.dim}>{children}</Text>;
 
   return (
-    <Box flexDirection="column" minHeight={28}>
-      {/* 顶栏 */}
-      <Box justifyContent="space-between" paddingX={1}>
-        <GradientText bold>{`⚔ Maou CLI 功能验收 [${page + 1}/${PAGES.length}]`}</GradientText>
+    <Box flexDirection="column" width={term.cols} height={term.rows} overflow="hidden">
+      {/* 顶栏 —— VFD 风格反色填色 */}
+      <Box justifyContent="space-between" paddingX={1} flexShrink={0}>
+        <GradientText bold>{`◆ Maou CLI [${page + 1}/${PAGES.length}]`}</GradientText>
         <Text>
-          <Text color={mouseOn ? t.status.ok : t.dim}>🖱 {mouseOn ? "ON" : "OFF"}</Text>
+          <Text color={mouseOn ? t.status.ok : t.dim}>■ {mouseOn ? "ON" : "OFF"}</Text>
           <Text color={t.dim}> ` 切 · {term.cols}×{term.rows} · q 退</Text>
         </Text>
       </Box>
 
-      <Box borderStyle="round" borderColor={t.border} flexDirection="column" paddingX={1} flexGrow={1} marginX={1}>
-        <Box marginBottom={1}><Text color={t.role.assistant} bold>{PAGES[page]}</Text></Box>
-
+      <Box borderStyle="single" borderColor={t.border} flexDirection="column" flexGrow={1} marginX={1} overflow="hidden">
+        <Box flexShrink={0}>
+          <Text backgroundColor={t.border} color={t.bg} bold> {PAGES[page]} </Text>
+        </Box>
+        <Box paddingX={1} flexDirection="column" flexGrow={1} overflow="hidden">
         {page === 0 && (
           <Box flexDirection="column">
             <Hint>断点: <Text color={t.accent}>{term.breakpoint}</Text> · 侧栏:{term.showSidebar ? "显示" : "折叠"} · HUD:{term.showHud ? "显示" : "折叠"}（缩放终端看变化）</Hint>
-            <Box height={9} marginTop={1}>
+            <Box height={9} overflow="hidden">
               {term.showSidebar && (
-                <Panel title="侧栏" icon="☰" width={14} focused>
-                  <Text color={t.fg}>✦ 新对话</Text>
-                  <Text color={t.fg}>◆ 选模型</Text>
-                  <Text color={t.fg}>⚡ 命令</Text>
+                <Panel title="侧栏" icon="≡" width={18} focused padX={1}>
+                  <Text color={t.fg}>✦ 新对话  ^N</Text>
+                  <Text color={t.fg}>◆ 模型    ^M</Text>
+                  <Text color={t.fg}>► 命令    ^K</Text>
                 </Panel>
               )}
-              <Panel title="对话" icon="✦" flexGrow={1}>
+              <Panel title="对话" icon="✦" width={Math.max(10, term.cols - 6 - (term.showSidebar ? 18 : 0) - (term.showHud ? 20 : 0))} padX={1}>
                 <Text color={t.fg}>中间主区（flex 自适应宽度）</Text>
                 <Text color={t.dim}>窄屏时侧栏/HUD 自动让位</Text>
               </Panel>
               {term.showHud && (
-                <Panel title="HUD" icon="❖" width={20}>
+                <Panel title="HUD" icon="❖" width={20} padX={1}>
                   <Gauge label="HP" value={7} max={10} width={10} />
                   <Gauge label="MP" value={4} max={10} width={10} color={t.spark[2]} />
                 </Panel>
@@ -324,7 +331,7 @@ export function Demo() {
 
         {page === 7 && (
           <Box flexDirection="column">
-            <Box borderStyle="round" borderColor={t.borderSoft} paddingX={1} flexDirection="column">
+            <Box borderStyle="single" borderColor={t.borderSoft} paddingX={1} flexDirection="column">
               <Markdown source={MD_SAMPLE} width={Math.min(60, term.cols - 8)} />
             </Box>
             <Box marginTop={1}><Check>标题/列表/代码块/引用/粗斜/删除线/链接 + 内联 HTML(&lt;b&gt;&lt;i&gt;&lt;code&gt;)</Check></Box>
@@ -334,7 +341,7 @@ export function Demo() {
         {page === 8 && (
           <Box flexDirection="column">
             {store.messages.map((m) => <Message key={m.id} msg={m} frame={frame} />)}
-            <Check>用户/助手分色 · 思考💭 · 工具卡片(✓) · token 统计</Check>
+            <Check>用户/助手分色 · 思考○ · 工具卡片(✓) · token 统计</Check>
           </Box>
         )}
 
@@ -345,7 +352,7 @@ export function Demo() {
               <ScrollView height={9} offset={chat.offset} contentHeight={TRANSCRIPT.length} width={Math.min(64, term.cols - 8)}>
                 {TRANSCRIPT.map((m, i) => (
                   <Text key={i} color={m.c === "user" ? t.role.user : m.c === "assistant" ? t.role.assistant : t.dim}>
-                    {m.c === "user" ? "▶" : m.c === "assistant" ? "✦" : "⚙"} {m.who}: {m.text}
+                    {m.c === "user" ? "►" : m.c === "assistant" ? "✦" : "▣"} {m.who}: {m.text}
                   </Text>
                 ))}
               </ScrollView>
@@ -359,15 +366,15 @@ export function Demo() {
             <Hint>按 <Text color={t.accent} bold>c</Text> 或 <Text color={t.accent} bold>空格</Text> 折叠/展开侧栏（带滑动动画）· 侧栏:{sidebarOpen ? "展开" : "收起"}</Hint>
             <Box height={8} marginTop={1}>
               <Collapsible open={sidebarOpen} size={18} axis="x">
-                <Box borderStyle="round" borderColor={t.accent} flexDirection="column" paddingX={1} width={18}>
-                  <Text color={t.accent} bold>☰ 菜单</Text>
+                <Box borderStyle="single" borderColor={t.accent} flexDirection="column" paddingX={1} width={18}>
+                  <Text color={t.accent} bold>≡ 菜单</Text>
                   <Text color={t.fg}>✦ 新对话</Text>
                   <Text color={t.fg}>◆ 模型</Text>
-                  <Text color={t.fg}>⚡ 命令</Text>
-                  <Text color={t.fg}>⚙ 设置</Text>
+                  <Text color={t.fg}>► 命令</Text>
+                  <Text color={t.fg}>▣ 设置</Text>
                 </Box>
               </Collapsible>
-              <Box borderStyle="round" borderColor={t.border} flexGrow={1} paddingX={1} marginLeft={sidebarOpen ? 0 : 0}>
+              <Box borderStyle="single" borderColor={t.border} flexGrow={1} paddingX={1} marginLeft={sidebarOpen ? 0 : 0}>
                 <Text color={t.fg}>主区域：侧栏收起时我会自动占满宽度</Text>
               </Box>
             </Box>
@@ -403,7 +410,7 @@ export function Demo() {
             <Box marginTop={1}>
               <Hint>光标索引 <Text color={t.accent}>{cursor}</Text>
                 {sel && sel[0] !== sel[1] ? <Text color={t.role.assistant}> · 选中 [{Math.min(sel[0], sel[1])},{Math.max(sel[0], sel[1])})</Text> : null}
-                {copied ? <Text color={t.status.ok}>　📋 {copied}</Text> : null}
+                {copied ? <Text color={t.status.ok}>　■ {copied}</Text> : null}
               </Hint>
             </Box>
             <Check>无修饰键同时：点击移光标 + 拖选复制(OSC52→真剪贴板) · 退格可删 · ↑↓ 行首/尾</Check>
@@ -426,7 +433,7 @@ export function Demo() {
         {page === 14 && (
           <Box flexDirection="column">
             <Text color={t.fg}>{mouseOn ? "点击/滚动屏幕任意处，下面实时显示：" : "按 ` 开启鼠标，再点击/滚动查看事件："}</Text>
-            <Box marginTop={1} borderStyle="round" borderColor={t.accent} paddingX={1}>
+            <Box marginTop={1} borderStyle="single" borderColor={t.accent} paddingX={1}>
               <Text color={t.role.toolResult}>最近事件: {lastMouse}</Text>
             </Box>
             <Box marginTop={1}><Check>SGR 鼠标：点击/释放/滚轮坐标实时解析（1000 模式，不抢拖选）</Check></Box>
@@ -440,7 +447,7 @@ export function Demo() {
               <Text color={t.fg}>   Pulse: </Text><Spinner frame={frame} kind="pulse" />
               <Text color={t.fg}>   表情: </Text><Text color={t.role.assistant} bold>{store.expression}</Text>
             </Box>
-            <Box marginTop={1}><Hint>主题: <Text color={t.accent}>{themeName}</Text> · 按 <Text color={t.accent} bold>t</Text> 切 vampire/cyber（全局换色）</Hint></Box>
+            <Box marginTop={1}><Hint>主题: <Text color={t.accent}>{themeName}</Text> · 按 <Text color={t.accent} bold>t</Text> 切 acid/vampire（全局换色）</Hint></Box>
             <Box marginTop={1}><GradientBar width={36} /></Box>
             <Box marginTop={1}><Gauge label="预览" value={frame % 11} max={10} width={20} /></Box>
             <Check>动画 spinner · 表情 · 主题切换全局换色（连渐变/血条一起变）</Check>
@@ -449,14 +456,73 @@ export function Demo() {
 
         {page === 16 && (
           <Box flexDirection="column">
+            <Hint>酸性配色 + VFD 反色填色框 + 密集布局（Acid Palette · 极简机能风）</Hint>
+            <Divider char="─" color={t.borderSoft} />
+            <Box flexDirection="column">
+              <Text color={t.dim}>▸ Mode 指示器（状态栏用，按 NORMAL/AUTO/其他 变色）：</Text>
+              <Box>
+                <VfdTag value="NORMAL" color={t.accent} />
+                <Text color={t.dim}> </Text>
+                <VfdTag value="AUTO" color={t.accent2} />
+                <Text color={t.dim}> </Text>
+                <VfdTag value="YOLO" color={t.status.err} />
+              </Box>
+            </Box>
+            <Divider char="─" color={t.borderSoft} />
+            <Box flexDirection="column">
+              <Text color={t.dim}>▸ 角色标签（消息流用，色块标签头部）：</Text>
+              <Box>
+                <VfdTag label="►" value="你" color={t.role.user} />
+                <Text color={t.dim}> </Text>
+                <VfdTag label="✦" value="Vampire" color={t.role.assistant} />
+                <Text color={t.dim}> </Text>
+                <VfdTag label="▣" value="系统" color={t.dim} />
+                <Text color={t.dim}> </Text>
+                <VfdTag label="◆" value="工具" color={t.role.tool} />
+              </Box>
+            </Box>
+            <Divider char="─" color={t.borderSoft} />
+            <Box flexDirection="column">
+              <Text color={t.dim}>▸ Gauge 标签（七段数码风格）：</Text>
+              <Gauge label="HP" value={8} max={10} width={20} />
+              <Gauge label="MP" value={3} max={10} width={20} color={t.spark[2]} />
+              <Gauge label="EXP" value={9} max={10} width={20} color={t.status.ok} />
+            </Box>
+            <Divider char="─" color={t.borderSoft} />
+            <Box flexDirection="column">
+              <Text color={t.dim}>▸ Panel 色块标题条（反色填色，细边框 single）：</Text>
+              <Panel title="磁带计数器" icon="❖" width={32} padX={1}>
+                <Text color={t.fg}>C-60 ▐█▌ 023:47</Text>
+                <Text color={t.dim}>第 23 轮 · 约 47% token</Text>
+              </Panel>
+            </Box>
+            <Divider char="─" color={t.borderSoft} />
+            <Box flexDirection="column">
+              <Text color={t.dim}>▸ 状态字段（VFD 分段，│ 分隔）：</Text>
+              <Box>
+                <VfdTag label="SESSION" value="d7f3a2e1" color={t.accent} />
+                <Text color={t.dim}> │ </Text>
+                <VfdTag label="MODEL" value="deepseek-v3" color={t.accent2} />
+                <Text color={t.dim}> │ </Text>
+                <VfdTag label="TOK" value="12.4k/128k" color={t.status.ok} />
+              </Box>
+            </Box>
+            <Check>反色填色框：Mode/角色/Gauge/Panel标题/状态字段 全套 VFD 风格</Check>
+            <Hint>设计原则：细边框 single · 线条分割而非留白 · 无阴影无渐变 · 空间利用率优先</Hint>
+          </Box>
+        )}
+
+        {page === 17 && (
+          <Box flexDirection="column">
             <Text color={t.role.assistant} bold>验收清单（逐页验过打勾）：</Text>
             <Box flexDirection="column" marginTop={1}>
-              {PAGES.slice(0, 16).map((p, i) => <Text key={i} color={t.fg}>  □ {p}</Text>)}
+              {PAGES.slice(0, 17).map((p, i) => <Text key={i} color={t.fg}>  □ {p}</Text>)}
             </Box>
-            <Box marginTop={1}><Text color={t.status.ok}>全部验过 = RPG 风 TUI 完整度达标 ✦</Text></Box>
+            <Box marginTop={1}><Text color={t.status.ok}>全部验过 = 磁带未来主义 TUI 完整度达标 ✦</Text></Box>
             <Hint>真实聊天请跑 `pnpm dev`（需配 ~/.maou/llm-config.json）</Hint>
           </Box>
         )}
+        </Box>
       </Box>
 
       {/* 页码点 */}

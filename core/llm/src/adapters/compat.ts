@@ -23,6 +23,9 @@ export type ThinkingFormat =
   | "string-thinking" // 旧式 <think> 标签
   | "ant-ling"; // 蚂蚁 Ling 的格式
 
+/** 思考级别（对标 OMP 的 effort 级别） */
+export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh";
+
 /** 结构化输出兼容（我们的扩展：pi 没有这个维度） */
 export type StructuredOutputCompat =
   | "json_schema" // 标准 OpenAI response_format json_schema
@@ -41,6 +44,8 @@ export interface OpenAICompat {
   supportsDeveloperRole?: boolean;
   /** 支持 `reasoning_effort` 字段（o-系列）；false 走 thinkingFormat */
   supportsReasoningEffort?: boolean;
+  /** 支持 `tool_choice` 参数；false 时不发送 tool_choice（DeepSeek V4 思考模式拒绝此参数） */
+  supportsToolChoice?: boolean;
   /** 流式响应含 usage（部分厂商流式不发 usage） */
   supportsUsageInStreaming?: boolean;
   /** 支持 strict 模式（json_schema strict） */
@@ -51,6 +56,10 @@ export interface OpenAICompat {
   requiresToolResultName?: boolean;
   /** 工具结果后必须紧跟 assistant 消息（不能连续 tool） */
   requiresAssistantAfterToolResult?: boolean;
+  /** 工具调用轮次历史消息中必须保留 reasoning_content（DeepSeek V4 不保留会 400） */
+  requiresReasoningContentForToolCalls?: boolean;
+  /** 工具调用消息的 content 不能为 null（DeepSeek V4 要求非空，否则 400） */
+  requiresAssistantContentForToolCalls?: boolean;
   /** 思考内容必须作为文本输出（无独立 reasoning 字段） */
   requiresThinkingAsText?: boolean;
   /** 思考格式（10 选 1，见 ThinkingFormat） */
@@ -69,6 +78,18 @@ export interface OpenAICompat {
   zaiToolStream?: boolean;
   /** 结构化输出兼容（我们的扩展） */
   structuredOutput?: StructuredOutputCompat;
+  /**
+   * Effort 级别映射（对标 OMP 的 reasoningEffortMap）
+   * 将我们的标准级别映射到厂商实际接受的值。
+   * 例如 DeepSeek V4：{ high: "high", xhigh: "max" }
+   * 例如 OpenAI：{ low: "low", medium: "medium", high: "high" }（默认）
+   * 未列出的级别使用原值。
+   */
+  reasoningEffortMap?: Partial<Record<EffortLevel, string>>;
+  /** 思考级别可选范围下限（默认 "none"） */
+  thinkingMinLevel?: EffortLevel;
+  /** 思考级别可选范围上限（默认 "xhigh"） */
+  thinkingMaxLevel?: EffortLevel;
 }
 
 /** Anthropic 兼容标志（对标 pi 的 AnthropicMessagesCompat） */
@@ -87,23 +108,35 @@ export interface AnthropicCompat {
   forceAdaptiveThinking?: boolean;
   /** 允许空签名（部分代理要求 tool 必须有 signature） */
   allowEmptySignature?: boolean;
+  /** 思考级别可选范围下限（默认 "none"） */
+  thinkingMinLevel?: EffortLevel;
+  /** 思考级别可选范围上限（默认 "xhigh"） */
+  thinkingMaxLevel?: EffortLevel;
 }
 
 // ─── 按 baseUrl 自动检测默认 compat（对标 pi 的回退检测）─────────────────────
 
 /** 已知的 OpenAI 兼容厂商默认 compat（按 baseUrl 关键词匹配） */
 const VENDOR_DEFAULTS: Array<{ match: RegExp; compat: OpenAICompat }> = [
-  { match: /deepseek/i, compat: { thinkingFormat: "deepseek", supportsReasoningEffort: false } },
+  { match: /deepseek/i, compat: {
+    thinkingFormat: "deepseek",
+    supportsReasoningEffort: false,
+    supportsToolChoice: false,
+    requiresReasoningContentForToolCalls: true,
+    requiresAssistantContentForToolCalls: true,
+    reasoningEffortMap: { high: "high", xhigh: "max" },
+    thinkingMinLevel: "low",
+  } },
   { match: /qwen|dashscope/i, compat: { thinkingFormat: "qwen", structuredOutput: "qwen-response-format" } },
   { match: /zai|z\.ai/i, compat: { thinkingFormat: "zai", zaiToolStream: true } },
   { match: /together/i, compat: { thinkingFormat: "together" } },
   { match: /openrouter/i, compat: { thinkingFormat: "openrouter" } },
-  { match: /cerebras/i, compat: { supportsStore: false, supportsReasoningEffort: false } },
+  { match: /cerebras/i, compat: { supportsStore: false, supportsReasoningEffort: false, thinkingMaxLevel: "none" } },
   { match: /api\.x\.ai|xai/i, compat: {} }, // xAI 较标准
-  { match: /groq/i, compat: { supportsStore: false } },
+  { match: /groq/i, compat: { supportsStore: false, thinkingMaxLevel: "none" } },
   { match: /fireworks/i, compat: { thinkingFormat: "deepseek" } },
-  { match: /cloudflare|workers\.ai/i, compat: { supportsStore: false, supportsStrictMode: false } },
-  { match: /nvidia|nim/i, compat: { supportsStore: false } },
+  { match: /cloudflare|workers\.ai/i, compat: { supportsStore: false, supportsStrictMode: false, thinkingMaxLevel: "none" } },
+  { match: /nvidia|nim/i, compat: { supportsStore: false, thinkingMaxLevel: "none" } },
   { match: /ant[-.]?ling|antling/i, compat: { thinkingFormat: "ant-ling" } },
 ];
 

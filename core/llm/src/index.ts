@@ -216,8 +216,13 @@ export {
   toOpenAIReasoningEffort,
   reasoningLevelFromBudget,
   REASONING_BUDGETS,
+  EFFORT_ORDER,
+  clampEffortLevel,
+  mapEffortLevel,
+  reasoningToEffort,
+  effortToReasoning,
 } from './reasoning.js'
-export type { ReasoningLevel } from './reasoning.js'
+export type { ReasoningLevel, EffortLevel } from './reasoning.js'
 
 // ─── 环境变量 Key 检测（对标 pi-ai getEnvApiKey/findEnvKeys，覆盖 30+ 厂商）──
 export { getEnvApiKey, findEnvKeys, hasEnvKey, PROVIDER_ENV_KEYS } from './env.js'
@@ -240,7 +245,7 @@ export { createStealthMapper, CLAUDE_CODE_TOOL_MAP } from './stealth.js'
 export type { StealthMapper } from './stealth.js'
 
 // ─── compat 兼容标志矩阵（OpenAI 兼容厂商；对标 pi-ai OpenAICompat）──────────
-export type { OpenAICompat, AnthropicCompat, ThinkingFormat, StructuredOutputCompat } from './adapters/compat.js'
+export type { OpenAICompat, AnthropicCompat, ThinkingFormat, StructuredOutputCompat, EffortLevel as CompatEffortLevel } from './adapters/compat.js'
 export { detectCompat, resolveCompat } from './adapters/compat.js'
 
 // ─── 跨运行时环境（Node / Bun / 浏览器安全）──────────────────────────────────

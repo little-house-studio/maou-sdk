@@ -267,7 +267,7 @@ export interface PluginConfig {
   // ─── 状态监控（可选）──────────────────────────────────────
   status?: PluginStatusConfig;
 
-  // ─── 兼容旧字段 ───────────────────────────────
+  // ─── 兼容旧字段 ─────────────────────────────────────
   healthCheck?: string | null;
 }
 

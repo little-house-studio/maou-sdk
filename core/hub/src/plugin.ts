@@ -1,12 +1,36 @@
 /**
- * SDK 插件基类 — 纯净接口，不依赖 hub 模块
- * 对齐 Python: sdk/plugin.py
+ * Hub 插件基类 — 服务/连接层插件的生命周期钩子
+ *
+ * 从 maou-agent 的 core/agent/agent_factory 迁来：插件系统本质是
+ * 「服务/连接管理」，按设计归 hub 层，不再寄生在 agent 层。
  *
  * 所有插件必须继承 PluginBase，实现生命周期钩子。
- * 插件通过 sdk/client 模块与 hub 通信。
+ * 插件通过 hub/client 模块与 hub 通信。
  */
 
-import type { Message, AgentEvent, ToolCall, ToolResult } from "./types.js";
+import type { ToolCall } from "@little-house-studio/types";
+
+// ─── 插件内部最小化类型（避免与 hub/types.ts 的 HubMessage/HubEvent 混淆）──────
+
+/** 插件收到的 SDK 消息（与 agent 层 sdk.types.Message 等价） */
+export interface PluginMessage {
+  id: string;
+  /** "user" / "assistant" / "tool" / "system" */
+  role: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  /** 来源标识 */
+  source: string;
+  timestamp: number;
+}
+
+/** 插件收到的事件（与 agent 层 sdk.types.AgentEvent 等价） */
+export interface PluginEvent {
+  type: string;
+  data: Record<string, unknown>;
+  source: string;
+  timestamp: number;
+}
 
 // ─── 插件元数据 ──────────────────────────────────────────────────────────────
 
@@ -76,7 +100,7 @@ export abstract class PluginBase {
   }
 
   /** 收到消息时调用 */
-  onMessage(_message: Message): void {
+  onMessage(_message: PluginMessage): void {
     // 默认空实现
   }
 
@@ -135,12 +159,12 @@ export async function discoverPlugins(dir = "plugins"): Promise<PluginBase[]> {
         for (const value of Object.values(mod)) {
           if (value instanceof PluginBase) {
             plugins.push(value);
-            console.log(`[sdk] 发现插件: ${value.name} (${entry.name})`);
+            console.log(`[hub] 发现插件: ${value.name} (${entry.name})`);
             break;
           }
         }
       } catch (e) {
-        console.warn(`[sdk] 加载插件 ${entry.name} 失败:`, e);
+        console.warn(`[hub] 加载插件 ${entry.name} 失败:`, e);
       }
     }
   } catch {

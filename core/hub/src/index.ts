@@ -17,3 +17,8 @@ export type {
   HubConfig,
 } from './types.js'
 export { EventType, DEFAULT_HUB_CONFIG } from './types.js'
+
+// 插件系统（从 agent/agent_factory 迁入：服务/连接管理归 hub 层）
+export { PluginBase, PLUGIN_METADATA, discoverPlugins } from './plugin.js'
+export type { PluginMessage, PluginEvent, PluginMeta } from './plugin.js'
+export * from './plugin-types.js'

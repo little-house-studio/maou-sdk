@@ -64,10 +64,6 @@ export { Runtime } from "./runtime-facade.js";
 export type { AppRuntimeOptions } from "./runtime-facade.js";
 export { createAppLogger } from "./app-logger.js";
 
-// 通用 CLI 驱动（用一条消息驱动 Runtime，逐事件回调）
-export { runAgentCli } from "./cli-driver.js";
-export type { AgentCliOptions } from "./cli-driver.js";
-
 // ── Agent 注册表与工厂 ─────────────────────────────────────────────────────
 
 export { AgentRegistry, initMainAgent } from "./registry.js";

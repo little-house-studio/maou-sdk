@@ -3,22 +3,26 @@
 import React from "react";
 import { render } from "ink";
 import { App } from "./app.js";
-import { setTheme } from "./theme.js";
+import { setTheme, THEMES } from "./theme.js";
 
 // CLI 参数
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === "--theme") setTheme(argv[++i]!);
   if (argv[i] === "-h" || argv[i] === "--help") {
-    console.log("Maou CLI — RPG 风终端 AI 对话\n用法: maou [--theme vampire|cyber]\n配置: ~/.maou/llm-config.json（或 MAOU_LLM_CONFIG）");
+    const themeNames = Object.keys(THEMES).join("|");
+    console.log(`Maou CLI — 酸性机能风终端 AI 对话\n用法: maou [--theme ${themeNames}]\n配置: ~/.maou/llm-config.json（或 MAOU_LLM_CONFIG）`);
     process.exit(0);
   }
 }
 
 // 进入备用屏（全屏 TUI）
 process.stdout.write("\x1b[?1049h\x1b[H");
+// 隐藏硬件光标（由 useImeCursor 按需显示）
+process.stdout.write("\x1b[?25l");
 const { waitUntilExit } = render(<App />, { exitOnCtrlC: false });
 waitUntilExit().then(() => {
+  process.stdout.write("\x1b[?25h");   // 恢复硬件光标
   process.stdout.write("\x1b[?1049l"); // 还原主屏
   process.stdout.write("\x1b[?1006l\x1b[?1000l"); // 关鼠标
 });

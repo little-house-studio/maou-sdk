@@ -36,7 +36,7 @@ export function InputBox({ value, cursor, focused, placeholder = "输入消息�
   const hasSel = e > s;
   const chars = [...value];
   return (
-    <Box borderStyle="round" borderColor={focused ? t.accent : t.border} paddingX={1}>
+    <Box borderStyle="single" borderColor={focused ? t.accent : t.border} paddingX={1}>
       <Text color={t.accent} bold>{prompt} </Text>
       {chars.length === 0 && !focused ? (
         <Text color={t.dim}>{placeholder}</Text>

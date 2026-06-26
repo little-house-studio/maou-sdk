@@ -3,7 +3,7 @@ import React, { useState, useMemo } from "react";
 import { currentTheme } from "../theme.js";
 import { useStore } from "../state/store.js";
 import { useCleanInput } from "../hooks/useCleanInput.js";
-import { Dialog, type DialogRow } from "./Dialog.js";
+import { Dialog, type DialogRow, padEndWidth } from "./Dialog.js";
 import { getProviders, getModels } from "@little-house-studio/llm";
 
 export function ModelPicker() {
@@ -36,9 +36,9 @@ export function ModelPicker() {
   const base = Math.max(0, Math.min(sel - 4, Math.max(0, filtered.length - 10)));
   const window = filtered.slice(base, base + 10);
   const rows: DialogRow[] = [
-    [{ text: `🔍 ${filter || "（输入筛选）"}`, color: t.overlayFg }],
+    [{ text: `► ${filter || "（输入筛选）"}`, color: t.overlayFg }],
     ...window.map((x) => [
-      { text: x.provider.padEnd(12), color: t.role.user },
+      { text: padEndWidth(x.provider, 12), color: t.role.user },
       { text: " " + x.name, color: t.overlayFg },
     ]),
   ];
@@ -79,12 +79,12 @@ export function CommandPalette({ onRun }: { onRun: (id: string) => void }) {
   const rows: DialogRow[] = [
     [{ text: `› ${filter}`, color: t.overlayFg }],
     ...filtered.map((c) => [
-      { text: c.label.padEnd(8), color: t.overlayFg, bold: true },
+      { text: padEndWidth(c.label, 8), color: t.overlayFg, bold: true },
       { text: "  " + c.desc, color: t.dim },
     ]),
   ];
   return (
-    <Dialog title="⚡ 命令面板" width={50} rows={rows} selected={sel + 1} footer="↑↓ 选 · ↵ 执行 · Esc 取消" />
+    <Dialog title="► 命令面板" width={50} rows={rows} selected={sel + 1} footer="↑↓ 选 · ↵ 执行 · Esc 取消" />
   );
 }
 
@@ -104,8 +104,8 @@ export function HelpModal() {
     ["Ctrl+C", "退出"],
   ];
   const rows: DialogRow[] = keys.map(([k, d]) => [
-    { text: k.padEnd(16), color: t.accent, bold: true },
+    { text: padEndWidth(k, 16), color: t.accent, bold: true },
     { text: d, color: t.overlayFg },
   ]);
-  return <Dialog title="? 快捷键" width={48} rows={rows} footer="Esc 关闭" />;
+  return <Dialog title="? 快捷键" width={52} rows={rows} footer="Esc 关闭" />;
 }

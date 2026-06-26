@@ -222,8 +222,8 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
 export { Runtime } from "@little-house-studio/agent";
 export type { AppRuntimeOptions } from "@little-house-studio/agent";
 
-// CLI 调试接口（编程特化薄包装 + 透传通用驱动）
+// CLI 调试接口（编程特化薄包装 + 通用驱动并入本包）
 export { runCodingAgentCli } from "./cli/index.js";
 export type { CodingCliOptions } from "./cli/index.js";
-export { runAgentCli } from "@little-house-studio/agent";
-export type { AgentCliOptions } from "@little-house-studio/agent";
+export { runAgentCli } from "./cli/run-agent-cli.js";
+export type { AgentCliOptions } from "./cli/run-agent-cli.js";

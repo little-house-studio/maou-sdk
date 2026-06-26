@@ -126,6 +126,9 @@ importers:
       '@little-house-studio/agent':
         specifier: workspace:*
         version: link:../agent
+      '@little-house-studio/types':
+        specifier: workspace:*
+        version: link:../types
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -187,9 +190,18 @@ importers:
 
   core/tools:
     dependencies:
+      '@little-house-studio/lsp-engine':
+        specifier: workspace:*
+        version: link:../../lsp-engine
+      '@little-house-studio/opencli-engine':
+        specifier: workspace:*
+        version: link:../../opencli-engine
+      '@little-house-studio/sqry-engine':
+        specifier: workspace:*
+        version: link:../../sqry-engine
       '@little-house-studio/terminal-engine':
         specifier: file:../../terminal-engine
-        version: file:terminal-engine
+        version: link:../../terminal-engine
       '@little-house-studio/types':
         specifier: workspace:*
         version: link:../types
@@ -232,6 +244,42 @@ importers:
       tsx:
         specifier: ^4.0.0
         version: 4.22.4
+
+  lsp-engine:
+    dependencies:
+      vscode-jsonrpc:
+        specifier: ^8.2.0
+        version: 8.2.1
+      vscode-languageserver-protocol:
+        specifier: ^3.17.5
+        version: 3.18.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  opencli-engine:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  sqry-engine:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  terminal-engine: {}
 
 packages:
 
@@ -634,9 +682,6 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
-
-  '@little-house-studio/terminal-engine@file:terminal-engine':
-    resolution: {directory: terminal-engine, type: directory}
 
   '@nodable/entities@2.2.0':
     resolution: {integrity: sha512-9uGyhaQavEUMC8AIddIjau4NsnsXhou+j5sBAGojCM1oxmQpVKTWR/9JxABD6UAv12vpIms55fPZKFQEhG6uBg==}
@@ -1410,6 +1455,20 @@ packages:
       jsdom:
         optional: true
 
+  vscode-jsonrpc@8.2.1:
+    resolution: {integrity: sha512-kdjOSJ2lLIn7r1rtrMbbNCHjyMPfRnowdKjBQ+mGq6NAW5QY2bEZC/khaC5OR8svbbjvLEaIXkOq45e2X9BIbQ==}
+    engines: {node: '>=14.0.0'}
+
+  vscode-jsonrpc@9.0.0:
+    resolution: {integrity: sha512-+VvMmQPJhtvJ+8O+zu2JKIRiLxXF8NW7krWgyMGeOHrp4Cn23T5hc0v2LknNeopDOB70wghHAds7mKtcZ0I4Sg==}
+    engines: {node: '>=14.0.0'}
+
+  vscode-languageserver-protocol@3.18.1:
+    resolution: {integrity: sha512-RTiiVHdpxpYcJVI5sq6S5TLjQ4WDR/rBrIWru+kPXe6sGQ9PFQ3GamrTKLvPqbR4ylr1SoodhmcqbFII0WXVuw==}
+
+  vscode-languageserver-types@3.18.0:
+    resolution: {integrity: sha512-8TsGPNMIMiiBdkORgRSvLjuiEIiAFtO+KssmYWxQ+uSVvlf7RjK8YKCOjPzZ+YA04jXEV7+7LvkSmHkhpNS99g==}
+
   why-is-node-running@2.3.0:
     resolution: {integrity: sha512-hUrmaWBdVDcxvYqnyh09zunKzROWjbZTiNy8dBEjkS7ehEDQibXJ7XvlmtbwuTclUiIyN+CyXQD4Vmko8fNm8w==}
     engines: {node: '>=8'}
@@ -1826,8 +1885,6 @@ snapshots:
     optional: true
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
-
-  '@little-house-studio/terminal-engine@file:terminal-engine': {}
 
   '@nodable/entities@2.2.0':
     optional: true
@@ -2603,6 +2660,17 @@ snapshots:
       - terser
       - tsx
       - yaml
+
+  vscode-jsonrpc@8.2.1: {}
+
+  vscode-jsonrpc@9.0.0: {}
+
+  vscode-languageserver-protocol@3.18.1:
+    dependencies:
+      vscode-jsonrpc: 9.0.0
+      vscode-languageserver-types: 3.18.0
+
+  vscode-languageserver-types@3.18.0: {}
 
   why-is-node-running@2.3.0:
     dependencies:

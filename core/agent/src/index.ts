@@ -13,9 +13,12 @@
  *
  * ③ 扩展件（可选，按需用）
  *    提示词编译(PromptCompiler)、token 追踪(TokenTracker)、Agent 注册表/工厂、
- *    烘焙系统(BakeSystem)、事件总线(EventBus)、技能注册(SkillRegistry)、Git 监听(GitWatcher)、
- *    插件基类(PluginBase)、动态上下文(compileDynamicContext)。
+ *    烘焙系统(BakeSystem)、技能注册(SkillRegistry)、Git 监听(GitWatcher)、
+ *    动态上下文(compileDynamicContext)。
  *    这些是"重型 agent 管理"件，最小 agent 不强制依赖，但 SDK 全量提供以保证可扩展性。
+ *
+ *    注：EventBus / PluginBase / plugin-types 已迁至 @little-house-studio/hub，
+ *    cli-driver 已并入 @little-house-studio/coding-agent。
  */
 
 // ① 极简入口：agentLoop（权威实现在 @little-house-studio/llm）
@@ -37,12 +40,9 @@ export * from "./agent/index.js";
 // Hooks 钩子系统
 export * from "./agent/hooks.js";
 
-// Agent Factory（SDK 插件层）
-export * from "./agent_factory/event-bus.js";
+// Agent Factory 剩余件（skill / git-watcher / sdk types）
 export * from "./agent_factory/skill.js";
 export * from "./agent_factory/git-watcher.js";
-export * from "./agent_factory/plugin.js";
-export * from "./agent_factory/plugin-types.js";
 export * from "./agent_factory/types.js";
 
 // 动态上下文编译（团队 Agent 状态 + 终端状态面板）

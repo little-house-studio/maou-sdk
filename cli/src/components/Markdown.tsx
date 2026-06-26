@@ -46,7 +46,7 @@ function Inline({ segs }: { segs: Seg[] }) {
           color={s.code ? t.role.tool : s.link ? t.role.user : t.fg}
           backgroundColor={s.code ? t.overlayBg : undefined}
         >
-          {s.code ? ` ${s.text} ` : s.text}{s.link ? ` ↪${s.link}` : ""}
+          {s.code ? ` ${s.text} ` : s.text}{s.link ? ` →${s.link}` : ""}
         </Text>
       ))}
     </Text>
@@ -71,7 +71,7 @@ export function Markdown({ source, width }: { source: string; width?: number }) 
       while (i < lines.length && !/^\s*```/.test(lines[i]!)) { buf.push(lines[i]!); i++; }
       i++;
       blocks.push(
-        <Box key={key++} flexDirection="column" borderStyle="round" borderColor={t.border} paddingX={1}>
+        <Box key={key++} flexDirection="column" borderStyle="single" borderColor={t.border} paddingX={1}>
           {lang && <Text color={t.dim}>‹{lang}›</Text>}
           {buf.map((b, j) => <Text key={j} color={t.role.toolResult}>{b || " "}</Text>)}
         </Box>,

@@ -14,7 +14,8 @@ import type {
   StreamEvent,
 } from "./types.js";
 import { parseToolArguments, normalizeToolParametersSchema, MAX_TOKENS_CAP, coerceText } from "./shared.js";
-import { resolveCompat } from "./compat.js";
+import { resolveCompat, type OpenAICompat, type EffortLevel } from "./compat.js";
+import { clampEffortLevel, mapEffortLevel, reasoningToEffort } from "../reasoning.js";
 
 /** 从文本中提取 JSON 候选（从 reasoning_content 中） */
 function extractJsonCandidateFromReasoning(
@@ -82,6 +83,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
   private _normalizeReasoningParamsForOpenAI(
     params: Record<string, unknown>,
     format: import("./compat.js").ThinkingFormat = "openai",
+    compat?: OpenAICompat,
   ): Record<string, unknown> {
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(params)) {
@@ -90,12 +92,22 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
         if (thinking.type === "disabled") continue; // 关闭，不注入
         if (thinking.type === "enabled") {
           // 优先使用 effort 字符串（正规值：none/low/medium/high/xhigh）
-          const effort = thinking.effort as string | undefined;
+          let effort = thinking.effort as string | undefined;
           // effort: "none" 等同于关闭思考
           if (effort === "none") continue;
+          // clamp 到 [thinkingMinLevel, thinkingMaxLevel]
+          if (effort && compat) {
+            const clamped = clampEffortLevel(
+              effort as EffortLevel,
+              compat.thinkingMinLevel,
+              compat.thinkingMaxLevel,
+            );
+            effort = clamped;
+            if (effort === "none") continue; // clamp 后变成 none，等同关闭
+          }
           // 其次使用 budget_tokens 数字（Anthropic 风格）
           const budgetTokens = thinking.budget_tokens as number | undefined;
-          this._injectByFormat(result, format, effort, budgetTokens);
+          this._injectByFormat(result, format, effort, budgetTokens, compat);
           continue;
         }
       }
@@ -111,12 +123,18 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
     format: import("./compat.js").ThinkingFormat,
     effort: string | undefined,
     budgetTokens: number | undefined,
+    compat?: OpenAICompat,
   ): void {
     // budget_tokens → effort 的降级映射（兼容旧逻辑）
     const fallbackEffort = budgetTokens !== undefined
       ? (budgetTokens <= 1024 ? "minimal" : budgetTokens <= 2048 ? "low" : budgetTokens <= 8192 ? "medium" : "high")
       : undefined;
-    const resolvedEffort = effort ?? fallbackEffort;
+    let resolvedEffort = effort ?? fallbackEffort;
+
+    // 通过 reasoningEffortMap 映射到厂商实际接受的值
+    if (resolvedEffort && compat?.reasoningEffortMap) {
+      resolvedEffort = mapEffortLevel(resolvedEffort as EffortLevel, compat.reasoningEffortMap);
+    }
 
     switch (format) {
       case "openai":
@@ -160,15 +178,19 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
     const { preset, messages, stream, toolSchemas, nativeToolCalling, jsonSettings } = params;
     const compat = resolveCompat(preset);
     const maxTokensField = compat.maxTokensField ?? "max_tokens";
+
+    // DeepSeek V4 等厂商的消息兼容处理
+    const normalizedMessages = this._normalizeMessagesForCompat(messages, compat);
+
     const payload: Record<string, unknown> = {
       model: preset.model,
       [maxTokensField]: Math.min(Number(preset.maxTokens ?? 65536) || 65536, MAX_TOKENS_CAP),
-      messages,
+      messages: normalizedMessages,
       stream,
     };
     // supportsDeveloperRole：把 system 角色改成 developer（OpenAI 较新）；默认不改
     if (compat.supportsDeveloperRole) {
-      for (const m of messages) {
+      for (const m of normalizedMessages) {
         if ((m as Record<string, unknown>).role === "system") (m as Record<string, unknown>).role = "developer";
       }
     }
@@ -180,7 +202,10 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
       const tools = this._buildTools(toolSchemas);
       if (tools.length) {
         payload.tools = tools;
-        payload.tool_choice = "auto";
+        // supportsToolChoice=false 时不发送 tool_choice（DeepSeek V4 思考模式拒绝此参数）
+        if (compat.supportsToolChoice !== false) {
+          payload.tool_choice = "auto";
+        }
       }
     }
     // jsonSettings → 注入 response_format 强制 JSON 输出
@@ -212,7 +237,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
     // 注入 reasoning_params：按 compat.thinkingFormat 映射到各厂商字段
     const reasoningParams = preset.reasoning_params;
     if (reasoningParams && typeof reasoningParams === "object") {
-      const normalized = this._normalizeReasoningParamsForOpenAI(reasoningParams, compat.thinkingFormat);
+      const normalized = this._normalizeReasoningParamsForOpenAI(reasoningParams, compat.thinkingFormat, compat);
       for (const [k, v] of Object.entries(normalized)) {
         if (!(k in payload)) {
           payload[k] = v;
@@ -232,6 +257,47 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
 
   normalizeMessages(messages: Record<string, unknown>[]): Record<string, unknown>[] {
     return messages;
+  }
+
+  /**
+   * 按 compat 标志规范化消息历史（DeepSeek V4 等厂商的特殊要求）。
+   * - requiresReasoningContentForToolCalls：工具调用轮次的 assistant 消息必须保留 reasoning_content
+   * - requiresAssistantContentForToolCalls：工具调用消息的 content 不能为 null
+   */
+  private _normalizeMessagesForCompat(
+    messages: Record<string, unknown>[],
+    compat: OpenAICompat,
+  ): Record<string, unknown>[] {
+    if (!compat.requiresReasoningContentForToolCalls && !compat.requiresAssistantContentForToolCalls) {
+      return messages; // 无需处理，直接返回
+    }
+
+    return messages.map((msg) => {
+      const role = msg.role as string;
+      if (role !== "assistant") return msg;
+
+      const hasToolCalls = Array.isArray(msg.tool_calls) && (msg.tool_calls as unknown[]).length > 0;
+      if (!hasToolCalls) return msg;
+
+      const patched = { ...msg };
+
+      // requiresAssistantContentForToolCalls：content 不能为 null
+      if (compat.requiresAssistantContentForToolCalls && (patched.content === null || patched.content === undefined)) {
+        patched.content = "";
+      }
+
+      // requiresReasoningContentForToolCalls：必须保留 reasoning_content
+      // 如果消息有 reasoning_content 但被上层清空了，这里无法恢复；
+      // 这个标志的实际含义是：在构建消息历史时，不要删除工具调用轮次的 reasoning_content
+      // （由上层 context 层在构建消息时检查此标志）
+      if (compat.requiresReasoningContentForToolCalls && patched.reasoning_content === undefined) {
+        // 如果没有 reasoning_content 但有 tool_calls，注入空字符串占位
+        // 防止 DeepSeek V4 因缺少此字段而 400
+        patched.reasoning_content = "";
+      }
+
+      return patched;
+    });
   }
 
   parseNonstreamResponse(data: Record<string, unknown>, preset?: APIPreset): ParsedLLMResponse {

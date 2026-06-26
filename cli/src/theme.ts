@@ -1,4 +1,8 @@
-/** Maou CLI 视觉主题 —— RPG 风调色板（truecolor，降级由终端处理） */
+/** Maou CLI 视觉主题 —— 酸性配色（Acid Palette）
+ *  主色：酸性黄绿 #CCFF00（Acid Yellow-Green）
+ *  辅色：酸性品红 #FF00FF / 酸性青 #00CCFF
+ *  背景：近黑 #0A0A0A，极简冷淡机能风
+ */
 
 export type Theme = {
   name: string;
@@ -10,20 +14,74 @@ export type Theme = {
   borderHeavy: string;
   accent: string;
   accent2: string;
-  /** 弹窗/卡片不透明底色（比 bg 略亮以区分层级） */
   overlayBg: string;
   overlayFg: string;
-  /** 弹窗投影色（极暗） */
   overlayShadow: string;
-  /** 选中高亮底色 */
   selectionBg: string;
-  /** 渐变色站（用于 GradientText / 填充展示） */
   gradient: string[];
   role: { user: string; assistant: string; system: string; tool: string; toolResult: string };
   status: { ok: string; warn: string; err: string; info: string };
   gauge: string[];
   spark: string[];
 };
+
+// ─── 酸性配色（Acid Palette） ─────────────────────────────────────────────────
+//
+// 酸性黄绿系（Acid Yellow-Green）：
+//   Acid Yellow-Green  #CCFF00  主交互色、光标、选中（黄绿，非纯绿）
+//   Acid Lime          #B0FF00  次级高亮
+//   Acid Chartreuse    #7FFF00  成功状态
+//
+// 酸性辅色：
+//   Acid Magenta       #FF00FF  工具调用、高对比强调
+//   Acid Cyan          #00CCFF  用户消息、信息
+//   Acid Orange        #FF6600  警告、进度
+//   Acid Red           #FF0044  错误、危险
+//
+// 中性色：
+//   Near Black         #0A0A0A  主背景
+//   Dark Gray          #1A1A1A  次级面板背景
+//   Gray               #333333  线条
+//   Mid Gray           #555555  失效/禁用
+//   Off White          #E0E0E0  正文
+
+const ACID: Theme = {
+  name: "acid",
+  bg: "#0A0A0A",          // 近黑 — 主背景
+  fg: "#E0E0E0",          // Off White — 正文
+  dim: "#555555",         // Mid Gray — 失效/禁用
+  border: "#333333",       // 线条主色
+  borderSoft: "#222222",  // 线条次级
+  borderHeavy: "#CCFF00", // 线条激活（酸性黄绿）
+  accent: "#CCFF00",      // Acid Yellow-Green — 主交互色、光标、选中
+  accent2: "#FF00FF",     // Acid Magenta — 高对比强调
+  overlayBg: "#1A1A1A",   // 次级面板背景
+  overlayFg: "#E0E0E0",
+  overlayShadow: "#000000",
+  selectionBg: "#CCFF00", // Acid Yellow-Green
+  // 渐变：黄绿 → 青绿 → 品红 → 橙（酸性色阶）
+  gradient: ["#CCFF00", "#00FF88", "#00CCFF", "#FF00FF"],
+  // 角色色
+  role: {
+    user: "#00CCFF",       // Acid Cyan — 用户消息
+    assistant: "#CCFF00",  // Acid Yellow-Green — Agent 回复
+    system: "#555555",     // Mid Gray — 系统消息
+    tool: "#FF00FF",       // Acid Magenta — 工具调用
+    toolResult: "#00FF88", // Acid Green-Cyan — 工具结果
+  },
+  // 状态色
+  status: {
+    ok: "#00FF88",        // Acid Green-Cyan
+    warn: "#FF6600",      // Acid Orange
+    err: "#FF0044",       // Acid Red
+    info: "#00CCFF",      // Acid Cyan
+  },
+  // VU 表 / 计数器色阶
+  gauge: ["#CCFF00", "#00FF88", "#FF6600", "#FF0044"],
+  spark: ["#CCFF00", "#00FF88", "#00CCFF", "#FF00FF", "#555555"],
+};
+
+// ─── 备用主题 ──────────────────────────────────────────────────────────────
 
 const VAMPIRE: Theme = {
   name: "vampire",
@@ -46,28 +104,6 @@ const VAMPIRE: Theme = {
   spark: ["#6b3fa0", "#c026d3", "#f43f5e", "#fb923c", "#fbbf24"],
 };
 
-const CYBER: Theme = {
-  ...VAMPIRE,
-  name: "cyber",
-  bg: "#04101a",
-  fg: "#d6f5ff",
-  dim: "#4a7a8a",
-  border: "#06b6d4",
-  borderSoft: "#22d3ee",
-  borderHeavy: "#0e7490",
-  accent: "#22d3ee",
-  accent2: "#ec4899",
-  overlayBg: "#06232f",
-  overlayFg: "#e6fbff",
-  overlayShadow: "#01080d",
-  selectionBg: "#0e7490",
-  gradient: ["#22d3ee", "#a78bfa", "#ec4899", "#34d399"],
-  role: { user: "#22d3ee", assistant: "#a78bfa", system: "#64748b", tool: "#fbbf24", toolResult: "#34d399" },
-  status: { ok: "#34d399", warn: "#fbbf24", err: "#ef4444", info: "#22d3ee" },
-  gauge: ["#0e7490", "#06b6d4", "#22d3ee", "#67e8f9"],
-  spark: ["#0e7490", "#06b6d4", "#22d3ee", "#67e8f9", "#a5f3fc"],
-};
-
-export const THEMES: Record<string, Theme> = { vampire: VAMPIRE, cyber: CYBER };
-export let currentTheme: Theme = VAMPIRE;
-export const setTheme = (name: string): void => { if (THEMES[name]) currentTheme = THEMES[name]; };
+export const THEMES: Record<string, Theme> = { acid: ACID, vampire: VAMPIRE };
+export let currentTheme: Theme = ACID;
+export const setTheme = (name: string): void => { if (THEMES[name]) currentTheme = THEMES[name]!; };

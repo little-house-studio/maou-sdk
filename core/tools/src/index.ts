@@ -23,6 +23,12 @@ export {
   getTerminalLogs,
 } from './terminal/use_terminal/tool.js'
 
+// LSP 引擎生命周期（harness 退出时关语言服务器进程）
+export {
+  shutdownLspEngine,
+  cleanupWorkspaceLsp,
+} from './code/lsp/tool.js'
+
 // 技能管理（从 context 下放到此；context 包会从这里再导出）
 export { SkillScanner, SkillContextManager } from './skill-context.js'
 export type { SkillEntry, SkillChange, SkillContextResult } from './skill-context.js'

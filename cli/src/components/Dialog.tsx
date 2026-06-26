@@ -7,17 +7,51 @@ import { currentTheme } from "../theme.js";
 export interface Seg { text: string; color?: string; bold?: boolean; dim?: boolean }
 export type DialogRow = Seg[];
 
-/** 行：分段着色 + 右侧空格填满（让整行底色连续，覆盖背后内容） */
+/** 按显示宽度截断文本（CJK 字符算 2 列） */
+function truncateToWidth(text: string, maxW: number): string {
+  let w = 0, result = "";
+  for (const ch of text) {
+    const cw = stringWidth(ch);
+    if (w + cw > maxW) break;
+    result += ch;
+    w += cw;
+  }
+  return result;
+}
+
+/** 按显示宽度右侧填充空格（替代 padEnd，避免 CJK 字符导致宽度不一致） */
+export function padEndWidth(text: string, width: number): string {
+  const sw = stringWidth(text);
+  return sw >= width ? text : text + " ".repeat(width - sw);
+}
+
+/** 行：分段着色 + 右侧空格填满（让整行底色连续，覆盖背后内容）
+ *  内容溢出时按 seg 顺序截断，保证右边框对齐 */
 function Row({ segs, innerW, bg, selected }: { segs: Seg[]; innerW: number; bg: string; selected?: boolean }) {
   const t = currentTheme;
   const rowBg = selected ? t.selectionBg : bg;
-  const used = segs.reduce((s, x) => s + stringWidth(x.text), 0);
+
+  // 截断溢出的 seg：按顺序分配 innerW 宽度，超出部分截断或清空
+  let remaining = innerW;
+  const displaySegs = segs.map((s) => {
+    const sw = stringWidth(s.text);
+    if (remaining <= 0) return { ...s, text: "" };
+    if (sw > remaining) {
+      const truncated = { ...s, text: truncateToWidth(s.text, remaining) };
+      remaining = 0;
+      return truncated;
+    }
+    remaining -= sw;
+    return s;
+  });
+  const used = displaySegs.reduce((s, x) => s + stringWidth(x.text), 0);
   const pad = Math.max(0, innerW - used);
+
   return (
     <Box>
       <Text backgroundColor={bg} color={t.accent}>│ </Text>
       <Text backgroundColor={rowBg}>
-        {segs.map((s, j) => (
+        {displaySegs.map((s, j) => (
           <Text key={j} backgroundColor={rowBg} color={s.color ?? t.overlayFg} bold={s.bold} dimColor={s.dim}>{s.text}</Text>
         ))}
         <Text backgroundColor={rowBg}>{" ".repeat(pad)}</Text>

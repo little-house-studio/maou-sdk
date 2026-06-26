@@ -4,9 +4,12 @@
  * 这是「把 agent 跑起来给人调试」的最小必要接口，所有 agent 通用，
  * 不含富 TUI —— 真正的调试界面在 @little-house-studio/cli 层复用。
  * done/error 事件后结束。
+ *
+ * 从 maou-agent 的 core/agent 层迁来：cli-driver 本质是 cli 层入口，
+ * 仅 coding-agent 在使用，故并入 coding-agent 包。
  */
 
-import type { Runtime } from "./runtime-facade.js";
+import type { Runtime } from "@little-house-studio/agent";
 import type { StreamEvent } from "@little-house-studio/types";
 
 export interface AgentCliOptions {

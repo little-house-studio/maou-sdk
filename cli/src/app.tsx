@@ -15,6 +15,8 @@ import { ModelPicker, CommandPalette, HelpModal } from "./components/Modals.js";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
 import { useMouse } from "./hooks/useMouse.js";
 import { useCleanInput } from "./hooks/useCleanInput.js";
+import { useImeCursor } from "./hooks/useImeCursor.js";
+import { openExternalEditor } from "./hooks/useExternalEditor.js";
 import { osc52 } from "./clipboard.js";
 
 type Focus = "input" | "sidebar" | "hud" | "chat";
@@ -42,11 +44,15 @@ export function App() {
   const hudVisible = store.hudOpen && term.showHud;
   const inputColOffset = 4; // 输入框文本起始列（border+pad+"❯ "）
 
-  // 动画帧循环 + 3D 旋转
+  // 动画帧循环 —— 仅在流式输出/HUD可见时运行（避免静态时重渲染打断终端框选）
   useEffect(() => {
-    const id = setInterval(() => { setFrame((f) => f + 1); store.tickWire(); }, 100);
+    if (!store.streaming && !hudVisible) return;
+    const id = setInterval(() => { setFrame((f) => f + 1); store.tickWire(); }, 150);
     return () => clearInterval(id);
-  }, []);
+  }, [store.streaming, hudVisible]);
+
+  // IME 硬件光标定位（InputBox 获焦时显示硬件光标，支持中文输入法）
+  useImeCursor({ focused: focus === "input", value: input, cursor, rows });
 
   // 鼠标（默认关；按 ` 开启，1002 拖动模式）。点击=光标，拖动=选区，松手=OSC52 复制。
   useMouse(mouseOn, (e) => {
@@ -119,7 +125,13 @@ export function App() {
     if (key.ctrl && char === "m") return store.setModal("model");
     if (key.ctrl && char === "n") { store.clearMessages(); setChatOffset(0); return; }
     if (key.ctrl && char === "b") return store.toggleSidebar();
-    if (key.ctrl && char === "g") return store.toggleHud();
+    if (key.ctrl && char === "h") return store.toggleHud();
+    if (key.ctrl && char === "g") {
+      // Ctrl+G — 打开外部编辑器（IME 回退方案）
+      const edited = openExternalEditor(input);
+      if (edited !== null) { setInput(edited); setCursor(edited.length); store.toastMsg("已从编辑器读取", "ok"); }
+      return;
+    }
     if (key.tab) { setFocus((f) => (f === "input" ? "sidebar" : f === "sidebar" ? "chat" : f === "chat" ? "hud" : "input")); return; }
     if (key.escape) { if (store.streaming) { abortRef.current?.abort(); store.toastMsg("已中断", "info"); } return; }
     if (char === "?" && focus !== "input") return store.setModal("help");

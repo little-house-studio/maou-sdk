@@ -12,7 +12,10 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
@@ -22,7 +25,10 @@
     "@little-house-studio/types": "workspace:*",
     "@little-house-studio/terminal-engine": "file:../../terminal-engine",
     "zod": "^3.23.0",
-    "zod-to-json-schema": "^3.24.6"
+    "zod-to-json-schema": "^3.24.6",
+    "@little-house-studio/sqry-engine": "workspace:*",
+    "@little-house-studio/opencli-engine": "workspace:*",
+    "@little-house-studio/lsp-engine": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

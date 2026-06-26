@@ -1,16 +1,20 @@
-/** 聊天组件 —— Message / ToolCard / ThinkingBlock / ChatView */
+/** 聊天组件 —— Message / ToolCard / ThinkingBlock / ChatView（密集布局）
+ *  - 角色标签用 VFD 反色填色（DESIGN.md §6.1 磁带标签卡样式）
+ *  - 消息间距收紧（marginBottom 0 + Divider 分割）
+ */
 import React from "react";
 import { Box, Text } from "ink";
 import type { ChatMessage } from "../state/store.js";
 import { currentTheme } from "../theme.js";
 import { Spinner } from "./graphics.js";
+import { VfdTag, Divider } from "./Panel.js";
 
 function roleGlyph(role: string): { icon: string; label: string } {
   switch (role) {
-    case "user": return { icon: "▶", label: "你" };
+    case "user": return { icon: "►", label: "你" };
     case "assistant": return { icon: "✦", label: "Vampire" };
-    case "system": return { icon: "⚙", label: "系统" };
-    case "tool": return { icon: "🔧", label: "工具" };
+    case "system": return { icon: "▣", label: "系统" };
+    case "tool": return { icon: "◆", label: "工具" };
     default: return { icon: "•", label: role };
   }
 }
@@ -19,7 +23,7 @@ function ToolCard({ tool, frame }: { tool: NonNullable<ChatMessage["toolCalls"]>
   const t = currentTheme;
   const statusColor = tool.isError ? t.status.err : tool.done ? t.status.ok : t.status.warn;
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={statusColor} paddingX={1} marginY={0}>
+    <Box flexDirection="column" borderStyle="single" borderColor={statusColor} paddingX={1}>
       <Box>
         {!tool.done ? <Spinner frame={frame} color={statusColor} /> : <Text color={statusColor}>{tool.isError ? "✗" : "✓"}</Text>}
         <Text color={t.role.tool} bold> {tool.name}</Text>
@@ -37,15 +41,16 @@ export function Message({ msg, frame }: { msg: ChatMessage; frame: number }) {
   const { icon, label } = roleGlyph(msg.role);
   const color = t.role[(msg.role === "assistant" ? "assistant" : msg.role === "user" ? "user" : msg.role === "tool" ? "tool" : "system") as keyof typeof t.role];
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <Box flexDirection="column">
       <Box>
-        <Text color={color} bold>{icon} {label}</Text>
+        {/* 角色标签 —— VFD 反色填色（磁带标签卡头部） */}
+        <VfdTag label={icon} value={label} color={color} />
         {msg.streaming && <Text color={t.dim}> <Spinner frame={frame} kind="pulse" /></Text>}
         {msg.usage && <Text color={t.dim}>  · {msg.usage.input}+{msg.usage.output}tok</Text>}
       </Box>
       {msg.thinking && (
-        <Box paddingLeft={2} marginBottom={0}>
-          <Text color={t.dim} italic>💭 {msg.thinking.slice(-200)}</Text>
+        <Box paddingLeft={2}>
+          <Text color={t.dim} italic>○ {msg.thinking.slice(-200)}</Text>
         </Box>
       )}
       {msg.content && (
@@ -56,6 +61,7 @@ export function Message({ msg, frame }: { msg: ChatMessage; frame: number }) {
       {msg.toolCalls?.map((tc) => (
         <Box key={tc.id} paddingLeft={2}><ToolCard tool={tc} frame={frame} /></Box>
       ))}
+      <Divider char="─" color={t.borderSoft} />
     </Box>
   );
 }
