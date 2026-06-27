@@ -6,7 +6,7 @@
  * 支持三级扫描：全局 ~/.maou/skills + 项目 skills/ + agent .maou/skills
  */
 
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { SkillContextManager } from "../../skill-context.js";
@@ -36,6 +36,7 @@ function getSkillManager(ctx: ToolContext): SkillContextManager {
 // ─── LoadSkillTool ─────────────────────────────────────────────────────────
 
 export class LoadSkillTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "use_skill",
     aliases: ["load_skill", "skill"],

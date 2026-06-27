@@ -5,7 +5,7 @@
  * 创建克隆子 Agent 处理独立任务。继承 ROLE 模板，注册为项目专属 Agent。
  */
 
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { TASK_MANAGER, TaskScheduler } from "../../task/task_manage/tool.js";
@@ -15,6 +15,7 @@ const STATUS_EMOJI: Record<string, string> = {
 };
 
 export class SubagentTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "agent_message",
     aliases: ["subagent_creat", "subagent-create", "clone-agent"],

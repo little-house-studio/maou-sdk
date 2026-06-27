@@ -162,12 +162,14 @@ export class ChatSession {
     preset: APIPreset
     maxRetries?: number
     loopThreshold?: number
+    /** 可选注入 LLMClient（缺省自动创建）；支持复用已有实例或注入自定义实现 */
+    client?: LLMClient
   }) {
     // 构造时做基本校验，fail fast
     if (!options.preset.url) throw new Error('ChatSession: preset.url is required')
     if (!options.preset.model) throw new Error('ChatSession: preset.model is required')
     this.preset = options.preset
-    this.client = new LLMClient()
+    this.client = options.client ?? new LLMClient()
     this.caller = new ModelCaller({
       client: this.client,
       emitEvent: (type, data) => ({ type, data }),

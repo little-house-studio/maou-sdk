@@ -4,7 +4,7 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { safePath, errToString } from "../../browser/god_tool/use_browser/_util.js";
@@ -26,6 +26,7 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 export class EditFileTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "edit_file",
     aliases: ["edit_file"],
@@ -69,7 +70,7 @@ export class EditFileTool extends Tool {
     const replaceAll = params.replace_all === true || params.replace_all === "true";
 
     if (!userPath) {
-      return createToolResponse(false, "edit-file 缺少 path 参数");
+      return createToolResponse(false, '❌ edit_file 缺少必填参数 path（文件路径）。正确用法示例：\n{"tool": "edit_file", "params": {"path": "src/index.ts", "old_text": "旧文本", "new_text": "新文本"}}\n请用正确的 path 参数重试。');
     }
     if (!oldText) {
       return createToolResponse(false, "edit_file 的 old_text 不能为空（无法匹配空字符串）。如需创建/覆写文件请用 write_file。");

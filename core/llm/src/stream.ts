@@ -164,6 +164,8 @@ export interface StreamOptions {
   /** 发送前/收到后拦截钩子（复用 LLMClient 的能力） */
   onPayload?: (ctx: { url: string; headers: Record<string, string>; body: string }) => void;
   onResponse?: (ctx: { url: string; status: number; headers: Record<string, string> }) => void;
+  /** 可选注入 LLMClient（缺省自动创建）；支持复用已有实例或注入自定义实现 */
+  client?: LLMClient;
 }
 
 // ─── stream 事件（对标 pi 的 AssistantMessageEvent，命名更直观）──────────────
@@ -280,7 +282,7 @@ export function stream(model: StreamModel, context: Context, options: StreamOpti
   if (context.systemPrompt) adapterMessages.unshift({ role: "system", content: context.systemPrompt });
   const toolSchemas = normalizeTools(context.tools);
 
-  const client = new LLMClient({
+  const client = options.client ?? new LLMClient({
     onPayload: options.onPayload ? (c) => options.onPayload!(c) : undefined,
     onResponse: options.onResponse ? (c) => options.onResponse!(c) : undefined,
   });

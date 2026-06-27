@@ -101,7 +101,6 @@ export interface CreateAgentOptions {
 
 const AGENT_FILE = "agent.json";
 const AGENT_TS_FILE = "agent.ts";
-const INSTRUCTIONS_FILE = "instructions.md";
 
 function nowTs(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
@@ -112,6 +111,52 @@ function atomicWriteJson(filePath: string, data: unknown): void {
   const tmp = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
   renameSync(tmp, filePath);
+}
+
+/**
+ * 去除 JSONC（带注释的 JSON）中的注释，便于 JSON.parse。
+ * 支持 `//` 行注释和 `/* ... *\/` 块注释。字符串内部的注释标记不会被误处理。
+ */
+function stripJsoncComments(text: string): string {
+  let result = "";
+  let i = 0;
+  let inString = false;
+  let stringChar = "";
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inString) {
+      result += ch;
+      if (ch === "\\") {
+        result += next ?? "";
+        i += 2;
+        continue;
+      }
+      if (ch === stringChar) inString = false;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      stringChar = ch;
+      result += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i += 1;
+      i += 2;
+      continue;
+    }
+    result += ch;
+    i += 1;
+  }
+  return result;
 }
 
 // ─── AgentRegistry ─────────────────────────────────────────────────────────
@@ -191,15 +236,15 @@ export class AgentRegistry {
    *
    * 规则：
    * - 有 agent.json → 以 JSON 为准（现有逻辑），再用 instructions.md / tools/ 等补充
-   * - 无 agent.json 但有 instructions.md → 自动推断 AgentEntry
-   * - 都没有 → 跳过（不是合法 Agent 目录）
+   * - 有 agent.json → 读取作为 AgentEntry
+   * - 有 agent.ts（defineAgent 约定）→ 标记为 defineAgent 模式
+   * - 都没有 → 跳过（不是合法 Agent 目录，不降级）
    */
   private scanConvention(dir: string, dirName: string, source: string): AgentEntry | null {
     const agentFile = join(dir, AGENT_FILE);
     const agentTsFile = join(dir, AGENT_TS_FILE);
-    const instructionsFile = join(dir, INSTRUCTIONS_FILE);
 
-    // 1. 优先读 agent.json（现有逻辑不变）
+    // 1. 读 agent.json
     if (existsSync(agentFile)) {
       try {
         const data = JSON.parse(readFileSync(agentFile, "utf-8"));
@@ -212,19 +257,9 @@ export class AgentRegistry {
     }
 
     // 2. 有 agent.ts（defineAgent 约定）→ 标记为 defineAgent 模式
-    //    注意：agent.ts 的实际 import 在运行时做，这里先标记
     if (existsSync(agentTsFile)) {
       const now = nowTs();
       let displayName = dirName;
-
-      // 尝试从 instructions.md 提取标题
-      if (existsSync(instructionsFile)) {
-        try {
-          const content = readFileSync(instructionsFile, "utf-8");
-          const titleMatch = content.match(/^#\s+(.+)/m);
-          if (titleMatch) displayName = titleMatch[1].trim();
-        } catch { /* ignore */ }
-      }
 
       // 读取 agent.json 里可能有的额外字段
       let extraFields: Record<string, unknown> = {};
@@ -254,43 +289,7 @@ export class AgentRegistry {
       };
     }
 
-    // 3. 无 agent.json 和 agent.ts，但有 instructions.md → 从目录约定推断
-    if (existsSync(instructionsFile)) {
-      const now = nowTs();
-      let displayName = dirName;
-      try {
-        const content = readFileSync(instructionsFile, "utf-8");
-        const titleMatch = content.match(/^#\s+(.+)/m);
-        if (titleMatch) displayName = titleMatch[1].trim();
-      } catch { /* ignore */ }
-
-      let extraFields: Record<string, unknown> = {};
-      if (existsSync(agentFile)) {
-        try {
-          extraFields = JSON.parse(readFileSync(agentFile, "utf-8"));
-        } catch { /* ignore */ }
-      }
-
-      return {
-        name: dirName,
-        display_name: displayName,
-        status: "idle",
-        role: "",
-        team: "",
-        parent: "",
-        personality: "",
-        scope: source,
-        description: "",
-        notes: "",
-        created_by: "",
-        created_at: now,
-        updated_at: now,
-        ...extraFields,
-        _source: source,
-      };
-    }
-
-    // 都没有 → 不是 Agent 目录
+    // 都没有 → 不是合法 Agent 目录
     return null;
   }
 
@@ -302,60 +301,30 @@ export class AgentRegistry {
   }
 
   /**
-   * 获取单个 agent 配置（优先项目级）
-   * 支持约定扫描：无 agent.json 但有 instructions.md 也能发现
+   * 获取单个 agent 配置（唯一真相源：全局 ~/.maou/agents/<name>/）
+   * 不降级到约定扫描，无 agent.json 则返回 null
    */
   get(name: string): AgentEntry | null {
-    // 优先项目级
-    if (this.projectAgentsDir) {
-      const projectDir = join(this.projectAgentsDir, name);
-      if (existsSync(projectDir)) {
-        // 先尝试 agent.json
-        const projectPath = join(projectDir, AGENT_FILE);
-        if (existsSync(projectPath)) {
-          try {
-            return { ...JSON.parse(readFileSync(projectPath, "utf-8")), _source: "project" };
-          } catch { /* 继续 */ }
-        }
-        // 约定扫描
-        const agent = this.scanConvention(projectDir, name, "project");
-        if (agent) return agent;
-      }
-    }
-
-    // 回退全局
     const globalDir = join(this.agentsDir, name);
     if (!existsSync(globalDir)) return null;
-
-    // 先尝试 agent.json
     const globalPath = join(globalDir, AGENT_FILE);
     if (existsSync(globalPath)) {
       try {
         return { ...JSON.parse(readFileSync(globalPath, "utf-8")), _source: "global" };
-      } catch { /* 继续 */ }
+      } catch { /* JSON 损坏 */ }
     }
-
-    // 约定扫描
+    // agent.ts（defineAgent）也合法
     return this.scanConvention(globalDir, name, "global");
   }
 
   /**
-   * 检查 agent 是否存在（检查全局和项目级）
-   * 支持约定扫描：有 instructions.md 也算存在
+   * 检查 agent 是否存在（全局 ~/.maou/agents/<name>/）
+   * 只认 agent.json，不降级
    */
   exists(name: string): boolean {
-    // 检查项目级
-    if (this.projectAgentsDir) {
-      const projectDir = join(this.projectAgentsDir, name);
-      if (existsSync(projectDir)) {
-        if (existsSync(join(projectDir, AGENT_FILE))) return true;
-        if (existsSync(join(projectDir, INSTRUCTIONS_FILE))) return true;
-      }
-    }
-    // 检查全局
     const globalDir = join(this.agentsDir, name);
     if (!existsSync(globalDir)) return false;
-    return existsSync(join(globalDir, AGENT_FILE)) || existsSync(join(globalDir, INSTRUCTIONS_FILE));
+    return existsSync(join(globalDir, AGENT_FILE));
   }
 
   /**
@@ -552,70 +521,41 @@ export class AgentRegistry {
   }
 
   /**
-   * 读取 agent 的 instructions.md（系统提示词）
-   * 如果不存在，回退到 ROLE/SYSTEM.md
+   * 读取 agent 的系统提示词（eve 结构 prompt/system/system.md）
+   * 缺失则抛错，不降级
    */
-  loadInstructions(name: string): string | null {
+  loadInstructions(name: string): string {
     const dir = this.agentDir(name);
-
-    // 优先 instructions.md
-    const instructionsFile = join(dir, INSTRUCTIONS_FILE);
-    if (existsSync(instructionsFile)) {
-      try {
-        return readFileSync(instructionsFile, "utf-8");
-      } catch { /* continue */ }
+    const systemFile = join(dir, "prompt", "system", "system.md");
+    if (!existsSync(systemFile)) {
+      throw new Error(`agent '${name}' 缺少 eve 提示词结构（prompt/system/system.md 不存在）`);
     }
-
-    // 回退 ROLE/SYSTEM.md
-    const systemFile = join(dir, "ROLE", "SYSTEM.md");
-    if (existsSync(systemFile)) {
-      try {
-        return readFileSync(systemFile, "utf-8");
-      } catch { /* continue */ }
+    try {
+      return readFileSync(systemFile, "utf-8");
+    } catch (err) {
+      throw new Error(`agent '${name}' 读取 system.md 失败: ${err}`);
     }
-
-    return null;
   }
 
   /**
    * 获取 agent 的 prompt 根目录（用于 PromptCompiler）
-   * 优先 ROLE/（现有逻辑），如果不存在则回退到 agent 目录本身
-   * （instructions.md 在 agent 根目录下时，promptRoot 就是 agent 目录）
+   * 只返回 eve 结构 prompt/（存在 prompt/system/system.md 时）
+   * 缺失则抛错，不降级
    */
   getPromptRoot(name: string): string {
     const dir = this.agentDir(name);
-    // eve 结构优先：prompt/ 作为 root，system/system.md 入口（before_user/compression 为同级）
     if (existsSync(join(dir, "prompt", "system", "system.md"))) {
       return join(dir, "prompt");
     }
-    const roleDir = join(dir, "ROLE");
-    if (existsSync(roleDir) && existsSync(join(roleDir, "SYSTEM.md"))) {
-      return roleDir;
-    }
-    // 有 instructions.md 时，agent 目录本身就是 prompt root
-    if (existsSync(join(dir, INSTRUCTIONS_FILE))) {
-      return dir;
-    }
-    // 默认回退 ROLE/
-    return roleDir;
+    throw new Error(`agent '${name}' 缺少 eve 提示词结构（prompt/system/system.md 不存在）`);
   }
 
   /**
    * 获取 agent 的 prompt 入口文件名
+   * 只返回 eve 入口 "system/system.md"
    */
   getPromptEntrypoint(name: string): string {
-    const dir = this.agentDir(name);
-    // eve 结构：入口是 system/system.md（相对 prompt/ root）
-    if (existsSync(join(dir, "prompt", "system", "system.md"))) {
-      return "system/system.md";
-    }
-    if (existsSync(join(dir, INSTRUCTIONS_FILE))) {
-      // 如果有 instructions.md 但没有 ROLE/SYSTEM.md
-      if (!existsSync(join(dir, "ROLE", "SYSTEM.md"))) {
-        return INSTRUCTIONS_FILE;
-      }
-    }
-    return "SYSTEM.md";
+    return "system/system.md";
   }
 
   /**
@@ -680,19 +620,5 @@ export class AgentRegistry {
       }
     }
   }
-}
 
-/**
- * 初始化 main agent（如果不存在则创建默认配置）
- */
-export function initMainAgent(maouRoot: string): void {
-  const registry = new AgentRegistry(maouRoot);
-  if (!registry.exists("main")) {
-    registry.create("main", {
-      displayName: "Vampire",
-      role: "assistant",
-      personality: "友好、高效、专业的 AI 助手",
-      description: "默认主 agent",
-    });
-  }
 }

@@ -9,7 +9,7 @@
 
 import { resolve } from "node:path";
 import * as lsp from "@little-house-studio/lsp-engine";
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { safePath, errToString } from "../../browser/god_tool/use_browser/_util.js";
@@ -23,6 +23,7 @@ function fmtLoc(l: lsp.Loc, root: string): string {
 }
 
 export class LspTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "lsp",
     aliases: ["check_code", "lsp_check", "diagnostics"],
@@ -64,7 +65,7 @@ export class LspTool extends Tool {
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
     const action = String(params.action ?? "").trim();
-    if (!action) return createToolResponse(false, "lsp 缺少 action 参数");
+    if (!action) return createToolResponse(false, '❌ lsp 缺少必填参数 action（操作类型）。正确用法示例：\n{"tool": "lsp", "params": {"action": "check", "file": "src/index.ts", "reason": "检查代码错误"}}\n可选 action: check, diagnostics, definition, references, type_definition, hover, rename, completion, symbols, workspace_symbols。请用正确的 action 参数重试。');
 
     const root = resolve(ctx.projectRoot);
     const fileParam = params.file ? String(params.file) : "";
@@ -92,30 +93,30 @@ export class LspTool extends Tool {
           return this.fmtWorkspaceDiags(r, root);
         }
         case "definition": {
-          if (!absFile) return createToolResponse(false, "definition 需要 file/line/character");
+          if (!absFile) return createToolResponse(false, '❌ lsp definition 缺少必填参数 file/line/character。正确用法示例：\n{"tool": "lsp", "params": {"action": "definition", "file": "src/index.ts", "line": 10, "character": 5, "reason": "跳转到定义"}}\n请用正确的 file、line、character 参数重试。');
           const locs = await lsp.definition(absFile, line, character);
           return this.fmtLocs(locs, "definition", root);
         }
         case "type_definition": {
-          if (!absFile) return createToolResponse(false, "type_definition 需要 file/line/character");
+          if (!absFile) return createToolResponse(false, '❌ lsp type_definition 缺少必填参数 file/line/character。正确用法示例：\n{"tool": "lsp", "params": {"action": "type_definition", "file": "src/index.ts", "line": 10, "character": 5, "reason": "跳转到类型定义"}}\n请用正确的 file、line、character 参数重试。');
           const locs = await lsp.typeDefinition(absFile, line, character);
           return this.fmtLocs(locs, "type_definition", root);
         }
         case "references": {
-          if (!absFile) return createToolResponse(false, "references 需要 file/line/character");
+          if (!absFile) return createToolResponse(false, '❌ lsp references 缺少必填参数 file/line/character。正确用法示例：\n{"tool": "lsp", "params": {"action": "references", "file": "src/index.ts", "line": 10, "character": 5, "reason": "查找引用"}}\n请用正确的 file、line、character 参数重试。');
           const locs = await lsp.references(absFile, line, character);
           return this.fmtLocs(locs, "references", root);
         }
         case "hover": {
-          if (!absFile) return createToolResponse(false, "hover 需要 file/line/character");
+          if (!absFile) return createToolResponse(false, '❌ lsp hover 缺少必填参数 file/line/character。正确用法示例：\n{"tool": "lsp", "params": {"action": "hover", "file": "src/index.ts", "line": 10, "character": 5, "reason": "查看类型签名"}}\n请用正确的 file、line、character 参数重试。');
           const h = await lsp.hover(absFile, line, character);
           if (!h) return createToolResponse(true, "（无悬停信息）", { payload: { action: "hover" } });
           return createToolResponse(true, `[hover]\n${h.contents}`, { payload: { action: "hover", contents: h.contents } });
         }
         case "rename": {
-          if (!absFile) return createToolResponse(false, "rename 需要 file/line/character");
+          if (!absFile) return createToolResponse(false, '❌ lsp rename 缺少必填参数 file/line/character。正确用法示例：\n{"tool": "lsp", "params": {"action": "rename", "file": "src/index.ts", "line": 10, "character": 5, "new_name": "newVarName", "reason": "重命名符号"}}\n请用正确的 file、line、character 参数重试。');
           const newName = String(params.new_name ?? "").trim();
-          if (!newName) return createToolResponse(false, "rename 需要 new_name");
+          if (!newName) return createToolResponse(false, '❌ lsp rename 缺少必填参数 new_name（新名字）。正确用法示例：\n{"tool": "lsp", "params": {"action": "rename", "file": "src/index.ts", "line": 10, "character": 5, "new_name": "newVarName", "reason": "重命名符号"}}\n请用正确的 new_name 参数重试。');
           const preview = await lsp.rename(absFile, line, character, newName);
           if (preview.totalEdits === 0) return createToolResponse(true, "（无可重命名的引用，或当前位置不可重命名）", { payload: { action: "rename" } });
           const lines = preview.changes.map(c => `${relFile(c.file, root)} (${c.edits.length} 处)`);
@@ -124,20 +125,20 @@ export class LspTool extends Tool {
             { payload: { action: "rename", preview } });
         }
         case "completion": {
-          if (!absFile) return createToolResponse(false, "completion 需要 file/line/character");
+          if (!absFile) return createToolResponse(false, '❌ lsp completion 缺少必填参数 file/line/character。正确用法示例：\n{"tool": "lsp", "params": {"action": "completion", "file": "src/index.ts", "line": 10, "character": 5, "reason": "代码补全"}}\n请用正确的 file、line、character 参数重试。');
           const items = await lsp.completion(absFile, line, character, { limit });
           if (items.length === 0) return createToolResponse(true, "（无补全建议）", { payload: { action: "completion" } });
           const formatted = items.map(it => `${it.label}${it.detail ? ` — ${it.detail}` : ""}`).join("\n");
           return createToolResponse(true, `[completion | ${items.length} 项]\n${formatted}`, { payload: { action: "completion", count: items.length } });
         }
         case "symbols": {
-          if (!absFile) return createToolResponse(false, "symbols 需要 file");
+          if (!absFile) return createToolResponse(false, '❌ lsp symbols 缺少必填参数 file（文件路径）。正确用法示例：\n{"tool": "lsp", "params": {"action": "symbols", "file": "src/index.ts", "reason": "列出文件符号"}}\n请用正确的 file 参数重试。');
           const syms = await lsp.documentSymbols(absFile);
           return this.fmtSymbols(syms, "symbols", root, limit);
         }
         case "workspace_symbols": {
           const query = String(params.query ?? "").trim();
-          if (!query) return createToolResponse(false, "workspace_symbols 需要 query");
+          if (!query) return createToolResponse(false, '❌ lsp workspace_symbols 缺少必填参数 query（搜索词）。正确用法示例：\n{"tool": "lsp", "params": {"action": "workspace_symbols", "query": "MyClass", "reason": "全工程搜符号"}}\n请用正确的 query 参数重试。');
           const syms = await lsp.workspaceSymbols(query, root);
           return this.fmtSymbols(syms, "workspace_symbols", root, limit);
         }

@@ -7,7 +7,7 @@
 import { exec } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, relative, join, extname } from "node:path";
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { groupGrepByFile } from "../../compress/output-compressor.js";
@@ -216,6 +216,7 @@ function matchSimpleGlob(filename: string, glob: string): boolean {
 }
 
 export class GrepTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "grep",
     aliases: ["search-text", "rg"],
@@ -297,7 +298,7 @@ export class GrepTool extends Tool {
   ): Promise<ToolResponse> {
     const pattern = String(params.pattern ?? "").trim();
     if (!pattern) {
-      return createToolResponse(false, "grep 缺少 pattern 参数");
+      return createToolResponse(false, '❌ grep 缺少必填参数 pattern（正则表达式）。正确用法示例：\n{"tool": "grep", "params": {"pattern": "function\\s+\\w+", "reason": "搜索函数定义"}}\n请用正确的 pattern 参数重试。');
     }
 
     const searchPath = String(params.path ?? ".").trim();

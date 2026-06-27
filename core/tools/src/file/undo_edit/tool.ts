@@ -10,7 +10,7 @@
  * @see DESIGN.md 第 28 行「被影响文件的回退机制」
  */
 
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { errToString } from "../../browser/god_tool/use_browser/_util.js";
@@ -22,6 +22,7 @@ import {
 } from "../file-edit-history.js";
 
 export class UndoEditTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "undo_edit",
     aliases: ["undo_edit"],

@@ -6,7 +6,7 @@
 import { exec } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { resolve, relative, join } from "node:path";
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 
@@ -139,6 +139,7 @@ function walkDir(
 }
 
 export class GlobTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "glob",
     aliases: ["find-files", "ls-glob"],
@@ -181,7 +182,7 @@ export class GlobTool extends Tool {
   ): Promise<ToolResponse> {
     const pattern = String(params.pattern ?? "").trim();
     if (!pattern) {
-      return createToolResponse(false, "请提供 glob 匹配模式 (pattern)");
+      return createToolResponse(false, '❌ glob 缺少必填参数 pattern（glob 匹配模式）。正确用法示例：\n{"tool": "glob", "params": {"pattern": "**/*.ts", "reason": "查找所有 TypeScript 文件"}}\n请用正确的 pattern 参数重试。');
     }
 
     const searchPath = String(params.path ?? ".").trim();
@@ -229,7 +230,9 @@ export class GlobTool extends Tool {
     results.sort((a, b) => b.mtime - a.mtime);
 
     if (results.length === 0) {
-      return createToolResponse(false, `未找到匹配 "${pattern}" 的文件。可能的原因：(1) pattern 太窄，尝试放宽（如 "**/*.ts"）；(2) 搜索路径 ${searchPath} 不对；(3) 目标在 node_modules/.git/dist/build 等自动忽略目录内。`, {
+      // 无结果视为查询成功（与 grep 一致）：让 LLM 看到"未找到"后正常决策，
+      // 而不是当成工具失败去 retry。
+      return createToolResponse(true, `未找到匹配 "${pattern}" 的文件。可能的原因：(1) pattern 太窄，尝试放宽（如 "**/*.ts"）；(2) 搜索路径 ${searchPath} 不对；(3) 目标在 node_modules/.git/dist/build 等自动忽略目录内。`, {
         payload: { pattern, search_path: searchPath, count: 0, method: "node" },
       });
     }

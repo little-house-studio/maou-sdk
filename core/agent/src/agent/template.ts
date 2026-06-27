@@ -1,32 +1,30 @@
 /**
- * Agent 模板实例化 —— eve 系统的「模板复制创建 agent」能力。
+ * Agent 模板实例化引擎 —— 从指定模板目录复制 eve 结构到 agent 实例目录。
  *
- * 不再硬编码写 SYSTEM.md，而是从 templates/agent/ 复制整套 eve 结构到
- * <maouRoot>/agents/<name>/，并替换占位符（{{name}} / {{display_name}} / {{role}}）、合并配置。
+ * SDK 只提供引擎能力（复制、占位符替换、agent.json 合并），
+ * 不内置任何具体角色的模板。模板由业务层（maou-agent/templates/）提供。
  *
- * eve 目录结构（模板）：
- *   prompt/system/system.md          系统提示词（入口，自动渲染嵌套）
- *   prompt/before_user/before_user.md 用户输入前注入
- *   prompt/compression/compression.md 压缩提示词
- *   prompt/PREVIEW/                    渲染预览产物
- *   memory/ hook/ loop/ triggers/ command/ skill/  各功能目录
- *   agent.json                        配置（工具白名单/重试/loop 上限/终端模式）
+ * 用法：
+ *   createAgentFromTemplate({
+ *     templateDir: "/path/to/templates/coding",
+ *     name: "coding",
+ *     maouRoot: "~/.maou",
+ *     opts: { tools: [...], terminalMode: "auto" }
+ *   })
  */
 
 import { existsSync, cpSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { PromptCompiler } from "@little-house-studio/prompt";
 
-/** 模板目录：相对编译产物 dist/agent/template.js 上溯到包根的 templates/agent。 */
-const TEMPLATE_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "templates", "agent");
-
 export interface CreateAgentOptions {
+  /** 模板源目录（必填，业务层传入，如 maou-agent/templates/coding/） */
+  templateDir: string;
   displayName?: string;
   role?: string;
-  /** 覆盖默认 system.md 内容（如 coding agent 的编程提示词） */
+  /** 覆盖模板 system.md 内容 */
   systemPrompt?: string;
-  /** 覆盖默认 before_user.md */
+  /** 覆盖模板 before_user.md */
   beforeUser?: string;
   tools?: readonly string[];
   roundLimit?: number;
@@ -41,17 +39,18 @@ export interface CreateAgentOptions {
  * 从模板创建一个 agent 实例到 <maouRoot>/agents/<name>/。
  * 返回 agent 目录路径。幂等：已存在且未 force 时直接返回。
  */
-export function createAgentFromTemplate(name: string, maouRoot: string, opts: CreateAgentOptions = {}): string {
+export function createAgentFromTemplate(name: string, maouRoot: string, opts: CreateAgentOptions): string {
+  const templateDir = opts.templateDir;
   const target = join(maouRoot, "agents", name);
   if (existsSync(join(target, "prompt", "system", "system.md")) && !opts.force) {
     return target;
   }
-  if (!existsSync(TEMPLATE_DIR)) {
-    throw new Error(`agent 模板缺失: ${TEMPLATE_DIR}`);
+  if (!existsSync(templateDir)) {
+    throw new Error(`agent 模板目录不存在: ${templateDir}`);
   }
   mkdirSync(dirname(target), { recursive: true });
   // 复制模板（保留已有的 memory/tokens/sessions 等运行数据，只覆盖模板文件）
-  cpSync(TEMPLATE_DIR, target, { recursive: true });
+  cpSync(templateDir, target, { recursive: true });
 
   const vars: Record<string, string> = {
     name,
@@ -65,7 +64,7 @@ export function createAgentFromTemplate(name: string, maouRoot: string, opts: Cr
 
   mergeAgentJson(join(target, "agent.json"), opts);
 
-  // 同步生成一份 PERMISSION.jsonc（工具白名单的强制副本，兼容现有权限读取）
+  // 同步生成一份 PERMISSION.jsonc（工具白名单的强制副本）
   if (opts.tools) {
     writeFileSync(
       join(target, "PERMISSION.jsonc"),
@@ -80,7 +79,7 @@ export function createAgentFromTemplate(name: string, maouRoot: string, opts: Cr
 }
 
 /**
- * 把 agent 的 system/before_user/compression 三个提示词**渲染后**写入 prompt/PREVIEW/，
+ * 把 agent 的 system/before_user/compression 三个提示词渲染后写入 prompt/PREVIEW/，
  * 方便开发时直接看到最终注入内容（含 {{file}} 内联、{{>>script}} 执行的结果）。
  * 只对 eve 结构（存在 prompt/system/system.md）生效。
  */

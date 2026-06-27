@@ -2,13 +2,13 @@
  * Subagent 系统 — 文件即子 Agent（对标 Vercel Eve）
  *
  * 约定：agent/subagents/<name>/ 目录即子 Agent
- * 子 Agent 拥有独立的 instructions.md、tools/、skills/
+ * 子 Agent 拥有独立的 prompt/system/system.md、tools/、skills/
  * 父 Agent 通过内置的 "agent" 工具委托任务给子 Agent
  *
  * @example
  * agent/subagents/investigator/
  * ├── agent.ts            # defineAgent({ description: "调查数据异常" })
- * ├── instructions.md     # 子 Agent 的系统提示词
+ * ├── prompt/system/system.md  # 子 Agent 的系统提示词（eve 结构）
  * └── tools/              # 子 Agent 专属工具
  */
 
@@ -22,14 +22,12 @@ import type { DefinedAgent } from "./define-agent.js";
 export interface SubagentEntry {
   /** 子 Agent 名（目录名） */
   name: string;
-  /** 子 Agent 描述（从 agent.ts 的 defineAgent.description 或 instructions.md 首行提取） */
+  /** 子 Agent 描述（从 agent.ts 的 defineAgent.description 提取） */
   description: string;
   /** 子 Agent 目录路径 */
   dir: string;
   /** 是否有 agent.ts */
   hasAgentTs: boolean;
-  /** 是否有 instructions.md */
-  hasInstructions: boolean;
   /** 子 Agent 工具列表 */
   tools: string[];
   /** 子 Agent 技能列表 */
@@ -127,22 +125,22 @@ export class SubagentRegistry {
 
   private _scanSubagentDir(dir: string, dirName: string): SubagentEntry | null {
     const agentTsPath = join(dir, "agent.ts");
-    const instructionsPath = join(dir, "instructions.md");
     const toolsDir = join(dir, "tools");
     const skillsDir = join(dir, "skills");
 
-    // 至少要有 agent.ts 或 instructions.md
+    // 必须有 agent.ts 或 agent.json（eve 结构）
     const hasAgentTs = existsSync(agentTsPath);
-    const hasInstructions = existsSync(instructionsPath);
-    if (!hasAgentTs && !hasInstructions) return null;
+    const hasAgentJson = existsSync(join(dir, "agent.json"));
+    if (!hasAgentTs && !hasAgentJson) return null;
 
     // 提取描述
     let description = dirName;
-    if (hasInstructions) {
+    if (hasAgentJson) {
       try {
-        const content = require("node:fs").readFileSync(instructionsPath, "utf-8");
-        const titleMatch = content.match(/^#\s+(.+)/m);
-        if (titleMatch) description = titleMatch[1].trim();
+        const content = require("node:fs").readFileSync(join(dir, "agent.json"), "utf-8");
+        const data = JSON.parse(content);
+        if (data.description) description = data.description;
+        else if (data.display_name) description = data.display_name;
       } catch { /* ignore */ }
     }
 
@@ -175,7 +173,6 @@ export class SubagentRegistry {
       description,
       dir,
       hasAgentTs,
-      hasInstructions,
       tools,
       skills,
     };

@@ -6,7 +6,7 @@
  * 主 Agent 用 scope=system 创建系统全局队友，Coding Agent 用 scope=project。
  */
 
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 
@@ -19,6 +19,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 export class TeamManageTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "agent_manage",
     aliases: [],

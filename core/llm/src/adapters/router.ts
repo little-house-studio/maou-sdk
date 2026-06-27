@@ -29,6 +29,7 @@ import { CloudflareAdapter } from "./cloudflare.js";
 import { GoogleVertexAdapter } from "./google-vertex.js";
 import { OpenAICodexAdapter } from "./openai-codex.js";
 import { GitHubCopilotAdapter } from "./github-copilot.js";
+import { getAdapterRegistry } from "../adapter-registry.js";
 
 /** 协议名称 → 适配器构造器映射 */
 const ADAPTER_MAP: Record<string, () => ProtocolAdapter> = {
@@ -53,9 +54,13 @@ const ADAPTER_MAP: Record<string, () => ProtocolAdapter> = {
  */
 export function getAdapter(protocol: string): ProtocolAdapter {
   const normalized = protocol.trim().toLowerCase();
+  // 1. 优先查全局注册表（adapter-registry.ts，支持运行时注册）
+  const globalAdapter = getAdapterRegistry().get(normalized);
+  if (globalAdapter) return globalAdapter;
+  // 2. 再查内置 ADAPTER_MAP
   const factory = ADAPTER_MAP[normalized];
   if (factory) return factory();
-  // 回退到 openai
+  // 3. 回退到 openai
   return ADAPTER_MAP["openai"]();
 }
 
@@ -84,7 +89,11 @@ export class ProtocolGateway {
     const cached = this._adapters.get(normalized);
     if (cached) return cached;
 
-    const factory = ADAPTER_MAP[normalized] ?? ADAPTER_MAP["openai"];
+    // 优先查全局注册表，再查内置 ADAPTER_MAP
+    const globalAdapter = getAdapterRegistry().get(normalized);
+    const factory = globalAdapter
+      ? () => globalAdapter
+      : (ADAPTER_MAP[normalized] ?? ADAPTER_MAP["openai"]);
     const adapter = factory();
     // 用真实协议名做键缓存（未匹配时回退到 openai 实例，也按 openai 缓存）
     this._adapters.set(adapter.protocolName, adapter);

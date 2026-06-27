@@ -5,7 +5,7 @@
 
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { extname } from "node:path";
-import { Tool } from "../../../base.js";
+import { Tool, toolDir } from "../../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../../base.js";
 import { createToolResponse } from "../../../base.js";
 import { safePath, errToString } from "../../../browser/god_tool/use_browser/_util.js";
@@ -44,6 +44,7 @@ function isImagePath(filePath: string): boolean {
 }
 
 export class ReadTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "reader",
     aliases: [],
@@ -87,7 +88,7 @@ export class ReadTool extends Tool {
   ): Promise<ToolResponse> {
     const filePath = String(params.path ?? params.file_path ?? "").trim();
     if (!filePath) {
-      return createToolResponse(false, "read 缺少 path 参数");
+      return createToolResponse(false, '❌ reader 缺少必填参数 path（文件路径或 URL）。正确用法示例：\n{"tool": "reader", "params": {"path": "src/index.ts"}}\n请用正确的 path 参数重试。');
     }
 
     // URL 模式

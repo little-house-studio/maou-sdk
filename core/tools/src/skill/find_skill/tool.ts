@@ -10,7 +10,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 
@@ -38,6 +38,7 @@ interface ParsedSearchQuery {
 // ─── 工具实现 ─────────────────────────────────────────────────────────────
 
 export class FindSkillTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "find_skill",
     aliases: ["skill_search", "skill_install"],

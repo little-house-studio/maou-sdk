@@ -2,9 +2,8 @@
  * Tool Registry
  * Python equivalent: core/tools/registry.py
  *
- * Schema loading priority:
- * 1. Schema directory (recursive scan for schema.json) - highest
- * 2. Tool class definition - fallback
+ * Schema 来源：每个 Tool 实例通过 schemaDir 自带 schema.json + TOOL.md
+ * Tool.nativeToolSchemas() 优先从 schemaDir/schema.json 读取
  *
  * Whitelist format: category/subpath (e.g. "terminal/use_terminal", "agent_team/god_tool/agent_team")
  */
@@ -13,6 +12,8 @@ import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Tool, ToolDefinition, ToolContext, ToolResponse } from "./base.js";
 import { createToolResponse } from "./base.js";
+import { clearReadRegistry } from "./file/read-registry.js";
+import { clearHistory as clearFileEditHistory } from "./file/file-edit-history.js";
 
 /** Schema with source path for whitelist matching */
 interface SchemaWithPath {
@@ -22,17 +23,8 @@ interface SchemaWithPath {
 
 export class ToolRegistry {
   private _tools = new Map<string, Tool>();
-  private _schemasDir: string | null = null;
   /** Agent 级工具目录（文件即 Agent 约定） */
   private _agentToolsDirs: string[] = [];
-
-  /**
-   * Set schema directory path (core/tools/)
-   * Recursively scans for schema.json files
-   */
-  setSchemasDir(dir: string | null): void {
-    this._schemasDir = dir;
-  }
 
   /**
    * 添加 Agent 级工具目录（如 ~/.maou/agents/<name>/tools/）
@@ -85,6 +77,14 @@ export class ToolRegistry {
 
   /**
    * Call session cleanup hooks on all tools
+   *
+   * 在新 session 启动前清理上一次 session 的工具侧状态：
+   * 1. 调用每个工具的 onSessionStart 钩子（工具自身的 session-scoped 状态）
+   * 2. 清空 read-registry（避免读到旧 session 的「文件已读」假标记，让下次 reader 工具重新读盘）
+   * 3. 清空 file-edit-history（避免 undo 误把上一个 session 的编辑回退掉）
+   *
+   * 注意：sessionId 在 maou 里通常是唯一 UUID，理论上不会撞——但 task recovery / 复用同名 session
+   * 时仍可能命中旧 state。冗余清理无副作用，所以这里都调一遍。
    */
   cleanupSession(sessionId: string): number {
     const seen = new Set<number>();
@@ -100,7 +100,41 @@ export class ToolRegistry {
         } catch { /* ignore */ }
       }
     }
+    // 清空模块级 session-scoped 状态（read-registry + file-edit-history）
+    try { clearReadRegistry(sessionId); } catch { /* ignore */ }
+    try { clearFileEditHistory(sessionId); } catch { /* ignore */ }
     return count;
+  }
+
+  /**
+   * 获取白名单中启用工具的提示词（TOOL.md），用于注入 system prompt
+   * @param whitelist 工具白名单，undefined 表示全部
+   * @returns Map<toolName, promptText>
+   */
+  getToolPrompts(whitelist?: Set<string>): Map<string, string> {
+    const prompts = new Map<string, string>();
+    const allowAll = whitelist?.has("*");
+    const effectiveWhitelist = allowAll ? undefined : whitelist;
+    const seen = new Set<number>();
+
+    for (const tool of this._tools.values()) {
+      const id = getObjectUid(tool);
+      if (seen.has(id)) continue;
+      seen.add(id);
+
+      const name = tool.definition.name;
+      // 白名单过滤
+      if (effectiveWhitelist && !effectiveWhitelist.has(name)) {
+        const aliases: string[] = tool.definition.aliases ?? [];
+        if (!aliases.some(a => effectiveWhitelist!.has(a))) continue;
+      }
+
+      const prompt = tool.toolPrompt();
+      if (prompt) {
+        prompts.set(name, prompt);
+      }
+    }
+    return prompts;
   }
 
   /**
@@ -108,7 +142,7 @@ export class ToolRegistry {
    * @param whitelist optional whitelist of path patterns (e.g. "terminal/use_terminal")
    *                   "*" means all allowed
    *
-   * Priority: schema dir > agent tools dirs > TOOL.jsonc > Tool class definition
+   * Priority: agent tools dirs > Tool class (自带 schema.json)
    */
   nativeToolSchemas(whitelist?: Set<string>): JsonSchema[] {
     const schemas: JsonSchema[] = [];
@@ -118,20 +152,7 @@ export class ToolRegistry {
     const allowAll = whitelist?.has("*");
     const effectiveWhitelist = allowAll ? undefined : whitelist;
 
-    // 1. Load from schema directory (highest priority)
-    if (this._schemasDir) {
-      const dirSchemas = this._loadSchemasFromDir();
-      for (const item of dirSchemas) {
-        const name = String(item.schema.name ?? "").trim();
-        if (!name || seenNames.has(name)) continue;
-        // Whitelist filter: match by path or by name
-        if (effectiveWhitelist && !this._matchesWhitelist(item.path, name, effectiveWhitelist)) continue;
-        seenNames.add(name);
-        schemas.push(item.schema);
-      }
-    }
-
-    // 2. Load from agent tools directories (文件即 Agent 约定)
+    // 1. Load from agent tools directories (文件即 Agent 约定)
     for (const agentDir of this._agentToolsDirs) {
       const agentSchemas = this._loadSchemasFromDir(agentDir);
       for (const item of agentSchemas) {
@@ -143,7 +164,7 @@ export class ToolRegistry {
       }
     }
 
-    // 3. Fallback to registered tool definitions
+    // 2. Fallback to registered tool definitions
     const seenTools = new Set<number>();
     for (const tool of this._tools.values()) {
       const toolId = getObjectUid(tool);
@@ -185,12 +206,11 @@ export class ToolRegistry {
    * Recursively load schemas from directory
    * Returns schemas with their relative paths for whitelist matching
    */
-  private _loadSchemasFromDir(dir?: string): SchemaWithPath[] {
+  private _loadSchemasFromDir(dir: string): SchemaWithPath[] {
     const schemas: SchemaWithPath[] = [];
-    const scanDir = dir ?? this._schemasDir;
-    if (!scanDir || !existsSync(scanDir)) return schemas;
+    if (!existsSync(dir)) return schemas;
 
-    this._scanDirRecursive(scanDir, "", schemas);
+    this._scanDirRecursive(dir, "", schemas);
     return schemas;
   }
 

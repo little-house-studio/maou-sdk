@@ -54,8 +54,29 @@ export function safePath(projectRoot: string, userPath: string): string {
 
 /**
  * 统一从 catch 的 unknown 值里提取可读错误字符串。
+ *
+ * 递归提取 Error.cause 链：Node.js 16+ 的 Error 可带 cause 字段表示根本原因，
+ * 只取 message 会丢失「为什么失败」的关键信息。例如：
+ *   Error: spawn opencli ENOENT → cause: Error: No such file or directory
+ * 拼成 "spawn opencli ENOENT [caused by: No such file or directory]" 后更易诊断。
  */
 export function errToString(err: unknown): string {
-  if (err instanceof Error) return err.message;
+  if (err instanceof Error) {
+    const msg = err.message;
+    const cause = (err as { cause?: unknown }).cause;
+    if (cause !== undefined && cause !== null) {
+      const causeStr = cause instanceof Error ? cause.message : String(cause);
+      if (causeStr && causeStr !== msg) {
+        return `${msg} [caused by: ${causeStr}]`;
+      }
+    }
+    return msg;
+  }
+  // 非 Error 值（字符串、数字、对象）直接转字符串
+  if (err === null) return "null";
+  if (err === undefined) return "undefined";
+  if (typeof err === "object") {
+    try { return JSON.stringify(err); } catch { return String(err); }
+  }
   return String(err);
 }

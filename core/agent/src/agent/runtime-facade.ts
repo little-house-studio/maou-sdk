@@ -25,6 +25,7 @@ import type { ToolRegistry, Task } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { ConfigStore } from "@little-house-studio/types";
 import { AgentRuntime } from "./runtime.js";
+import { AgentFactory } from "./factory.js";
 import { GitWatcher } from "../agent_factory/git-watcher.js";
 import { createAppLogger } from "./app-logger.js";
 import { join } from "node:path";
@@ -155,7 +156,8 @@ export class Runtime {
   private getRuntime(): AgentRuntime {
     if (!this.agentRuntime) {
       const config = this.configStore.get();
-      const compiler = new PromptCompiler({ promptRoot: config.api.promptRoot, projectRoot: this.projectRoot });
+      // PromptCompiler 占位：AgentRuntime.run() 内部从 AgentRegistry 获取 agent 实际路径后自行创建 compiler
+      const compiler = new PromptCompiler({ promptRoot: this.maouRoot, projectRoot: this.projectRoot });
 
       // 注入 LLM POST 日志记录器 —— 每次 LLM 调用自动写入 raw.jsonl
       const sessionStore = this.sessionStore;
@@ -364,15 +366,9 @@ export class Runtime {
     }
   }
 
-  /** 初始化新 agent */
+  /** 初始化新 agent —— 由业务层 createAgentFromTemplate 负责，此处仅占位 */
   async initAgent(name: string): Promise<Record<string, unknown>> {
-    try {
-      const { initMainAgent } = await import("./registry.js");
-      initMainAgent(this.maouRoot);
-      return { ok: true, name };
-    } catch (err) {
-      return { ok: false, error: String(err) };
-    }
+    return { ok: true, name, note: "agent 初始化已迁移到业务层 createAgentFromTemplate" };
   }
 
   /** 获取 Agent 工厂预设 */
@@ -388,11 +384,22 @@ export class Runtime {
 
   /** 预览 agent 配置 */
   previewAgent(data: Record<string, unknown>): Record<string, unknown> {
-    return { name: data.name, role: data.role, preview: true };
+    try {
+      const factory = new AgentFactory(this.maouRoot, process.cwd());
+      return factory.previewAgent(data as any) as unknown as Record<string, unknown>;
+    } catch {
+      return { name: data.name, role: data.role, preview: true };
+    }
   }
 
   /** 创建 agent */
-  createAgent(data: Record<string, unknown>): Record<string, unknown> {
-    return { ok: true, ...data };
+  async createAgent(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+    try {
+      const factory = new AgentFactory(this.maouRoot, process.cwd());
+      const result = factory.createAgent(data as any);
+      return { ok: result.success, ...data, message: result.message };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
   }
 }

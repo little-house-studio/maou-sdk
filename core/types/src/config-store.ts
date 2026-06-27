@@ -47,15 +47,7 @@ const PluginSettingsSchema = z.object({
 const ApiConfigSchema = z.object({
   presets: z.array(LLMPresetSchema).default([]),
   defaultPreset: z.number().int().min(0).default(0),
-  /** role 名 → presets 数组下标。/api/run 的 role 参数据此路由到具体 preset。
-   *  例如 {"default":0,"vision":1,"fast":2}。未配置的 role 回退到 defaultPreset。 */
-  rolePresets: z.record(z.string(), z.number()).default({}),
   agentRoundLimit: z.number().int().positive().default(50),
-  promptRoot: z.string().default('ROLE/default'),
-  promptEntrypoint: z.string().default('SYSTEM.md'),
-  userEntrypoint: z.string().default('USER.md'),
-  toolSchemasFile: z.string().default('TOOL.jsonc'),
-  promptRoles: z.record(z.string()).default({}),
   contextSettings: ContextSettingsSchema.default({}),
   pluginSettings: PluginSettingsSchema.optional(),
 })

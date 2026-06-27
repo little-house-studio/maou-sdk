@@ -44,16 +44,6 @@ export interface CallerStreamEvent {
 
 // ── 工具调用预校验/修补 ──
 
-/**
- * 从工具注册表构建参数校验规则
- * 规则定义在工具的 definition.paramGuards 中
- */
-export function buildParamGuards(tools: { get(name: string): { definition: { paramGuards?: Record<string, string> } } | undefined }): Map<string, Set<string>> {
-  const guards = new Map<string, Set<string>>();
-  // 不遍历注册表，按需查询
-  return guards;
-}
-
 function repairToolCalls(toolCalls: LLMToolCall[], paramGuards?: Map<string, Set<string>>, getGuard?: (name: string) => Set<string> | undefined): LLMToolCall[] {
   if (!toolCalls?.length) return [];
   const ok: LLMToolCall[] = [];

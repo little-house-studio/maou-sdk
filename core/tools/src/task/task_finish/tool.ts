@@ -6,13 +6,14 @@
  * 自动更新依赖链并返回当前进度表格。
  */
 
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { TASK_MANAGER } from "../task_manage/tool.js";
 import { errToString } from "../../browser/god_tool/use_browser/_util.js";
 
 export class TaskFinishTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "task_finish",
     aliases: [],

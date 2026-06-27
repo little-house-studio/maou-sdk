@@ -11,6 +11,7 @@
  */
 
 import type { BuildMessagesParams, UserMessageOptions } from "./types.js";
+import type { LLMToolCall } from "./types/message.js";
 import { compileProjectContext } from "./project-context.js";
 
 /**
@@ -107,7 +108,7 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
           type: "function",
           function: {
             name: tc.name,
-            arguments: JSON.stringify(tc.arguments ?? {}),
+            arguments: JSON.stringify((tc as LLMToolCall).arguments ?? {}),
           },
         }));
       }
@@ -129,7 +130,7 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
           type: tc.type || "function",
           function: {
             name: tc.name,
-            arguments: JSON.stringify(tc.arguments ?? {}),
+            arguments: JSON.stringify(tc.arguments ?? tc.parameters ?? {}),
           },
         }));
       }

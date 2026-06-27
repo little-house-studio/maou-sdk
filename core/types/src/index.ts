@@ -226,13 +226,7 @@ export interface SecurityConfig {
 export interface ApiConfig {
   presets: LLMPreset[]
   defaultPreset: number
-  rolePresets: Record<string, number>
   agentRoundLimit: number
-  promptRoot: string
-  promptEntrypoint: string
-  userEntrypoint: string
-  toolSchemasFile: string
-  promptRoles: Record<string, string>
   contextSettings: ContextSettings
   pluginSettings?: PluginSettings
 }

@@ -32,7 +32,7 @@ import type { HarnessSessionStore, TaskSessionStore, Summarizer, LLMMessage } fr
 import { compileDynamicContext } from "../dynamic-context.js";
 import { TokenTracker } from "./token-tracker.js";
 import type { TokenUsage } from "./token-tracker.js";
-import { AgentRegistry, initMainAgent } from "./registry.js";
+import { AgentRegistry } from "./registry.js";
 import { renderAgentPreview } from "./template.js";
 import { runAgentCommand } from "./command-runner.js";
 import { ModelCaller, type ModelCallResult, type CallerStreamEvent } from "@little-house-studio/llm";
@@ -85,6 +85,18 @@ export interface RuntimeOptions {
    * 检查队列，投递等待中的用户消息。缺省则使用全局 MESSAGE_QUEUE 单例。
    */
   messageQueue?: MessageQueue;
+
+  // ── 可插拔工厂（缺省使用内部默认实现，注入后可替换为自定义）──
+  /** SessionManager 工厂（缺省 new SessionManager(sessions, maouRoot)） */
+  createSessionManager?: (sessions: SessionStore, maouRoot: string) => SessionManager;
+  /** CheckpointStore 工厂（缺省 new CheckpointStore(sessions)） */
+  createCheckpointStore?: (sessions: SessionStore) => CheckpointStore;
+  /** MemoryStore 工厂（缺省 new MemoryStore(maouRoot, agentName)） */
+  createMemoryStore?: (maouRoot: string, agentName: string) => MemoryStore;
+  /** TokenTracker 工厂（缺省 new TokenTracker(maouRoot, agentName, preset)） */
+  createTokenTracker?: (maouRoot: string, agentName: string, preset: Record<string, unknown>) => TokenTracker;
+  /** SkillContextManager 工厂（缺省 new SkillContextManager(agentName, projectRoot, maouRoot)） */
+  createSkillManager?: (agentName: string, projectRoot: string, maouRoot: string) => SkillContextManager;
 }
 
 export interface ModelCallParams {
@@ -159,6 +171,13 @@ export class AgentRuntime {
    */
   private subagentExecutor?: SubagentExecutorLike;
 
+  // ── 可插拔工厂（缺省使用内部默认实现）──
+  private createSessionManagerFn: (sessions: SessionStore, maouRoot: string) => SessionManager;
+  private createCheckpointStoreFn: (sessions: SessionStore) => CheckpointStore;
+  private createMemoryStoreFn: (maouRoot: string, agentName: string) => MemoryStore;
+  private createTokenTrackerFn: (maouRoot: string, agentName: string, preset: Record<string, unknown>) => TokenTracker;
+  private createSkillManagerFn: (agentName: string, projectRoot: string, maouRoot: string) => SkillContextManager;
+
   constructor(options: RuntimeOptions) {
     this.compiler = options.compiler;
     this.sessions = options.sessions;
@@ -176,6 +195,13 @@ export class AgentRuntime {
     this.hooks = options.hooks;
     this.messageQueue = options.messageQueue ?? MESSAGE_QUEUE;
 
+    // 工厂：优先使用注入的实现，缺省使用内部默认
+    this.createSessionManagerFn = options.createSessionManager ?? ((s, r) => new SessionManager(s, r));
+    this.createCheckpointStoreFn = options.createCheckpointStore ?? ((s) => new CheckpointStore(s));
+    this.createMemoryStoreFn = options.createMemoryStore ?? ((r, n) => new MemoryStore(r, n));
+    this.createTokenTrackerFn = options.createTokenTracker ?? ((r, n, p) => new TokenTracker(r, n, p));
+    this.createSkillManagerFn = options.createSkillManager ?? ((n, p, r) => new SkillContextManager(n, p, r));
+
     // 注入 interrupt 回调：interrupt 模式 enqueue 时自动 abort 当前 run
     // （未注入时只返回 shouldAbort=true，需调用方自行 abort）
     this.messageQueue.setOnInterrupt((sid, mode) => {
@@ -183,10 +209,10 @@ export class AgentRuntime {
       this.log("info", `[MSG_QUEUE] session=${sid} 触发 ${mode}，已 abort 当前 run`);
     });
 
-    // 初始化上下文管理层
-    this.sessionManager = new SessionManager(this.sessions, this.maouRoot);
+    // 初始化上下文管理层（通过工厂）
+    this.sessionManager = this.createSessionManagerFn(this.sessions, this.maouRoot);
     this.sessionManager.loadState();
-    this.checkpointStore = new CheckpointStore(this.sessions);
+    this.checkpointStore = this.createCheckpointStoreFn(this.sessions);
   }
 
   /**
@@ -313,37 +339,45 @@ export class AgentRuntime {
 
     const agentName = session.agentName || "main";
     const maouRoot = this.maouRoot;
-    initMainAgent(maouRoot);
+    // Agent 实例由业务层创建（createAgentFromTemplate），SDK 不自动物化
 
-    // ── 从 agent.json 读取 round_limit + 约定扫描 promptRoot/entrypoint ──
+    // ── 从 agent.json 读取 round_limit + promptRoot/entrypoint ──
     let effectiveRoundLimit = this.agentRoundLimit;
-    let agentPromptRoot: string | null = null;
-    let agentEntrypoint: string | null = null;
+    let agentPromptRoot: string = "";
+    let agentEntrypoint: string = "system/system.md";
     let compressionLevel: "off" | "normal" | "aggressive" = "normal";
     let verifyCommand = "";
+    const registry = new AgentRegistry(maouRoot);
+    const agentEntry = registry.get(agentName);
+    if (!agentEntry) {
+      const errMsg = `agent '${agentName}' 不存在（~/.maou/agents/${agentName}/agent.json 缺失）`;
+      yield this.logEvent("error", errMsg);
+      yield this.event("error", { message: errMsg, round: 0 });
+      yield this.event("done", { sessionId, rounds: 0, error: errMsg });
+      return;
+    }
+    if (typeof agentEntry.round_limit === "number" && agentEntry.round_limit > 0) {
+      effectiveRoundLimit = agentEntry.round_limit;
+      this.log("info", `[RUN] agent=${agentName} round_limit=${effectiveRoundLimit}`);
+    }
+    const tc = (agentEntry as { tool_compression?: string }).tool_compression;
+    if (tc === "off" || tc === "normal" || tc === "aggressive") compressionLevel = tc;
+    const vc = (agentEntry as { verify_command?: string }).verify_command;
+    if (typeof vc === "string" && vc.trim()) verifyCommand = vc.trim();
+    const tm = (agentEntry as { terminal_mode?: string }).terminal_mode;
+    if (tm === "normal" || tm === "auto" || tm === "yolo") {
+      try { setTerminalMode(agentName, tm); } catch { /* ignore */ }
+    }
+    // promptRoot：必须存在 eve 结构，否则抛错
     try {
-      const registry = new AgentRegistry(maouRoot, this.projectRoot);
-      const agentEntry = registry.get(agentName);
-      if (agentEntry && typeof agentEntry.round_limit === "number" && agentEntry.round_limit > 0) {
-        effectiveRoundLimit = agentEntry.round_limit;
-        this.log("info", `[RUN] agent=${agentName} round_limit=${effectiveRoundLimit}`);
-      }
-      // 工具输出压缩级别（agent.json tool_compression）
-      const tc = (agentEntry as { tool_compression?: string } | null)?.tool_compression;
-      if (tc === "off" || tc === "normal" || tc === "aggressive") compressionLevel = tc;
-      // 完成前自动验证命令（agent.json verify_command），如 "npm run typecheck"
-      const vc = (agentEntry as { verify_command?: string } | null)?.verify_command;
-      if (typeof vc === "string" && vc.trim()) verifyCommand = vc.trim();
-      // 终端审批模式（agent.json terminal_mode: normal/auto/yolo）→ 应用到该 agent 的策略
-      const tm = (agentEntry as { terminal_mode?: string } | null)?.terminal_mode;
-      if (tm === "normal" || tm === "auto" || tm === "yolo") {
-        try { setTerminalMode(agentName, tm); } catch { /* ignore */ }
-      }
-      // 文件即 Agent：使用约定目录的 promptRoot 和 entrypoint
       agentPromptRoot = registry.getPromptRoot(agentName);
       agentEntrypoint = registry.getPromptEntrypoint(agentName);
-    } catch {
-      // 读取失败使用默认值
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      yield this.logEvent("error", errMsg);
+      yield this.event("error", { message: errMsg, round: 0 });
+      yield this.event("done", { sessionId, rounds: 0, error: errMsg });
+      return;
     }
 
     // ── 1a. 清理 session-scoped 条目 ──
@@ -375,42 +409,31 @@ export class AgentRuntime {
     yield this.event("status", { text: "编译 Prompt..." });
     yield this.logEvent("info", "开始编译 Prompt");
 
-    // 文件即 Agent：用「该 agent 实际生效的 promptRoot」编译。
-    // 🔴 竞态根因修复：每个 run 创建**独立** PromptCompiler，绝不 configure/mutate 共享的 this.compiler。
-    // 旧逻辑 configure(agentRoot)→compile()→还原 共享 compiler；飞书后台轮询会**并发**触发其它
-    // agent（如 ROLE/default 吸血鬼 main）的 run，并发改掉共享 promptRoot，导致本 run 的 compile()
-    // 读到别的 agent 的 SYSTEM.md（吸血鬼 + JSON 规范）。独立 compiler 彻底消除该竞态。
+    // eve 结构：每个 agent 必须自带 prompt/system/system.md（getPromptRoot 已校验）。
+    // 每个 run 创建独立 PromptCompiler，杜绝并发竞态。
     let systemPrompt: string;
-    const origPromptRoot = this.compiler.promptRoot;
-    const origEntrypoint = (this.compiler as unknown as { entrypoint?: string }).entrypoint ?? "SYSTEM.md";
-    const useAgentRoot = Boolean(
-      agentPromptRoot && agentEntrypoint && existsSync(join(agentPromptRoot, agentEntrypoint)),
-    );
-    const effectivePromptRoot = useAgentRoot && agentPromptRoot ? agentPromptRoot : origPromptRoot;
-    const effectiveEntrypoint = useAgentRoot && agentEntrypoint ? agentEntrypoint : origEntrypoint;
-    if (agentPromptRoot && agentEntrypoint && !useAgentRoot) {
-      this.log("warning", `agent=${agentName} 约定 prompt 入口缺失（${join(agentPromptRoot, agentEntrypoint)}），回退全局 promptRoot=${origPromptRoot}`);
-    }
-    const runCompiler = new PromptCompiler({ promptRoot: effectivePromptRoot, projectRoot: this.projectRoot, entrypoint: effectiveEntrypoint });
+    let runCompiler: PromptCompiler | null = null;
+    runCompiler = new PromptCompiler({ promptRoot: agentPromptRoot, projectRoot: this.projectRoot, entrypoint: agentEntrypoint });
     const endCompile = prof.start("compile_prompt");
     try {
       systemPrompt = runCompiler.compile();
     } catch (err) {
-      systemPrompt = `[Prompt 编译失败: ${err}]`;
-      this.log("warning", `Prompt 编译失败: ${err}`);
+      const errMsg = `Prompt 编译失败: ${err}`;
+      this.log("error", errMsg);
+      yield this.event("error", { message: errMsg, round: 0 });
+      yield this.event("done", { sessionId, rounds: 0, error: errMsg });
+      return;
     } finally {
       endCompile();
     }
     yield this.logEvent("info", `Prompt 编译完成，长度=${systemPrompt.length}`);
 
-    // ── 2a. 编译 before_user（eve 结构 before_user/before_user.md 优先，兼容旧 BEFORE_USER.md）──
+    // ── 2a. 编译 before_user（eve 结构 before_user/before_user.md）──
     let beforeUserContent = "";
     const endBeforeUser = prof.start("compile_before_user");
     try {
-      const beforeUserCandidate = ["before_user/before_user.md", "BEFORE_USER.md"]
-        .find((c) => existsSync(join(effectivePromptRoot, c)));
-      if (beforeUserCandidate) {
-        beforeUserContent = runCompiler.compile(beforeUserCandidate);
+      if (runCompiler && agentPromptRoot && existsSync(join(agentPromptRoot, "before_user", "before_user.md"))) {
+        beforeUserContent = runCompiler.compile("before_user/before_user.md");
         yield this.logEvent("info", `before_user 编译完成，长度=${beforeUserContent.length}`);
       }
     } catch {
@@ -422,7 +445,7 @@ export class AgentRuntime {
     // ── eve: 加载 compression 提示词（compression/compression.md），压缩时覆盖默认 summarizer prompt ──
     let compressionPromptText = "";
     try {
-      if (existsSync(join(effectivePromptRoot, "compression/compression.md"))) {
+      if (runCompiler && agentPromptRoot && existsSync(join(agentPromptRoot, "compression", "compression.md"))) {
         compressionPromptText = runCompiler.compile("compression/compression.md").trim();
       }
     } catch { /* 不存在则用默认 */ }
@@ -435,16 +458,17 @@ export class AgentRuntime {
     // ── eve: 加载 loop/end.md 达标标准（loop 结束后用小判定再检查是否真完成）──
     let loopEndCriteria = "";
     try {
-      const endPath = join(effectivePromptRoot, "..", "loop", "end.md");
-      if (existsSync(endPath)) loopEndCriteria = readFileSync(endPath, "utf-8").trim();
+      if (agentPromptRoot) {
+        const endPath = join(agentPromptRoot, "..", "loop", "end.md");
+        if (existsSync(endPath)) loopEndCriteria = readFileSync(endPath, "utf-8").trim();
+      }
     } catch { /* 无则跳过 */ }
 
     // ── 注入实际工作目录（让 agent 知道自己驻扎在哪、所有相对路径基于此）──
     systemPrompt = `${systemPrompt}\n\n<workspace>\n你当前的工作目录（所有文件读写、终端命令、相对路径均以此为根）：${this.projectRoot}\n</workspace>`;
 
     // ── eve: 渲染 PREVIEW（把 system/before_user/compression 的最终渲染结果写到 prompt/PREVIEW/，调试用）──
-    // 仅 eve 结构（effectivePromptRoot 以 prompt 结尾、含 system/system.md）生效；自带 self-guard。
-    try { renderAgentPreview(join(effectivePromptRoot, ".."), this.projectRoot); } catch { /* 渲染失败不影响主流程 */ }
+    try { if (agentPromptRoot) renderAgentPreview(join(agentPromptRoot, ".."), this.projectRoot); } catch { /* 渲染失败不影响主流程 */ }
 
     // ── 2b. 编译动态注入内容（board / pending / agents 状态 / task 规划） ──
     const dynamicInjections = prof.sync("dynamic_context", () => compileDynamicContext(maouRoot, agentName, sessionId!));
@@ -454,7 +478,7 @@ export class AgentRuntime {
     // 后续轮产出 incrementalContent（新增/删除/更新的 skill，注入动态区）。
     let skillManager: SkillContextManager | null = null;
     try {
-      skillManager = new SkillContextManager(agentName, this.projectRoot, maouRoot);
+      skillManager = this.createSkillManagerFn(agentName, this.projectRoot, maouRoot);
       const skillFirst = skillManager.compile();
       if (skillFirst.bakedContent) {
         systemPrompt = `${systemPrompt}\n\n${skillFirst.bakedContent}`;
@@ -466,7 +490,6 @@ export class AgentRuntime {
     }
 
     // ── 2c. 加载 OUTPUT.jsonc 派生 jsonSettings（用于 response_format 强制 JSON 输出） ──
-    // 文件即 Agent：OUTPUT.jsonc 可在 agent 根目录或 ROLE/ 下。
     // 开关：preset.output_format === "none" 时彻底禁用结构化 JSON 输出（跳过 OUTPUT.jsonc），
     // 改走纯原生 tool calling —— 对工具调用判断力弱的模型更友好（避免强制 JSON 引发过度调用）。
     let outputJsonSettings: Record<string, unknown> | null = null;
@@ -475,10 +498,8 @@ export class AgentRuntime {
       yield this.logEvent("info", "output_format=none：已禁用结构化 JSON 输出，使用原生 tool calling");
     } else {
       try {
-        // 用「该 agent 实际生效的 promptRoot」找 OUTPUT.jsonc（effectivePromptRoot 已在上方计算），
-        // 避免 coding 等子 agent 误加载 ROLE/default 的 OUTPUT.jsonc（强制 JSON）。
+        // eve 结构：OUTPUT.jsonc 只在 agent 根目录下查找
         const outputPaths = [
-          join(effectivePromptRoot, "OUTPUT.jsonc"),
           join(maouRoot, "agents", agentName, "OUTPUT.jsonc"),
         ];
         for (const outputFile of outputPaths) {
@@ -514,11 +535,10 @@ export class AgentRuntime {
     } catch { /* ignore */ }
 
     // 合并白名单：PERMISSION.jsonc ∩ agent.json tools
-    // 文件即 Agent：PERMISSION.jsonc 可在 agent 根目录或 ROLE/ 下
+    // eve 结构：PERMISSION.jsonc 只在 agent 根目录下
     let toolWhitelist: Set<string> | undefined;
     try {
       const permPaths = [
-        join(effectivePromptRoot, "PERMISSION.jsonc"),
         join(maouRoot, "agents", agentName, "PERMISSION.jsonc"),
       ];
       for (const permFile of permPaths) {
@@ -653,7 +673,7 @@ export class AgentRuntime {
 
       // ── 3a. 构建消息数组 ──
       const memoryResult = prof.sync("memory_recall", () => {
-        const memoryStore = new MemoryStore(this.maouRoot, agentName);
+        const memoryStore = this.createMemoryStoreFn(this.maouRoot, agentName);
         return memoryStore.recall(userMessage, 5);
       }, { round: currentRound });
 
@@ -710,8 +730,11 @@ export class AgentRuntime {
             }
           }
         } catch (err) {
-          this.log("warning", `[ContextEngine] 压缩失败，回退原始历史: ${err}`);
-          compressedHistory = undefined;
+          const errMsg = `[ContextEngine] 压缩失败: ${err}`;
+          this.log("error", errMsg);
+          yield this.event("error", { message: errMsg, round: currentRound });
+          yield this.event("done", { sessionId, rounds: currentRound, error: errMsg });
+          return;
         }
       }
       endCompress();
@@ -891,7 +914,7 @@ export class AgentRuntime {
         totalTokens += Number(tt) || 0;
         yield { type: "model.usage", usage: tokenUsage } as unknown as StreamEvent;
         try {
-          const tracker = new TokenTracker(maouRoot, agentName, preset as unknown as Record<string, unknown>);
+          const tracker = this.createTokenTrackerFn(maouRoot, agentName, preset as unknown as Record<string, unknown>);
           tracker.record(tokenUsage, preset.model ?? "");
         } catch (err) {
           this.log("warning", `token tracking failed: ${err}`);
@@ -1067,7 +1090,7 @@ export class AgentRuntime {
         // 提取结构化记忆
         const memories = extractMemories(finalSession.messages);
         if (memories.length > 0) {
-          const memStore = new MemoryStore(this.maouRoot, agentName);
+          const memStore = this.createMemoryStoreFn(this.maouRoot, agentName);
           for (const mem of memories) {
             memStore.store({ ...mem, sourceSessionId: sessionId! });
           }
@@ -1183,6 +1206,11 @@ export class AgentRuntime {
     //   后台异步执行真实工具，loop 不等待直接进下一轮。
     // 执行可并发，但「提交」（落盘 raw + 写 session 消息 + yield 事件）严格按调用顺序，
     // 保证下一轮 LLM 看到的工具结果顺序与调用顺序一致。
+    //
+    // 收集本轮所有「真实执行」（非 background）工具的 ok 状态，
+    // 用于 endsLoop 判定时考虑执行失败（task_finish 失败时不应退出 loop）。
+    const executedTools: { name: string; ok: boolean }[] = [];
+
     let i = 0;
     while (i < toolCalls.length) {
       const tc = toolCalls[i];
@@ -1224,12 +1252,28 @@ export class AgentRuntime {
         const commits = await Promise.all(
           group.map((g) => this.execOneToolCall(g, round, sessionId, context, prof)),
         );
-        for (const commit of commits) {
-          for (const ev of commit()) yield ev;
+        for (let k = 0; k < commits.length; k++) {
+          const events = commits[k]();
+          for (const ev of events) yield ev;
+          // 从 tool_result 事件里提取 ok 状态
+          const tr = events.find((e) => e.type === "tool_result");
+          if (tr && typeof tr.ok === "boolean") {
+            executedTools.push({ name: group[k].name, ok: tr.ok });
+          } else {
+            // 理论上不可能：每次 execOneToolCall 的 commit 必返回 tool_result 事件
+            executedTools.push({ name: group[k].name, ok: false });
+          }
         }
       } else {
         const commit = await this.execOneToolCall(toolCalls[i], round, sessionId, context, prof);
-        for (const ev of commit()) yield ev;
+        const events = commit();
+        for (const ev of events) yield ev;
+        const tr = events.find((e) => e.type === "tool_result");
+        if (tr && typeof tr.ok === "boolean") {
+          executedTools.push({ name: toolCalls[i].name, ok: tr.ok });
+        } else {
+          executedTools.push({ name: toolCalls[i].name, ok: false });
+        }
         i++;
       }
     }
@@ -1238,15 +1282,26 @@ export class AgentRuntime {
     // 一轮内若所有被调工具都是 endsLoop（收尾型，如 task_finish），默认结束 loop；
     // 但若当前 session 的 task 表还有未完成 todo，强制继续下一轮——
     // 让 AI 必须把所有规划任务做完才能退出（task 表接管 loop 条件）。
+    //
+    // 失败兜底（致命#3）：endsLoop 工具执行失败（ok=false）时，不退出 loop，
+    // 让 AI 看到错误信息后继续处理（否则 task_finish 失败也会退出 loop，用户卡死）。
     const allEndsLoop = !toolCalls.some((tc) => !this.toolEndsLoop(tc.name));
     if (allEndsLoop) {
+      const endsLoopFailed = executedTools.some(
+        (t) => this.toolEndsLoop(t.name) && t.ok === false,
+      );
+      if (endsLoopFailed) {
+        this.log("warn", "[Runtime] endsLoop 工具执行失败（ok=false），不退出 loop，让 AI 继续处理");
+        return true;
+      }
       try {
         const tasks = TASK_MANAGER.getTasks(sessionId);
         if (tasks.length > 0 && !tasks.every((t) => t.status === "completed")) {
           return true; // 还有未完成 todo，强制继续 loop
         }
-      } catch {
-        // TaskManager 读取失败，回退默认 endsLoop 行为
+      } catch (err) {
+        // TaskManager 读取失败属于系统错误，直接抛出让上层处理
+        throw new Error(`TaskManager 读取失败，无法判断 loop 是否应结束: ${err}`);
       }
       return false;
     }
@@ -1259,6 +1314,32 @@ export class AgentRuntime {
       return Boolean(this.tools.get(name)?.definition.endsLoop);
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * 检查 toolCall 是否缺必填参数。
+   * - 找不到工具定义时返回空数组（不拦截，让 executor 自己报错）
+   * - 工具 schema 无 required 时返回空数组（所有参数都可选）
+   * - 否则返回缺失的 required 参数名数组
+   *
+   * 注意：空字符串 / null / undefined 都算「缺失」，但 false / 0 / 空数组 不算。
+   */
+  private collectMissingRequiredParams(toolCall: LLMToolCall): string[] {
+    try {
+      const tool = this.tools.get(toolCall.name);
+      if (!tool) return [];
+      const required = tool.definition.parameters?.required;
+      if (!Array.isArray(required) || required.length === 0) return [];
+      const params = toolCall.parameters ?? {};
+      const missing: string[] = [];
+      for (const key of required) {
+        const v = params[key];
+        if (v === undefined || v === null || v === "") missing.push(key);
+      }
+      return missing;
+    } catch {
+      return [];
     }
   }
 
@@ -1417,6 +1498,7 @@ export class AgentRuntime {
       round, toolCallId: toolCall.id, tool_name: toolCall.name,
       tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
       background: true,
+      tool_ok: true, // 占位响应视为成功（真实结果后续异步上报）
     });
     return events;
   }
@@ -1438,6 +1520,30 @@ export class AgentRuntime {
     // background=true：后台执行（fire-and-forget），commit() 时跳过 appendMessage
     // （占位 tool_result 已由 commitBackgroundToolCall 写入，重复写会破坏 tool_call_id 一一对应）
     const background = opts?.background ?? false;
+
+    // ── 前置校验：必填参数缺失时提前拦截，避免浪费一轮执行 ──
+    // LLM 有时产生不完整的 tool_call（缺必填参数），此时直接返回引导性错误。
+    // 注意：参数为空但工具 schema 没有任何 required 时，不拦截——有些工具所有参数都可选。
+    const missingRequired = this.collectMissingRequiredParams(toolCall);
+    if (missingRequired.length > 0) {
+      const emptyMsg =
+        `❌ 工具 ${toolCall.name} 缺少必填参数: ${missingRequired.join(", ")}\n` +
+        `请重新调用并填写上述参数。如果你不想调用任何工具，请直接回复文本，不要生成缺参数的工具调用。`;
+      this.log("warn", `[Runtime] 拦截缺参数工具调用: ${toolCall.name} (round=${round}, missing=${missingRequired.join(",")})`);
+      return (): StreamEvent[] => {
+        const now = () => new Date().toISOString();
+        this.sessions.appendRawEntry(sessionId, { type: "tool_call", round, created_at: now(), data: { name: toolCall.name, parameters: toolCall.parameters ?? {}, id: toolCall.id, provider: toolCall.provider, tool_type: toolCall.type } });
+        this.sessions.appendRawEntry(sessionId, { type: "tool_result", round, created_at: now(), data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: emptyMsg, ok: false, background } });
+        const events: StreamEvent[] = [
+          this.event("tool_call", { tool: { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters ?? {}, provider: toolCall.provider, type: toolCall.type }, round }),
+          this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: emptyMsg, ok: false, round, background }),
+        ];
+        if (!background) {
+          this.sessions.appendMessage(sessionId, "tool", emptyMsg, { round, toolCallId: toolCall.id, tool_name: toolCall.name, tool_ok: false });
+        }
+        return events;
+      };
+    }
 
     // pre_tool_use hook（同步）：返回 false 拦截
     const blocked = this.hooks ? !this.hooks.preToolUse(tcInfo) : false;
@@ -1486,7 +1592,11 @@ export class AgentRuntime {
         });
         events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: blockedMsg, ok: false, round, background }));
         if (!background) {
-          this.sessions.appendMessage(sessionId, "tool", blockedMsg, { round, toolCallId: toolCall.id, tool_name: toolCall.name });
+          this.sessions.appendMessage(sessionId, "tool", blockedMsg, {
+            round, toolCallId: toolCall.id, tool_name: toolCall.name,
+            tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
+            tool_ok: false,
+          });
         }
         return events;
       }
@@ -1503,13 +1613,23 @@ export class AgentRuntime {
           this.sessions.appendMessage(sessionId, "tool", errorMsg, {
             round, toolCallId: toolCall.id, tool_name: toolCall.name,
             tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
+            tool_ok: false,
           });
         }
         return events;
       }
 
       const res = result!;
-      const toolResultContent = res.result.message ?? JSON.stringify(res.result);
+      // G4: 空字符串 tool_result 会让大部分 LLM API 报 400。
+      // ?? 只兜底 null/undefined，空字符串会穿透——所以再判断一次。
+      // payload 也要兜底（部分工具只填 payload 不填 message）。
+      let toolResultContent = res.result.message ?? "";
+      if (!toolResultContent.trim()) {
+        const fallback = res.result.payload;
+        toolResultContent = fallback
+          ? JSON.stringify({ ok: res.result.ok, payload: fallback })
+          : `工具 ${toolCall.name} 执行完成（ok=${res.result.ok}，无 message）`;
+      }
       const toolImages = res.result.images;
 
       this.sessions.appendRawEntry(sessionId, {
@@ -1528,6 +1648,7 @@ export class AgentRuntime {
       const toolMeta: Record<string, unknown> = {
         round, toolCallId: toolCall.id, tool_name: toolCall.name,
         tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
+        tool_ok: res.result.ok,
       };
       if (toolImages && toolImages.length > 0) toolMeta.images = toolImages;
       this.sessions.appendMessage(sessionId, "tool", toolResultContent, toolMeta);

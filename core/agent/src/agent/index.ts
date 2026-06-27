@@ -68,7 +68,7 @@ export type { CreateAgentOptions as CreateAgentFromTemplateOptions } from "./tem
 
 // ── Agent 注册表与工厂 ─────────────────────────────────────────────────────
 
-export { AgentRegistry, initMainAgent } from "./registry.js";
+export { AgentRegistry } from "./registry.js";
 export type { AgentEntry, CreateAgentOptions, ChannelEntry, ScheduleEntry, AgentToolEntry } from "./registry.js";
 
 export { AgentFactory } from "./factory.js";

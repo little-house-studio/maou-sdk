@@ -1,10 +1,10 @@
 /**
- * materializeAgent —— 「文件即 Agent」约定的通用物化骨架。
+ * materializeAgent —— 「文件即 Agent」约定的通用物化骨架（eve 结构）。
  *
  * 把一个 agent 定义物化到 <maouRoot>/agents/<name>/ 目录：
- *   - agent.json        元数据（role/round_limit/tools/tool_compression）
- *   - ROLE/SYSTEM.md    系统提示词（PromptCompiler 入口）
- *   - PERMISSION.jsonc  工具白名单（真正强制）
+ *   - agent.json                元数据（role/round_limit/tools/tool_compression）
+ *   - prompt/system/system.md   系统提示词（PromptCompiler 入口）
+ *   - PERMISSION.jsonc          工具白名单（真正强制）
  *
  * 幂等：默认仅在缺失时创建；force=true 时重写。
  *
@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface MaterializeAgentOptions {
-  /** 系统提示词正文（写入 ROLE/SYSTEM.md）。 */
+  /** 系统提示词正文（写入 prompt/system/system.md）。 */
   systemPrompt: string;
   /** 工具白名单（写入 PERMISSION.jsonc.tool_whitelist + agent.json.tools）。 */
   toolWhitelist: readonly string[];
@@ -39,7 +39,7 @@ export interface MaterializeAgentOptions {
 export const DEFAULT_AGENT_ROUND_LIMIT = 50;
 
 /**
- * 物化「文件即 Agent」定义到 <maouRoot>/agents/<name>/。
+ * 物化「文件即 Agent」定义到 <maouRoot>/agents/<name>/（eve 结构）。
  *
  * @param name agent 名称（即目录名）
  * @param maouRoot ~/.maou 根目录
@@ -51,8 +51,8 @@ export function materializeAgent(
   opts: MaterializeAgentOptions,
 ): void {
   const dir = join(maouRoot, "agents", name);
-  const roleDir = join(dir, "ROLE");
-  const systemPath = join(roleDir, "SYSTEM.md");
+  const promptSystemDir = join(dir, "prompt", "system");
+  const systemPath = join(promptSystemDir, "system.md");
   const agentJsonPath = join(dir, "agent.json");
   const permissionPath = join(dir, "PERMISSION.jsonc");
   const whitelist = opts.toolWhitelist;
@@ -63,7 +63,7 @@ export function materializeAgent(
   const displayName = opts.displayName ?? name.charAt(0).toUpperCase() + name.slice(1);
   const description = opts.description ?? "";
 
-  mkdirSync(roleDir, { recursive: true });
+  mkdirSync(promptSystemDir, { recursive: true });
 
   if (force || !existsSync(agentJsonPath)) {
     const now = new Date().toISOString();

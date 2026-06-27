@@ -9,7 +9,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 
@@ -20,6 +20,7 @@ interface SearchResult {
 }
 
 export class InternetSearchTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "search_internet",
     aliases: ["search"],
@@ -76,7 +77,11 @@ export class InternetSearchTool extends Tool {
     }
 
     if (allResults.length === 0) {
-      return createToolResponse(false, "搜索无结果，建议更换搜索词后重试");
+      // 无结果视为查询成功（与 grep/glob 一致）：让 LLM 知道搜索完成但无命中，
+      // 可以正常决策（换关键词、换信息源），而不是当成工具失败去 retry。
+      return createToolResponse(true, "搜索无结果，建议更换搜索词或扩大时间范围后重试", {
+        payload: { query, sub_queries: subQueries, count: 0 },
+      });
     }
 
     const lines: string[] = [];

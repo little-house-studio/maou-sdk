@@ -3,7 +3,7 @@
  * 工具基础类型从 @little-house-studio/types 引入（见 base.ts）。
  */
 
-export { Tool, createToolResponse } from './base.js'
+export { Tool, createToolResponse, toolDir } from './base.js'
 export type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult } from './base.js'
 
 export { ToolRegistry } from './registry.js'

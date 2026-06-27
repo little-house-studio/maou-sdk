@@ -116,6 +116,7 @@ export interface DefineToolConfig<
 export class DefinedToolAdapter implements Tool {
   readonly definition: import("./base.js").ToolDefinition;
   readonly zodParameters: z.ZodTypeAny;
+  readonly schemaDir?: string = undefined; // defineTool 不自带 schema.json
 
   private _config: DefineToolConfig;
   private _toolName: string;
@@ -167,6 +168,9 @@ export class DefinedToolAdapter implements Tool {
     const schema = zodToToolSchema(this._toolName, this._config.description, this._config.inputSchema);
     return [{ type: "object", ...schema } as JsonSchema];
   }
+
+  /** defineTool 不自带 TOOL.md */
+  toolPrompt(): string | null { return null; }
 
   /** 执行工具 */
   async execute(params: Record<string, unknown>, _ctx: ToolContext): Promise<ToolResponse> {

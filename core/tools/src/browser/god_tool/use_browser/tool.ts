@@ -11,11 +11,13 @@
  */
 
 import * as opencli from "@little-house-studio/opencli-engine";
-import { Tool } from "../../../base.js";
+import { Tool, toolDir } from "../../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../../base.js";
 import { createToolResponse } from "../../../base.js";
+import { errToString } from "./_util.js";
 
 export class BrowserTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "use_browser",
     aliases: ["browser-verify", "browser-check", "browser_verify", "web-verify", "read-page"],
@@ -127,7 +129,7 @@ export class BrowserTool extends Tool {
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
     const action = String(params.action ?? "").trim().toLowerCase();
-    if (!action) return createToolResponse(false, "缺少 action 参数。action='help' 查看所有可用操作。");
+    if (!action) return createToolResponse(false, '❌ use_browser 缺少必填参数 action（操作类型）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "open", "url": "https://example.com"}}\n可选 action: open, state, find, screenshot, click, type, fill, extract 等。action=\'help\' 查看所有可用操作。请用正确的 action 参数重试。');
 
     if (!opencli.isAvailable()) {
       return createToolResponse(false, "opencli 未安装（提示：请先安装 opencli 并加入 PATH）。");
@@ -140,12 +142,12 @@ export class BrowserTool extends Tool {
       // ── 编排类 ──
       if (action === "batch") {
         const steps = params.steps as Array<Record<string, string>> | undefined;
-        if (!steps || !Array.isArray(steps) || steps.length === 0) return createToolResponse(false, "batch 需要 steps 数组");
+        if (!steps || !Array.isArray(steps) || steps.length === 0) return createToolResponse(false, '❌ use_browser batch 缺少必填参数 steps（操作步骤数组）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "batch", "steps": [{"action": "open", "url": "https://example.com"}]}}\n请用正确的 steps 参数重试。');
         return this.wrap(await opencli.batch(session, steps, { cwd }));
       }
       if (action === "multi") {
         const steps = params.steps as opencli.MultiStep[] | undefined;
-        if (!steps || !Array.isArray(steps) || steps.length === 0) return createToolResponse(false, "multi 需要 steps 数组");
+        if (!steps || !Array.isArray(steps) || steps.length === 0) return createToolResponse(false, '❌ use_browser multi 缺少必填参数 steps（跨 session 操作步骤数组）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "multi", "steps": [{"session": "default", "action": "open", "url": "https://example.com"}]}}\n请用正确的 steps 参数重试。');
         return this.wrap(await opencli.multi(steps, { cwd }));
       }
       if (action === "watch") {
@@ -161,7 +163,7 @@ export class BrowserTool extends Tool {
       }
       if (action === "run") {
         const command = String(params.command ?? "").trim();
-        if (!command) return createToolResponse(false, "run 需要 command 参数");
+        if (!command) return createToolResponse(false, '❌ use_browser run 缺少必填参数 command（原始命令）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "run", "command": "open https://example.com"}}\n请用正确的 command 参数重试。');
         return this.wrap(await opencli.runRaw(session, command.split(/\s+/), { cwd }));
       }
 
@@ -179,7 +181,7 @@ export class BrowserTool extends Tool {
       };
       return this.wrap(await opencli.run(session, action, shortcutArgs, { cwd }));
     } catch (e) {
-      return createToolResponse(false, `browser 执行失败: ${e}`);
+      return createToolResponse(false, `browser 执行失败: ${errToString(e)}`);
     }
   }
 

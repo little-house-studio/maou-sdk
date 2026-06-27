@@ -6,11 +6,12 @@
  * 查看项目列表、新增项目、删除项目、查看项目成员、创建项目 Agent、和项目主 Agent 沟通。
  */
 
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 
 export class ProjectManageTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "project_manage",
     aliases: [],

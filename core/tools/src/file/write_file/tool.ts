@@ -5,7 +5,7 @@
 
 import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { safePath, errToString } from "../../browser/god_tool/use_browser/_util.js";
@@ -15,6 +15,7 @@ import { wasRead, isStaleSinceRead, markRead, refreshRead } from "../read-regist
 import { record as recordEdit, readBefore } from "../file-edit-history.js";
 
 export class WriteFileTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "write_file",
     aliases: ["write_file"],
@@ -45,7 +46,7 @@ export class WriteFileTool extends Tool {
     const content = String(params.content ?? params.text ?? "");
 
     if (!userPath) {
-      return createToolResponse(false, "write-file 缺少 path 参数");
+      return createToolResponse(false, '❌ write_file 缺少必填参数 path（文件路径）。正确用法示例：\n{"tool": "write_file", "params": {"path": "src/index.ts", "content": "console.log(\\"hello\\")"}}\n请用正确的 path 参数重试。');
     }
 
     let fullPath: string;

@@ -6,7 +6,7 @@
  * TaskManager: Per-session 任务状态管理
  */
 
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 
@@ -308,6 +308,7 @@ export const TASK_MANAGER = new TaskManager();
  * 包装 TaskManager，供 ToolRegistry 注册使用。
  */
 export class TaskManageTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "task_manage",
     aliases: [],

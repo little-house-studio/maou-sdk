@@ -17,7 +17,7 @@
  * before_user 终端状态面板由 Runtime 层自动注入，无需 AI 主动调用。
  */
 
-import { Tool } from "../../base.js";
+import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { compressTerminalOutput, compressOutput } from "../../compress/output-compressor.js";
 import { createToolResponse } from "../../base.js";
@@ -28,6 +28,7 @@ import { decideCommand, getTerminalReviewer, recordReviewApprove, recordReviewRe
 import * as engine from "@little-house-studio/terminal-engine";
 
 export class TerminalTool extends Tool {
+  readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "use_terminal",
     aliases: ["bash", "terminal_manage"],
@@ -114,7 +115,11 @@ export class TerminalTool extends Tool {
     ctx: ToolContext,
   ): Promise<ToolResponse> {
     const command = String(params.command ?? "").trim();
-    if (!command) return createToolResponse(false, "run 操作缺少 command 参数");
+    if (!command) return createToolResponse(false,
+      "❌ run 操作必须提供 command 参数。\n" +
+      "正确用法示例：{\"action\":\"run\",\"command\":\"git status\",\"reason\":\"查看仓库状态\"}\n" +
+      "请重新调用 use_terminal 并填写 command 字段。"
+    );
 
     // ── 终端审批策略（normal / auto / yolo + 黑白名单 + 重复放行）──
     const gate = await this._approve(command, ctx);
