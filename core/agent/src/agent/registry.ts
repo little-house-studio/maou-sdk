@@ -584,6 +584,10 @@ export class AgentRegistry {
    */
   getPromptRoot(name: string): string {
     const dir = this.agentDir(name);
+    // eve 结构优先：prompt/ 作为 root，system/system.md 入口（before_user/compression 为同级）
+    if (existsSync(join(dir, "prompt", "system", "system.md"))) {
+      return join(dir, "prompt");
+    }
     const roleDir = join(dir, "ROLE");
     if (existsSync(roleDir) && existsSync(join(roleDir, "SYSTEM.md"))) {
       return roleDir;
@@ -601,6 +605,10 @@ export class AgentRegistry {
    */
   getPromptEntrypoint(name: string): string {
     const dir = this.agentDir(name);
+    // eve 结构：入口是 system/system.md（相对 prompt/ root）
+    if (existsSync(join(dir, "prompt", "system", "system.md"))) {
+      return "system/system.md";
+    }
     if (existsSync(join(dir, INSTRUCTIONS_FILE))) {
       // 如果有 instructions.md 但没有 ROLE/SYSTEM.md
       if (!existsSync(join(dir, "ROLE", "SYSTEM.md"))) {

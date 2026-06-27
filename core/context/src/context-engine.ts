@@ -89,14 +89,28 @@ export class ContextEngine {
     // 1. 备份
     this.harnessStore.backupBeforeCompress(this.sessionId);
 
-    // 2. 压缩
+    // 1.5 收集当前活跃 todo 关联的 task 块 id（#4：压缩时屏蔽无关 task）
+    // 只有未完成 todo 关联的 task 块摘要进压缩区，其他 task 屏蔽归档
+    const planBefore = this.taskStore.loadTaskPlan(this.sessionId);
+    const activeTaskIds: string[] = [];
+    for (const todo of planBefore) {
+      if (todo.status !== "completed") {
+        for (const id of todo.relatedBlockIds ?? []) {
+          if (!activeTaskIds.includes(id)) activeTaskIds.push(id);
+        }
+      }
+    }
+
+    // 2. 压缩（传入 activeTaskIds：只有 active task 摘要进压缩区）
     const result: CompressMaouResult = await compressMaou(this.history, {
       maxTokens,
       summarizer: this.summarizer,
       sessionId: this.sessionId,
+      activeTaskIds: activeTaskIds.length > 0 ? activeTaskIds : undefined,
     });
 
     // 3. 将被折叠的任务块原文写入 TaskSessionStore
+    const newBlockIds: string[] = [];
     for (const [taskId, originals] of result.perTaskOriginals) {
       if (taskId === "__no_task__") continue;
       const llmMsgs = originals.map(maouToLLMMessage);
@@ -104,6 +118,26 @@ export class ContextEngine {
       for (const msg of llmMsgs) {
         this.taskStore.appendMessage(this.sessionId, taskId, msg);
       }
+      newBlockIds.push(taskId);
+    }
+
+    // 3.5 关联新 task 块到未完成 todo 的 relatedBlockIds
+    // 系统自动追加，不依赖 AI 显式声明——压缩产生的 task 块属于当前活跃的 todo
+    if (newBlockIds.length > 0) {
+      const plan = this.taskStore.loadTaskPlan(this.sessionId);
+      let changed = false;
+      for (const todo of plan) {
+        if (todo.status !== "completed") {
+          const existing = new Set(todo.relatedBlockIds ?? []);
+          const before = existing.size;
+          for (const id of newBlockIds) existing.add(id);
+          if (existing.size !== before) {
+            todo.relatedBlockIds = [...existing];
+            changed = true;
+          }
+        }
+      }
+      if (changed) this.taskStore.saveTaskPlan(this.sessionId, plan);
     }
 
     // 4. 保存压缩后上下文

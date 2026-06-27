@@ -9,6 +9,7 @@ import { Tool } from "../../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../../base.js";
 import { createToolResponse } from "../../../base.js";
 import { safePath, errToString } from "../../../browser/god_tool/use_browser/_util.js";
+import { markRead } from "../../../file/read-registry.js";
 import { extractSignatures } from "../../../compress/output-compressor.js";
 
 const IMAGE_MIMES: Record<string, string> = {
@@ -77,6 +78,7 @@ export class ReadTool extends Tool {
       additionalProperties: false,
     },
     allowedModes: ["plan", "execute"],
+    parallelSafe: true,
   };
 
   async execute(
@@ -99,7 +101,7 @@ export class ReadTool extends Tool {
     }
 
     // 本地文件读取
-    return this._readLocalFile(ctx.projectRoot, filePath, params);
+    return this._readLocalFile(ctx.projectRoot, filePath, params, ctx.sessionId);
   }
 
   /**
@@ -109,6 +111,7 @@ export class ReadTool extends Tool {
     projectRoot: string,
     userPath: string,
     params: Record<string, unknown>,
+    sessionId?: string,
   ): ToolResponse {
     let fullPath: string;
     try {
@@ -126,6 +129,9 @@ export class ReadTool extends Tool {
       if (stat.isDirectory()) {
         return createToolResponse(false, `路径是目录而非文件: ${userPath}（如需列出目录内容，请用 glob pattern="${userPath}/*"）`);
       }
+
+      // 登记"已读"——支撑 edit/write 的先读后改安全语义
+      if (sessionId) markRead(sessionId, fullPath);
 
       let content = readFileSync(fullPath, "utf-8");
       const lines = content.split("\n");
@@ -161,7 +167,14 @@ export class ReadTool extends Tool {
 
       let result = formatted;
       if (maxChars > 0 && result.length > maxChars) {
-        result = result.slice(0, maxChars) + "\n...(截断)";
+        // 截断带"可继续"提示：估算已显示到第几行 + 如何读取后续
+        const shownText = result.slice(0, maxChars);
+        const shownLineCount = shownText.split("\n").length;
+        const nextLine = clampedStart + shownLineCount;
+        result =
+          shownText +
+          `\n... [输出按 ${maxChars} 字符截断，本段共 ${clampedEnd - clampedStart + 1} 行 / ${formatted.length} 字符；` +
+          `如需后续内容用 read start_line=${Math.min(nextLine, totalLines)} end_line=${clampedEnd}]`;
       }
 
       const isTruncated =

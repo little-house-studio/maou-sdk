@@ -19,9 +19,10 @@
 
 import { Tool } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
-import { compressTerminalOutput } from "../../compress/output-compressor.js";
+import { compressTerminalOutput, compressOutput } from "../../compress/output-compressor.js";
 import { createToolResponse } from "../../base.js";
-import { truncateMiddle, formatMetadata } from "../../browser/god_tool/use_browser/_util.js";
+import { truncateMiddle, formatMetadata, errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { decideCommand, getTerminalReviewer, recordReviewApprove, recordReviewReject } from "../terminal-policy.js";
 
 // Rust 终端引擎
 import * as engine from "@little-house-studio/terminal-engine";
@@ -115,6 +116,10 @@ export class TerminalTool extends Tool {
     const command = String(params.command ?? "").trim();
     if (!command) return createToolResponse(false, "run 操作缺少 command 参数");
 
+    // ── 终端审批策略（normal / auto / yolo + 黑白名单 + 重复放行）──
+    const gate = await this._approve(command, ctx);
+    if (gate) return gate; // 非空 = 被拦截，返回审批提示/拒绝
+
     // description 缺失时用命令兜底（而非报错），减少模型多花一轮补参数。
     const description = String(params.description ?? "").trim() || `执行命令: ${command.slice(0, 60)}`;
 
@@ -139,6 +144,53 @@ export class TerminalTool extends Tool {
       return this._runBackground(id, command, description, cwd, ctx, timeoutSec, resultLimit);
     }
     return this._runForeground(id, command, description, cwd, ctx, timeoutSec, resultLimit);
+  }
+
+  /**
+   * 终端审批门：返回 null 放行；返回 ToolResponse 表示被拦截（拒绝/待确认）。
+   * yolo 直接放行；normal 非白名单→待确认；auto 非名单→小模型审核；黑名单→拒绝。
+   * 被拦的命令原样再次执行即放行（误报兜底）。
+   */
+  private async _approve(command: string, ctx: ToolContext): Promise<ToolResponse | null> {
+    const agent = ctx.agentName || "main";
+    const decision = decideCommand(command, agent);
+
+    if (decision.action === "allow") return null;
+
+    if (decision.action === "deny") {
+      return createToolResponse(false,
+        `⛔ 命令被终端策略拒绝：\`${command}\`\n原因：${decision.reason}\n如果这是误报，原样再次执行完全相同的命令即可放行（将自动加入白名单）。`,
+        { payload: { policy: "deny", command, reason: decision.reason } });
+    }
+
+    if (decision.action === "ask") {
+      return createToolResponse(false,
+        `🔐 命令需确认（normal 模式，不在白名单）：\`${command}\`\n如确认安全，原样再次执行相同命令即放行（自动加入白名单）；或切换 auto/yolo 模式。`,
+        { payload: { policy: "ask", command } });
+    }
+
+    // review（auto 模式）：调小模型审核
+    const reviewer = getTerminalReviewer();
+    if (!reviewer) {
+      return createToolResponse(false,
+        `🔐 命令需审核但未配置审核器（auto 模式）：\`${command}\`\n原样再次执行相同命令即放行。`,
+        { payload: { policy: "review-no-reviewer", command } });
+    }
+    try {
+      const verdict = await reviewer(command, { agentName: agent, cwd: ctx.workingDir || ctx.projectRoot });
+      if (verdict.approve) {
+        recordReviewApprove(agent, command);
+        return null; // 审核通过，放行
+      }
+      recordReviewReject(agent, command);
+      return createToolResponse(false,
+        `⛔ 小模型审核未通过：\`${command}\`\n理由：${verdict.reason}\n如果这是误报，原样再次执行完全相同的命令即可放行。`,
+        { payload: { policy: "review-reject", command, reason: verdict.reason } });
+    } catch (err) {
+      return createToolResponse(false,
+        `🔐 审核异常，命令暂不执行：\`${command}\`（${errToString(err)}）\n原样再次执行相同命令即放行。`,
+        { payload: { policy: "review-error", command } });
+    }
   }
 
   /** 前台阻塞执行 */
@@ -219,7 +271,12 @@ export class TerminalTool extends Tool {
       if (result.exitCode != null) {
         const ok = result.exitCode === 0;
         const status = ok ? "已完成" : `已失败(退出码${result.exitCode})`;
-        const truncated = applyResultLimit(result.output, resultLimit);
+        // 摄入层压缩：与前台对齐（去噪去重超长截断/测试失败项抽取），off 时原样。
+        const level = ctx.compressionLevel ?? "normal";
+        const compressed = result.output
+          ? compressTerminalOutput(command, result.output, level)
+          : "";
+        const truncated = applyResultLimit(compressed, resultLimit);
         const meta = formatMetadata({
           terminal_id: result.terminalId,
           exit_code: result.exitCode,
@@ -327,7 +384,7 @@ export class TerminalTool extends Tool {
     const limit = Math.max(0, Number(params.limit ?? 5000) || 5000);
 
     try {
-      const output = await engine.logs(id, ctx.agentName, limit);
+      const rawOutput = await engine.logs(id, ctx.agentName, limit);
       const terminals = engine.list(ctx.agentName);
       const term = terminals.find((t) => t.id === id);
       const stateLabel = term
@@ -338,6 +395,11 @@ export class TerminalTool extends Tool {
             : term.state
         : "未知";
       const meta = formatMetadata({ id, status: stateLabel });
+
+      // 摄入层压缩：logs 路径无 command 上下文，用通用压缩（不触发测试失败项抽取）；
+      // maxLines=Infinity 表示只去噪去重不截断——用户主动查日志应给完整信息。
+      const level = ctx.compressionLevel ?? "normal";
+      const output = rawOutput ? compressOutput(rawOutput, { level, maxLines: Infinity }) : "";
 
       return createToolResponse(true,
         `${output || "（无输出）"}\n\n${meta}`,

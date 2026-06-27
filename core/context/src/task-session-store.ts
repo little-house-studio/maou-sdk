@@ -21,33 +21,28 @@ import {
   readdirSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
-import type { LLMMessage, TaskStatus, Pin } from "./types/message.js";
+import type { LLMMessage, TaskStatus, Pin, MaouTaskBlock } from "./types/message.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
-/** 任务块数据结构（对齐 message.ts MaouTaskBlock） */
-export interface MaouTaskBlock {
-  taskId: string;
-  parentTaskId?: string;
-  status: TaskStatus;
+// MaouTaskBlock 权威定义在 types/message.ts，此处 re-export 供调用方使用
+export type { MaouTaskBlock };
+
+/**
+ * 任务规划条目（task_plan.json 的单条记录）
+ *
+ * 与 tools 包的 TaskManager.Task 接口保持字段一致，
+ * 但定义在 context 包以避免跨包依赖。
+ * 字段变更时需同步两边。
+ */
+export interface TaskPlanEntry {
+  id: string;
+  desc: string;
+  deps: string[];
+  status: "pending" | "in_progress" | "completed";
   summary: string;
-  goal: string;
-  context?: string;
-  outline: string[];
-  notes?: string[];
-  progress?: number;
-  currentStep?: string;
-  dependencies?: string[];
-  relatedFiles?: string[];
-  pins?: Pin[];
-  tags?: string[];
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  messageCount?: number;
-  toolCallCount?: number;
-  tokenUsage?: number;
-  messages: LLMMessage[];
+  /** 关联的归档 task 块 ID 列表（压缩时由系统自动追加） */
+  relatedBlockIds?: string[];
 }
 
 /** JSONL 文件中的条目类型 */
@@ -121,7 +116,7 @@ export class TaskSessionStore {
       parentTaskId?: string;
       status?: TaskStatus;
       goal?: string;
-      context?: string;
+      background?: string;
       tags?: string[];
     },
   ): MaouTaskBlock {
@@ -136,7 +131,7 @@ export class TaskSessionStore {
         status: options?.status ?? "running",
         summary,
         goal: options?.goal ?? "",
-        context: options?.context,
+        background: options?.background,
         outline,
         tags: options?.tags,
       },
@@ -152,7 +147,7 @@ export class TaskSessionStore {
       status: options?.status ?? "running",
       summary,
       goal: options?.goal ?? "",
-      context: options?.context,
+      background: options?.background,
       outline,
       tags: options?.tags,
       messages: [],
@@ -203,7 +198,7 @@ export class TaskSessionStore {
 
     let summary = "";
     let goal = "";
-    let context_ = "";
+    let background_ = "";
     let parentTaskId: string | undefined;
     let status: TaskStatus = "running";
     let outline: string[] = [];
@@ -224,13 +219,13 @@ export class TaskSessionStore {
             status?: string;
             summary?: string;
             goal?: string;
-            context?: string;
+            background?: string;
             outline?: string[];
             tags?: string[];
           };
           summary = data.summary ?? "";
           goal = data.goal ?? "";
-          context_ = data.context ?? "";
+          background_ = data.background ?? "";
           parentTaskId = data.parent_task_id;
           status = (data.status as TaskStatus) ?? "running";
           outline = data.outline ?? [];
@@ -256,7 +251,7 @@ export class TaskSessionStore {
       status,
       summary,
       goal,
-      context: context_,
+      background: background_,
       outline,
       tags,
       messages,
@@ -278,7 +273,7 @@ export class TaskSessionStore {
     outline: string[],
     options?: {
       goal?: string;
-      context?: string;
+      background?: string;
       status?: TaskStatus;
       progress?: number;
       currentStep?: string;
@@ -317,7 +312,7 @@ export class TaskSessionStore {
         task_id: taskId,
         summary,
         goal: options?.goal ?? "",
-        context: options?.context,
+        background: options?.background,
         status: options?.status,
         progress: options?.progress,
         current_step: options?.currentStep,
@@ -340,7 +335,7 @@ export class TaskSessionStore {
       taskId,
       summary,
       goal: options?.goal ?? "",
-      context: options?.context,
+      background: options?.background,
       status: options?.status ?? "running",
       progress: options?.progress,
       currentStep: options?.currentStep,
@@ -389,5 +384,64 @@ export class TaskSessionStore {
     return readdirSync(dirPath)
       .filter((f: string) => f.endsWith(".jsonl"))
       .map((f: string) => f.slice(0, -6)); // 去掉 .jsonl
+  }
+
+  // ── task_plan.json（任务规划清单持久化） ──
+
+  /**
+   * 获取 task_plan.json 的完整路径
+   *
+   * 路径: <maouRoot>/agents/<agent>/sessions/<sid>/task_plan.json
+   * 与 task_session/ 目录同级，物理聚合、逻辑独立。
+   */
+  taskPlanPath(sessionId: string): string {
+    return join(
+      this.maouRoot,
+      "agents",
+      this.agentName,
+      "sessions",
+      sessionId,
+      "task_plan.json",
+    );
+  }
+
+  /**
+   * 保存任务规划清单到 task_plan.json（原子写入）
+   */
+  saveTaskPlan(sessionId: string, tasks: TaskPlanEntry[]): void {
+    const filePath = this.taskPlanPath(sessionId);
+    const payload = {
+      sessionId,
+      tasks,
+      updatedAt: nowIso(),
+    };
+    atomicWrite(filePath, JSON.stringify(payload, null, 2));
+  }
+
+  /**
+   * 加载 task_plan.json 中的任务规划清单
+   * 文件不存在返回空数组
+   */
+  loadTaskPlan(sessionId: string): TaskPlanEntry[] {
+    const filePath = this.taskPlanPath(sessionId);
+    if (!existsSync(filePath)) return [];
+    try {
+      const content = readFileSync(filePath, "utf-8");
+      const payload = JSON.parse(content) as { tasks?: TaskPlanEntry[] };
+      return Array.isArray(payload.tasks) ? payload.tasks : [];
+    } catch {
+      // 解析失败返回空数组，不抛错（容错）
+      return [];
+    }
+  }
+
+  /**
+   * 只加载未完成的任务（status !== "completed"）
+   *
+   * 用于进程启动恢复 TaskManager 内存状态——
+   * 已完成任务不再注入 before_user，避免污染上下文。
+   */
+  loadPendingTaskPlan(sessionId: string): TaskPlanEntry[] {
+    return this.loadTaskPlan(sessionId).filter((t) => t.status !== "completed");
   }
 }

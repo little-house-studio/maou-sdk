@@ -33,14 +33,20 @@ import { compileDynamicContext } from "../dynamic-context.js";
 import { TokenTracker } from "./token-tracker.js";
 import type { TokenUsage } from "./token-tracker.js";
 import { AgentRegistry, initMainAgent } from "./registry.js";
+import { renderAgentPreview } from "./template.js";
+import { runAgentCommand } from "./command-runner.js";
 import { ModelCaller, type ModelCallResult, type CallerStreamEvent } from "@little-house-studio/llm";
 import type { LLMToolCall, APIPreset } from "@little-house-studio/llm";
 import { deriveJsonSettings, StreamJsonAccumulator } from "@little-house-studio/llm";
 import type { ToolRegistry, ToolExecutor } from "@little-house-studio/tools";
-import { cleanupAgentTerminals, listTerminals, getTerminalLogs } from "@little-house-studio/tools";
+import type { ToolContext } from "@little-house-studio/tools";
+import type { SubagentExecutorLike } from "@little-house-studio/types";
+import { cleanupAgentTerminals, listTerminals, getTerminalLogs, setTerminalMode, SkillContextManager, TASK_MANAGER } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import { Profiler } from "@little-house-studio/types";
 import type { Hooks } from "./hooks.js";
+import { MESSAGE_QUEUE, MessageQueue } from "./message-queue.js";
+import type { QueuedMessage } from "./message-queue.js";
 import { existsSync, mkdirSync, cpSync, readdirSync, rmSync, statSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -74,6 +80,11 @@ export interface RuntimeOptions {
   summarizer?: Summarizer;
   /** 钩子管理器（可选）。注入后 agent 循环会在各生命周期点触发 hooks。 */
   hooks?: Hooks;
+  /**
+   * 消息队列（可选）。注入后 agent 循环会在 round_end / loop_end / task_complete
+   * 检查队列，投递等待中的用户消息。缺省则使用全局 MESSAGE_QUEUE 单例。
+   */
+  messageQueue?: MessageQueue;
 }
 
 export interface ModelCallParams {
@@ -138,6 +149,15 @@ export class AgentRuntime {
   onCompress?: (sessionId: string, stage: string, summary: string, taskBlocks: string[]) => void;
   /** 钩子管理器（可选） */
   private hooks?: Hooks;
+  /** 消息队列（缺省全局单例） */
+  private messageQueue: MessageQueue;
+  /** per-session 内部 AbortController（用于 interrupt 模式触发 abort） */
+  private abortControllers = new Map<string, AbortController>();
+  /**
+   * 子 Agent 真并行执行器（可选；harness 注入 runFn 后才可用）。
+   * 注入到 ToolContext.subagentExecutor，agent_message 工具据此 fork 子 Agent。
+   */
+  private subagentExecutor?: SubagentExecutorLike;
 
   constructor(options: RuntimeOptions) {
     this.compiler = options.compiler;
@@ -154,6 +174,14 @@ export class AgentRuntime {
     this.taskStore = options.taskStore;
     this.summarizer = options.summarizer;
     this.hooks = options.hooks;
+    this.messageQueue = options.messageQueue ?? MESSAGE_QUEUE;
+
+    // 注入 interrupt 回调：interrupt 模式 enqueue 时自动 abort 当前 run
+    // （未注入时只返回 shouldAbort=true，需调用方自行 abort）
+    this.messageQueue.setOnInterrupt((sid, mode) => {
+      this.abortCurrentRun(sid, mode);
+      this.log("info", `[MSG_QUEUE] session=${sid} 触发 ${mode}，已 abort 当前 run`);
+    });
 
     // 初始化上下文管理层
     this.sessionManager = new SessionManager(this.sessions, this.maouRoot);
@@ -172,10 +200,116 @@ export class AgentRuntime {
     // ── 性能埋点：本次 run 的 profiler（常驻、低开销，定位各阶段耗时）──
     const prof = new Profiler(`run:${(sessionId ?? "new").slice(0, 8)}`);
 
-    // ── 1. 确保 session 存在 ──
-    const session = prof.sync("ensure_session", () => this.sessions.ensure(sessionId ?? undefined));
+    // ── 1. 确保 session 存在（新会话首条消息即绑定到 initAgentName，如 coding）──
+    const session = prof.sync("ensure_session", () => this.sessions.ensure(sessionId ?? undefined, options.initAgentName));
     sessionId = session.id;
     this.log("info", `[RUN] start session=${sessionId} msg_len=${userMessage.length}`);
+
+    // ── #14 控制命令：/agent <name> 中途切换会话绑定的 agent（不调模型）──
+    const agentSwitch = userMessage.trim().match(/^\/agent\s+(\S+)\s*$/);
+    if (agentSwitch) {
+      const newAgent = agentSwitch[1];
+      try {
+        (this.sessions as { setAgentName?: (id: string, n: string) => void }).setAgentName?.(sessionId!, newAgent);
+      } catch { /* ignore */ }
+      yield this.event("session", { sessionId });
+      yield this.event("assistant", { content: `已切换到 agent「${newAgent}」，下一条消息生效。`, round: 0 });
+      yield this.event("done", { sessionId, rounds: 0, agentSwitched: newAgent });
+      this.log("info", `[RUN] /agent 切换 → ${newAgent}`);
+      return;
+    }
+
+    // ── 基础指令：/new /clear /stop（不调模型，纯会话控制）──
+    const cmd = userMessage.trim().toLowerCase();
+    if (cmd === "/new") {
+      const newSession = this.sessions.create(undefined, options.initAgentName);
+      yield this.event("session", { sessionId: newSession.id });
+      yield this.event("assistant", { content: `已新建会话 ${newSession.id}（agent: ${newSession.agentName || "main"}）。`, round: 0 });
+      yield this.event("done", { sessionId: newSession.id, rounds: 0, newSession: true });
+      this.log("info", `[RUN] /new → ${newSession.id}`);
+      return;
+    }
+    if (cmd === "/clear") {
+      try {
+        this.sessions.clearSession(sessionId!);
+        // 同步清理 task_plan（避免残留）
+        try { this.taskStore?.saveTaskPlan(sessionId!, []); } catch { /* ignore */ }
+        // 同步清理 TaskManager 内存状态
+        try { TASK_MANAGER.manage(sessionId!, "delete", null); } catch { /* ignore */ }
+        // 同步清理消息队列（防 session 复用时残留消息）
+        this.messageQueue.clear(sessionId!);
+        yield this.event("session", { sessionId });
+        yield this.event("assistant", { content: `已清空会话 ${sessionId} 的历史记录。`, round: 0 });
+        yield this.event("done", { sessionId, rounds: 0, cleared: true });
+        this.log("info", `[RUN] /clear → ${sessionId}`);
+      } catch (err) {
+        yield this.event("assistant", { content: `清空失败: ${err}`, round: 0 });
+        yield this.event("done", { sessionId, rounds: 0 });
+      }
+      return;
+    }
+    if (cmd === "/stop") {
+      // /stop 在 runtime 内部仅作为兜底：若 abortSignal 已触发则优雅退出，
+      // 否则提示用户应通过外部中断信号停止当前 loop。
+      if (options.abortSignal?.aborted) {
+        yield this.event("session", { sessionId });
+        yield this.event("assistant", { content: "已停止当前任务。", round: 0 });
+        yield this.event("done", { sessionId, rounds: 0, stopped: true });
+        this.log("info", `[RUN] /stop 已触发，退出`);
+        return;
+      }
+      yield this.event("session", { sessionId });
+      yield this.event("assistant", { content: "当前无运行中的任务可停止（/stop 通常由外部中断信号触发）。", round: 0 });
+      yield this.event("done", { sessionId, rounds: 0 });
+      this.log("info", `[RUN] /stop 无运行任务`);
+      return;
+    }
+
+    // ── eve: 自定义指令 command/<name>（内置 /agent /new /clear /stop 之外）──
+    // 用户发 /<name> 且 agent 的 command/<name>.{md,sh,mjs,ts} 存在 → 执行并返回，不调模型。
+    const slash = userMessage.trim().match(/^\/([\w-]+)(?:\s+([\s\S]*))?$/);
+    if (slash) {
+      const cmdAgentDir = join(this.maouRoot, "agents", session.agentName || "main");
+      const out = await runAgentCommand(cmdAgentDir, slash[1], slash[2] ?? "", this.projectRoot);
+      if (out !== null) {
+        yield this.event("session", { sessionId });
+        yield this.event("assistant", { content: out, round: 0 });
+        yield this.event("done", { sessionId, rounds: 0, command: slash[1] });
+        this.log("info", `[RUN] 自定义指令 /${slash[1]} 已执行`);
+        return;
+      }
+    }
+
+    // ── 1a. 内部 AbortController：让 MessageQueue interrupt 模式可以触发 abort ──
+    // 合并外部 abortSignal：外部触发 → 内部也 abort；内部触发 → 外部感知不到（但本轮 run 会退出）
+    // 注：interrupt_immediately 模式会在 break 处重置 controller（创建新的），让 run 继续下一轮
+    let internalController = new AbortController();
+    this.abortControllers.set(sessionId, internalController);
+    const externalSignal = options.abortSignal;
+    const linkExternalAbort = (ctrl: AbortController) => {
+      if (!externalSignal) return;
+      if (externalSignal.aborted) {
+        if (!ctrl.signal.aborted) ctrl.abort("external_already_aborted");
+      } else {
+        externalSignal.addEventListener("abort", () => {
+          if (!ctrl.signal.aborted) ctrl.abort("external_abort");
+        }, { once: true });
+      }
+    };
+    linkExternalAbort(internalController);
+    // effectiveAbortSignal：内部 controller 的 signal（已合并外部 abort）
+    let effectiveAbortSignal: AbortSignal = internalController.signal;
+
+    // 路由权威：显式传了 initAgentName 且与会话当前 agent 不一致 → 重绑定。
+    // 修复：旧会话以 main 创建后（如飞书群会话），即便绑定指向 coding 也一直走 main。
+    // 飞书每条消息都带 init_agent_name=<绑定agent>，故此处让绑定真正生效。
+    if (options.initAgentName && session.agentName !== options.initAgentName) {
+      try {
+        (this.sessions as { setAgentName?: (id: string, n: string) => void }).setAgentName?.(sessionId!, options.initAgentName);
+        session.agentName = options.initAgentName;
+        this.log("info", `[RUN] 会话 agent 重绑定 → ${options.initAgentName}`);
+      } catch { /* ignore */ }
+    }
 
     const agentName = session.agentName || "main";
     const maouRoot = this.maouRoot;
@@ -186,6 +320,7 @@ export class AgentRuntime {
     let agentPromptRoot: string | null = null;
     let agentEntrypoint: string | null = null;
     let compressionLevel: "off" | "normal" | "aggressive" = "normal";
+    let verifyCommand = "";
     try {
       const registry = new AgentRegistry(maouRoot, this.projectRoot);
       const agentEntry = registry.get(agentName);
@@ -196,6 +331,14 @@ export class AgentRuntime {
       // 工具输出压缩级别（agent.json tool_compression）
       const tc = (agentEntry as { tool_compression?: string } | null)?.tool_compression;
       if (tc === "off" || tc === "normal" || tc === "aggressive") compressionLevel = tc;
+      // 完成前自动验证命令（agent.json verify_command），如 "npm run typecheck"
+      const vc = (agentEntry as { verify_command?: string } | null)?.verify_command;
+      if (typeof vc === "string" && vc.trim()) verifyCommand = vc.trim();
+      // 终端审批模式（agent.json terminal_mode: normal/auto/yolo）→ 应用到该 agent 的策略
+      const tm = (agentEntry as { terminal_mode?: string } | null)?.terminal_mode;
+      if (tm === "normal" || tm === "auto" || tm === "yolo") {
+        try { setTerminalMode(agentName, tm); } catch { /* ignore */ }
+      }
       // 文件即 Agent：使用约定目录的 promptRoot 和 entrypoint
       agentPromptRoot = registry.getPromptRoot(agentName);
       agentEntrypoint = registry.getPromptEntrypoint(agentName);
@@ -232,71 +375,123 @@ export class AgentRuntime {
     yield this.event("status", { text: "编译 Prompt..." });
     yield this.logEvent("info", "开始编译 Prompt");
 
-    // 文件即 Agent：如果有约定目录，临时切换 compiler 的 promptRoot
+    // 文件即 Agent：用「该 agent 实际生效的 promptRoot」编译。
+    // 🔴 竞态根因修复：每个 run 创建**独立** PromptCompiler，绝不 configure/mutate 共享的 this.compiler。
+    // 旧逻辑 configure(agentRoot)→compile()→还原 共享 compiler；飞书后台轮询会**并发**触发其它
+    // agent（如 ROLE/default 吸血鬼 main）的 run，并发改掉共享 promptRoot，导致本 run 的 compile()
+    // 读到别的 agent 的 SYSTEM.md（吸血鬼 + JSON 规范）。独立 compiler 彻底消除该竞态。
     let systemPrompt: string;
     const origPromptRoot = this.compiler.promptRoot;
-    const origEntrypoint = (this.compiler as any).entrypoint;
-    // 仅当 agent 约定目录的入口文件真实存在时才切换 promptRoot；
-    // 否则保持 config 全局 promptRoot（如 ROLE/default）。
-    // 修复：getPromptRoot 在无 SYSTEM.md/instructions.md 时会回退到不存在的约定路径，
-    // 导致 compile() ENOENT、系统提示静默退化为错误字符串、persona 丢失。
+    const origEntrypoint = (this.compiler as unknown as { entrypoint?: string }).entrypoint ?? "SYSTEM.md";
     const useAgentRoot = Boolean(
       agentPromptRoot && agentEntrypoint && existsSync(join(agentPromptRoot, agentEntrypoint)),
     );
+    const effectivePromptRoot = useAgentRoot && agentPromptRoot ? agentPromptRoot : origPromptRoot;
+    const effectiveEntrypoint = useAgentRoot && agentEntrypoint ? agentEntrypoint : origEntrypoint;
     if (agentPromptRoot && agentEntrypoint && !useAgentRoot) {
       this.log("warning", `agent=${agentName} 约定 prompt 入口缺失（${join(agentPromptRoot, agentEntrypoint)}），回退全局 promptRoot=${origPromptRoot}`);
     }
+    const runCompiler = new PromptCompiler({ promptRoot: effectivePromptRoot, projectRoot: this.projectRoot, entrypoint: effectiveEntrypoint });
     const endCompile = prof.start("compile_prompt");
     try {
-      if (useAgentRoot) {
-        this.compiler.configure(agentPromptRoot!, agentEntrypoint!);
-      }
-      systemPrompt = this.compiler.compile();
+      systemPrompt = runCompiler.compile();
     } catch (err) {
       systemPrompt = `[Prompt 编译失败: ${err}]`;
       this.log("warning", `Prompt 编译失败: ${err}`);
     } finally {
-      // 恢复原始配置
-      if (useAgentRoot) {
-        this.compiler.configure(origPromptRoot, origEntrypoint);
-      }
       endCompile();
     }
     yield this.logEvent("info", `Prompt 编译完成，长度=${systemPrompt.length}`);
 
-    // ── 2a. 编译 BEFORE_USER.md ──
+    // ── 2a. 编译 before_user（eve 结构 before_user/before_user.md 优先，兼容旧 BEFORE_USER.md）──
     let beforeUserContent = "";
     const endBeforeUser = prof.start("compile_before_user");
     try {
-      beforeUserContent = this.compiler.compile("BEFORE_USER.md");
-      yield this.logEvent("info", `BEFORE_USER 编译完成，长度=${beforeUserContent.length}`);
+      const beforeUserCandidate = ["before_user/before_user.md", "BEFORE_USER.md"]
+        .find((c) => existsSync(join(effectivePromptRoot, c)));
+      if (beforeUserCandidate) {
+        beforeUserContent = runCompiler.compile(beforeUserCandidate);
+        yield this.logEvent("info", `before_user 编译完成，长度=${beforeUserContent.length}`);
+      }
     } catch {
-      // BEFORE_USER.md 可能不存在，静默跳过
+      // 不存在则静默跳过
     } finally {
       endBeforeUser();
     }
 
-    // ── 2b. 编译动态注入内容（board / pending / agents 状态） ──
-    const dynamicInjections = prof.sync("dynamic_context", () => compileDynamicContext(maouRoot, agentName));
-
-    // ── 2c. 加载 OUTPUT.jsonc 派生 jsonSettings（用于 response_format 强制 JSON 输出） ──
-    // 文件即 Agent：OUTPUT.jsonc 可在 agent 根目录或 ROLE/ 下
-    let outputJsonSettings: Record<string, unknown> | null = null;
+    // ── eve: 加载 compression 提示词（compression/compression.md），压缩时覆盖默认 summarizer prompt ──
+    let compressionPromptText = "";
     try {
-      const outputPaths = [
-        join(this.compiler.promptRoot, "OUTPUT.jsonc"),
-        join(maouRoot, "agents", agentName, "OUTPUT.jsonc"),
-      ];
-      for (const outputFile of outputPaths) {
-        if (existsSync(outputFile)) {
-          const outputText = readFileSync(outputFile, "utf-8");
-          outputJsonSettings = deriveJsonSettings(outputText) as unknown as Record<string, unknown>;
-          yield this.logEvent("info", "OUTPUT.jsonc 已加载，启用 JSON 结构化输出");
-          break;
-        }
+      if (existsSync(join(effectivePromptRoot, "compression/compression.md"))) {
+        compressionPromptText = runCompiler.compile("compression/compression.md").trim();
+      }
+    } catch { /* 不存在则用默认 */ }
+    // 每个 run 包一层 summarizer，把本 agent 的 compression 提示词注入（race-safe，不改共享态）
+    const runSummarizer: Summarizer | undefined =
+      compressionPromptText && this.summarizer
+        ? (input) => this.summarizer!({ ...input, prompt: compressionPromptText })
+        : this.summarizer;
+
+    // ── eve: 加载 loop/end.md 达标标准（loop 结束后用小判定再检查是否真完成）──
+    let loopEndCriteria = "";
+    try {
+      const endPath = join(effectivePromptRoot, "..", "loop", "end.md");
+      if (existsSync(endPath)) loopEndCriteria = readFileSync(endPath, "utf-8").trim();
+    } catch { /* 无则跳过 */ }
+
+    // ── 注入实际工作目录（让 agent 知道自己驻扎在哪、所有相对路径基于此）──
+    systemPrompt = `${systemPrompt}\n\n<workspace>\n你当前的工作目录（所有文件读写、终端命令、相对路径均以此为根）：${this.projectRoot}\n</workspace>`;
+
+    // ── eve: 渲染 PREVIEW（把 system/before_user/compression 的最终渲染结果写到 prompt/PREVIEW/，调试用）──
+    // 仅 eve 结构（effectivePromptRoot 以 prompt 结尾、含 system/system.md）生效；自带 self-guard。
+    try { renderAgentPreview(join(effectivePromptRoot, ".."), this.projectRoot); } catch { /* 渲染失败不影响主流程 */ }
+
+    // ── 2b. 编译动态注入内容（board / pending / agents 状态 / task 规划） ──
+    const dynamicInjections = prof.sync("dynamic_context", () => compileDynamicContext(maouRoot, agentName, sessionId!));
+
+    // ── 2b2. Skill 注入（修复：原本 SkillContextManager 从未被 runtime 调用 → 技能列表从不进提示词）──
+    // compile() 首轮产出 bakedContent（全部可用 skill 列表，注入 system 区，可缓存），
+    // 后续轮产出 incrementalContent（新增/删除/更新的 skill，注入动态区）。
+    let skillManager: SkillContextManager | null = null;
+    try {
+      skillManager = new SkillContextManager(agentName, this.projectRoot, maouRoot);
+      const skillFirst = skillManager.compile();
+      if (skillFirst.bakedContent) {
+        systemPrompt = `${systemPrompt}\n\n${skillFirst.bakedContent}`;
+        yield this.logEvent("info", "已注入可用 skill 列表到系统提示词");
       }
     } catch (err) {
-      yield this.logEvent("warning", `OUTPUT.jsonc 加载失败: ${err}`);
+      this.log("warning", `[SKILL] 注入失败: ${err}`);
+      skillManager = null;
+    }
+
+    // ── 2c. 加载 OUTPUT.jsonc 派生 jsonSettings（用于 response_format 强制 JSON 输出） ──
+    // 文件即 Agent：OUTPUT.jsonc 可在 agent 根目录或 ROLE/ 下。
+    // 开关：preset.output_format === "none" 时彻底禁用结构化 JSON 输出（跳过 OUTPUT.jsonc），
+    // 改走纯原生 tool calling —— 对工具调用判断力弱的模型更友好（避免强制 JSON 引发过度调用）。
+    let outputJsonSettings: Record<string, unknown> | null = null;
+    const structuredDisabled = (options.preset as { output_format?: string }).output_format === "none";
+    if (structuredDisabled) {
+      yield this.logEvent("info", "output_format=none：已禁用结构化 JSON 输出，使用原生 tool calling");
+    } else {
+      try {
+        // 用「该 agent 实际生效的 promptRoot」找 OUTPUT.jsonc（effectivePromptRoot 已在上方计算），
+        // 避免 coding 等子 agent 误加载 ROLE/default 的 OUTPUT.jsonc（强制 JSON）。
+        const outputPaths = [
+          join(effectivePromptRoot, "OUTPUT.jsonc"),
+          join(maouRoot, "agents", agentName, "OUTPUT.jsonc"),
+        ];
+        for (const outputFile of outputPaths) {
+          if (existsSync(outputFile)) {
+            const outputText = readFileSync(outputFile, "utf-8");
+            outputJsonSettings = deriveJsonSettings(outputText) as unknown as Record<string, unknown>;
+            yield this.logEvent("info", "OUTPUT.jsonc 已加载，启用 JSON 结构化输出");
+            break;
+          }
+        }
+      } catch (err) {
+        yield this.logEvent("warning", `OUTPUT.jsonc 加载失败: ${err}`);
+      }
     }
 
     const preset = options.preset;
@@ -323,7 +518,7 @@ export class AgentRuntime {
     let toolWhitelist: Set<string> | undefined;
     try {
       const permPaths = [
-        join(this.compiler.promptRoot, "PERMISSION.jsonc"),
+        join(effectivePromptRoot, "PERMISSION.jsonc"),
         join(maouRoot, "agents", agentName, "PERMISSION.jsonc"),
       ];
       for (const permFile of permPaths) {
@@ -364,11 +559,46 @@ export class AgentRuntime {
     let roundCount = 0;
     const maxRounds = effectiveRoundLimit > 0 ? effectiveRoundLimit : MAX_ROUNDS;
     const notifiedBgCompletions = new Set<string>();
+    // 完成前自动验证（#9）：失败则注入结果让模型自修，最多 MAX_VERIFY_FIX 次
+    let verifyAttempts = 0;
+    const MAX_VERIFY_FIX = 2;
+    // eve loop/end.md 达标检查：不达标则反馈让 AI 继续，最多 MAX_LOOP_CHECK 次
+    let loopCheckAttempts = 0;
+    const MAX_LOOP_CHECK = 2;
+    // #16 可观测：本次 run 的累计重试次数与 token
+    let totalRetries = 0;
+    let totalTokens = 0;
 
     while (roundCount < maxRounds) {
-      // 检查中断信号
-      if (options.abortSignal?.aborted) {
-        this.log("info", `[RUN] session=${sessionId} 收到中断信号，停止循环`);
+      // 检查中断信号（已合并外部 + 内部 interrupt）
+      if (effectiveAbortSignal.aborted) {
+        const reason = String(internalController.signal.reason ?? "unknown");
+        // interrupt_immediately：不退出 run，重置 controller 后继续下一轮
+        // （让 buildMessages 看到队列消息后正常处理）
+        if (reason === "interrupt_immediately") {
+          this.log("info", `[RUN] session=${sessionId} interrupt_immediately：重置 controller，继续下一轮处理队列消息`);
+          internalController = new AbortController();
+          this.abortControllers.set(sessionId, internalController);
+          linkExternalAbort(internalController);
+          effectiveAbortSignal = internalController.signal;
+          // 投递队列里的 interrupt 消息到 session（runExited=false，但已 abort 过，符合 interrupt 模式投递条件）
+          const interruptMessages = this.messageQueue.dequeueIfReady(sessionId!, "loop_end", {
+            runExited: false,
+            aborted: true,
+            allTasksComplete: this.checkAllTasksComplete(sessionId!),
+          });
+          for (const msg of interruptMessages) {
+            const r = this.messageQueue.deliver(sessionId!, msg, this.sessions);
+            if (r.delivered) {
+              yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}) 到 session（interrupt_immediately）`);
+            } else {
+              yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败（interrupt_immediately）: ${r.reason}`);
+            }
+          }
+          roundCount++;
+          continue;
+        }
+        this.log("info", `[RUN] session=${sessionId} 收到中断信号（${reason}），停止循环`);
         this.hooks?.abort("用户中断");
         yield this.event("info", { message: "已中断" });
         break;
@@ -410,8 +640,16 @@ export class AgentRuntime {
 
       // ── 3a-pre2. 每轮刷新动态注入（board / pending / agent 状态） ──
       // 首轮编译一次后持续复用，后续轮次只刷新动态部分，避免重复编译 BEFORE_USER.md
+      const gitBlock = await prof.async("git_changes", () => this.workspaceChanges(), { round: currentRound });
+      // Skill 增量：本轮新增/删除/更新的 skill（首轮已 baked 进 systemPrompt，这里只补增量）
+      let skillIncremental = "";
+      if (roundCount > 0 && skillManager) {
+        try { skillIncremental = skillManager.compile().incrementalContent ?? ""; } catch { /* ignore */ }
+      }
       const currentDynamicInjections =
-        roundCount === 0 ? dynamicInjections : compileDynamicContext(maouRoot, agentName);
+        (roundCount === 0 ? dynamicInjections : compileDynamicContext(maouRoot, agentName, sessionId!))
+        + (gitBlock ? `\n\n${gitBlock}` : "")
+        + (skillIncremental ? `\n\n${skillIncremental}` : "");
 
       // ── 3a. 构建消息数组 ──
       const memoryResult = prof.sync("memory_recall", () => {
@@ -437,7 +675,7 @@ export class AgentRuntime {
             sessionId: sessionId!,
             harnessStore: this.harnessStore!,
             taskStore: this.taskStore!,
-            summarizer: this.summarizer,
+            summarizer: runSummarizer,
           });
           engine.initFromSessionMessages(sessionMessages as unknown as Array<Record<string, unknown>>);
           const tokens = estimateTokens(engine.getHistory());
@@ -556,72 +794,80 @@ export class AgentRuntime {
       this.hooks?.agentThinking();
       this.hooks?.responseStart();
 
-      // ── 3b. 调用 LLM（流式） ──
+      // ── 3b. 调用 LLM（流式，带原样重试，不降级）──
+      // 模型返回不可用（抛错 / 空内容+校验失败）时，原样重试同一请求最多 MODEL_RETRIES 次。
+      // 注意：不修改请求、不去结构化、不换措辞——只是重试（用户要求"重试不自动降级"）。
       let result: ModelCallResult;
-      const endLlm = prof.start("llm_call", { round: currentRound, model: preset.model });
-      try {
-        const callGen = this.callModelFn({
-          preset,
-          messages: finalMessages,
-          stream,
-          toolSchemas: nativeToolCalling ? toolSchemas : null,
-          nativeToolCalling,
-          autoFormat,
-          jsonSettings: options.jsonSettings ?? outputJsonSettings ?? null,
-          sessionId: sessionId ?? undefined,
-          round: currentRound,
-          abortSignal: options.abortSignal,
-        });
+      const MODEL_RETRIES = 2;
+      let modelAttempt = 0;
+      for (;;) {
+        const endLlm = prof.start("llm_call", { round: currentRound, model: preset.model, attempt: modelAttempt });
+        try {
+          const callGen = this.callModelFn({
+            preset,
+            messages: finalMessages,
+            stream,
+            toolSchemas: nativeToolCalling ? toolSchemas : null,
+            nativeToolCalling,
+            autoFormat,
+            jsonSettings: options.jsonSettings ?? outputJsonSettings ?? null,
+            sessionId: sessionId ?? undefined,
+            round: currentRound,
+            abortSignal: effectiveAbortSignal,
+          });
 
-        // 字段级流式提取：每轮创建新 accumulator（每轮重置）
-        // - JSON 模式下提取结构化输出字段（field_complete / field_streaming）
-        // - 工具调用模式下做早期检测（与 nativeToolCalling 并存）
-        // - 原始 assistant_delta 仍然 yield，保证下游兼容
-        const jsonAcc = new StreamJsonAccumulator();
+          // 字段级流式提取：每轮创建新 accumulator（每轮重置）
+          const jsonAcc = new StreamJsonAccumulator();
 
-        let iterResult = await callGen.next();
-        while (!iterResult.done) {
-          const streamEvent = iterResult.value as CallerStreamEvent;
+          let iterResult = await callGen.next();
+          while (!iterResult.done) {
+            const streamEvent = iterResult.value as CallerStreamEvent;
 
-          // 先 yield 原始事件（assistant_delta 等）
-          yield {
-            type: streamEvent.type,
-            ...streamEvent.data,
-          };
+            yield {
+              type: streamEvent.type,
+              ...streamEvent.data,
+            };
 
-          // assistant_delta → 喂入 accumulator，提取字段级事件
-          if (streamEvent.type === "assistant_delta" && streamEvent.data.delta) {
-            jsonAcc.feed(String(streamEvent.data.delta));
-
-            // 新完成的字段 → field_complete
-            for (const field of jsonAcc.getNewFields()) {
-              yield {
-                type: "field_complete",
-                fieldName: field.name,
-                fieldValue: field.value,
-                rawValue: field.rawValue,
-              } as StreamEvent;
+            if (streamEvent.type === "assistant_delta" && streamEvent.data.delta) {
+              jsonAcc.feed(String(streamEvent.data.delta));
+              for (const field of jsonAcc.getNewFields()) {
+                yield {
+                  type: "field_complete",
+                  fieldName: field.name,
+                  fieldValue: field.value,
+                  rawValue: field.rawValue,
+                } as StreamEvent;
+              }
+              for (const [, field] of jsonAcc.getStreamingFields()) {
+                yield {
+                  type: "field_streaming",
+                  fieldName: field.name,
+                  content: field.content,
+                  delta: field.delta,
+                } as StreamEvent;
+              }
             }
 
-            // 流式中的字段 → field_streaming
-            for (const [, field] of jsonAcc.getStreamingFields()) {
-              yield {
-                type: "field_streaming",
-                fieldName: field.name,
-                content: field.content,
-                delta: field.delta,
-              } as StreamEvent;
-            }
+            iterResult = await callGen.next();
           }
-
-          iterResult = await callGen.next();
+          result = iterResult.value;
+        } catch (err) {
+          this.log("warning", `[RUN] model call failed: ${err}`);
+          result = this.errorCallResult(String(err));
+        } finally {
+          endLlm();
         }
-        result = iterResult.value;
-      } catch (err) {
-        this.log("warning", `[RUN] model call failed: ${err}`);
-        result = this.errorCallResult(String(err));
-      } finally {
-        endLlm();
+
+        // 重试判定：模型应答但不可用（空内容 + 校验失败 / 错误结果）。
+        // 中断信号优先；有原生工具调用即视为可用，不重试。
+        const unusable = !result.content && !!result.validationError && result.nativeToolCalls.length === 0;
+        if (unusable && modelAttempt < MODEL_RETRIES && !effectiveAbortSignal.aborted) {
+          modelAttempt++;
+          yield this.logEvent("warning", `模型返回不可用（${result.validationError}），原样重试 ${modelAttempt}/${MODEL_RETRIES}`);
+          this.hooks?.agentThinking();
+          continue;
+        }
+        break;
       }
 
       // 桥接 LLM 内部细分计时（首字节/生成）到 profiler，区分"网络等待"与"生成"
@@ -635,9 +881,14 @@ export class AgentRuntime {
       this.sessions.setLastRawResponse(sessionId!, result.rawResponse);
       yield this.event("raw_response", { content: result.rawResponse });
 
+      // 累计本次 run 的重试与 token（#16 可观测）
+      totalRetries += modelAttempt;
       // 记录 token 用量
       if (result.usage) {
         const tokenUsage = result.usage as unknown as TokenUsage;
+        const tt = (result.usage as { total_tokens?: number; totalTokens?: number }).total_tokens
+          ?? (result.usage as { totalTokens?: number }).totalTokens ?? 0;
+        totalTokens += Number(tt) || 0;
         yield { type: "model.usage", usage: tokenUsage } as unknown as StreamEvent;
         try {
           const tracker = new TokenTracker(maouRoot, agentName, preset as unknown as Record<string, unknown>);
@@ -692,6 +943,22 @@ export class AgentRuntime {
           compressionLevel,
         );
 
+        // task_complete phase：本轮若有工具完成（尤其 task_finish），且全部 task 已完成，
+        // 立即投递 after_task_complete 模式的消息（不必等 loop_end 兜底）。
+        if (this.checkAllTasksComplete(sessionId!)) {
+          const taskCompleteMessages = this.messageQueue.dequeueIfReady(sessionId!, "task_complete", {
+            allTasksComplete: true,
+          });
+          for (const msg of taskCompleteMessages) {
+            const r = this.messageQueue.deliver(sessionId!, msg, this.sessions);
+            if (r.delivered) {
+              yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}) 到 session（task_complete）`);
+            } else {
+              yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败（task_complete）: ${r.reason}`);
+            }
+          }
+        }
+
         if (shouldContinue) {
           this.hooks?.agentStop(currentRound);
           roundCount++;
@@ -699,7 +966,64 @@ export class AgentRuntime {
         }
       }
 
-      // 无工具调用 → 退出循环
+      // ── #9 完成前自动验证（typecheck/test 等）──
+      // 模型已无工具调用、准备收尾：若配置了 verify_command 则跑一次，失败就把结果喂回让其自修。
+      if (verifyCommand && verifyAttempts < MAX_VERIFY_FIX && !effectiveAbortSignal.aborted) {
+        yield this.event("status", { text: "运行完成前验证..." });
+        yield this.logEvent("info", `完成前验证: ${verifyCommand}`);
+        const v = await prof.async("verify", () => this.runVerify(verifyCommand), { round: currentRound });
+        if (!v.ok) {
+          verifyAttempts++;
+          yield this.logEvent("warning", `验证未通过（exit=${v.code}），注入失败结果让模型修复（${verifyAttempts}/${MAX_VERIFY_FIX}）`);
+          const note =
+            `<verification-failed>\n命令 \`${verifyCommand}\` 失败（exit=${v.code}）。请修复以下问题后再结束：\n\n${v.output}\n</verification-failed>`;
+          this.sessions.appendMessage(sessionId!, "user", note, { source: "verification", round: currentRound });
+          yield this.event("verification", { ok: false, command: verifyCommand, attempt: verifyAttempts });
+          this.hooks?.agentStop(currentRound);
+          roundCount++;
+          continue;
+        }
+        yield this.logEvent("info", `✅ 完成前验证通过: ${verifyCommand}`);
+        yield this.event("verification", { ok: true, command: verifyCommand });
+      }
+
+      // ── eve: loop/end.md 达标检查（小判定）──
+      // 模型准备收尾时，按 end.md 标准判断是否真完成；不达标则把反馈喂回，继续 loop。
+      if (loopEndCriteria && loopCheckAttempts < MAX_LOOP_CHECK && !effectiveAbortSignal.aborted) {
+        yield this.event("status", { text: "loop 达标检查..." });
+        const verdict = await prof.async("loop_end_check", () => this.judgeLoopEnd(loopEndCriteria, sessionId!, preset, options.abortSignal), { round: currentRound });
+        if (verdict && verdict.done === false) {
+          loopCheckAttempts++;
+          yield this.logEvent("warning", `loop 未达标（${loopCheckAttempts}/${MAX_LOOP_CHECK}）：${verdict.feedback?.slice(0, 80)}`);
+          this.sessions.appendMessage(sessionId!, "user", `<loop-not-done>\n按完成标准检查，本次任务尚未达标：${verdict.feedback}\n请继续完成后再结束。\n</loop-not-done>`, { source: "loop_end", round: currentRound });
+          yield this.event("loop_check", { done: false, attempt: loopCheckAttempts });
+          this.hooks?.agentStop(currentRound);
+          roundCount++;
+          continue;
+        }
+        if (verdict) yield this.event("loop_check", { done: true });
+      }
+
+      // 无工具调用（且验证通过/无验证）→ 检查消息队列再决定退出
+      // round_end：投递 after_round_complete 模式的消息，有投递则继续下一轮让 LLM 处理
+      const roundEndMessages = this.messageQueue.dequeueIfReady(sessionId!, "round_end", {
+        allTasksComplete: this.checkAllTasksComplete(sessionId!),
+      });
+      if (roundEndMessages.length > 0) {
+        for (const msg of roundEndMessages) {
+          const r = this.messageQueue.deliver(sessionId!, msg, this.sessions);
+          if (r.delivered) {
+            yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}): 已追加到 session`);
+          } else {
+            yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败: ${r.reason}`);
+          }
+        }
+        this.hooks?.agentStop(currentRound);
+        roundCount++;
+        continue;
+      }
+
+      // 无队列消息 → 退出循环
       this.hooks?.agentStop(currentRound);
       break;
     }
@@ -709,6 +1033,30 @@ export class AgentRuntime {
       yield this.event("round_limit", {
         message: `已达到最大轮次限制 (${effectiveRoundLimit})`,
       });
+    }
+
+    // ── 4a. loop_end：投递剩余队列消息（after_loop_complete / after_task_complete / interrupt 模式） ──
+    // 此时 run 已退出，interrupt 模式消息也可投递。投递的消息留在 session 里，由下次 run 处理。
+    {
+      const loopEndMessages = this.messageQueue.dequeueIfReady(sessionId!, "loop_end", {
+        runExited: true,
+        allTasksComplete: this.checkAllTasksComplete(sessionId!),
+      });
+      for (const msg of loopEndMessages) {
+        const r = this.messageQueue.deliver(sessionId!, msg, this.sessions);
+        if (r.delivered) {
+          yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}) 到 session（loop_end）`);
+        } else {
+          yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败: ${r.reason}`);
+        }
+      }
+      if (loopEndMessages.length > 0) {
+        yield this.event("queue_delivered", {
+          count: loopEndMessages.length,
+          sessionId: sessionId!,
+          phase: "loop_end",
+        });
+      }
     }
 
     // ── 5. 后处理：提取记忆 + 持久化摘要 ──
@@ -745,8 +1093,48 @@ export class AgentRuntime {
     yield this.event("done", {
       sessionId,
       rounds: roundCount,
+      retries: totalRetries,
+      totalTokens,
     });
+    this.log("info", `[STATS] rounds=${roundCount} retries=${totalRetries} tokens=${totalTokens}`);
     this.log("info", `[RUN] main loop finished, rounds=${roundCount}`);
+
+    // ── 6. 清理内部 AbortController（已退出主循环，不再需要 interrupt 能力）──
+    this.abortControllers.delete(sessionId);
+  }
+
+  /**
+   * 主动中断指定 session 的当前 run（用于 MessageQueue interrupt 模式）。
+   *
+   * 调用后，当前 run 内部的 AbortController 会被 abort。
+   * - interrupt_stop / 默认：loop 下一轮检查到 aborted 后退出 run
+   * - interrupt_immediately：loop 下一轮检查到 aborted 后**重置 controller 并继续下一轮**，
+   *   让 buildMessages 看到队列消息后正常处理（不退出 run）
+   *
+   * 不存在运行中的 run 时无副作用。
+   */
+  abortCurrentRun(sessionId: string, reason: string = "interrupt"): void {
+    const controller = this.abortControllers.get(sessionId);
+    if (controller && !controller.signal.aborted) {
+      controller.abort(reason);
+      this.log("info", `[RUN] session=${sessionId} 触发 interrupt: ${reason}`);
+    }
+  }
+
+  /**
+   * 查询指定 session 是否有运行中的 run（用于 harness 判断是否需要 enqueue interrupt 模式）。
+   */
+  isRunning(sessionId: string): boolean {
+    return this.abortControllers.has(sessionId);
+  }
+
+  /**
+   * 注入子 Agent 真并行执行器。
+   * harness 提供 runFn 后调用此方法，agent_message 工具即可真并行 fork 子 Agent。
+   * 未注入时 agent_message 退回 stub 行为。
+   */
+  setSubagentExecutor(executor: SubagentExecutorLike): void {
+    this.subagentExecutor = executor;
   }
 
   // ── 工具调用处理 ──
@@ -785,138 +1173,366 @@ export class AgentRuntime {
       pluginSettings: {},
       workingDir: this.projectRoot,
       compressionLevel,
+      // 注入 SubagentExecutor（若 harness 配置了 runFn）—— agent_message 工具据此真并行 fork
+      subagentExecutor: this.subagentExecutor,
     };
 
-    for (const toolCall of toolCalls) {
-      // 落盘 tool_call 原始条目（供前端 /rawdata/:round 调试面板按 type:'tool_call' 过滤）
-      this.sessions.appendRawEntry(sessionId, {
-        type: "tool_call",
-        round,
-        created_at: new Date().toISOString(),
-        data: {
-          name: toolCall.name,
-          parameters: toolCall.parameters,
-          id: toolCall.id,
-          provider: toolCall.provider,
-          tool_type: toolCall.type,
-        },
-      });
+    // ── 按 parallelSafe / blocking 分组执行 ──
+    // 连续的 parallelSafe（只读）工具合并为并发组并行执行；其余串行。
+    // blocking=false 的工具（后台 fire-and-forget）：立即提交占位 tool_result，
+    //   后台异步执行真实工具，loop 不等待直接进下一轮。
+    // 执行可并发，但「提交」（落盘 raw + 写 session 消息 + yield 事件）严格按调用顺序，
+    // 保证下一轮 LLM 看到的工具结果顺序与调用顺序一致。
+    let i = 0;
+    while (i < toolCalls.length) {
+      const tc = toolCalls[i];
 
-      yield this.event("tool_call", {
-        tool: { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters, provider: toolCall.provider, type: toolCall.type },
-        round,
-      });
-      yield this.logEvent("info", `执行工具: ${toolCall.name}`);
-
-      // ── pre_tool_use hook：返回 false 可拦截工具执行 ──
-      if (this.hooks) {
-        const allowed = this.hooks.preToolUse({ id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters });
-        if (!allowed) {
-          const blockedMsg = `工具 ${toolCall.name} 被钩子拦截`;
-          this.sessions.appendRawEntry(sessionId, {
-            type: "tool_result",
-            round,
-            created_at: new Date().toISOString(),
-            data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: blockedMsg, ok: false },
-          });
-          yield this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: blockedMsg, ok: false, round });
-          this.sessions.appendMessage(sessionId, "tool", blockedMsg, {
-            round, toolCallId: toolCall.id, tool_name: toolCall.name,
-          });
-          continue;
-        }
+      // blocking=false：fire-and-forget 后台执行，立即占位
+      if (!this.toolIsBlocking(tc.name)) {
+        yield this.logEvent("info", `后台派发非阻塞工具: ${tc.name}`);
+        // 立即提交占位 tool_result（让 LLM 知道任务已派发，不阻塞 loop）
+        for (const ev of this.commitBackgroundToolCall(tc, round, sessionId)) yield ev;
+        // fire-and-forget 后台执行（不 await，错误吞掉避免 unhandledRejection）
+        this.execOneToolCall(tc, round, sessionId, context, prof, { background: true })
+          .then((commit) => {
+            // 后台执行完成后：
+            // - raw 日志已写入（commit 内 appendRawEntry）
+            // - tool_result 事件已 emit（前端可通过事件流看到）
+            // - background=true 跳过 appendMessage（占位已写入，避免重复 tool_call_id）
+            try {
+              for (const ev of commit()) {
+                // 后台结果通过 log 上报（无法 yield 到主生成器，因为已过提交点）
+                if (ev.type === "log") this.log("info", ev.message ?? "");
+              }
+            } catch { /* ignore */ }
+          })
+          .catch((err) => this.log("warning", `[BG] 后台工具 ${tc.name} 执行失败: ${err}`));
+        i++;
+        continue;
       }
 
-      try {
-        const endTool = prof?.start(`tool:${toolCall.name}`, { round });
-        const result = await this.toolExecutor.executeSingle(
-          {
-            id: toolCall.id,
-            name: toolCall.name,
-            parameters: toolCall.parameters,
-          },
-          context,
-        );
-        endTool?.();
-
-        const toolResultContent = result.result.message ?? JSON.stringify(result.result);
-        const toolImages = result.result.images;
-
-        // 落盘 tool_result 原始条目（供前端按 type:'tool_result' 过滤；字段名 tool_name 对齐前端 ChatApp.jsx:53）
-        this.sessions.appendRawEntry(sessionId, {
-          type: "tool_result",
-          round,
-          created_at: new Date().toISOString(),
-          data: {
-            tool_name: toolCall.name,
-            tool_call_id: toolCall.id,
-            content: toolResultContent,
-            ok: result.result.ok,
-          },
-        });
-
-        yield this.event("tool_result", {
-          toolCallId: toolCall.id,
-          name: toolCall.name,
-          content: toolResultContent,
-          ok: result.result.ok,
-          round,
-        });
-        yield this.logEvent("info", `工具 ${toolCall.name} 完成: ok=${result.result.ok}`);
-        this.hooks?.postToolUse(
-          { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters },
-          { toolCallId: toolCall.id, name: toolCall.name, output: toolResultContent, success: result.result.ok, error: "", elapsed: 0 },
-        );
-
-        // 追加 tool 结果到 session（含图片数据供多模态 LLM 使用）
-        const toolMeta: Record<string, unknown> = {
-          round,
-          toolCallId: toolCall.id,
-          tool_name: toolCall.name,
-          tool_provider: toolCall.provider,
-          tool_type: toolCall.type,
-          tool_parameters: toolCall.parameters,
-        };
-        if (toolImages && toolImages.length > 0) {
-          toolMeta.images = toolImages;
+      if (this.toolIsParallelSafe(tc.name)) {
+        const group: LLMToolCall[] = [];
+        while (i < toolCalls.length && this.toolIsParallelSafe(toolCalls[i].name)) {
+          // blocking=false 已在循环开头 continue 跳过，这里不再检查
+          group.push(toolCalls[i]);
+          i++;
         }
-        this.sessions.appendMessage(sessionId, "tool", toolResultContent, toolMeta);
-      } catch (err) {
-        const errorMsg = `工具执行失败: ${err}`;
-        this.hooks?.toolError({ id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters }, errorMsg);
-
-        // 失败也落盘 tool_result
-        this.sessions.appendRawEntry(sessionId, {
-          type: "tool_result",
-          round,
-          created_at: new Date().toISOString(),
-          data: {
-            tool_name: toolCall.name,
-            tool_call_id: toolCall.id,
-            content: errorMsg,
-            ok: false,
-          },
-        });
-
-        yield this.event("tool_result", {
-          toolCallId: toolCall.id,
-          name: toolCall.name,
-          content: errorMsg,
-          ok: false,
-          round,
-        });
-        this.sessions.appendMessage(sessionId, "tool", errorMsg, {
-          round,
-          toolCallId: toolCall.id,
-          tool_name: toolCall.name,
-          tool_provider: toolCall.provider,
-          tool_type: toolCall.type,
-          tool_parameters: toolCall.parameters,
-        });
+        if (group.length > 1) {
+          yield this.logEvent("info", `并行执行 ${group.length} 个只读工具: ${group.map(g => g.name).join(", ")}`);
+        }
+        const commits = await Promise.all(
+          group.map((g) => this.execOneToolCall(g, round, sessionId, context, prof)),
+        );
+        for (const commit of commits) {
+          for (const ev of commit()) yield ev;
+        }
+      } else {
+        const commit = await this.execOneToolCall(toolCalls[i], round, sessionId, context, prof);
+        for (const ev of commit()) yield ev;
+        i++;
       }
     }
 
-    return true; // 有工具调用，继续循环
+    // ③ per-tool loop 控制 + task 表接管 loop 条件（#2）：
+    // 一轮内若所有被调工具都是 endsLoop（收尾型，如 task_finish），默认结束 loop；
+    // 但若当前 session 的 task 表还有未完成 todo，强制继续下一轮——
+    // 让 AI 必须把所有规划任务做完才能退出（task 表接管 loop 条件）。
+    const allEndsLoop = !toolCalls.some((tc) => !this.toolEndsLoop(tc.name));
+    if (allEndsLoop) {
+      try {
+        const tasks = TASK_MANAGER.getTasks(sessionId);
+        if (tasks.length > 0 && !tasks.every((t) => t.status === "completed")) {
+          return true; // 还有未完成 todo，强制继续 loop
+        }
+      } catch {
+        // TaskManager 读取失败，回退默认 endsLoop 行为
+      }
+      return false;
+    }
+    return true;
+  }
+
+  /** 该工具调用后是否终止 loop（收尾型，如 task_finish）。 */
+  private toolEndsLoop(name: string): boolean {
+    try {
+      return Boolean(this.tools.get(name)?.definition.endsLoop);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 运行完成前验证命令（如 npm run typecheck）。
+   * 在项目根用 shell 执行，限时 120s，截断输出。失败/超时返回 ok:false + 输出。
+   */
+  /**
+   * eve loop/end.md 达标检查：用一次性模型调用判断任务是否真完成。
+   * 返回 {done, feedback}；解析失败视为完成（不卡死）；判定异常返回 null（调用方视为通过）。
+   */
+  private async judgeLoopEnd(
+    criteria: string,
+    sessionId: string,
+    preset: APIPreset,
+    abortSignal?: AbortSignal,
+  ): Promise<{ done: boolean; feedback: string } | null> {
+    try {
+      const sess = this.sessions.load(sessionId);
+      const recent = (sess?.messages ?? []).slice(-8)
+        .map((m) => `[${m.role}] ${String(m.content ?? "").slice(0, 800)}`).join("\n").slice(0, 8000);
+      const messages: Record<string, unknown>[] = [
+        { role: "system", content: `你是任务达标检查员。根据「完成标准」判断对话中的任务是否已真正完成。\n\n完成标准：\n${criteria}\n\n只输出一行 JSON：{"done": true/false, "feedback": "若未完成简述还差什么"}` },
+        { role: "user", content: `近期对话：\n${recent}` },
+      ];
+      const gen = this.callModelFn({ preset, messages, stream: false, toolSchemas: null, nativeToolCalling: false, autoFormat: false, jsonSettings: null, sessionId, round: 0, abortSignal });
+      let r = await gen.next();
+      while (!r.done) r = await gen.next();
+      const content = String((r.value as ModelCallResult).content ?? "");
+      const m = content.match(/\{[\s\S]*\}/);
+      if (!m) return { done: true, feedback: "" };
+      const parsed = JSON.parse(m[0]) as { done?: boolean; feedback?: string };
+      return { done: parsed.done !== false, feedback: String(parsed.feedback ?? "") };
+    } catch {
+      return null;
+    }
+  }
+
+  private async runVerify(command: string): Promise<{ ok: boolean; code: number; output: string }> {
+    const { exec } = await import("node:child_process");
+    return await new Promise((resolve) => {
+      const child = exec(command, { cwd: this.projectRoot, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 },
+        (error, stdout, stderr) => {
+          const out = `${stdout ?? ""}${stderr ?? ""}`.trim();
+          const tail = out.length > 6000 ? "…(已截断)\n" + out.slice(-6000) : out;
+          const code = error && typeof (error as { code?: unknown }).code === "number" ? (error as { code: number }).code : (error ? 1 : 0);
+          resolve({ ok: !error, code, output: tail || "(无输出)" });
+        });
+      child.on("error", () => resolve({ ok: false, code: 1, output: `无法执行: ${command}` }));
+    });
+  }
+
+  /**
+   * 工作区改动摘要（① diff 自动注入动态区）：
+   * 跑 `git status --porcelain`，解析成 新增/修改/删除 文件名单，注入动态区（不入持久历史）。
+   * 让 agent 实时看到「相对 git HEAD 改了哪些文件」。非 git 仓库/无改动 → 空串。
+   */
+  private async workspaceChanges(): Promise<string> {
+    try {
+      const { exec } = await import("node:child_process");
+      const porcelain: string = await new Promise((resolve) => {
+        exec("git status --porcelain", { cwd: this.projectRoot, timeout: 5000, maxBuffer: 1024 * 1024 },
+          (err, stdout) => resolve(err ? "" : (stdout ?? "")));
+      });
+      if (!porcelain.trim()) return "";
+      const added: string[] = [], modified: string[] = [], deleted: string[] = [];
+      for (const line of porcelain.split("\n")) {
+        if (!line.trim()) continue;
+        const code = line.slice(0, 2);
+        const file = line.slice(3).trim();
+        if (code.includes("D")) deleted.push(file);
+        else if (code.includes("A") || code === "??") added.push(file);
+        else modified.push(file);
+      }
+      const cap = (a: string[]) => a.length > 30 ? `${a.slice(0, 30).join(", ")} …(+${a.length - 30})` : a.join(", ");
+      const lines: string[] = [];
+      if (added.length) lines.push(`  新增(${added.length}): ${cap(added)}`);
+      if (modified.length) lines.push(`  修改(${modified.length}): ${cap(modified)}`);
+      if (deleted.length) lines.push(`  删除(${deleted.length}): ${cap(deleted)}`);
+      if (!lines.length) return "";
+      return `<workspace_changes>\n工作区相对 git HEAD 的改动：\n${lines.join("\n")}\n</workspace_changes>`;
+    } catch {
+      return "";
+    }
+  }
+
+  /** 该工具是否标注为单轮可并行（只读、无副作用）。查不到默认串行（安全）。 */
+  private toolIsParallelSafe(name: string): boolean {
+    try {
+      return Boolean(this.tools.get(name)?.definition.parallelSafe);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 该工具是否阻塞 loop 等待真实结果。
+   * 缺省 true（阻塞）；显式 blocking=false 的是后台 fire-and-forget 工具。
+   */
+  private toolIsBlocking(name: string): boolean {
+    try {
+      const def = this.tools.get(name)?.definition;
+      return def?.blocking !== false; // 缺省/true → 阻塞；仅 false 才非阻塞
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * 检查 session 的 task 表是否全部完成（消息队列 task_complete 判定依据）。
+   * 没有 task 表时返回 false（不能触发 after_task_complete 投递）。
+   */
+  private checkAllTasksComplete(sessionId: string): boolean {
+    try {
+      const tasks = TASK_MANAGER.getTasks(sessionId);
+      if (tasks.length === 0) return false;
+      return tasks.every((t) => t.status === "completed");
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 同步提交一个「后台派发」占位 tool_result（用于 blocking=false 的工具）。
+   *
+   * 不执行真实工具，只写入占位结果让 LLM 知道任务已派发、loop 可立即进下一轮。
+   * 真实工具执行由调用方 fire-and-forget 启动。
+   */
+  private commitBackgroundToolCall(
+    toolCall: LLMToolCall,
+    round: number,
+    sessionId: string,
+  ): StreamEvent[] {
+    const events: StreamEvent[] = [];
+    const now = () => new Date().toISOString();
+    const placeholder = `[后台执行] 工具 ${toolCall.name} 已派发，不等待真实结果。`;
+
+    this.sessions.appendRawEntry(sessionId, {
+      type: "tool_call",
+      round,
+      created_at: now(),
+      data: { name: toolCall.name, parameters: toolCall.parameters, id: toolCall.id, provider: toolCall.provider, tool_type: toolCall.type, background: true },
+    });
+    events.push(this.event("tool_call", {
+      tool: { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters, provider: toolCall.provider, type: toolCall.type },
+      round,
+    }));
+    events.push(this.logEvent("info", `后台派发工具: ${toolCall.name}`));
+
+    this.sessions.appendRawEntry(sessionId, {
+      type: "tool_result", round, created_at: now(),
+      data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: placeholder, ok: true, background: true },
+    });
+    events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: placeholder, ok: true, round, background: true }));
+    this.sessions.appendMessage(sessionId, "tool", placeholder, {
+      round, toolCallId: toolCall.id, tool_name: toolCall.name,
+      tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
+      background: true,
+    });
+    return events;
+  }
+
+  /**
+   * 执行单个工具调用（异步部分），返回一个 commit 闭包。
+   * commit() 同步执行所有有序副作用（落盘 raw + 写 session 消息）并返回需 yield 的事件数组。
+   * 拆分「执行」与「提交」，使并发组可并行执行、按序提交。
+   */
+  private async execOneToolCall(
+    toolCall: LLMToolCall,
+    round: number,
+    sessionId: string,
+    context: ToolContext,
+    prof?: Profiler,
+    opts?: { background?: boolean },
+  ): Promise<() => StreamEvent[]> {
+    const tcInfo = { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters };
+    // background=true：后台执行（fire-and-forget），commit() 时跳过 appendMessage
+    // （占位 tool_result 已由 commitBackgroundToolCall 写入，重复写会破坏 tool_call_id 一一对应）
+    const background = opts?.background ?? false;
+
+    // pre_tool_use hook（同步）：返回 false 拦截
+    const blocked = this.hooks ? !this.hooks.preToolUse(tcInfo) : false;
+
+    let result: Awaited<ReturnType<ToolExecutor["executeSingle"]>> | null = null;
+    let execError: unknown = null;
+    if (!blocked) {
+      const endTool = prof?.start(`tool:${toolCall.name}`, { round });
+      try {
+        result = await this.toolExecutor.executeSingle(
+          { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters },
+          context,
+        );
+      } catch (err) {
+        execError = err;
+      } finally {
+        endTool?.();
+      }
+    }
+
+    // commit：有序副作用 + 事件
+    return (): StreamEvent[] => {
+      const events: StreamEvent[] = [];
+      const now = () => new Date().toISOString();
+
+      // background=true：tool_call 日志由 commitBackgroundToolCall 已写过，这里不重复
+      if (!background) {
+        this.sessions.appendRawEntry(sessionId, {
+          type: "tool_call",
+          round,
+          created_at: now(),
+          data: { name: toolCall.name, parameters: toolCall.parameters, id: toolCall.id, provider: toolCall.provider, tool_type: toolCall.type },
+        });
+        events.push(this.event("tool_call", {
+          tool: { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters, provider: toolCall.provider, type: toolCall.type },
+          round,
+        }));
+        events.push(this.logEvent("info", `执行工具: ${toolCall.name}`));
+      }
+
+      if (blocked) {
+        const blockedMsg = `工具 ${toolCall.name} 被钩子拦截`;
+        this.sessions.appendRawEntry(sessionId, {
+          type: "tool_result", round, created_at: now(),
+          data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: blockedMsg, ok: false, background },
+        });
+        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: blockedMsg, ok: false, round, background }));
+        if (!background) {
+          this.sessions.appendMessage(sessionId, "tool", blockedMsg, { round, toolCallId: toolCall.id, tool_name: toolCall.name });
+        }
+        return events;
+      }
+
+      if (execError !== null) {
+        const errorMsg = `工具执行失败: ${execError}`;
+        this.hooks?.toolError(tcInfo, errorMsg);
+        this.sessions.appendRawEntry(sessionId, {
+          type: "tool_result", round, created_at: now(),
+          data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: errorMsg, ok: false, background },
+        });
+        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: errorMsg, ok: false, round, background }));
+        if (!background) {
+          this.sessions.appendMessage(sessionId, "tool", errorMsg, {
+            round, toolCallId: toolCall.id, tool_name: toolCall.name,
+            tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
+          });
+        }
+        return events;
+      }
+
+      const res = result!;
+      const toolResultContent = res.result.message ?? JSON.stringify(res.result);
+      const toolImages = res.result.images;
+
+      this.sessions.appendRawEntry(sessionId, {
+        type: "tool_result", round, created_at: now(),
+        data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: toolResultContent, ok: res.result.ok, background },
+      });
+      events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: toolResultContent, ok: res.result.ok, round, background }));
+      events.push(this.logEvent("info", `工具 ${toolCall.name} 完成: ok=${res.result.ok}${background ? " [后台]" : ""}`));
+      this.hooks?.postToolUse(tcInfo, { toolCallId: toolCall.id, name: toolCall.name, output: toolResultContent, success: res.result.ok, error: "", elapsed: 0 });
+
+      // background=true：跳过 appendMessage（占位已写入，再写会破坏 tool_call_id 一一对应）
+      if (background) {
+        return events;
+      }
+
+      const toolMeta: Record<string, unknown> = {
+        round, toolCallId: toolCall.id, tool_name: toolCall.name,
+        tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
+      };
+      if (toolImages && toolImages.length > 0) toolMeta.images = toolImages;
+      this.sessions.appendMessage(sessionId, "tool", toolResultContent, toolMeta);
+      return events;
+    };
   }
 
   // ── 辅助方法 ──

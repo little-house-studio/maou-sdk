@@ -288,22 +288,16 @@ export class SkillContextManager {
   private generateBakedContent(skills: Map<string, SkillEntry>): string {
     if (skills.size === 0) return "";
 
-    const parts: string[] = ["<skills>", ""];
-    parts.push(`当前已加载 ${skills.size} 个技能：`);
+    const parts: string[] = ["<available_skills>"];
+    parts.push(`以下 ${skills.size} 个技能**可用但尚未加载**。遇到相关任务时，先用 \`use_skill\` 工具按 name 加载该技能完整内容再操作（不相关无需加载）：`);
     parts.push("");
 
     for (const [name, entry] of skills) {
-      parts.push(`<skill name="${name}">`);
-      if (entry.description) {
-        parts.push(`  <description>${entry.description}</description>`);
-      }
-      parts.push(`  <version>${entry.version}</version>`);
-      parts.push(`  <source>${entry.source}</source>`);
-      parts.push("</skill>");
-      parts.push("");
+      const desc = entry.description ? entry.description : "(无描述)";
+      parts.push(`- **${name}** — ${desc} [${entry.source}]`);
     }
 
-    parts.push("</skills>");
+    parts.push("</available_skills>");
     return parts.join("\n");
   }
 

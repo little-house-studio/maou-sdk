@@ -13,14 +13,15 @@
 
 import { PromptCompiler } from "@little-house-studio/prompt";
 import { SessionStore } from "@little-house-studio/context";
-import type { HarnessSessionStore, TaskSessionStore, Summarizer } from "@little-house-studio/context";
+import { HarnessSessionStore, TaskSessionStore } from "@little-house-studio/context";
+import type { TaskPlanEntry, Summarizer } from "@little-house-studio/context";
 import { ModelCaller } from "@little-house-studio/llm";
 import type { APIPreset } from "@little-house-studio/llm";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { LLMPostLogger } from "@little-house-studio/llm";
 import type { LLMPostLogRecord } from "@little-house-studio/llm";
-import { ToolExecutor } from "@little-house-studio/tools";
-import type { ToolRegistry } from "@little-house-studio/tools";
+import { ToolExecutor, TASK_MANAGER } from "@little-house-studio/tools";
+import type { ToolRegistry, Task } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { ConfigStore } from "@little-house-studio/types";
 import { AgentRuntime } from "./runtime.js";
@@ -37,8 +38,19 @@ export interface AppRuntimeOptions {
   llmClient: LLMClient;
   maouRoot?: string;
   projectRoot?: string;
-  /** ContextEngine 压缩闭环（可选）；同时提供 harnessStore+taskStore 时激活。 */
+  /**
+   * ContextEngine 压缩闭环开关。
+   * - true（缺省）：自动按 agentName 构造 HarnessSessionStore + TaskSessionStore，
+   *   并装配 TASK_MANAGER 持久化回调 + 会话启动时自动恢复 task_plan。
+   * - false：不启用压缩闭环（无 harnessStore/taskStore）。
+   * 注：显式传入 harnessStore/taskStore 时优先用注入值。
+   */
+  enableCompression?: boolean;
+  /** 与 enableCompression 配套的 agent 名（用于 TaskSessionStore 路径隔离）。 */
+  agentName?: string;
+  /** 显式注入 harnessStore（覆盖 enableCompression 自动构造）。 */
   harnessStore?: HarnessSessionStore;
+  /** 显式注入 taskStore（覆盖 enableCompression 自动构造）。 */
   taskStore?: TaskSessionStore;
   /** 可插拔 LLM 摘要器（缺省回退确定性 truncate）。 */
   summarizer?: Summarizer;
@@ -75,10 +87,69 @@ export class Runtime {
     this.llmClient = options.llmClient;
     this.maouRoot = options.maouRoot ?? join(process.env.HOME ?? '', '.maou');
     this.projectRoot = options.projectRoot ?? process.cwd();
-    this.harnessStore = options.harnessStore;
-    this.taskStore = options.taskStore;
     this.summarizer = options.summarizer;
     this.gitWatcher = new GitWatcher(this.maouRoot, this.projectRoot);
+
+    // ContextEngine 压缩闭环装配：
+    // - 显式注入 harnessStore/taskStore 时优先用注入值
+    // - 否则 enableCompression !== false 时按 agentName 自动构造
+    const compressionOn = options.enableCompression !== false;
+    const explicitStores = Boolean(options.harnessStore || options.taskStore);
+
+    if (explicitStores) {
+      this.harnessStore = options.harnessStore;
+      this.taskStore = options.taskStore;
+    } else if (compressionOn) {
+      const agentName = options.agentName ?? "";
+      this.harnessStore = new HarnessSessionStore({ maouRoot: this.maouRoot });
+      this.taskStore = new TaskSessionStore(this.maouRoot, agentName);
+    }
+
+    // 装配 TaskManager 持久化回调：每次 task_manage/task_finish CRUD 时同步写 task_plan.json
+    // 解耦设计：TaskManager（tools 包）不直接依赖 TaskSessionStore（context 包）
+    if (this.taskStore) {
+      this.installTaskPersistCallback(this.taskStore);
+    }
+  }
+
+  /**
+   * 安装 TaskManager 持久化回调。
+   *
+   * 含 relatedBlockIds 合并：ContextEngine 压缩时会自动往 task_plan.json 的未完成 todo
+   * 追加 blockId，但 TaskManager 内存里没有这些——写盘前先合并，避免覆盖系统追加的关联。
+   */
+  private installTaskPersistCallback(taskStore: TaskSessionStore): void {
+    TASK_MANAGER.setPersistCallback((sessionId, tasks) => {
+      const existing = taskStore.loadTaskPlan(sessionId);
+      const existingMap = new Map(existing.map((t) => [t.id, t.relatedBlockIds ?? []]));
+      for (const t of tasks) {
+        if (!t.relatedBlockIds) t.relatedBlockIds = [];
+        const oldIds = existingMap.get(t.id) ?? [];
+        for (const id of oldIds) {
+          if (!t.relatedBlockIds.includes(id)) t.relatedBlockIds.push(id);
+        }
+      }
+      // Task 与 TaskPlanEntry 字段结构一致，可直接 cast
+      taskStore.saveTaskPlan(sessionId, tasks as unknown as TaskPlanEntry[]);
+    });
+  }
+
+  /**
+   * 启动新会话。
+   *
+   * 通用 helper：所有 agent 应用都可复用。会自动从 task_plan.json 恢复
+   * 未完成 todo 到 TaskManager 内存，无需各 agent 自己实现恢复逻辑。
+   */
+  startSession(agentName: string | undefined, title?: string): string {
+    const session = this.sessionStore.create({ agentName, title });
+    if (this.taskStore) {
+      const pending = this.taskStore.loadPendingTaskPlan(session.id);
+      if (pending.length > 0) {
+        // TaskPlanEntry 与 Task 字段结构一致，可直接 cast
+        TASK_MANAGER.restore(session.id, pending as unknown as Task[]);
+      }
+    }
+    return session.id;
   }
 
   private getRuntime(): AgentRuntime {

@@ -103,6 +103,7 @@ export type { HarnessSessionStoreOptions } from "./harness-session-store.js";
 
 // 任务块存储
 export { TaskSessionStore } from "./task-session-store.js";
+export type { TaskPlanEntry } from "./task-session-store.js";
 
 // BakeFile 文件 diff 监听与增量注入
 export { BakeFile, bake } from "./bake-file.js";

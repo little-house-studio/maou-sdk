@@ -246,17 +246,22 @@ export class GoogleGeminiAdapter implements ProtocolAdapter {
       const part = parts[i];
       if (!part || typeof part !== "object") continue;
 
-      if (typeof part.text === "string") {
+      const isThoughtFlag = part.thought === true;
+      const thoughtStr = typeof part.thought === "string" ? part.thought : "";
+
+      // 思考内容：thought 字符串 或 thought=true 标记的 text
+      if (thoughtStr) {
+        reasoningContent += thoughtStr;
+      }
+      if (isThoughtFlag && typeof part.text === "string") {
+        reasoningContent += part.text;
+      }
+
+      // 正文：仅当 text 不是思考内容时才加入 body
+      if (typeof part.text === "string" && !isThoughtFlag) {
         body += part.text;
       }
-      if (typeof part.thought === "string") {
-        reasoningContent += part.thought;
-      }
-      if (part.thought === true && typeof part.text === "string") {
-        // Gemini 的 thought=true 表示这是思考内容
-        reasoningContent += part.text;
-        body = body.replace(part.text, ""); // 从正文中移除
-      }
+
       if (part.functionCall && typeof part.functionCall === "object") {
         const fc = part.functionCall as Record<string, unknown>;
         const name = String(fc.name ?? "").trim();

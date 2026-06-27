@@ -14,14 +14,21 @@ import { SkillContextManager } from "../../skill-context.js";
 // ─── 全局 SkillContextManager 实例 ─────────────────────────────────────────
 
 let skillManager: SkillContextManager | null = null;
+let skillManagerKey = "";
 
 function getSkillManager(ctx: ToolContext): SkillContextManager {
-  if (!skillManager) {
+  // 修复：原来是全局单例，第一个 agent/项目用过后对其它 agent 失效。
+  // 改为按 agentName+projectRoot 作 key，ctx 变化即重建。
+  const key = `${ctx.agentName || "default"}::${ctx.projectRoot}`;
+  if (!skillManager || skillManagerKey !== key) {
+    // 第三参是 maouRoot，不能传 sandboxRoot（否则扫不到全局 ~/.maou/skills）。
+    // 传 undefined → SkillContextManager 默认 ~/.maou。
     skillManager = new SkillContextManager(
       ctx.agentName || "default",
       ctx.projectRoot,
-      ctx.sandboxRoot
+      undefined
     );
+    skillManagerKey = key;
   }
   return skillManager;
 }

@@ -5,11 +5,11 @@
  * 不含富 TUI —— 真正的调试界面在 @little-house-studio/cli 层复用。
  * done/error 事件后结束。
  *
- * 从 maou-agent 的 core/agent 层迁来：cli-driver 本质是 cli 层入口，
- * 仅 coding-agent 在使用，故并入 coding-agent 包。
+ * agent 层提供此驱动让所有场景特化 agent（coding / reviewer / ...）
+ * 都能直接复用，避免每个 agent 自己写一遍循环 + 事件回调装配。
  */
 
-import type { Runtime } from "@little-house-studio/agent";
+import type { Runtime } from "../agent/runtime-facade.js";
 import type { StreamEvent } from "@little-house-studio/types";
 
 export interface AgentCliOptions {

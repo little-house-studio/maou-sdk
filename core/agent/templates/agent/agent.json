@@ -1,0 +1,10 @@
+{
+  "name": "{{name}}",
+  "display_name": "{{display_name}}",
+  "role": "{{role}}",
+  "scope": "project",
+  "round_limit": 50,
+  "max_retries": 10,
+  "terminal_mode": "normal",
+  "tools": ["reader", "write_file", "edit_file", "glob", "grep", "find_code", "use_terminal", "use_skill", "find_skill", "task_finish"]
+}

@@ -207,17 +207,29 @@ export class SessionStore {
     return this.reconstructSession(meta, [], []);
   }
 
+  /** 更新会话绑定的 agent（用于会话中途 /agent 切换）。 */
+  setAgentName(sessionId: string, name: string): void {
+    const meta = (tryReadJson(this.metaPath(sessionId)) as SessionMeta | null);
+    if (!meta) return;
+    meta.agent_name = name;
+    meta.updated_at = nowIso();
+    atomicWriteJson(this.metaPath(sessionId), meta);
+    this.agentNameCache.set(sessionId, name);
+  }
+
   /**
-   * 确保会话存在（不存在则创建）
+   * 确保会话存在（不存在则创建）。
+   * @param agentName 仅在创建新会话时生效，把会话绑定到指定 agent（如 coding）；
+   *   已存在的会话保持其原有 agentName 不变（不中途改绑）。
    */
-  ensure(sessionId?: string | null): SessionData {
+  ensure(sessionId?: string | null, agentName?: string): SessionData {
     if (sessionId) {
       const existing = this.load(sessionId);
       if (existing) return existing;
-      // 不存在则用此 ID 创建
-      return this.create({ sessionId });
+      // 不存在则用此 ID 创建（首条消息即绑定到目标 agent）
+      return this.create({ sessionId, agentName });
     }
-    return this.create();
+    return this.create({ agentName });
   }
 
   /**

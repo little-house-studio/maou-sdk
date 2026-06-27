@@ -59,6 +59,7 @@ export class LspTool extends Tool {
       additionalProperties: false,
     },
     allowedModes: ["plan", "execute"],
+    parallelSafe: true,
   };
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {

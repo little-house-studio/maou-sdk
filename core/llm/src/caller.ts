@@ -326,8 +326,20 @@ export class ModelCaller {
           error: String(error),
         });
 
-        // 400 类错误重试（不注入错误提示到上下文，直接重试）
-        if (retry < this.maxRetries && String(error).includes("400")) {
+        // 可重试错误（原样重试，不降级、不注入错误到上下文）：
+        // - 400 类
+        // - 流式停滞（一个字没动超过 stall 阈值即中止）→ 这是用户要求的"流式停滞才重试"
+        // - 连接/网络/超时类瞬时故障
+        const errStr = String(error);
+        const retryable =
+          errStr.includes("400") ||
+          errStr.includes("停滞") || errStr.includes("stall") ||
+          errStr.includes("timeout") || errStr.includes("timed out") ||
+          errStr.includes("ECONNRESET") || errStr.includes("ECONNREFUSED") ||
+          errStr.includes("ETIMEDOUT") || errStr.includes("socket hang up") ||
+          errStr.includes("network");
+        if (retry < this.maxRetries && retryable) {
+          yield this.emitLog("warn", `请求失败可重试（${errStr.slice(0, 80)}），第 ${retry + 1}/${this.maxRetries} 次重试`);
           continue;
         }
         throw error;

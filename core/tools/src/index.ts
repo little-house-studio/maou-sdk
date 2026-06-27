@@ -29,6 +29,18 @@ export {
   cleanupWorkspaceLsp,
 } from './code/lsp/tool.js'
 
+// 终端审批策略（normal/auto/yolo + 黑白名单 + 小模型审核器注入）
+export {
+  setTerminalPolicyRoot,
+  setTerminalReviewer,
+  getMode as getTerminalMode,
+  setMode as setTerminalMode,
+  addToWhitelist as addTerminalWhitelist,
+  addToBlacklist as addTerminalBlacklist,
+  decideCommand as decideTerminalCommand,
+} from './terminal/terminal-policy.js'
+export type { TerminalMode, TerminalReviewer, PolicyAction, PolicyDecision } from './terminal/terminal-policy.js'
+
 // 技能管理（从 context 下放到此；context 包会从这里再导出）
 export { SkillScanner, SkillContextManager } from './skill-context.js'
 export type { SkillEntry, SkillChange, SkillContextResult } from './skill-context.js'
@@ -59,3 +71,20 @@ export {
   groupGrepByFile,
 } from './compress/output-compressor.js'
 export type { CompressOptions, CompressLevel } from './compress/output-compressor.js'
+
+// ── 任务规划管理器（TaskManager 单例 + TaskScheduler 依赖链推进）──
+// 注：TaskManager 通过 setPersistCallback 解耦持久化（由调用方注入回调）
+export { TASK_MANAGER, TaskManager, TaskScheduler } from './task/task_manage/tool.js'
+export type { Task } from './task/task_manage/tool.js'
+
+// ── 文件编辑历史 + 回退（diff 标记，支撑「被影响文件的回退机制」）──
+export {
+  record as recordFileEdit,
+  undo as undoFileEdit,
+  undoByToolCallId as undoFileEditByToolCallId,
+  lastEdit as lastFileEdit,
+  listEdits as listFileEdits,
+  clearHistory as clearFileEditHistory,
+  readBefore as readFileBefore,
+} from './file/file-edit-history.js'
+export type { FileEditRecord } from './file/file-edit-history.js'

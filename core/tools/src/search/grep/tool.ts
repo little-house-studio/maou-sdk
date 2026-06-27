@@ -288,6 +288,7 @@ export class GrepTool extends Tool {
       additionalProperties: false,
     },
     allowedModes: ["plan", "execute"],
+    parallelSafe: true,
   };
 
   async execute(

@@ -63,6 +63,8 @@ export type {
 export { Runtime } from "./runtime-facade.js";
 export type { AppRuntimeOptions } from "./runtime-facade.js";
 export { createAppLogger } from "./app-logger.js";
+export { createAgentFromTemplate, renderAgentPreview } from "./template.js";
+export type { CreateAgentOptions as CreateAgentFromTemplateOptions } from "./template.js";
 
 // ── Agent 注册表与工厂 ─────────────────────────────────────────────────────
 

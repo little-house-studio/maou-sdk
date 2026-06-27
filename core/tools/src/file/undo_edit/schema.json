@@ -1,0 +1,27 @@
+{
+  "name": "undo_edit",
+  "description": "撤销最近一次 edit_file/write_file 的文件改动，恢复到编辑前的内容。不传 path 撤销最近一次任意文件的编辑；传 path 撤销指定文件最近一次编辑；传 all=true 撤销该 session 全部历史编辑。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "要撤销编辑的文件路径（相对项目根）。不传则撤销最近一次任意文件的编辑。"
+      },
+      "all": {
+        "type": "boolean",
+        "description": "为 true 时撤销该 session 全部历史编辑（按时间倒序逐个回退）。慎用。"
+      },
+      "tool_call_id": {
+        "type": "string",
+        "description": "按 toolCallId 精确回退某次编辑。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具？说明撤销的必要性。"
+      }
+    },
+    "required": [],
+    "additionalProperties": false
+  }
+}

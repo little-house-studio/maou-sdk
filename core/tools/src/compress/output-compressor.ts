@@ -47,6 +47,15 @@ export function stripNoise(s: string): string {
   return s.replace(CARRIAGE_RE, "").replace(ANSI_RE, "");
 }
 
+/**
+ * Never-worse 守卫（对标 RTK v0.42）：压缩后若不比原短，回退原样。
+ * 绝不让摄入层压缩反向膨胀上下文。几乎所有正常路径都不会触发，
+ * 只在边缘情况（如未来新增的有损策略参数退化）兜底。
+ */
+export function applyNeverWorse(original: string, compressed: string): string {
+  return compressed.length >= original.length ? original : compressed;
+}
+
 /** 折叠连续重复行 → `行  [×N]`。 */
 export function dedupeConsecutive(text: string): string {
   const lines = text.split("\n");
@@ -92,7 +101,7 @@ export function compressOutput(text: string, opts: CompressOptions = {}): string
   let s = stripAnsiCodes ? stripNoise(text) : text;
   if (dedupe) s = dedupeConsecutive(s);
   if (s.split("\n").length > maxLines) s = truncateMiddle(s, headLines, tailLines);
-  return s;
+  return applyNeverWorse(text, s);
 }
 
 // ─── 终端语义压缩 ─────────────────────────────────────────────────────────────
@@ -109,7 +118,7 @@ export function compressTestOutput(text: string, level: CompressLevel = "normal"
   if (level === "off") return text;
   const th = levelThresholds(level)!;
   const lines = stripNoise(text).split("\n");
-  if (lines.length <= th.maxLines) return dedupeConsecutive(lines.join("\n"));
+  if (lines.length <= th.maxLines) return applyNeverWorse(text, dedupeConsecutive(lines.join("\n")));
 
   const hasFailure = lines.some((l) => FAIL_RE.test(l));
   if (!hasFailure) {

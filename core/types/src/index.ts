@@ -49,6 +49,29 @@ export interface ToolDefinition {
   parameters: JsonSchema
   allowedModes: string[] | null
   paramGuards?: Record<string, string>
+  /**
+   * 单轮内多个工具调用是否可并行执行。
+   * true = 该工具无副作用/读操作，安全并发（如 read/glob/grep/find_code/lsp）；
+   * 缺省/false = 串行（写文件、终端、有状态操作）。
+   * AgentRuntime 会把连续的 parallelSafe 调用合并为并发组，其余按序执行，保持顺序语义。
+   */
+  parallelSafe?: boolean
+  /**
+   * 该工具调用后是否**终止** loop（不再进入下一轮）。
+   * 缺省/false = 继续 loop（拿到结果 → 下一轮，标准行为）。
+   * true = 收尾型工具（如 task_finish）。
+   * 规则：一轮内若**所有**被调工具都是 endsLoop，则结束 loop；只要有一个非 endsLoop 工具就继续。
+   */
+  endsLoop?: boolean
+  /**
+   * 该工具是否**阻塞** loop 等待真实结果。
+   * 缺省/true = 阻塞（标准行为，loop 等工具返回后才进下一轮）。
+   * false = 非阻塞（fire-and-forget 后台任务，如启动开发服务器、监听文件变化）：
+   *   - runtime 立即提交占位 tool_result（"后台执行中"），不等待真实结果
+   *   - loop 直接进入下一轮
+   *   - 真实结果通过 StreamEvent 异步上报（如果工具支持）
+   */
+  blocking?: boolean
 }
 export interface ToolContext {
   sessionId: string
@@ -62,6 +85,33 @@ export interface ToolContext {
   workingDir: string
   /** 工具输出压缩级别：off=不压；normal=保守(默认)；aggressive=更激进。由 AgentRuntime 从 agent.json 注入。 */
   compressionLevel?: "off" | "normal" | "aggressive"
+  /**
+   * 子 Agent 真并行执行器（由 AgentRuntime 注入；harness 提供 runFn）。
+   *
+   * agent_message 工具调此函数 fork 子 Agent 执行独立任务。
+   * 缺省（undefined）→ agent_message 退回原 stub 行为（"暂未开放"）。
+   */
+  subagentExecutor?: SubagentExecutorLike
+}
+
+/**
+ * SubagentExecutor 的最小契约（types 包不依赖 agent 包）。
+ * 真实实现见 @little-house-studio/agent 的 SubagentExecutor。
+ */
+export interface SubagentExecutorLike {
+  /** fork 单个子 Agent 执行任务。 */
+  fork(taskId: string, task: string): Promise<SubagentResultLike>
+  /** 并发 fork 一层 task（同层可并行）。 */
+  forkLayer(tasks: Array<{ id: string; desc: string }>): Promise<SubagentResultLike[]>
+}
+
+export interface SubagentResultLike {
+  taskId: string
+  subSessionId: string
+  output: string
+  ok: boolean
+  error?: string
+  elapsedMs: number
 }
 export interface ToolResponse {
   ok: boolean

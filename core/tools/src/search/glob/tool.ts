@@ -172,6 +172,7 @@ export class GlobTool extends Tool {
       additionalProperties: false,
     },
     allowedModes: ["plan", "execute"],
+    parallelSafe: true,
   };
 
   async execute(

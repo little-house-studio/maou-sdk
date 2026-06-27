@@ -1,13 +1,13 @@
 /**
  * coding-agent CLI 特化接口
  *
- * 薄包装：接受 createCodingAgent() 句柄，委托给通用 runAgentCli。
- * 通用驱动逻辑现并入本包（./run-agent-cli.ts）；这里只做编程特化：
+ * 薄包装：接受 createCodingAgent() 句柄，委托给 agent 层的通用 runAgentCli。
+ * 这里只做编程特化：
  *   - 缺省会话时自动 startSession()，把会话绑定到 coding agent（保证编程 prompt+白名单生效）。
  * 真正的调试界面在 @little-house-studio/cli 层复用。
  */
 
-import { runAgentCli } from "./run-agent-cli.js";
+import { runAgentCli } from "@little-house-studio/agent";
 import type { CodingAgent } from "../index.js";
 import type { StreamEvent } from "@little-house-studio/types";
 

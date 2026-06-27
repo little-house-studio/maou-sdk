@@ -47,3 +47,30 @@ export * from "./agent_factory/types.js";
 
 // 动态上下文编译（团队 Agent 状态 + 终端状态面板）
 export { compileDynamicContext, formatAgentStatus } from "./dynamic-context.js";
+
+// 子 Agent 真并行执行器（#4 fork + 并发 + 合并）
+export { SubagentExecutor } from "./agent/subagent-executor.js";
+export type { SubagentRunFn, SubagentExecutorOptions } from "./agent/subagent-executor.js";
+
+// 消息队列系统（5 模式 + 防 tool_call/tool_result 中间插入）
+export { MessageQueue, MESSAGE_QUEUE } from "./agent/message-queue.js";
+export type {
+  MessageQueueMode,
+  DeliveryPhase,
+  EnqueueOptions,
+  QueuedMessage,
+  DeliveryDecision,
+  MessageQueueOptions,
+} from "./agent/message-queue.js";
+
+// ── 「文件即 Agent」物化骨架（coding/reviewer/... 共用）──────────────────────
+export { materializeAgent } from "./agent/materialize.js";
+export type { MaterializeAgentOptions } from "./agent/materialize.js";
+export { DEFAULT_AGENT_ROUND_LIMIT as DEFAULT_MATERIALIZE_ROUND_LIMIT } from "./agent/materialize.js";
+
+// ── 通用 Agent 句柄接口 ──────────────────────────────────────────────────────
+export type { AgentHandle } from "./agent/handle.js";
+
+// ── 通用 CLI 驱动（所有 agent 复用，避免各自实现事件循环）──────────────────────
+export { runAgentCli } from "./cli/run-agent-cli.js";
+export type { AgentCliOptions } from "./cli/run-agent-cli.js";

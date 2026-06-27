@@ -39,6 +39,8 @@ export type Summarizer = (input: {
   kind: 'task' | 'micro';
   taskId?: string;
   messages: LLMMessage[];
+  /** 可选：覆盖默认压缩提示词（由 agent 的 compression/compression.md 注入）。 */
+  prompt?: string;
 }) => Promise<string>;
 
 export interface CompressOptions {
@@ -47,6 +49,13 @@ export interface CompressOptions {
   sessionId?: string;
   /** 最大压缩阶段（逐级递进时限制只压到某一级） */
   maxStage?: CompressionStage;
+  /**
+   * 当前活跃的 task 块 ID 列表（#4：压缩时屏蔽无关 task）。
+   * 传入时：只有 activeTaskIds 中的 task 摘要进入压缩区显示，
+   * 非 active task 的摘要只进 droppedSummary（归档），不进工作上下文。
+   * 未传：所有 task 摘要都进压缩区（兼容旧行为）。
+   */
+  activeTaskIds?: string[];
 }
 
 export interface CompressMaouResult {
@@ -124,7 +133,7 @@ export async function compressMaou(
       compressedTokens: microTokens,
     };
   }
-  const afterSummary = await summaryCompressHarness(afterMicro, opts.summarizer);
+  const afterSummary = await summaryCompressHarness(afterMicro, opts.summarizer, opts.activeTaskIds);
   const summaryTokens = estimateTokens(afterSummary.messages);
   if (summaryTokens < Math.floor((threshold * ARCHIVE_TRIGGER_PERCENT) / 100)) {
     return {
@@ -288,16 +297,23 @@ interface SummaryCompressResult {
   summary: string;
   taskBlocks: string[];
   perTaskOriginals: Map<string, MaouMessage[]>;
+  /** 每个 task 的摘要文本（#1：archiveStage 保留每 task 摘要片段 + task id 展示层级） */
+  perTaskSummaries: Map<string, string>;
 }
 
-async function summaryCompressHarness(messages: MaouMessage[], summarizer?: Summarizer): Promise<SummaryCompressResult> {
+async function summaryCompressHarness(messages: MaouMessage[], summarizer?: Summarizer, activeTaskIds?: string[]): Promise<SummaryCompressResult> {
   const { systemMsgs, pinnedOrCritical, recentToolChain, compressible, recentToolMsgs } = partitionMessages(messages);
   const groups = groupByTask(compressible);
   const taskBlocks: string[] = [];
   const summaryLines: string[] = [];
   const perTaskOriginals = new Map<string, MaouMessage[]>();
+  const perTaskSummaries = new Map<string, string>();
+  const activeSet = new Set(activeTaskIds ?? []);
+  const filterActive = activeSet.size > 0;
 
-  for (const [taskId, msgs] of groups) {
+  // #1：并行调 summarizer（第一次压缩用 agent 写摘要/大纲，并行加速）
+  const taskEntries = [...groups];
+  const summaryResults = await Promise.all(taskEntries.map(async ([taskId, msgs]) => {
     perTaskOriginals.set(taskId, msgs);
     let taskSummaryText: string;
     if (summarizer) {
@@ -308,21 +324,31 @@ async function summaryCompressHarness(messages: MaouMessage[], summarizer?: Summ
     } else {
       taskSummaryText = summarizeTaskFallback(taskId, msgs).summary;
     }
+    return { taskId, msgs, summary: taskSummaryText };
+  }));
+
+  // 每个 task 生成独立摘要消息（#1：按时间流程排序显示在压缩区）
+  // #4：非 active task 的摘要不进压缩区（屏蔽归档），只进 droppedSummary
+  const taskSummaryMsgs: MaouMessage[] = [];
+  for (const { taskId, msgs, summary: taskSummaryText } of summaryResults) {
+    perTaskSummaries.set(taskId, taskSummaryText);
     summaryLines.push(taskSummaryText);
     taskBlocks.push(taskId);
+    if (!filterActive || activeSet.has(taskId)) {
+      // active task 或未传 activeTaskIds：进压缩区显示
+      taskSummaryMsgs.push(makeTaskSummaryMessage(taskId, taskSummaryText, msgs));
+    }
   }
 
   const summary = summaryLines.join("\n\n");
-  const result: MaouMessage[] = [...systemMsgs, ...pinnedOrCritical, ...recentToolMsgs];
-  if (summary.trim()) {
-    result.splice(systemMsgs.length, 0, makeSummaryMessage(summary));
-  }
+  const result: MaouMessage[] = [...systemMsgs, ...pinnedOrCritical, ...taskSummaryMsgs, ...recentToolMsgs];
 
   return {
     messages: result.sort((a, b) => a.seqId - b.seqId),
     summary: buildDroppedSummary(compressible, summary),
     taskBlocks,
     perTaskOriginals,
+    perTaskSummaries,
   };
 }
 
@@ -332,24 +358,29 @@ function summaryCompressSync(messages: MaouMessage[]): SummaryCompressResult {
   const taskBlocks: string[] = [];
   const summaryLines: string[] = [];
   const perTaskOriginals = new Map<string, MaouMessage[]>();
+  const perTaskSummaries = new Map<string, string>();
 
   for (const [taskId, msgs] of groups) {
     perTaskOriginals.set(taskId, msgs);
-    summaryLines.push(summarizeTaskFallback(taskId, msgs).summary);
+    const taskSummaryText = summarizeTaskFallback(taskId, msgs).summary;
+    perTaskSummaries.set(taskId, taskSummaryText);
+    summaryLines.push(taskSummaryText);
     taskBlocks.push(taskId);
   }
 
   const summary = summaryLines.join("\n\n");
-  const result: MaouMessage[] = [...systemMsgs, ...pinnedOrCritical, ...recentToolMsgs];
-  if (summary.trim()) {
-    result.splice(systemMsgs.length, 0, makeSummaryMessage(summary));
-  }
+  // sync 版不筛选 active（maybeCompress 旧路径不接 activeTaskIds）
+  const taskSummaryMsgs = taskBlocks.map((taskId) =>
+    makeTaskSummaryMessage(taskId, perTaskSummaries.get(taskId)!, groups.get(taskId)!),
+  );
+  const result: MaouMessage[] = [...systemMsgs, ...pinnedOrCritical, ...taskSummaryMsgs, ...recentToolMsgs];
 
   return {
     messages: result.sort((a, b) => a.seqId - b.seqId),
     summary: buildDroppedSummary(compressible, summary),
     taskBlocks,
     perTaskOriginals,
+    perTaskSummaries,
   };
 }
 
@@ -399,7 +430,14 @@ function collectRecentToolChain(messages: MaouMessage[], protectedIds: Set<strin
 function archiveCompressHarness(input: SummaryCompressResult): { messages: MaouMessage[]; summary: string; taskBlocks: string[] } {
   const systemMsgs = input.messages.filter(m => m.category === "system");
   const pinned = input.messages.filter(m => m.pinned || m.keepAfterCompress);
-  const archiveText = `[已归档任务: ${input.taskBlocks.length} 个]\n${input.taskBlocks.map(id => `- ${id}`).join("\n")}`;
+  // #1：保留每个 task 摘要片段 + task id（展示层级），不只列 id
+  const archiveLines: string[] = [`[已归档任务: ${input.taskBlocks.length} 个]`];
+  for (const taskId of input.taskBlocks) {
+    const summary = input.perTaskSummaries.get(taskId) ?? "";
+    const snippet = summary.length > 120 ? summary.slice(0, 120) + "…" : summary;
+    archiveLines.push(`- ${taskId}: ${snippet}`);
+  }
+  const archiveText = archiveLines.join("\n");
   return {
     messages: [...systemMsgs, makeSummaryMessage(archiveText), ...pinned],
     summary: archiveText,
@@ -518,6 +556,26 @@ function makeSummaryMessage(summary: string): MaouMessage {
         `以下是此前对话中被压缩掉的摘要，供参考以保持上下文连贯性：\n\n` +
         `${summary}\n` +
         `</prior_context_summary>`,
+    }],
+    keepAfterCompress: true,
+    category: "injected",
+    originalRole: "user",
+  };
+}
+
+/**
+ * 生成单个 task 的摘要消息（#1：每个 task 独立显示，按时间流程排序）。
+ *
+ * 用 task 块第一条消息的 seqId 作为排序键，使压缩区内
+ * 多个 task 摘要按原始时间顺序排列，展示任务执行流程。
+ */
+function makeTaskSummaryMessage(taskId: string, summary: string, originalMsgs: MaouMessage[]): MaouMessage {
+  const seqId = originalMsgs[0]?.seqId ?? -1;
+  return {
+    seqId,
+    taskIds: [taskId],
+    contents: [{
+      text: `<task_summary task="${taskId}">\n${summary}\n</task_summary>`,
     }],
     keepAfterCompress: true,
     category: "injected",

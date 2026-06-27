@@ -34,6 +34,7 @@ export class TaskFinishTool extends Tool {
       required: ["task_id", "summary"],
     },
     allowedModes: ["execute"],
+    endsLoop: true,
   };
 
   async execute(

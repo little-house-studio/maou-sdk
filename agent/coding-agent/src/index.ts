@@ -8,16 +8,25 @@
  *   - 轮次上限等元数据（agent.json）
  *
  * 定位是「服务」：界面少，CLI 调试接口见 ./cli。
- * 后续扩展点：项目驻扎工作区（大纲/任务清单/diff 记录）、子任务编排、监督者 agent 等。
+ *
+ * 重构说明：本包仅保留 coding 特化部分（白名单 + 系统提示词 + 名称常量），
+ * 通用骨架已上提到 agent 层：
+ *   - materializeAgent（通用物化）
+ *   - Runtime 门面的 enableCompression + agentName + startSession
+ *   - AgentHandle 通用句柄接口
+ *   - runAgentCli 通用 CLI 驱动
  */
 
-import { Runtime } from "@little-house-studio/agent";
-import { HarnessSessionStore, TaskSessionStore } from "@little-house-studio/context";
-import type { SessionStore, Summarizer } from "@little-house-studio/context";
+import {
+  Runtime,
+  materializeAgent,
+} from "@little-house-studio/agent";
+import type { AgentHandle } from "@little-house-studio/agent";
+import type { Summarizer } from "@little-house-studio/context";
+import type { SessionStore } from "@little-house-studio/context";
 import type { ToolRegistry } from "@little-house-studio/tools";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { ConfigStore } from "@little-house-studio/types";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -94,83 +103,38 @@ export interface CodingAgentOptions {
 }
 
 /**
- * 编程 Agent 句柄：通用 Runtime + 编程特化元数据 + 会话工厂。
+ * 编程 Agent 句柄：复用通用 AgentHandle 接口。
+ * 不再独立定义 CodingAgent 字段（与 AgentHandle 完全一致），
+ * 仅作为类型别名以便消费方按需引用。
  */
-export interface CodingAgent {
-  /** 底层通用运行时门面。 */
-  runtime: Runtime;
-  /** agent 名称（会话需绑定此名才会用编程 prompt+白名单）。 */
-  agentName: string;
-  /** 绑定的项目根目录。 */
-  projectRoot: string;
-  /** 生效的工具白名单。 */
-  toolWhitelist: readonly string[];
-  /**
-   * 新建一个绑定到本 coding agent 的会话，返回 sessionId。
-   * 只有用此 agentName 创建的会话，AgentRuntime 才会加载编程 prompt + 白名单。
-   */
-  startSession(title?: string): string;
-}
+export type CodingAgent = AgentHandle;
 
 /**
- * 物化「文件即 Agent」定义到 <maouRoot>/agents/<name>/：
- *   - agent.json        元数据（role/round_limit/tools）
- *   - ROLE/SYSTEM.md    编程系统提示词（promptRoot 入口）
- *   - PERMISSION.jsonc  工具白名单（真正强制）
+ * 物化「文件即 Agent」定义到 <maouRoot>/agents/<name>/。
  *
- * 幂等：默认仅在缺失时创建；force=true 时重写。
+ * 薄包装：调用 agent 层的通用 materializeAgent，传入编程特化参数。
+ * 保留此函数是为了向后兼容（已存在的调用方仍可用）。
  */
 export function materializeCodingAgent(
   name: string,
   maouRoot: string,
-  opts?: { roundLimit?: number; toolWhitelist?: readonly string[]; force?: boolean; toolCompression?: "off" | "normal" | "aggressive" },
+  opts?: {
+    roundLimit?: number;
+    toolWhitelist?: readonly string[];
+    force?: boolean;
+    toolCompression?: "off" | "normal" | "aggressive";
+  },
 ): void {
-  const dir = join(maouRoot, "agents", name);
-  const roleDir = join(dir, "ROLE");
-  const systemPath = join(roleDir, "SYSTEM.md");
-  const agentJsonPath = join(dir, "agent.json");
-  const permissionPath = join(dir, "PERMISSION.jsonc");
-  const whitelist = opts?.toolWhitelist ?? CODING_TOOL_WHITELIST;
-  const roundLimit = opts?.roundLimit ?? DEFAULT_CODING_ROUND_LIMIT;
-  const toolCompression = opts?.toolCompression ?? "normal";
-  const force = opts?.force ?? false;
-
-  mkdirSync(roleDir, { recursive: true });
-
-  if (force || !existsSync(agentJsonPath)) {
-    const now = new Date().toISOString();
-    const agentEntry = {
-      name,
-      display_name: "Coding Agent",
-      status: "idle",
-      role: "coding",
-      team: "",
-      parent: "",
-      personality: "严谨、高效的编程助手",
-      scope: "project",
-      description: "绑定项目目录驻扎的编码 agent",
-      notes: "",
-      round_limit: roundLimit,
-      tools: [...whitelist],
-      // 工具输出压缩级别（摄入层省 token）：off/normal/aggressive。可手动改本文件调整。
-      tool_compression: toolCompression,
-      created_at: now,
-      updated_at: now,
-    };
-    writeFileSync(agentJsonPath, JSON.stringify(agentEntry, null, 2), "utf-8");
-  }
-
-  if (force || !existsSync(systemPath)) {
-    writeFileSync(systemPath, CODING_SYSTEM_PROMPT, "utf-8");
-  }
-
-  if (force || !existsSync(permissionPath)) {
-    const permission = {
-      permission_preset: "full",
-      tool_whitelist: [...whitelist],
-    };
-    writeFileSync(permissionPath, JSON.stringify(permission, null, 2), "utf-8");
-  }
+  materializeAgent(name, maouRoot, {
+    systemPrompt: CODING_SYSTEM_PROMPT,
+    toolWhitelist: opts?.toolWhitelist ?? CODING_TOOL_WHITELIST,
+    role: "coding",
+    displayName: "Coding Agent",
+    description: "绑定项目目录驻扎的编码 agent",
+    roundLimit: opts?.roundLimit ?? DEFAULT_CODING_ROUND_LIMIT,
+    toolCompression: opts?.toolCompression ?? "normal",
+    force: opts?.force ?? false,
+  });
 }
 
 /**
@@ -178,6 +142,11 @@ export function materializeCodingAgent(
  *
  * 物化编程 agent 定义（白名单/prompt 真正生效）+ 构建通用 Runtime 门面，
  * 返回带会话工厂的句柄。
+ *
+ * 重构后内部委托给 agent 层：
+ *   - materializeAgent 物化骨架
+ *   - Runtime 构造函数自动按 enableCompression + agentName 装配双 Store + persistCallback
+ *   - runtime.startSession helper 自动恢复 task_plan
  */
 export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
   const name = opts.name ?? DEFAULT_CODING_AGENT_NAME;
@@ -193,11 +162,10 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     toolCompression: opts.toolCompression,
   });
 
-  // ContextEngine 压缩闭环：默认启用，构造双 Store 注入 → AgentRuntime 每轮 sync→compress→落盘。
-  const compressionOn = opts.enableCompression !== false;
-  const harnessStore = compressionOn ? new HarnessSessionStore({ maouRoot }) : undefined;
-  const taskStore = compressionOn ? new TaskSessionStore(maouRoot, name) : undefined;
-
+  // Runtime 门面自动按 enableCompression + agentName 装配：
+  //   - HarnessSessionStore + TaskSessionStore
+  //   - TASK_MANAGER 持久化回调（含 relatedBlockIds 合并）
+  //   - startSession 自动恢复 task_plan
   const runtime = new Runtime({
     configStore: opts.configStore,
     sessionStore: opts.sessionStore,
@@ -205,31 +173,26 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     llmClient: opts.llmClient,
     maouRoot,
     projectRoot,
-    harnessStore,
-    taskStore,
+    enableCompression: opts.enableCompression,
+    agentName: name,
     summarizer: opts.summarizer,
   });
-
-  const sessionStore = opts.sessionStore;
 
   return {
     runtime,
     agentName: name,
     projectRoot,
     toolWhitelist,
-    startSession(title?: string): string {
-      const session = sessionStore.create({ agentName: name, title });
-      return session.id;
-    },
+    startSession: (title?: string) => runtime.startSession(name, title),
   };
 }
 
-// 透传通用 Runtime 类型，便于消费方按需引用。
+// 透传通用 Runtime / CLI 驱动类型，便于消费方按需引用。
 export { Runtime } from "@little-house-studio/agent";
-export type { AppRuntimeOptions } from "@little-house-studio/agent";
+export type { AppRuntimeOptions, AgentHandle } from "@little-house-studio/agent";
+export { runAgentCli } from "@little-house-studio/agent";
+export type { AgentCliOptions } from "@little-house-studio/agent";
 
-// CLI 调试接口（编程特化薄包装 + 通用驱动并入本包）
+// CLI 调试接口（编程特化薄包装）
 export { runCodingAgentCli } from "./cli/index.js";
 export type { CodingCliOptions } from "./cli/index.js";
-export { runAgentCli } from "./cli/run-agent-cli.js";
-export type { AgentCliOptions } from "./cli/run-agent-cli.js";

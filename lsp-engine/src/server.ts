@@ -99,9 +99,18 @@ export class LanguageServer {
       });
     });
 
-    // spawn 之后的 error 不再阻断初始化，只标记死亡
-    child.on("error", () => { this.dead = true; });
-    child.on("exit", () => { this.dead = true; });
+    // 进程在 initialize 期间退出/出错的竞速信号——否则 sendRequest(Initialize) 会永久挂起
+    // （响应永不到来，事件循环空转）。常见于 server 二进制损坏/版本不符立即退出（如 rust-analyzer
+    // rustup shim 报 "Unknown binary" 后 code=1 退出）。
+    let earlyExitReject: ((e: Error) => void) | null = null;
+    const earlyExit = new Promise<never>((_, reject) => { earlyExitReject = reject; });
+    earlyExit.catch(() => { /* 若 initialize 先成功则忽略 */ });
+    const onEarlyExit = (info: string) => {
+      this.dead = true;
+      earlyExitReject?.(new ServerCrashError(`${this.spec.command} 在初始化期间退出（${info}）。请检查该语言服务器是否正确安装。`));
+    };
+    child.on("error", (e: NodeJS.ErrnoException) => onEarlyExit(e.message));
+    child.on("exit", (code, sig) => onEarlyExit(`code=${code} signal=${sig}`));
 
     const conn = createProtocolConnection(
       new StreamMessageReader(child.stdout!),
@@ -166,7 +175,11 @@ export class LanguageServer {
       workspaceFolders: [{ uri: pathToUri(this.root), name: this.root }],
     };
 
-    await conn.sendRequest(InitializeRequest.type, initParams);
+    // initialize 与"进程提前退出"竞速：坏掉的 server 会立即退出，避免永久挂起
+    await Promise.race([
+      conn.sendRequest(InitializeRequest.type, initParams),
+      earlyExit,
+    ]);
     await conn.sendNotification(InitializedNotification.type, {});
   }
 
