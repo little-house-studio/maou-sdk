@@ -28,6 +28,20 @@
           "y"
         ],
         "description": "时间范围。d=近24小时, w=近一周, m=近一月, y=近一年。"
+      },
+      "category": {
+        "type": "string",
+        "enum": [
+          "coding",
+          "academic",
+          "knowledge",
+          "news",
+          "tools",
+          "social",
+          "video",
+          "general"
+        ],
+        "description": "搜索内容分类，自动限定搜索到该分类下的核心站点。coding=编程资源(GitHub/SO/npm/PyPI/MDN), academic=学术权威(Arxiv/Scholar/Wikipedia/IEEE), knowledge=知识经验(知乎/Reddit/HN/Quora), news=资讯新闻(Google News/36kr/TechCrunch), tools=工具资讯(ProductHunt/AlternativeTo/V2EX/少数派), social=社交媒体(Twitter/微博/Reddit), video=视频教程(YouTube/B站), general=不限(默认)"
       }
     },
     "required": [

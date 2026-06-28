@@ -89,7 +89,17 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
     for (const [k, v] of Object.entries(params)) {
       if (k === "thinking" && v && typeof v === "object") {
         const thinking = v as Record<string, unknown>;
-        if (thinking.type === "disabled") continue; // 关闭，不注入
+        if (thinking.type === "disabled") {
+          // mimo 等厂商默认开启思考，必须显式传 thinking:{type:"disabled"} 才能关闭
+          // 但 OpenAI 标准 API 不识别此字段，按 format 决定是否注入
+          if (format === "openai") {
+            // 标准 OpenAI 不需要此字段；但 mimo/volc 等兼容 API 需要
+            // 检测 baseUrl 是否为 mimo 或其他默认思考的厂商
+            // 保险起见：始终注入 disabled，标准 OpenAI 会忽略未知字段
+            result["thinking"] = { type: "disabled" };
+          }
+          continue;
+        }
         if (thinking.type === "enabled") {
           // 优先使用 effort 字符串（正规值：none/low/medium/high/xhigh）
           let effort = thinking.effort as string | undefined;

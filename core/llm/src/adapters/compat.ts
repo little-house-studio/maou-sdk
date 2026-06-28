@@ -138,6 +138,10 @@ const VENDOR_DEFAULTS: Array<{ match: RegExp; compat: OpenAICompat }> = [
   { match: /cloudflare|workers\.ai/i, compat: { supportsStore: false, supportsStrictMode: false, thinkingMaxLevel: "none" } },
   { match: /nvidia|nim/i, compat: { supportsStore: false, thinkingMaxLevel: "none" } },
   { match: /ant[-.]?ling|antling/i, compat: { thinkingFormat: "ant-ling" } },
+  // Mimo (小米 MiMo) — token-plan / mimo API
+  // 关键：Mimo 的 thinking:{type:"disabled"} 在流式模式下会导致首字延迟 9s+（API 端 bug），
+  // 必须用 enable_thinking: false（qwen 格式）来关闭思考，首字正常 ~2.7s。
+  { match: /xiaomimimo|mimo/i, compat: { thinkingFormat: "qwen", supportsToolChoice: true } },
 ];
 
 /**

@@ -228,7 +228,7 @@ export class TaskManager {
     const nextHint = allDone
       ? "\n\n🎉 全部任务完成，可回复用户收尾"
       : inProgressCount > 1
-        ? `\n\n⚡ 当前 ${inProgressCount} 个 task 并行执行中（可 fork 子 agent 加速）`
+        ? `\n\n⚡ 当前 ${inProgressCount} 个 task 并行执行中`
         : next
           ? `\n\n▶ 下一步执行: ${next}（依赖已解锁，可继续）`
           : "\n\n⏳ 下一步被阻塞，等待依赖完成";
@@ -315,15 +315,15 @@ export class TaskManageTool extends Tool {
     description:
       "管理任务表。仅在用户给出明确的多步骤复杂任务时使用，用于规划和跟踪进度。" +
       "简单对话、问候、闲聊、单步操作不需要使用。" +
-      "提示：尽可能设计可并行的任务（无 deps 依赖），系统自动管理依赖锁，同层 task 自动标记为 in_progress 可并行执行。" +
-      "调用 fork_layer 可查询当前可并行的一层 task（系统会返回 ready 的 task 列表，可配合 agent_message 工具 fork 子 Agent 加速）。",
+      "提示：尽可能设计可并行的任务（无 deps 依赖），系统自动管理依赖锁。" +
+      "每完成一个 task 调用 task_finish，系统自动解锁下一层依赖。",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["create", "replace", "delete", "fork_layer"],
-          description: "create: 新建 | replace: 替换 | delete: 清空 | fork_layer: 查询当前可并行执行的一层 task",
+          enum: ["create", "replace", "delete"],
+          description: "create: 新建 | replace: 替换 | delete: 清空",
         },
         reason: { type: "string", description: "为什么必须调用此工具而不是直接回复用户？" },
         tasks: {
@@ -351,28 +351,6 @@ export class TaskManageTool extends Tool {
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
     const action = String(params.action ?? "").trim().toLowerCase();
     const tasksRaw = params.tasks as Record<string, unknown>[] | null;
-
-    // fork_layer：查询当前可并行执行的一层 task（不修改状态）
-    if (action === "fork_layer") {
-      const tasks = TASK_MANAGER.getTasks(ctx.sessionId);
-      const ready = TaskScheduler.selectLayer(tasks);
-      if (ready.length === 0) {
-        return createToolResponse(true, "当前没有可并行执行的 task（可能全部完成、或下层被依赖阻塞）。", {
-          displayEvents: [{ type: "terminal", stream: "info", text: `[任务管理] fork_layer: 无可并行 task` }],
-        });
-      }
-      const lines: string[] = [
-        `⚡ 当前可并行执行 ${ready.length} 个 task:`,
-        ...ready.map((t) => `- ${t.id}: ${t.desc}`),
-        "",
-        "提示：可用 agent_message 工具为每个 task fork 子 Agent 并行执行；",
-        "或串行逐个完成（每完成一个调 task_finish，系统会自动解锁下一层）。",
-      ];
-      return createToolResponse(true, lines.join("\n"), {
-        payload: { ready_tasks: ready.map((t) => ({ id: t.id, desc: t.desc })) },
-        displayEvents: [{ type: "terminal", stream: "info", text: `[任务管理] fork_layer: ${ready.length} 个可并行` }],
-      });
-    }
 
     try {
       const rendered = TASK_MANAGER.manage(ctx.sessionId, action, tasksRaw);

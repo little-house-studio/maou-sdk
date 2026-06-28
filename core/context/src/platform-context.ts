@@ -74,9 +74,9 @@ export const platformContextRegistry = new PlatformContextRegistry();
 
 // ─── 构建工具 ──────────────────────────────────────────────────────────────
 
-/** 获取当前北京时间字符串 */
-function nowBeijing(): string {
-  return new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+/** 获取当前时间字符串（ISO 格式，含时区偏移） */
+function nowISO(): string {
+  return new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
 }
 
 /** 平台上下文构建选项 */
@@ -110,8 +110,7 @@ export function buildPlatformContext(opts: BuildPlatformContextOptions): string 
 
 <reply_mechanism>
 - 你的 content 输出就是用户收到的回复，不要通过 bash、echo 或其他工具输出回复内容。
-- 必须将 JSON 格式（expression/response/predict）直接作为 content 输出，不要用工具打印 JSON。
-- 如果你不需要调用工具，直接输出 JSON 即可，无需任何前置操作。
+- 如果你不需要调用工具，直接输出回复即可，无需任何前置操作。
 </reply_mechanism>
 
 <context_awareness>
@@ -121,7 +120,7 @@ export function buildPlatformContext(opts: BuildPlatformContextOptions): string 
 </context_awareness>
 
 <output_constraint>
-- 对话场景下，通常不需要调用工具。直接输出 JSON 回复即可。
+- 对话场景下，通常不需要调用工具。直接输出回复即可。
 - 只在用户明确要求执行操作（搜索、计算、文件操作等）时才调用工具。
 - 不要为了"输出回复"而调用 bash。
 </output_constraint>`;
@@ -130,7 +129,7 @@ export function buildPlatformContext(opts: BuildPlatformContextOptions): string 
     ctx += `\n\n<extra>\n${opts.extraInstructions}\n</extra>`;
   }
 
-  ctx += `\n\n当前时间：${nowBeijing()}\n</platform_context>`;
+  ctx += `\n\n当前时间：${nowISO()}\n</platform_context>`;
 
   return ctx;
 }

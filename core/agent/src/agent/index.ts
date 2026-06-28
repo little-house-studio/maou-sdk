@@ -146,3 +146,14 @@ export type {
   EvalCheckResult,
   EvalRunResult,
 } from "./define-eval.js";
+
+// ── 指令注册表 ──────────────────────────────────────────────────────────
+
+export { CommandRegistry, registerBuiltinCommands, defineCommand } from "./command-registry.js";
+export type {
+  CommandDefinition,
+  CommandContext,
+  CommandResult,
+  CommandRuntimeRef,
+  DefineCommandConfig,
+} from "./command-registry.js";

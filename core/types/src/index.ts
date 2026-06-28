@@ -72,6 +72,13 @@ export interface ToolDefinition {
    *   - 真实结果通过 StreamEvent 异步上报（如果工具支持）
    */
   blocking?: boolean
+  /**
+   * 该工具的执行超时时间（毫秒）。0 = 无超时。
+   * 未设置时使用 ToolExecutor 的 defaultTimeoutMs（默认 0 = 无超时）。
+   * 工具可自行覆盖，如 search_internet 可设 30_000（搜索不宜太久），
+   * use_terminal 可设 0（命令可能跑很久）。
+   */
+  timeoutMs?: number
 }
 export interface ToolContext {
   sessionId: string

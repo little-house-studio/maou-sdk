@@ -12,11 +12,21 @@ import type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, T
 export type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult };
 
 /**
- * 从 import.meta.url 推断工具目录路径
+ * 从 import.meta.url 推算工具目录路径。
  * 子类中使用: schemaDir = toolDir(import.meta.url)
+ *
+ * 当从 dist/ 加载编译后的 .js 时，import.meta.url 指向 dist/ 目录，
+ * 但 schema.json 和 TOOL.md 仍在 src/ 目录下。
+ * 此函数检测 dist/ 路径并回退到对应的 src/ 路径。
  */
 export function toolDir(metaUrl: string): string {
-  return dirname(fileURLToPath(metaUrl));
+  const raw = dirname(fileURLToPath(metaUrl));
+  // dist/ → src/ 回退：schema.json 和 TOOL.md 只存在于 src/
+  if (raw.includes("/dist/")) {
+    const srcPath = raw.replace(/\/dist\//, "/src/");
+    if (existsSync(srcPath)) return srcPath;
+  }
+  return raw;
 }
 
 /**

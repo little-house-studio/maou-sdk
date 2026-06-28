@@ -673,8 +673,8 @@ export class ChatSession {
       input += msg.usage.prompt_tokens ?? 0
       output += msg.usage.completion_tokens ?? 0
       total += msg.usage.total_tokens ?? 0
-      // 尝试常见的 cache token 字段
-      for (const key of ['cache_read_input_tokens', 'cache_hit_tokens']) {
+      // 尝试常见的 cache token 字段（包括 OpenAI 的 cached_tokens）
+      for (const key of ['cache_read_input_tokens', 'cache_hit_tokens', 'cached_tokens']) {
         const v = msg.usage[key]
         if (typeof v === 'number') { cacheHit += v; break }
       }

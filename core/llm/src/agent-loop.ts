@@ -197,7 +197,7 @@ function stringifyResult(value: unknown): string {
 
 function accumulateUsage(into: LLMUsage, add: LLMUsage | null): void {
   if (!add) return;
-  for (const key of ["prompt_tokens", "completion_tokens", "total_tokens", "cache_read_input_tokens"]) {
+  for (const key of ["prompt_tokens", "completion_tokens", "total_tokens", "cache_read_input_tokens", "cache_hit_tokens", "cached_tokens"]) {
     const v = add[key];
     if (typeof v === "number") into[key] = (Number(into[key]) || 0) + v;
   }

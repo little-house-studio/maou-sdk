@@ -23,13 +23,13 @@ export interface ToolExecutionResult {
 
 /** ToolExecutor 配置 */
 export interface ToolExecutorConfig {
-  /** 默认超时时间（毫秒），默认 30000 */
+  /** 默认超时时间（毫秒），0 表示无超时。默认 0 */
   defaultTimeoutMs?: number;
   /** 最大并发数 */
   maxConcurrency?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 0; // 无超时：Agent Loop 可能执行很长时间，工具不应被硬超时中断
 
 export class ToolExecutor {
   private _registry: ToolRegistry;
@@ -121,9 +121,12 @@ export class ToolExecutor {
   ): Promise<ToolResponse> {
     const params = { ...toolCall.parameters, __tool_name__: toolCall.name };
 
+    // 优先使用工具级 timeoutMs，否则使用全局 defaultTimeoutMs
+    const timeoutMs = tool.definition.timeoutMs ?? this._timeoutMs;
+
     const execPromise = tool.execute(params, ctx);
 
-    if (this._timeoutMs <= 0) {
+    if (timeoutMs <= 0) {
       return execPromise;
     }
 
@@ -131,10 +134,10 @@ export class ToolExecutor {
       const timer = setTimeout(() => {
         reject(
           new Error(
-            `工具 ${toolCall.name} 执行超时（${this._timeoutMs / 1000}秒）`,
+            `工具 ${toolCall.name} 执行超时（${timeoutMs / 1000}秒）`,
           ),
         );
-      }, this._timeoutMs);
+      }, timeoutMs);
 
       execPromise
         .then((result) => {

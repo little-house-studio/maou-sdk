@@ -8,7 +8,7 @@
  * Whitelist format: category/subpath (e.g. "terminal/use_terminal", "agent_team/god_tool/agent_team")
  */
 
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import type { Tool, ToolDefinition, ToolContext, ToolResponse } from "./base.js";
 import { createToolResponse } from "./base.js";
@@ -25,6 +25,12 @@ export class ToolRegistry {
   private _tools = new Map<string, Tool>();
   /** Agent 级工具目录（文件即 Agent 约定） */
   private _agentToolsDirs: string[] = [];
+  /** TOOL.md 缓存：toolName → { content, mtimeMs } */
+  private _toolPromptCache = new Map<string, { content: string; mtimeMs: number }>();
+  /** TOOL.md 文件监听器 */
+  private _toolPromptWatchers: FSWatcher[] = [];
+  /** 缓存是否已失效（文件变更后置 true，下次 getToolPrompts 时重建） */
+  private _toolPromptCacheDirty = false;
 
   /**
    * 添加 Agent 级工具目录（如 ~/.maou/agents/<name>/tools/）
@@ -108,6 +114,7 @@ export class ToolRegistry {
 
   /**
    * 获取白名单中启用工具的提示词（TOOL.md），用于注入 system prompt
+   * 使用缓存 + 文件监听：首次读取后缓存，文件变更时标记 dirty，下次调用重建
    * @param whitelist 工具白名单，undefined 表示全部
    * @returns Map<toolName, promptText>
    */
@@ -116,6 +123,7 @@ export class ToolRegistry {
     const allowAll = whitelist?.has("*");
     const effectiveWhitelist = allowAll ? undefined : whitelist;
     const seen = new Set<number>();
+    const debugInfo: string[] = [];
 
     for (const tool of this._tools.values()) {
       const id = getObjectUid(tool);
@@ -123,18 +131,87 @@ export class ToolRegistry {
       seen.add(id);
 
       const name = tool.definition.name;
+      const hasSchemaDir = Boolean(tool.schemaDir);
       // 白名单过滤
       if (effectiveWhitelist && !effectiveWhitelist.has(name)) {
         const aliases: string[] = tool.definition.aliases ?? [];
-        if (!aliases.some(a => effectiveWhitelist!.has(a))) continue;
+        if (!aliases.some(a => effectiveWhitelist!.has(a))) {
+          debugInfo.push(`${name}:filtered_out`);
+          continue;
+        }
       }
 
-      const prompt = tool.toolPrompt();
+      const prompt = this._readToolPromptCached(tool);
+      debugInfo.push(`${name}:schemaDir=${hasSchemaDir},prompt=${prompt ? prompt.length + 'chars' : 'null'}`);
       if (prompt) {
         prompts.set(name, prompt);
       }
     }
+    console.log(`[ToolRegistry] getToolPrompts debug: tools=${this._tools.size}, whitelist=${whitelist ? [...whitelist].join(',') : 'all'}, results=[${debugInfo.join('; ')}]`);
     return prompts;
+  }
+
+  /** 读取工具提示词（带缓存） */
+  private _readToolPromptCached(tool: Tool): string | null {
+    if (!tool.schemaDir) return null;
+    const promptPath = join(tool.schemaDir, "TOOL.md");
+
+    // 读取文件并更新缓存
+    const fileExists = existsSync(promptPath);
+    if (!fileExists) {
+      console.log(`[ToolRegistry] TOOL.md NOT FOUND for ${tool.definition.name}: path=${promptPath}, schemaDir=${tool.schemaDir}`);
+      this._toolPromptCache.delete(tool.definition.name);
+      return null;
+    }
+
+    try {
+      const content = readFileSync(promptPath, "utf-8");
+      if (!content.trim()) {
+        console.log(`[ToolRegistry] TOOL.md EMPTY for ${tool.definition.name}: path=${promptPath}`);
+        return null;
+      }
+      this._toolPromptCache.set(tool.definition.name, { content, mtimeMs: Date.now() });
+      console.log(`[ToolRegistry] TOOL.md LOADED for ${tool.definition.name}: ${content.length} chars from ${promptPath}`);
+      return content;
+    } catch (err) {
+      console.log(`[ToolRegistry] TOOL.md READ ERROR for ${tool.definition.name}: ${err}`);
+      return null;
+    }
+  }
+
+  /**
+   * 启动 TOOL.md 文件监听（热编译）
+   * 文件变更时标记缓存 dirty，下次 getToolPrompts 调用自动重建
+   */
+  startToolPromptWatch(): void {
+    // 先关闭已有监听
+    this.stopToolPromptWatch();
+
+    const watchedDirs = new Set<string>();
+    for (const tool of this._tools.values()) {
+      if (tool.schemaDir && !watchedDirs.has(tool.schemaDir)) {
+        watchedDirs.add(tool.schemaDir);
+        try {
+          const watcher = watch(tool.schemaDir, { persistent: false }, (eventType, filename) => {
+            if (filename && /^TOOL\.md$/i.test(filename)) {
+              this._toolPromptCacheDirty = true;
+              // 清除该工具的缓存条目
+              const toolName = tool.definition.name;
+              this._toolPromptCache.delete(toolName);
+            }
+          });
+          this._toolPromptWatchers.push(watcher);
+        } catch { /* 监听失败不影响功能 */ }
+      }
+    }
+  }
+
+  /** 停止 TOOL.md 文件监听 */
+  stopToolPromptWatch(): void {
+    for (const w of this._toolPromptWatchers) {
+      try { w.close(); } catch { /* ignore */ }
+    }
+    this._toolPromptWatchers = [];
   }
 
   /**

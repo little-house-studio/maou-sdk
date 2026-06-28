@@ -35,6 +35,7 @@ import type { TokenUsage } from "./token-tracker.js";
 import { AgentRegistry } from "./registry.js";
 import { renderAgentPreview } from "./template.js";
 import { runAgentCommand } from "./command-runner.js";
+import { CommandRegistry, registerBuiltinCommands, type CommandContext, type CommandResult } from "./command-registry.js";
 import { ModelCaller, type ModelCallResult, type CallerStreamEvent } from "@little-house-studio/llm";
 import type { LLMToolCall, APIPreset } from "@little-house-studio/llm";
 import { deriveJsonSettings, StreamJsonAccumulator } from "@little-house-studio/llm";
@@ -153,6 +154,8 @@ export class AgentRuntime {
   private logFn: (level: string, message: string) => void;
   private maouRoot: string;
   private projectRoot: string;
+  /** 当前 run() 的实际工作目录（agent.json working_dir 或 projectRoot）—— workspaceChanges/PromptCompiler 用 */
+  private effectiveWorkingDir: string = "";
   /** ContextEngine 闭环依赖（可选） */
   private harnessStore?: HarnessSessionStore;
   private taskStore?: TaskSessionStore;
@@ -165,6 +168,10 @@ export class AgentRuntime {
   private messageQueue: MessageQueue;
   /** per-session 内部 AbortController（用于 interrupt 模式触发 abort） */
   private abortControllers = new Map<string, AbortController>();
+  /** 指令注册表（统一管理所有 /xxx 指令，匹配成功不走 AI） */
+  readonly commandRegistry: CommandRegistry;
+  /** TOOL.md 文件监听是否已启动 */
+  private _toolPromptWatchStarted = false;
   /**
    * 子 Agent 真并行执行器（可选；harness 注入 runFn 后才可用）。
    * 注入到 ToolContext.subagentExecutor，agent_message 工具据此 fork 子 Agent。
@@ -213,6 +220,10 @@ export class AgentRuntime {
     this.sessionManager = this.createSessionManagerFn(this.sessions, this.maouRoot);
     this.sessionManager.loadState();
     this.checkpointStore = this.createCheckpointStoreFn(this.sessions);
+
+    // 初始化指令注册表（内置指令 + 外部可扩展）
+    this.commandRegistry = new CommandRegistry();
+    registerBuiltinCommands(this.commandRegistry);
   }
 
   /**
@@ -231,79 +242,44 @@ export class AgentRuntime {
     sessionId = session.id;
     this.log("info", `[RUN] start session=${sessionId} msg_len=${userMessage.length}`);
 
-    // ── #14 控制命令：/agent <name> 中途切换会话绑定的 agent（不调模型）──
-    const agentSwitch = userMessage.trim().match(/^\/agent\s+(\S+)\s*$/);
-    if (agentSwitch) {
-      const newAgent = agentSwitch[1];
-      try {
-        (this.sessions as { setAgentName?: (id: string, n: string) => void }).setAgentName?.(sessionId!, newAgent);
-      } catch { /* ignore */ }
-      yield this.event("session", { sessionId });
-      yield this.event("assistant", { content: `已切换到 agent「${newAgent}」，下一条消息生效。`, round: 0 });
-      yield this.event("done", { sessionId, rounds: 0, agentSwitched: newAgent });
-      this.log("info", `[RUN] /agent 切换 → ${newAgent}`);
+    // ── 1. 指令匹配：/xxx 指令直接执行，不走 AI ──
+    const cmdCtx: CommandContext = {
+      rawInput: userMessage.trim(),
+      args: "",
+      sessionId: sessionId!,
+      agentName: session.agentName || "main",
+      maouRoot: this.maouRoot,
+      projectRoot: this.projectRoot,
+      runtime: {
+        createSession: (initAgentName?: string) => this.sessions.create(undefined, initAgentName),
+        clearSession: (sid: string) => {
+          this.sessions.clearSession(sid);
+          try { this.taskStore?.saveTaskPlan(sid, []); } catch { /* ignore */ }
+          try { TASK_MANAGER.manage(sid, "delete", null); } catch { /* ignore */ }
+          this.messageQueue.clear(sid);
+        },
+        setAgentName: (sid: string, name: string) => {
+          try { (this.sessions as { setAgentName?: (id: string, n: string) => void }).setAgentName?.(sid, name); } catch { /* ignore */ }
+        },
+        clearTaskState: (sid: string) => {
+          try { this.taskStore?.saveTaskPlan(sid, []); } catch { /* ignore */ }
+          try { TASK_MANAGER.manage(sid, "delete", null); } catch { /* ignore */ }
+        },
+        clearMessageQueue: (sid: string) => { this.messageQueue.clear(sid); },
+        abortSignal: options.abortSignal,
+      },
+    };
+    const cmdResult = await this.commandRegistry.tryExecute(userMessage, cmdCtx);
+    if (cmdResult) {
+      // 指令匹配成功，直接返回结果
+      const meta = cmdResult.meta ?? {};
+      // /new 返回新 session ID
+      const effectiveSessionId = (meta.sessionId as string) ?? sessionId!;
+      yield this.event("session", { sessionId: effectiveSessionId });
+      yield this.event("assistant", { content: cmdResult.content, round: 0 });
+      yield this.event("done", { sessionId: effectiveSessionId, rounds: 0, ...meta });
+      this.log("info", `[RUN] 指令命中 → ${userMessage.trim().split(/\s/)[0]}`);
       return;
-    }
-
-    // ── 基础指令：/new /clear /stop（不调模型，纯会话控制）──
-    const cmd = userMessage.trim().toLowerCase();
-    if (cmd === "/new") {
-      const newSession = this.sessions.create(undefined, options.initAgentName);
-      yield this.event("session", { sessionId: newSession.id });
-      yield this.event("assistant", { content: `已新建会话 ${newSession.id}（agent: ${newSession.agentName || "main"}）。`, round: 0 });
-      yield this.event("done", { sessionId: newSession.id, rounds: 0, newSession: true });
-      this.log("info", `[RUN] /new → ${newSession.id}`);
-      return;
-    }
-    if (cmd === "/clear") {
-      try {
-        this.sessions.clearSession(sessionId!);
-        // 同步清理 task_plan（避免残留）
-        try { this.taskStore?.saveTaskPlan(sessionId!, []); } catch { /* ignore */ }
-        // 同步清理 TaskManager 内存状态
-        try { TASK_MANAGER.manage(sessionId!, "delete", null); } catch { /* ignore */ }
-        // 同步清理消息队列（防 session 复用时残留消息）
-        this.messageQueue.clear(sessionId!);
-        yield this.event("session", { sessionId });
-        yield this.event("assistant", { content: `已清空会话 ${sessionId} 的历史记录。`, round: 0 });
-        yield this.event("done", { sessionId, rounds: 0, cleared: true });
-        this.log("info", `[RUN] /clear → ${sessionId}`);
-      } catch (err) {
-        yield this.event("assistant", { content: `清空失败: ${err}`, round: 0 });
-        yield this.event("done", { sessionId, rounds: 0 });
-      }
-      return;
-    }
-    if (cmd === "/stop") {
-      // /stop 在 runtime 内部仅作为兜底：若 abortSignal 已触发则优雅退出，
-      // 否则提示用户应通过外部中断信号停止当前 loop。
-      if (options.abortSignal?.aborted) {
-        yield this.event("session", { sessionId });
-        yield this.event("assistant", { content: "已停止当前任务。", round: 0 });
-        yield this.event("done", { sessionId, rounds: 0, stopped: true });
-        this.log("info", `[RUN] /stop 已触发，退出`);
-        return;
-      }
-      yield this.event("session", { sessionId });
-      yield this.event("assistant", { content: "当前无运行中的任务可停止（/stop 通常由外部中断信号触发）。", round: 0 });
-      yield this.event("done", { sessionId, rounds: 0 });
-      this.log("info", `[RUN] /stop 无运行任务`);
-      return;
-    }
-
-    // ── eve: 自定义指令 command/<name>（内置 /agent /new /clear /stop 之外）──
-    // 用户发 /<name> 且 agent 的 command/<name>.{md,sh,mjs,ts} 存在 → 执行并返回，不调模型。
-    const slash = userMessage.trim().match(/^\/([\w-]+)(?:\s+([\s\S]*))?$/);
-    if (slash) {
-      const cmdAgentDir = join(this.maouRoot, "agents", session.agentName || "main");
-      const out = await runAgentCommand(cmdAgentDir, slash[1], slash[2] ?? "", this.projectRoot);
-      if (out !== null) {
-        yield this.event("session", { sessionId });
-        yield this.event("assistant", { content: out, round: 0 });
-        yield this.event("done", { sessionId, rounds: 0, command: slash[1] });
-        this.log("info", `[RUN] 自定义指令 /${slash[1]} 已执行`);
-        return;
-      }
     }
 
     // ── 1a. 内部 AbortController：让 MessageQueue interrupt 模式可以触发 abort ──
@@ -342,9 +318,11 @@ export class AgentRuntime {
     // Agent 实例由业务层创建（createAgentFromTemplate），SDK 不自动物化
 
     // ── 从 agent.json 读取 round_limit + promptRoot/entrypoint ──
+    const endAgentConfig = prof.start("agent_config");
     let effectiveRoundLimit = this.agentRoundLimit;
     let agentPromptRoot: string = "";
     let agentEntrypoint: string = "system/system.md";
+    let effectiveWorkingDir = this.projectRoot;
     let compressionLevel: "off" | "normal" | "aggressive" = "normal";
     let verifyCommand = "";
     const registry = new AgentRegistry(maouRoot);
@@ -368,6 +346,12 @@ export class AgentRuntime {
     if (tm === "normal" || tm === "auto" || tm === "yolo") {
       try { setTerminalMode(agentName, tm); } catch { /* ignore */ }
     }
+    // working_dir：优先 agent.json 配置，否则 projectRoot（process.cwd）
+    const agentWorkingDir = (agentEntry as { working_dir?: string }).working_dir;
+    if (agentWorkingDir && typeof agentWorkingDir === "string" && agentWorkingDir.trim()) {
+      effectiveWorkingDir = agentWorkingDir.trim();
+    }
+    this.effectiveWorkingDir = effectiveWorkingDir;
     // promptRoot：必须存在 eve 结构，否则抛错
     try {
       agentPromptRoot = registry.getPromptRoot(agentName);
@@ -381,6 +365,8 @@ export class AgentRuntime {
     }
 
     // ── 1a. 清理 session-scoped 条目 ──
+    endAgentConfig();
+    const endSessionCleanup = prof.start("session_cleanup");
     try {
       const cleaned = this.tools.cleanupSession(sessionId);
       if (cleaned > 0) {
@@ -399,7 +385,10 @@ export class AgentRuntime {
     }
 
     // ── 1b. 沙箱快照 ──
+    endSessionCleanup();
+    const endSnapshot = prof.start("sandbox_snapshot");
     this.snapshotBeforeRun(maouRoot);
+    endSnapshot();
 
     // yield session 事件
     yield this.event("session", { sessionId });
@@ -413,7 +402,7 @@ export class AgentRuntime {
     // 每个 run 创建独立 PromptCompiler，杜绝并发竞态。
     let systemPrompt: string;
     let runCompiler: PromptCompiler | null = null;
-    runCompiler = new PromptCompiler({ promptRoot: agentPromptRoot, projectRoot: this.projectRoot, entrypoint: agentEntrypoint });
+    runCompiler = new PromptCompiler({ promptRoot: agentPromptRoot, projectRoot: effectiveWorkingDir, entrypoint: agentEntrypoint });
     const endCompile = prof.start("compile_prompt");
     try {
       systemPrompt = runCompiler.compile();
@@ -465,7 +454,8 @@ export class AgentRuntime {
     } catch { /* 无则跳过 */ }
 
     // ── 注入实际工作目录（让 agent 知道自己驻扎在哪、所有相对路径基于此）──
-    systemPrompt = `${systemPrompt}\n\n<workspace>\n你当前的工作目录（所有文件读写、终端命令、相对路径均以此为根）：${this.projectRoot}\n</workspace>`;
+    // effectiveWorkingDir 已在上方从 agent.json working_dir 计算
+    systemPrompt = `${systemPrompt}\n\n<workspace>\n你当前的工作目录（所有文件读写、终端命令、相对路径均以此为根）：${effectiveWorkingDir}\n</workspace>`;
 
     // ── eve: 渲染 PREVIEW（把 system/before_user/compression 的最终渲染结果写到 prompt/PREVIEW/，调试用）──
     try { if (agentPromptRoot) renderAgentPreview(join(agentPromptRoot, ".."), this.projectRoot); } catch { /* 渲染失败不影响主流程 */ }
@@ -527,6 +517,7 @@ export class AgentRuntime {
     );
 
     // ── 初始化工具调用依赖 ──
+    const endToolSetup = prof.start("tool_setup");
     // 文件即 Agent：加载 agent 级工具目录
     this.tools.clearAgentToolsDirs();
     try {
@@ -570,6 +561,32 @@ export class AgentRuntime {
 
     const toolSchemas = this.tools.nativeToolSchemas?.(toolWhitelist) ?? null;
     const nativeToolCalling = Boolean(preset.nativeToolCalling ?? true) && Boolean(toolSchemas?.length);
+
+    // ── 工具提示词注入（TOOL.md → systemPrompt）──
+    // 每个工具目录下若有 TOOL.md，其内容作为该工具的补充说明注入系统提示词
+    // 仅注入白名单内工具的提示词，避免无关工具干扰 AI
+    // 首次调用时启动文件监听（热编译），后续 TOOL.md 变更自动更新缓存
+    try {
+      if (!this._toolPromptWatchStarted) {
+        (this.tools as { startToolPromptWatch?: () => void }).startToolPromptWatch?.();
+        this._toolPromptWatchStarted = true;
+      }
+      const toolsAny = this.tools as any;
+      const toolPrompts: Map<string, string> | undefined = toolsAny.getToolPrompts?.(toolWhitelist);
+      this.log("info", `[TOOL_PROMPT] getToolPrompts called, whitelist=${toolWhitelist ? [...toolWhitelist].join(',') : 'all'}, result=${toolPrompts ? toolPrompts.size : 'undefined'}`);
+      if (toolPrompts && toolPrompts.size > 0) {
+        let toolPromptSection = "<tool_instructions>\n以下是你可使用的工具的补充说明，请在调用对应工具时遵循这些指引：\n";
+        for (const [toolName, prompt] of toolPrompts) {
+          toolPromptSection += `\n<tool name="${toolName}">\n${prompt}\n</tool>\n`;
+        }
+        toolPromptSection += "\n</tool_instructions>";
+        systemPrompt = `${systemPrompt}\n\n${toolPromptSection}`;
+        yield this.logEvent("info", `已注入 ${toolPrompts.size} 个工具提示词到系统提示词`);
+      }
+    } catch (err) {
+      this.log("warning", `[TOOL_PROMPT] 注入失败: ${err}`);
+    }
+    endToolSetup();
 
     // ── 将用户消息写入 session（供后续请求回溯历史） ──
     this.sessions.appendMessage(sessionId!, "user", userMessage);
@@ -945,7 +962,7 @@ export class AgentRuntime {
       yield this.event("assistant", {
         content: contentToUse,
         round: currentRound,
-        usage: result.usage,
+        usage: { ...result.usage, max_context: preset.maxContext ?? preset.maxTokens },
         nativeToolCalls: result.nativeToolCalls.length > 0 ? result.nativeToolCalls : undefined,
         timing: result.timing,
       });
@@ -964,6 +981,7 @@ export class AgentRuntime {
           agentName,
           prof,
           compressionLevel,
+          effectiveWorkingDir,
         );
 
         // task_complete phase：本轮若有工具完成（尤其 task_finish），且全部 task 已完成，
@@ -1174,6 +1192,7 @@ export class AgentRuntime {
     agentName: string,
     prof?: Profiler,
     compressionLevel: "off" | "normal" | "aggressive" = "normal",
+    workingDir?: string,
   ): AsyncGenerator<StreamEvent, boolean> {
     // 工具调用前自动快照
     if (this.checkpointStore.shouldAutoCheckpoint("tool_call")) {
@@ -1187,14 +1206,14 @@ export class AgentRuntime {
 
     const context = {
       sessionId,
-      projectRoot: this.projectRoot,
+      projectRoot: this.projectRoot,  // 始终用 maou-agent 安装目录（skill/tool 资源发现）
       promptRoot: this.compiler.promptRoot,
       sandboxRoot: join(this.maouRoot, 'sandbox', sessionId),
       sandboxMode,
       agentName,
       agentMode: "execute",
       pluginSettings: {},
-      workingDir: this.projectRoot,
+      workingDir: workingDir ?? this.projectRoot,  // agent 工作目录（终端、文件读写）
       compressionLevel,
       // 注入 SubagentExecutor（若 harness 配置了 runFn）—— agent_message 工具据此真并行 fork
       subagentExecutor: this.subagentExecutor,
@@ -1398,10 +1417,11 @@ export class AgentRuntime {
    * 让 agent 实时看到「相对 git HEAD 改了哪些文件」。非 git 仓库/无改动 → 空串。
    */
   private async workspaceChanges(): Promise<string> {
+    const workingDir = this.effectiveWorkingDir || this.projectRoot;
     try {
       const { exec } = await import("node:child_process");
       const porcelain: string = await new Promise((resolve) => {
-        exec("git status --porcelain", { cwd: this.projectRoot, timeout: 5000, maxBuffer: 1024 * 1024 },
+        exec("git status --porcelain", { cwd: workingDir, timeout: 5000, maxBuffer: 1024 * 1024 },
           (err, stdout) => resolve(err ? "" : (stdout ?? "")));
       });
       if (!porcelain.trim()) return "";

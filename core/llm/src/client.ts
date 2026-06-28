@@ -241,7 +241,7 @@ export class LLMClient {
       retryableStatuses: options?.retry?.retryableStatuses ?? [429, 500, 502, 503, 504],
     };
     this._onError = options?.onError ?? null;
-    this._streamStallMs = options?.streamStallMs ?? 120_000;
+    this._streamStallMs = options?.streamStallMs ?? 60_000;
     this._connectTimeoutMs = options?.connectTimeoutMs ?? 60_000;
   }
 

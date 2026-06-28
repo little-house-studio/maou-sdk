@@ -902,16 +902,23 @@ export class SessionStore {
     return this.reconstructSession(meta, messages, session.trace ?? []);
   }
 
+  /** 加载到内存的最大消息条数（防止 session 无限膨胀导致上下文爆炸） */
+  static readonly MAX_MESSAGES_IN_MEMORY = 200;
+
   private reconstructSession(
     meta: SessionMeta,
     messages: SessionMessage[],
     trace: SessionTrace[],
   ): SessionData {
+    // 只保留最近 N 条消息，防止 34MB session 全量加载到 LLM 上下文
+    const trimmed = messages.length > SessionStore.MAX_MESSAGES_IN_MEMORY
+      ? messages.slice(-SessionStore.MAX_MESSAGES_IN_MEMORY)
+      : messages;
     return {
       id: meta.id,
       title: meta.title || "新对话",
       agentName: meta.agent_name || "main",
-      messages,
+      messages: trimmed,
       trace,
       createdAt: meta.created_at || "",
       updatedAt: meta.updated_at || "",
