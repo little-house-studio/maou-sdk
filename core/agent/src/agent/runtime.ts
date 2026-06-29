@@ -38,7 +38,9 @@ import { runAgentCommand } from "./command-runner.js";
 import { CommandRegistry, registerBuiltinCommands, type CommandContext, type CommandResult } from "./command-registry.js";
 import { ModelCaller, type ModelCallResult, type CallerStreamEvent } from "@little-house-studio/llm";
 import type { LLMToolCall, APIPreset } from "@little-house-studio/llm";
+import { AuxModelCaller, resolveHelperPreset } from "@little-house-studio/llm";
 import { deriveJsonSettings, StreamJsonAccumulator } from "@little-house-studio/llm";
+import { SUPERVISOR_MANAGER } from "./supervisor-manager.js";
 import type { ToolRegistry, ToolExecutor } from "@little-house-studio/tools";
 import type { ToolContext } from "@little-house-studio/tools";
 import type { SubagentExecutorLike } from "@little-house-studio/types";
@@ -79,6 +81,21 @@ export interface RuntimeOptions {
   taskStore?: TaskSessionStore;
   /** 可插拔 LLM 摘要器（compress 时生成真摘要；缺省回退确定性 truncate）。 */
   summarizer?: Summarizer;
+  /**
+   * 辅助模型调用器（可选）—— 统一辅助调用管道（压缩/loop判定/路由等）。
+   * 注入后：
+   *   - judgeLoopEnd 走 auxModelCaller（独立 token 统计，不混入主调用）
+   *   - 若同时注入了 summarizer，summarizer 仍用旧路径（向后兼容）
+   *   - 若注入了 auxModelCaller 但没注入 summarizer，summarizer 自动用 auxModelCaller 构建
+   * 未注入：judgeLoopEnd 回退旧路径（用 callModelFn + 主 preset）。
+   */
+  auxModelCaller?: AuxModelCaller;
+  /**
+   * 辅助模型 preset 解析函数（可选）—— 返回当前 agent 应使用的辅助模型 preset。
+   * runtime 在每轮 run 开始时调用，传入 agentName 和主 preset，返回辅助 preset。
+   * 未注入：辅助调用回退主 preset。
+   */
+  resolveHelperPreset?: (agentName: string, mainPreset: APIPreset) => APIPreset;
   /** 钩子管理器（可选）。注入后 agent 循环会在各生命周期点触发 hooks。 */
   hooks?: Hooks;
   /**
@@ -86,6 +103,20 @@ export interface RuntimeOptions {
    * 检查队列，投递等待中的用户消息。缺省则使用全局 MESSAGE_QUEUE 单例。
    */
   messageQueue?: MessageQueue;
+  /**
+   * 调用主 Agent（监督模式专用）—— 由 harness 注入。
+   *
+   * supervisor_chat_main 工具调此函数把消息派给主 Agent。
+   * 函数接收 (mainSessionId, message, abortSignal)，返回 AsyncGenerator<StreamEvent, string>：
+   *   - yield 主 Agent 的流式事件（可选上报前端）
+   *   - return 主 Agent 的最终输出文本
+   *
+   * AgentRuntime 在 processToolCalls 中根据当前 sessionId 查 SUPERVISOR_MANAGER 拿到
+   * mainSessionId，再调此函数 —— 这样多用户同时 /goal 不会串台。
+   *
+   * 缺省（undefined）→ supervisor_chat_main 工具返回错误。
+   */
+  callMainAgent?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
 
   // ── 可插拔工厂（缺省使用内部默认实现，注入后可替换为自定义）──
   /** SessionManager 工厂（缺省 new SessionManager(sessions, maouRoot)） */
@@ -137,6 +168,8 @@ export interface RunOptions {
   abortSignal?: AbortSignal;
   /** 平台上下文注入 —— 由插件（如飞书）提供，追加在 system prompt 之后 */
   platformContext?: string;
+  /** 绑定级项目根路径 —— 由插件（如飞书）提供，覆盖 AgentRuntime.projectRoot */
+  bindingProjectRoot?: string;
 }
 
 // ─── AgentRuntime ──────────────────────────────────────────────────────────
@@ -160,6 +193,10 @@ export class AgentRuntime {
   private harnessStore?: HarnessSessionStore;
   private taskStore?: TaskSessionStore;
   private summarizer?: Summarizer;
+  /** 辅助模型调用器（统一辅助调用管道） */
+  private auxModelCaller?: AuxModelCaller;
+  /** 辅助模型 preset 解析函数 */
+  private resolveHelperPresetFn?: (agentName: string, mainPreset: APIPreset) => APIPreset;
   /** 压缩回调（由外部注入，用于压缩区落盘） */
   onCompress?: (sessionId: string, stage: string, summary: string, taskBlocks: string[]) => void;
   /** 钩子管理器（可选） */
@@ -172,11 +209,12 @@ export class AgentRuntime {
   readonly commandRegistry: CommandRegistry;
   /** TOOL.md 文件监听是否已启动 */
   private _toolPromptWatchStarted = false;
-  /**
-   * 子 Agent 真并行执行器（可选；harness 注入 runFn 后才可用）。
+  /** 子 Agent 真并行执行器（可选；harness 注入 runFn 后才可用）。
    * 注入到 ToolContext.subagentExecutor，agent_message 工具据此 fork 子 Agent。
    */
   private subagentExecutor?: SubagentExecutorLike;
+  /** 调用主 Agent（监督模式专用）—— 由 harness 注入 */
+  private callMainAgentFn?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
 
   // ── 可插拔工厂（缺省使用内部默认实现）──
   private createSessionManagerFn: (sessions: SessionStore, maouRoot: string) => SessionManager;
@@ -199,8 +237,11 @@ export class AgentRuntime {
     this.harnessStore = options.harnessStore;
     this.taskStore = options.taskStore;
     this.summarizer = options.summarizer;
+    this.auxModelCaller = options.auxModelCaller;
+    this.resolveHelperPresetFn = options.resolveHelperPreset;
     this.hooks = options.hooks;
     this.messageQueue = options.messageQueue ?? MESSAGE_QUEUE;
+    this.callMainAgentFn = options.callMainAgent;
 
     // 工厂：优先使用注入的实现，缺省使用内部默认
     this.createSessionManagerFn = options.createSessionManager ?? ((s, r) => new SessionManager(s, r));
@@ -266,6 +307,26 @@ export class AgentRuntime {
           try { TASK_MANAGER.manage(sid, "delete", null); } catch { /* ignore */ }
         },
         clearMessageQueue: (sid: string) => { this.messageQueue.clear(sid); },
+        // /goal 指令：创建监督 Agent session + 绑定到主 session
+        startSupervisorMode: (mainSessionId: string, agentName: string, chatKey?: string): string => {
+          const supervisorSession = this.sessions.create(undefined, agentName);
+          SUPERVISOR_MANAGER.bind({
+            mainSessionId,
+            supervisorSessionId: supervisorSession.id,
+            chatKey,
+          });
+          this.log("info", `[SUPERVISOR] bind main=${mainSessionId} → supervisor=${supervisorSession.id}`);
+          return supervisorSession.id;
+        },
+        // supervisor_task_control end：解除绑定，返回主 session ID
+        endSupervisorMode: (supervisorSessionId: string): string | undefined => {
+          const binding = SUPERVISOR_MANAGER.getBySupervisor(supervisorSessionId);
+          if (!binding) return undefined;
+          const mainSessionId = binding.mainSessionId;
+          SUPERVISOR_MANAGER.unbind(mainSessionId);
+          this.log("info", `[SUPERVISOR] unbind supervisor=${supervisorSessionId} → main=${mainSessionId}`);
+          return mainSessionId;
+        },
         abortSignal: options.abortSignal,
       },
     };
@@ -317,15 +378,23 @@ export class AgentRuntime {
     const maouRoot = this.maouRoot;
     // Agent 实例由业务层创建（createAgentFromTemplate），SDK 不自动物化
 
+    // 绑定级 projectRoot 覆盖（飞书 binding.project_root → 覆盖运行时 projectRoot）
+    const effectiveProjectRoot = options.bindingProjectRoot || this.projectRoot;
+
     // ── 从 agent.json 读取 round_limit + promptRoot/entrypoint ──
     const endAgentConfig = prof.start("agent_config");
     let effectiveRoundLimit = this.agentRoundLimit;
     let agentPromptRoot: string = "";
     let agentEntrypoint: string = "system/system.md";
-    let effectiveWorkingDir = this.projectRoot;
+    let effectiveWorkingDir = effectiveProjectRoot;
     let compressionLevel: "off" | "normal" | "aggressive" = "normal";
     let verifyCommand = "";
-    const registry = new AgentRegistry(maouRoot);
+    const registry = new AgentRegistry(maouRoot, effectiveProjectRoot);
+    // 确保项目级 agent 已物化（从全局模板复制到 <project>/.maou/agents/<name>/）
+    const projectAgentResult = registry.ensureProjectAgent(agentName);
+    if (projectAgentResult.created) {
+      this.log("info", `[RUN] 项目级 agent '${agentName}' 已物化 → ${projectAgentResult.dir} (${projectAgentResult.reason})`);
+    }
     const agentEntry = registry.get(agentName);
     if (!agentEntry) {
       const errMsg = `agent '${agentName}' 不存在（~/.maou/agents/${agentName}/agent.json 缺失）`;
@@ -439,10 +508,48 @@ export class AgentRuntime {
       }
     } catch { /* 不存在则用默认 */ }
     // 每个 run 包一层 summarizer，把本 agent 的 compression 提示词注入（race-safe，不改共享态）
-    const runSummarizer: Summarizer | undefined =
-      compressionPromptText && this.summarizer
-        ? (input) => this.summarizer!({ ...input, prompt: compressionPromptText })
-        : this.summarizer;
+    // 优先级：
+    //   1. 显式注入 summarizer（harness 层提供）—— 包一层 compression prompt
+    //   2. auxModelCaller 自动构建 summarizer —— 用辅助 preset，独立 token 统计
+    //   3. 都没有 → undefined（上游回退确定性 truncate）
+    const runSummarizer: Summarizer | undefined = (() => {
+      if (this.summarizer) {
+        return compressionPromptText
+          ? (input: Parameters<Summarizer>[0]) => this.summarizer!({ ...input, prompt: compressionPromptText })
+          : this.summarizer;
+      }
+      if (this.auxModelCaller) {
+        const aux = this.auxModelCaller;
+        const resolveFn = this.resolveHelperPresetFn;
+        const mainPreset = options.preset;
+        const sid = sessionId ?? "";
+        return async (input: Parameters<Summarizer>[0]) => {
+          // 默认压缩提示词（agent 的 compression.md 优先，由调用方通过 input.prompt 注入）
+          const sys = (typeof input.prompt === "string" && input.prompt.trim())
+            ? input.prompt
+            : (input.kind === "micro"
+              ? "你是上下文压缩器。把下面这段对话压成 2-4 句中文要点，保留关键决策/结论/未完成事项，只输出要点。"
+              : "你是上下文压缩器。把下面这段任务对话压成简洁中文摘要，保留：目标、关键决策、改动过的文件、命令结果、未完成事项、重要结论。只输出摘要文本，不要寒暄。");
+          const transcript = input.messages
+            .map((m) => `[${m.role}] ${String(m.content ?? "").slice(0, 4000)}`)
+            .join("\n")
+            .slice(0, 24000);
+          const helperPreset = resolveFn ? resolveFn(agentName, mainPreset) : mainPreset;
+          const result = await aux.callText(
+            {
+              preset: helperPreset,
+              systemPrompt: sys,
+              userPrompt: transcript,
+              abortSignal: options.abortSignal,
+              context: { sessionId: sid, tag: `compressor:${input.kind}` },
+            },
+            mainPreset, // fallback 主 preset
+          );
+          return result.content; // 失败时为空串 → 上游回退 truncate
+        };
+      }
+      return undefined;
+    })();
 
     // ── eve: 加载 loop/end.md 达标标准（loop 结束后用小判定再检查是否真完成）──
     let loopEndCriteria = "";
@@ -458,7 +565,17 @@ export class AgentRuntime {
     systemPrompt = `${systemPrompt}\n\n<workspace>\n你当前的工作目录（所有文件读写、终端命令、相对路径均以此为根）：${effectiveWorkingDir}\n</workspace>`;
 
     // ── eve: 渲染 PREVIEW（把 system/before_user/compression 的最终渲染结果写到 prompt/PREVIEW/，调试用）──
-    try { if (agentPromptRoot) renderAgentPreview(join(agentPromptRoot, ".."), this.projectRoot); } catch { /* 渲染失败不影响主流程 */ }
+    // 注意：要传「实例目录」而非 agentPromptRoot 的父目录——引用模式下 agentPromptRoot 是模板目录，
+    // 父目录会指错。实例目录优先项目级 .maou/agents/<name>，回退全局 ~/.maou/agents/<name>。
+    try {
+      if (agentPromptRoot) {
+        const instDir =
+          (registry.projectAgentsDir && existsSync(join(registry.projectAgentsDir, agentName)))
+            ? join(registry.projectAgentsDir, agentName)
+            : join(registry.agentsDir, agentName);
+        renderAgentPreview(instDir, this.projectRoot);
+      }
+    } catch { /* 渲染失败不影响主流程 */ }
 
     // ── 2b. 编译动态注入内容（board / pending / agents 状态 / task 规划） ──
     const dynamicInjections = prof.sync("dynamic_context", () => compileDynamicContext(maouRoot, agentName, sessionId!));
@@ -545,7 +662,7 @@ export class AgentRuntime {
 
     // agent.json tools 白名单（与 PERMISSION 取交集）
     try {
-      const registry = new AgentRegistry(maouRoot, this.projectRoot);
+      const registry = new AgentRegistry(maouRoot, effectiveProjectRoot);
       const agentEntry = registry.get(agentName);
       if (agentEntry?.tools && Array.isArray(agentEntry.tools) && !agentEntry.tools.includes("*")) {
         const agentToolSet = new Set(agentEntry.tools as string[]);
@@ -1032,7 +1149,7 @@ export class AgentRuntime {
       // 模型准备收尾时，按 end.md 标准判断是否真完成；不达标则把反馈喂回，继续 loop。
       if (loopEndCriteria && loopCheckAttempts < MAX_LOOP_CHECK && !effectiveAbortSignal.aborted) {
         yield this.event("status", { text: "loop 达标检查..." });
-        const verdict = await prof.async("loop_end_check", () => this.judgeLoopEnd(loopEndCriteria, sessionId!, preset, options.abortSignal), { round: currentRound });
+        const verdict = await prof.async("loop_end_check", () => this.judgeLoopEnd(loopEndCriteria, sessionId!, preset, agentName, options.abortSignal), { round: currentRound });
         if (verdict && verdict.done === false) {
           loopCheckAttempts++;
           yield this.logEvent("warning", `loop 未达标（${loopCheckAttempts}/${MAX_LOOP_CHECK}）：${verdict.feedback?.slice(0, 80)}`);
@@ -1216,7 +1333,24 @@ export class AgentRuntime {
       workingDir: workingDir ?? this.projectRoot,  // agent 工作目录（终端、文件读写）
       compressionLevel,
       // 注入 SubagentExecutor（若 harness 配置了 runFn）—— agent_message 工具据此真并行 fork
-      subagentExecutor: this.subagentExecutor,
+      // 同时设置 parentSessionId，让 fork 时生成的子 sessionId 关联到当前 session
+      subagentExecutor: this.subagentExecutor
+        ? (Object.assign(this.subagentExecutor, { parentSessionId: sessionId ?? "" }), this.subagentExecutor)
+        : undefined,
+      // 监督模式：注入 callMainAgent 函数 + 标记当前 session 是否是监督 Agent
+      // supervisor_chat_main / supervisor_task_control 工具据此判断调用上下文
+      // callMainAgent 闭包绑定当前 sessionId 对应的 mainSessionId（多用户场景不串台）
+      callMainAgent: (() => {
+        if (!this.callMainAgentFn) return undefined;
+        const currentSessionId = sessionId ?? "";
+        const binding = SUPERVISOR_MANAGER.getBySupervisor(currentSessionId);
+        if (!binding) return undefined; // 当前 session 不是监督 Agent → 不注入
+        return (message: string, abortSignal?: AbortSignal) =>
+          this.callMainAgentFn!(binding.mainSessionId, message, abortSignal);
+      })(),
+      isSupervisorSession: SUPERVISOR_MANAGER.isSupervisorSession(sessionId ?? ""),
+      // 注入 SUPERVISOR_MANAGER 单例（supervisor 工具通过它查询/更新绑定）
+      supervisorManager: SUPERVISOR_MANAGER,
     };
 
     // ── 按 parallelSafe / blocking 分组执行 ──
@@ -1369,20 +1503,52 @@ export class AgentRuntime {
   /**
    * eve loop/end.md 达标检查：用一次性模型调用判断任务是否真完成。
    * 返回 {done, feedback}；解析失败视为完成（不卡死）；判定异常返回 null（调用方视为通过）。
+   *
+   * 调用路径优先级：
+   *   1. auxModelCaller（统一辅助调用管道，独立 token 统计）—— 用辅助 preset
+   *   2. callModelFn（旧路径，混入主调用 token）—— 用主 preset
    */
   private async judgeLoopEnd(
     criteria: string,
     sessionId: string,
     preset: APIPreset,
+    agentName: string,
     abortSignal?: AbortSignal,
   ): Promise<{ done: boolean; feedback: string } | null> {
     try {
       const sess = this.sessions.load(sessionId);
       const recent = (sess?.messages ?? []).slice(-8)
         .map((m) => `[${m.role}] ${String(m.content ?? "").slice(0, 800)}`).join("\n").slice(0, 8000);
+      const systemPrompt = `你是任务达标检查员。根据「完成标准」判断对话中的任务是否已真正完成。\n\n完成标准：\n${criteria}\n\n只输出一行 JSON：{"done": true/false, "feedback": "若未完成简述还差什么"}`;
+      const userPrompt = `近期对话：\n${recent}`;
+
+      // 优先走 auxModelCaller（统一辅助调用管道）
+      if (this.auxModelCaller) {
+        const helperPreset = this.resolveHelperPresetFn
+          ? this.resolveHelperPresetFn(agentName, preset)
+          : preset;
+        const result = await this.auxModelCaller.callJson(
+          {
+            preset: helperPreset,
+            systemPrompt,
+            userPrompt,
+            abortSignal,
+            context: { sessionId, tag: "loop_judge" },
+          },
+          preset, // fallback 主 preset
+        );
+        if (!result.ok) return null;
+        if (!result.json) return { done: true, feedback: "" };
+        return {
+          done: result.json.done !== false,
+          feedback: String(result.json.feedback ?? ""),
+        };
+      }
+
+      // 旧路径：callModelFn（混入主调用 token）
       const messages: Record<string, unknown>[] = [
-        { role: "system", content: `你是任务达标检查员。根据「完成标准」判断对话中的任务是否已真正完成。\n\n完成标准：\n${criteria}\n\n只输出一行 JSON：{"done": true/false, "feedback": "若未完成简述还差什么"}` },
-        { role: "user", content: `近期对话：\n${recent}` },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ];
       const gen = this.callModelFn({ preset, messages, stream: false, toolSchemas: null, nativeToolCalling: false, autoFormat: false, jsonSettings: null, sessionId, round: 0, abortSignal });
       let r = await gen.next();
@@ -1656,7 +1822,19 @@ export class AgentRuntime {
         type: "tool_result", round, created_at: now(),
         data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: toolResultContent, ok: res.result.ok, background },
       });
-      events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: toolResultContent, ok: res.result.ok, round, background }));
+      // tool_result 事件带上 displayEvents（supervisor_task_control end 用此机制通知前端切回主 Agent）
+      const toolResultEvent: Record<string, unknown> = {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        content: toolResultContent,
+        ok: res.result.ok,
+        round,
+        background,
+      };
+      if (Array.isArray(res.result.displayEvents) && res.result.displayEvents.length > 0) {
+        toolResultEvent.displayEvents = res.result.displayEvents;
+      }
+      events.push(this.event("tool_result", toolResultEvent));
       events.push(this.logEvent("info", `工具 ${toolCall.name} 完成: ok=${res.result.ok}${background ? " [后台]" : ""}`));
       this.hooks?.postToolUse(tcInfo, { toolCallId: toolCall.id, name: toolCall.name, output: toolResultContent, success: res.result.ok, error: "", elapsed: 0 });
 

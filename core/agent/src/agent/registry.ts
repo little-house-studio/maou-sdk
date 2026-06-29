@@ -17,6 +17,8 @@ import {
   renameSync,
 } from "node:fs";
 import { join } from "node:path";
+import { getTemplateRef } from "./template-ref.js";
+import { resolvePromptRoot, resolveAgentConfig } from "./template.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
@@ -76,6 +78,11 @@ export interface AgentEntry {
   round_limit?: number;
   /** 模型配置（可选），覆盖 preset 中的 model */
   model?: string;
+  /** 辅助模型配置（可选）—— 用于压缩/loop判定/路由等辅助调用。
+   * 字符串匹配 preset name 或 model id；未配置时回退主模型。
+   * 优先级：agent.json helperModel > 全局 helperPreset > 主模型 preset
+   */
+  helperModel?: string;
   removal_request?: {
     reason: string;
     requested_by: string;
@@ -230,9 +237,12 @@ export class AgentRegistry {
   readonly agentsDir: string;
   /** 项目级 agent 目录（可选，优先级高于全局） */
   readonly projectAgentsDir?: string;
+  /** 项目根路径（用于物化时自动填写 working_dir） */
+  readonly projectRoot?: string;
 
   constructor(maouRoot: string, projectRoot?: string) {
     this.agentsDir = join(maouRoot, "agents");
+    this.projectRoot = projectRoot;
     if (projectRoot) {
       this.projectAgentsDir = join(projectRoot, ".maou", "agents");
     }
@@ -308,6 +318,28 @@ export class AgentRegistry {
     const agentFile = join(dir, AGENT_FILE);
     const agentTsFile = join(dir, AGENT_TS_FILE);
     const instructionsFile = join(dir, INSTRUCTIONS_FILE);
+
+    // 0. 引用模式：有 .agent.ref → 读模板 agent.json 作基础，合并实例 agent.custom.json
+    //    实例目录通常没有自己的 agent.json，只有 .agent.ref + agent.custom.json。
+    const refPath = join(dir, ".agent.ref");
+    if (existsSync(refPath)) {
+      const templateDir = getTemplateRef(dir);
+      if (templateDir) {
+        const templateAgentJson = join(templateDir, AGENT_FILE);
+        if (existsSync(templateAgentJson)) {
+          try {
+            const data = JSON.parse(readFileSync(templateAgentJson, "utf-8"));
+            if (data && typeof data === "object") {
+              // 合并 custom 覆盖；custom 里没有的字段保持模板值
+              const custom = resolveAgentConfig(dir);
+              return { ...data, ...custom, name: dirName, _source: source };
+            }
+          } catch {
+            // 模板 agent.json 解析失败，继续尝试其它约定
+          }
+        }
+      }
+    }
 
     // 1. 优先读 agent.json（现有逻辑不变）
     if (existsSync(agentFile)) {
@@ -420,11 +452,28 @@ export class AgentRegistry {
     if (this.projectAgentsDir) {
       const projectDir = join(this.projectAgentsDir, name);
       if (existsSync(projectDir)) {
+        // 引用模式：有 .agent.ref → 用 resolveAgentConfig 合并模板+custom
+        if (existsSync(join(projectDir, ".agent.ref"))) {
+          const config = resolveAgentConfig(projectDir);
+          if (config && typeof config === "object" && "name" in config) {
+            return { ...config, _source: "project" } as unknown as AgentEntry;
+          }
+          return { name, _source: "project", ...config } as unknown as AgentEntry;
+        }
         // 先尝试 agent.json
         const projectPath = join(projectDir, AGENT_FILE);
         if (existsSync(projectPath)) {
           try {
-            return { ...JSON.parse(readFileSync(projectPath, "utf-8")), _source: "project" };
+            const entry = { ...JSON.parse(readFileSync(projectPath, "utf-8")), _source: "project" };
+            // 合并 agent.custom.json 覆盖
+            const customPath = join(projectDir, "agent.custom.json");
+            if (existsSync(customPath)) {
+              try {
+                const custom = JSON.parse(readFileSync(customPath, "utf-8"));
+                return { ...entry, ...custom, _source: "project" };
+              } catch { /* ignore */ }
+            }
+            return entry;
           } catch { /* 继续 */ }
         }
         // 约定扫描
@@ -437,11 +486,29 @@ export class AgentRegistry {
     const globalDir = join(this.agentsDir, name);
     if (!existsSync(globalDir)) return null;
 
+    // 引用模式：全局 agent 也可以有 .agent.ref
+    if (existsSync(join(globalDir, ".agent.ref"))) {
+      const config = resolveAgentConfig(globalDir);
+      if (config && typeof config === "object" && "name" in config) {
+        return { ...config, _source: "global" } as unknown as AgentEntry;
+      }
+      return { name, _source: "global", ...config } as unknown as AgentEntry;
+    }
+
     // 先尝试 agent.json
     const globalPath = join(globalDir, AGENT_FILE);
     if (existsSync(globalPath)) {
       try {
-        return { ...JSON.parse(readFileSync(globalPath, "utf-8")), _source: "global" };
+        const entry = { ...JSON.parse(readFileSync(globalPath, "utf-8")), _source: "global" };
+        // 合并 agent.custom.json 覆盖
+        const customPath = join(globalDir, "agent.custom.json");
+        if (existsSync(customPath)) {
+          try {
+            const custom = JSON.parse(readFileSync(customPath, "utf-8"));
+            return { ...entry, ...custom, _source: "global" };
+          } catch { /* ignore */ }
+        }
+        return entry;
       } catch { /* 继续 */ }
     }
 
@@ -458,6 +525,7 @@ export class AgentRegistry {
     if (this.projectAgentsDir) {
       const projectDir = join(this.projectAgentsDir, name);
       if (existsSync(projectDir)) {
+        if (existsSync(join(projectDir, ".agent.ref"))) return true;
         if (existsSync(join(projectDir, AGENT_FILE))) return true;
         if (existsSync(join(projectDir, INSTRUCTIONS_FILE))) return true;
       }
@@ -465,6 +533,7 @@ export class AgentRegistry {
     // 检查全局
     const globalDir = join(this.agentsDir, name);
     if (!existsSync(globalDir)) return false;
+    if (existsSync(join(globalDir, ".agent.ref"))) return true;
     return existsSync(join(globalDir, AGENT_FILE)) || existsSync(join(globalDir, INSTRUCTIONS_FILE));
   }
 
@@ -694,7 +763,12 @@ export class AgentRegistry {
    */
   getPromptRoot(name: string): string {
     const dir = this.agentDir(name);
-    // eve 结构优先：prompt/ 作为 root，system/system.md 入口（before_user/compression 为同级）
+    // 引用模式：优先用 resolvePromptRoot（处理 .agent.ref + 实例覆盖）
+    const refPath = join(dir, ".agent.ref");
+    if (existsSync(refPath)) {
+      return resolvePromptRoot(dir).promptRoot;
+    }
+    // 旧模式兼容
     if (existsSync(join(dir, "prompt", "system", "system.md"))) {
       return join(dir, "prompt");
     }
@@ -702,11 +776,9 @@ export class AgentRegistry {
     if (existsSync(roleDir) && existsSync(join(roleDir, "SYSTEM.md"))) {
       return roleDir;
     }
-    // 有 instructions.md 时，agent 目录本身就是 prompt root
     if (existsSync(join(dir, INSTRUCTIONS_FILE))) {
       return dir;
     }
-    // 默认回退 ROLE/
     return roleDir;
   }
 
@@ -715,12 +787,16 @@ export class AgentRegistry {
    */
   getPromptEntrypoint(name: string): string {
     const dir = this.agentDir(name);
-    // eve 结构：入口是 system/system.md（相对 prompt/ root）
+    // 引用模式
+    const refPath = join(dir, ".agent.ref");
+    if (existsSync(refPath)) {
+      return resolvePromptRoot(dir).entrypoint;
+    }
+    // 旧模式兼容
     if (existsSync(join(dir, "prompt", "system", "system.md"))) {
       return "system/system.md";
     }
     if (existsSync(join(dir, INSTRUCTIONS_FILE))) {
-      // 如果有 instructions.md 但没有 ROLE/SYSTEM.md
       if (!existsSync(join(dir, "ROLE", "SYSTEM.md"))) {
         return INSTRUCTIONS_FILE;
       }
@@ -795,20 +871,23 @@ export class AgentRegistry {
 
   /**
    * 确保项目级 agent 存在；不存在则物化一份 Eve 风格骨架到
-   * `<projectRoot>/.maou/agents/<name>/`（agent.json + ROLE/SYSTEM.md + PERMISSION.jsonc）。
+   * `<projectRoot>/.maou/agents/<name>/`（agent.json + prompt/system/system.md + PERMISSION.jsonc）。
    *
    * 幂等：已存在（agent.json 在）则跳过，绝不覆盖用户已编辑的内容。
    *
-   * 模板来源优先级：
-   * 1. 调用方传入的 `template` 参数（最高优先级）
-   * 2. 全局 `~/.maou/agents/<name>/` 有完整定义（agent.json + 含 prompt 内容：
-   *    instructions.md 或 ROLE/SYSTEM.md）→ 读取作为模板复制到项目级
-   * 3. 内置默认 coding 模板（DEFAULT_PROJECT_AGENT_TEMPLATE，参考 ~/.maou/agents/coding/）
+   * 物化策略（优先级从高到低，引用模式）：
+   * 1. 调用方传入 `template` 参数 → 用 _writeProjectAgent 写 eve 骨架（独立实例，无 ref）
+   * 2. 全局 `~/.maou/agents/<name>/` 存在 → 写 .agent.ref 引用全局模板
+   * 3. 全局 `<name>` 不存在但 `main` 存在 → 写 .agent.ref 引用 main 模板
+   * 4. 都没有 → 用内置 DEFAULT_PROJECT_AGENT_TEMPLATE 写最小骨架
+   *
+   * 引用模式下：实例只存 .agent.ref + agent.custom.json，运行时读模板的 prompt/loop/hook，
+   * 改模板即时生效。working_dir 写进 agent.custom.json。
    *
    * 注意：仅当 registry 构造时传入了 projectRoot 才生效，否则 no-op。
    *
    * @param name agent 名，默认 "main"
-   * @param template 可选模板（覆盖全局模板和内置默认模板）
+   * @param template 可选模板（直接写独立实例，不引用）
    * @returns 物化结果：{created: true, dir} 或 {created: false, reason}
    */
   ensureProjectAgent(
@@ -820,30 +899,53 @@ export class AgentRegistry {
     }
     const projectDir = join(this.projectAgentsDir, name);
     const projectAgentJson = join(projectDir, AGENT_FILE);
+    const projectRef = join(projectDir, ".agent.ref");
 
-    // 幂等：已存在则跳过
-    if (existsSync(projectAgentJson)) {
+    // 幂等：已有 .agent.ref 或 agent.json → 跳过（绝不覆盖用户已编辑的内容）
+    if (existsSync(projectRef) || existsSync(projectAgentJson)) {
       return { created: false, dir: projectDir, reason: "项目级 agent 已存在" };
     }
 
     mkdirSync(projectDir, { recursive: true });
 
-    // 1. 调用方传入模板 → 直接用
-    // 2. 否则尝试从全局同名 agent 读取作为模板
-    // 3. 全局不完整 → 用内置默认 coding 模板
-    let finalTemplate: ProjectAgentTemplate;
+    // 1. 调用方传入模板 → 写独立 eve 骨架（不引用，无 .agent.ref）
     if (template) {
-      finalTemplate = template;
-    } else {
-      const globalDir = join(this.agentsDir, name);
-      const globalTemplate = this._readGlobalAsTemplate(globalDir);
-      finalTemplate = globalTemplate ?? DEFAULT_PROJECT_AGENT_TEMPLATE;
+      this._writeProjectAgent(projectDir, name, template);
+      return { created: true, dir: projectDir, reason: "自定义模板" };
     }
 
-    this._writeProjectAgent(projectDir, name, finalTemplate);
-    return { created: true, dir: projectDir, reason: finalTemplate === DEFAULT_PROJECT_AGENT_TEMPLATE ? "内置默认模板" : "自定义模板" };
+    // 引用模板辅助：写 .agent.ref + agent.custom.json
+    const writeRef = (templateDir: string, reason: string, custom: Record<string, unknown> = {}): { created: boolean; dir: string; reason: string } => {
+      writeFileSync(projectRef, templateDir, "utf-8");
+      writeFileSync(
+        join(projectDir, "agent.custom.json"),
+        JSON.stringify({ working_dir: this.projectRoot, ...custom }, null, 2),
+        "utf-8",
+      );
+      return { created: true, dir: projectDir, reason };
+    };
+
+    // 2. 全局同名 agent 存在（agent.json 或自身 .agent.ref）→ 引用
+    const globalDir = join(this.agentsDir, name);
+    if (existsSync(join(globalDir, AGENT_FILE)) || existsSync(join(globalDir, ".agent.ref"))) {
+      return writeRef(globalDir, "引用全局模板");
+    }
+
+    // 3. 全局 <name> 不存在但 main 存在 → 引用 main
+    if (name !== "main") {
+      const mainDir = join(this.agentsDir, "main");
+      if (existsSync(join(mainDir, AGENT_FILE)) || existsSync(join(mainDir, ".agent.ref"))) {
+        return writeRef(mainDir, "引用全局 main 模板", { display_name: name });
+      }
+    }
+
+    // 4. 都没有 → 用内置默认模板写骨架（独立实例）
+    this._writeProjectAgent(projectDir, name, DEFAULT_PROJECT_AGENT_TEMPLATE);
+    return { created: true, dir: projectDir, reason: "内置默认模板" };
   }
 
+  /**
+   * 从全局 agent 目录完整复制 eve 结构到项目级目录。
   /**
    * 从全局 agent 目录读取作为模板源。
    * 仅当全局 agent 有「完整定义」（agent.json + prompt 内容）时才返回模板，
@@ -855,10 +957,12 @@ export class AgentRegistry {
    * - prompt/system/system.md（eve 结构入口）
    */
   private _readGlobalAsTemplate(globalDir: string): ProjectAgentTemplate | null {
-    if (!existsSync(globalDir)) return null;
+    // 引用模式：全局 agent 自身可能是 .agent.ref → 先解析到真正模板目录再读内容
+    const actualDir = getTemplateRef(globalDir) ?? globalDir;
+    if (!existsSync(actualDir)) return null;
 
     // 读 agent.json
-    const agentJsonPath = join(globalDir, AGENT_FILE);
+    const agentJsonPath = join(actualDir, AGENT_FILE);
     if (!existsSync(agentJsonPath)) return null;
 
     let agentEntry: Record<string, unknown> = {};
@@ -870,9 +974,9 @@ export class AgentRegistry {
 
     // 读 systemPrompt（按多个约定顺序尝试）
     let systemPrompt = "";
-    const instructionsFile = join(globalDir, INSTRUCTIONS_FILE);
-    const roleSystemFile = join(globalDir, "ROLE", "SYSTEM.md");
-    const eveSystemFile = join(globalDir, "prompt", "system", "system.md");
+    const instructionsFile = join(actualDir, INSTRUCTIONS_FILE);
+    const roleSystemFile = join(actualDir, "ROLE", "SYSTEM.md");
+    const eveSystemFile = join(actualDir, "prompt", "system", "system.md");
 
     if (existsSync(instructionsFile)) {
       try { systemPrompt = readFileSync(instructionsFile, "utf-8"); } catch { /* ignore */ }
@@ -889,7 +993,7 @@ export class AgentRegistry {
 
     // 读工具白名单：优先 PERMISSION.jsonc.tool_whitelist，回退 agent.json.tools
     let toolWhitelist: string[] = [];
-    const permissionPath = join(globalDir, "PERMISSION.jsonc");
+    const permissionPath = join(actualDir, "PERMISSION.jsonc");
     if (existsSync(permissionPath)) {
       try {
         const permRaw = readFileSync(permissionPath, "utf-8");
@@ -919,13 +1023,13 @@ export class AgentRegistry {
   /**
    * 物化项目级 agent 到指定目录（Eve 风格骨架）。
    * 写入文件：
-   * - agent.json        元数据 + 工具白名单 + round_limit
-   * - ROLE/SYSTEM.md    系统提示词（兼容现有 PromptCompiler 入口）
-   * - PERMISSION.jsonc   工具白名单（强制）
+   * - agent.json               元数据 + 工具白名单 + round_limit + working_dir
+   * - prompt/system/system.md  系统提示词（PromotCompiler eve 结构入口）
+   * - PERMISSION.jsonc         工具白名单（强制）
    */
   private _writeProjectAgent(projectDir: string, name: string, template: ProjectAgentTemplate): void {
-    const roleDir = join(projectDir, "ROLE");
-    mkdirSync(roleDir, { recursive: true });
+    const promptSystemDir = join(projectDir, "prompt", "system");
+    mkdirSync(promptSystemDir, { recursive: true });
 
     const now = new Date().toISOString();
     const displayName = template.displayName ?? (name.charAt(0).toUpperCase() + name.slice(1));
@@ -948,13 +1052,14 @@ export class AgentRegistry {
       round_limit: roundLimit,
       tools: [...template.toolWhitelist],
       tool_compression: toolCompression,
+      working_dir: this.projectRoot,
       created_at: now,
       updated_at: now,
     };
     writeFileSync(join(projectDir, AGENT_FILE), JSON.stringify(agentEntry, null, 2), "utf-8");
 
-    // ROLE/SYSTEM.md —— 兼容现有 PromptCompiler 入口（promptRoot=ROLE/，entrypoint=SYSTEM.md）
-    writeFileSync(join(roleDir, "SYSTEM.md"), template.systemPrompt, "utf-8");
+    // prompt/system/system.md —— PromotCompiler eve 结构入口（promptRoot=prompt/，entrypoint=system/system.md）
+    writeFileSync(join(promptSystemDir, "system.md"), template.systemPrompt, "utf-8");
 
     // PERMISSION.jsonc —— 工具白名单（强制）
     const permission = {

@@ -63,7 +63,8 @@ export type {
 export { Runtime } from "./runtime-facade.js";
 export type { AppRuntimeOptions } from "./runtime-facade.js";
 export { createAppLogger } from "./app-logger.js";
-export { createAgentFromTemplate, renderAgentPreview } from "./template.js";
+export { createAgentFromTemplate, renderAgentPreview, resolvePromptRoot, resolveAgentConfig } from "./template.js";
+export { getTemplateRef } from "./template-ref.js";
 export type { CreateAgentOptions as CreateAgentFromTemplateOptions } from "./template.js";
 
 // ── Agent 注册表与工厂 ─────────────────────────────────────────────────────
@@ -136,6 +137,16 @@ export type {
 
 export { SubagentRegistry } from "./subagent-registry.js";
 export type { SubagentEntry } from "./subagent-registry.js";
+
+// ── 子 Agent 执行器（fork/并行执行）─────────────────────────────────────────
+
+export { SubagentExecutor } from "./subagent-executor.js";
+export type { SubagentRunFn, SubagentExecutorOptions } from "./subagent-executor.js";
+
+// ── 监督模式管理器（/goal 模式：主 Agent ↔ 监督 Agent 绑定）─────────────────
+
+export { SUPERVISOR_MANAGER } from "./supervisor-manager.js";
+export type { SupervisorBinding, SupervisorState } from "./supervisor-manager.js";
 
 // ── defineEval API + EvalRunner ─────────────────────────────────────────────
 
