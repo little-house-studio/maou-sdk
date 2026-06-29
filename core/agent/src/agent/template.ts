@@ -22,7 +22,7 @@ import { getTemplateRef } from "./template-ref.js";
 import { renderAgentPreview } from "./preview.js";
 
 // re-export 保持兼容
-export { renderAgentPreview } from "./preview.js";
+export { renderAgentPreview, watchAgentPreview } from "./preview.js";
 export { getTemplateRef } from "./template-ref.js";
 
 export interface CreateAgentOptions {
@@ -41,6 +41,11 @@ export interface CreateAgentOptions {
   reviewerRole?: string;
   /** 已存在时是否强制覆盖（否则幂等跳过） */
   force?: boolean;
+  /**
+   * 实例目录路径（可选）。默认 <maouRoot>/agents/<name>（全局）；
+   * 传入则写到指定目录（如 <projectRoot>/.maou/agents/<name> 项目级）。
+   */
+  targetDir?: string;
 }
 
 /**
@@ -50,7 +55,8 @@ export interface CreateAgentOptions {
  */
 export function createAgentFromTemplate(name: string, maouRoot: string, opts: CreateAgentOptions): string {
   const templateDir = opts.templateDir;
-  const target = join(maouRoot, "agents", name);
+  // targetDir 优先（项目级），否则默认全局 <maouRoot>/agents/<name>
+  const target = opts.targetDir ?? join(maouRoot, "agents", name);
 
   // 幂等：已有 .agent.ref 且未 force → 直接返回
   if (existsSync(join(target, ".agent.ref")) && !opts.force) {

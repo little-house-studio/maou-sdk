@@ -1,0 +1,26 @@
+{
+  "name": "grade",
+  "description": "裁判 agent 评分工具。对被测 agent 的回复给出结构化评分（分数/是否通过/评语）。仅在裁判测试场景使用。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "score": {
+        "type": "number",
+        "description": "得分（0 到 maxScore 之间）。"
+      },
+      "maxScore": {
+        "type": "number",
+        "description": "满分（与题目分值一致）。"
+      },
+      "passed": {
+        "type": "boolean",
+        "description": "是否合格。"
+      },
+      "comment": {
+        "type": "string",
+        "description": "评语：为什么给这个分，扣分点/亮点。"
+      }
+    },
+    "required": ["score", "passed", "comment"]
+  }
+}

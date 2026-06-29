@@ -263,6 +263,19 @@ export class AgentRegistry {
   }
 
   /**
+   * 解析 agent 实例目录：项目级优先（若存在），回退全局。
+   * 与 get() 的优先级一致，供 getPromptRoot/getPromptEntrypoint 等使用。
+   * public 供 runtime 加载模板脚本（loop.ts/hook 等）使用。
+   */
+  resolveAgentDir(name: string): string {
+    if (this.projectAgentsDir) {
+      const projectDir = join(this.projectAgentsDir, name);
+      if (existsSync(projectDir)) return projectDir;
+    }
+    return join(this.agentsDir, name);
+  }
+
+  /**
    * 加载所有 agent 配置（合并全局 + 项目级）
    * 项目级覆盖全局同名 agent
    *
@@ -762,7 +775,7 @@ export class AgentRegistry {
    * （instructions.md 在 agent 根目录下时，promptRoot 就是 agent 目录）
    */
   getPromptRoot(name: string): string {
-    const dir = this.agentDir(name);
+    const dir = this.resolveAgentDir(name);
     // 引用模式：优先用 resolvePromptRoot（处理 .agent.ref + 实例覆盖）
     const refPath = join(dir, ".agent.ref");
     if (existsSync(refPath)) {
@@ -786,7 +799,7 @@ export class AgentRegistry {
    * 获取 agent 的 prompt 入口文件名
    */
   getPromptEntrypoint(name: string): string {
-    const dir = this.agentDir(name);
+    const dir = this.resolveAgentDir(name);
     // 引用模式
     const refPath = join(dir, ".agent.ref");
     if (existsSync(refPath)) {
@@ -942,82 +955,6 @@ export class AgentRegistry {
     // 4. 都没有 → 用内置默认模板写骨架（独立实例）
     this._writeProjectAgent(projectDir, name, DEFAULT_PROJECT_AGENT_TEMPLATE);
     return { created: true, dir: projectDir, reason: "内置默认模板" };
-  }
-
-  /**
-   * 从全局 agent 目录完整复制 eve 结构到项目级目录。
-  /**
-   * 从全局 agent 目录读取作为模板源。
-   * 仅当全局 agent 有「完整定义」（agent.json + prompt 内容）时才返回模板，
-   * 否则返回 null（让调用方 fallback 到内置默认模板）。
-   *
-   * prompt 内容读取顺序：
-   * - instructions.md（约定模式入口）
-   * - ROLE/SYSTEM.md（兼容模式入口）
-   * - prompt/system/system.md（eve 结构入口）
-   */
-  private _readGlobalAsTemplate(globalDir: string): ProjectAgentTemplate | null {
-    // 引用模式：全局 agent 自身可能是 .agent.ref → 先解析到真正模板目录再读内容
-    const actualDir = getTemplateRef(globalDir) ?? globalDir;
-    if (!existsSync(actualDir)) return null;
-
-    // 读 agent.json
-    const agentJsonPath = join(actualDir, AGENT_FILE);
-    if (!existsSync(agentJsonPath)) return null;
-
-    let agentEntry: Record<string, unknown> = {};
-    try {
-      agentEntry = JSON.parse(readFileSync(agentJsonPath, "utf-8"));
-    } catch {
-      return null;
-    }
-
-    // 读 systemPrompt（按多个约定顺序尝试）
-    let systemPrompt = "";
-    const instructionsFile = join(actualDir, INSTRUCTIONS_FILE);
-    const roleSystemFile = join(actualDir, "ROLE", "SYSTEM.md");
-    const eveSystemFile = join(actualDir, "prompt", "system", "system.md");
-
-    if (existsSync(instructionsFile)) {
-      try { systemPrompt = readFileSync(instructionsFile, "utf-8"); } catch { /* ignore */ }
-    }
-    if (!systemPrompt && existsSync(roleSystemFile)) {
-      try { systemPrompt = readFileSync(roleSystemFile, "utf-8"); } catch { /* ignore */ }
-    }
-    if (!systemPrompt && existsSync(eveSystemFile)) {
-      try { systemPrompt = readFileSync(eveSystemFile, "utf-8"); } catch { /* ignore */ }
-    }
-
-    // 全局 agent 没有 prompt 内容 → 不能作为完整模板，返回 null 让调用方 fallback
-    if (!systemPrompt.trim()) return null;
-
-    // 读工具白名单：优先 PERMISSION.jsonc.tool_whitelist，回退 agent.json.tools
-    let toolWhitelist: string[] = [];
-    const permissionPath = join(actualDir, "PERMISSION.jsonc");
-    if (existsSync(permissionPath)) {
-      try {
-        const permRaw = readFileSync(permissionPath, "utf-8");
-        const perm = JSON.parse(stripJsoncComments(permRaw)) as { tool_whitelist?: string[] };
-        if (Array.isArray(perm.tool_whitelist)) {
-          toolWhitelist = perm.tool_whitelist.map(String);
-        }
-      } catch { /* ignore */ }
-    }
-    if (toolWhitelist.length === 0 && Array.isArray(agentEntry.tools)) {
-      toolWhitelist = (agentEntry.tools as unknown[]).map(String);
-    }
-    if (toolWhitelist.length === 0) toolWhitelist = ["*"];
-
-    const toolCompression = (agentEntry.tool_compression as "off" | "normal" | "aggressive" | undefined);
-    return {
-      systemPrompt,
-      toolWhitelist,
-      role: typeof agentEntry.role === "string" ? agentEntry.role : "default",
-      displayName: typeof agentEntry.display_name === "string" ? agentEntry.display_name : "",
-      description: typeof agentEntry.description === "string" ? agentEntry.description : "",
-      roundLimit: typeof agentEntry.round_limit === "number" ? agentEntry.round_limit : 50,
-      toolCompression: toolCompression === "off" || toolCompression === "normal" || toolCompression === "aggressive" ? toolCompression : "normal",
-    };
   }
 
   /**

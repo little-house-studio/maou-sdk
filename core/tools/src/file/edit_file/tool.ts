@@ -81,7 +81,7 @@ export class EditFileTool extends Tool {
 
     let fullPath: string;
     try {
-      fullPath = safePath(ctx.projectRoot, userPath);
+      fullPath = safePath(ctx.workingDir || ctx.projectRoot, userPath);
     } catch (err: unknown) {
       return createToolResponse(false, errToString(err));
     }

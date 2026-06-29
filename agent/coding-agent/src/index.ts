@@ -11,7 +11,7 @@
  *
  * 重构说明：本包仅保留 coding 特化部分（白名单 + 系统提示词 + 名称常量），
  * 通用骨架已上提到 agent 层：
- *   - materializeAgent（通用物化）
+ *   - createAgentFromTemplate（引用模式物化，.agent.ref 指向包内模板）
  *   - Runtime 门面的 enableCompression + agentName + startSession
  *   - AgentHandle 通用句柄接口
  *   - runAgentCli 通用 CLI 驱动
@@ -116,8 +116,11 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
   const toolWhitelist = opts.toolWhitelist ?? CODING_TOOL_WHITELIST;
 
   // 引用模式物化：.agent.ref 指向包内 coding 模板 + agent.custom.json 覆盖项。
+  // coding agent 只服务项目级：实例写到 <projectRoot>/.maou/agents/<name>。
+  const targetDir = join(projectRoot, ".maou", "agents", name);
   createAgentFromTemplate(name, maouRoot, {
     templateDir: resolveCodingTemplateDir(),
+    targetDir,
     displayName: "Coding Agent",
     role: "coding",
     tools: toolWhitelist,
@@ -127,7 +130,7 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
   // toolCompression 写进 agent.custom.json（createAgentFromTemplate 未直接支持该字段）
   if (opts.toolCompression && opts.toolCompression !== "normal") {
     try {
-      const customPath = join(maouRoot, "agents", name, "agent.custom.json");
+      const customPath = join(targetDir, "agent.custom.json");
       const existing = existsSync(customPath) ? JSON.parse(readFileSync(customPath, "utf-8")) : {};
       existing.tool_compression = opts.toolCompression;
       existing.updated_at = new Date().toISOString();

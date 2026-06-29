@@ -33,7 +33,8 @@ import { compileDynamicContext } from "../dynamic-context.js";
 import { TokenTracker } from "./token-tracker.js";
 import type { TokenUsage } from "./token-tracker.js";
 import { AgentRegistry } from "./registry.js";
-import { renderAgentPreview } from "./template.js";
+import { getTemplateRef } from "./template-ref.js";
+import { renderAgentPreview, watchAgentPreview } from "./template.js";
 import { runAgentCommand } from "./command-runner.js";
 import { CommandRegistry, registerBuiltinCommands, type CommandContext, type CommandResult } from "./command-registry.js";
 import { ModelCaller, type ModelCallResult, type CallerStreamEvent } from "@little-house-studio/llm";
@@ -48,6 +49,14 @@ import { cleanupAgentTerminals, listTerminals, getTerminalLogs, setTerminalMode,
 import type { StreamEvent } from "@little-house-studio/types";
 import { Profiler } from "@little-house-studio/types";
 import type { Hooks } from "./hooks.js";
+
+/** loop.ts 脚本的判定上下文（shouldContinueLoop 入参）。 */
+interface LoopScriptCtx {
+  toolCalls: { name: string; endsLoop: boolean }[];
+  endsLoopFailed: boolean;
+  tasksIncomplete: boolean;
+  round: number;
+}
 import { MESSAGE_QUEUE, MessageQueue } from "./message-queue.js";
 import type { QueuedMessage } from "./message-queue.js";
 import { existsSync, mkdirSync, cpSync, readdirSync, rmSync, statSync, readFileSync } from "node:fs";
@@ -574,6 +583,8 @@ export class AgentRuntime {
             ? join(registry.projectAgentsDir, agentName)
             : join(registry.agentsDir, agentName);
         renderAgentPreview(instDir, this.projectRoot);
+        // 监听模板源文件变化，自动重新渲染 PREVIEW（设计：检测到内容变了就渲染）
+        watchAgentPreview(instDir, this.projectRoot);
       }
     } catch { /* 渲染失败不影响主流程 */ }
 
@@ -664,14 +675,19 @@ export class AgentRuntime {
     try {
       const registry = new AgentRegistry(maouRoot, effectiveProjectRoot);
       const agentEntry = registry.get(agentName);
-      if (agentEntry?.tools && Array.isArray(agentEntry.tools) && !agentEntry.tools.includes("*")) {
-        const agentToolSet = new Set(agentEntry.tools as string[]);
-        if (toolWhitelist) {
-          // 取交集
-          const intersection = new Set([...toolWhitelist].filter(x => agentToolSet.has(x)));
-          toolWhitelist = intersection.size > 0 ? intersection : undefined;
+      if (agentEntry?.tools && Array.isArray(agentEntry.tools)) {
+        if (agentEntry.tools.includes("*")) {
+          // "*" 表示该 agent 允许全部工具：不缩窄 PERMISSION 白名单（若 PERMISSION 也是 * 或不存在则全允许）
+          // 这里不改动 toolWhitelist
         } else {
-          toolWhitelist = agentToolSet;
+          const agentToolSet = new Set(agentEntry.tools as string[]);
+          if (toolWhitelist) {
+            // 取交集
+            const intersection = new Set([...toolWhitelist].filter(x => agentToolSet.has(x)));
+            toolWhitelist = intersection.size > 0 ? intersection : undefined;
+          } else {
+            toolWhitelist = agentToolSet;
+          }
         }
       }
     } catch { /* ignore */ }
@@ -1432,33 +1448,82 @@ export class AgentRuntime {
     }
 
     // ③ per-tool loop 控制 + task 表接管 loop 条件（#2）：
+    // 优先用模板的 loop.ts 脚本（shouldContinueLoop）自定义判定；无脚本则走内联逻辑：
     // 一轮内若所有被调工具都是 endsLoop（收尾型，如 task_finish），默认结束 loop；
     // 但若当前 session 的 task 表还有未完成 todo，强制继续下一轮——
     // 让 AI 必须把所有规划任务做完才能退出（task 表接管 loop 条件）。
     //
     // 失败兜底（致命#3）：endsLoop 工具执行失败（ok=false）时，不退出 loop，
     // 让 AI 看到错误信息后继续处理（否则 task_finish 失败也会退出 loop，用户卡死）。
-    const allEndsLoop = !toolCalls.some((tc) => !this.toolEndsLoop(tc.name));
+    const toolCallsCtx = toolCalls.map((tc) => ({ name: tc.name, endsLoop: this.toolEndsLoop(tc.name) }));
+    const endsLoopFailed = executedTools.some(
+      (t) => this.toolEndsLoop(t.name) && t.ok === false,
+    );
+    let tasksIncomplete = false;
+    try {
+      const tasks = TASK_MANAGER.getTasks(sessionId);
+      tasksIncomplete = tasks.length > 0 && !tasks.every((t) => t.status === "completed");
+    } catch (err) {
+      // 读取失败不应中断整个 run：降级为"无未完成任务"，让 endsLoop 正常判定。
+      this.log("warn", `[Runtime] TaskManager 读取失败，降级为无未完成任务: ${err}`);
+    }
+
+    // 优先：模板 loop.ts 脚本自定义判定
+    const loopScript = await this._loadLoopScript(agentName);
+    if (loopScript) {
+      try {
+        const cont = loopScript({
+          toolCalls: toolCallsCtx,
+          endsLoopFailed,
+          tasksIncomplete,
+          round: round,
+        });
+        return Boolean(cont);
+      } catch (err) {
+        this.log("warn", `[Runtime] loop.ts 脚本执行失败，回退内联判定: ${err}`);
+      }
+    }
+
+    // 内联判定（默认）
+    const allEndsLoop = !toolCallsCtx.some((tc) => !tc.endsLoop);
     if (allEndsLoop) {
-      const endsLoopFailed = executedTools.some(
-        (t) => this.toolEndsLoop(t.name) && t.ok === false,
-      );
       if (endsLoopFailed) {
         this.log("warn", "[Runtime] endsLoop 工具执行失败（ok=false），不退出 loop，让 AI 继续处理");
         return true;
       }
-      try {
-        const tasks = TASK_MANAGER.getTasks(sessionId);
-        if (tasks.length > 0 && !tasks.every((t) => t.status === "completed")) {
-          return true; // 还有未完成 todo，强制继续 loop
-        }
-      } catch (err) {
-        // TaskManager 读取失败属于系统错误，直接抛出让上层处理
-        throw new Error(`TaskManager 读取失败，无法判断 loop 是否应结束: ${err}`);
+      if (tasksIncomplete) {
+        return true; // 还有未完成 todo，强制继续 loop
       }
       return false;
     }
     return true;
+  }
+
+  /**
+   * 加载模板的 loop.ts 脚本（shouldContinueLoop）。
+   * 路径：<实例或模板>/loop/loop.ts。动态 import，缓存。
+   * 失败/不存在返回 null（走内联判定）。
+   */
+  private _loopScriptCache = new Map<string, ((ctx: LoopScriptCtx) => boolean) | null>();
+  private async _loadLoopScript(agentName: string): Promise<((ctx: LoopScriptCtx) => boolean) | null> {
+    if (this._loopScriptCache.has(agentName)) return this._loopScriptCache.get(agentName)!;
+    let script: ((ctx: LoopScriptCtx) => boolean) | null = null;
+    try {
+      const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
+      const dir = registry.resolveAgentDir(agentName);
+      // 引用模式：从 .agent.ref 找模板目录的 loop.ts
+      const templateDir = getTemplateRef(dir) ?? dir;
+      const loopTsPath = join(templateDir, "loop", "loop.ts");
+      if (existsSync(loopTsPath)) {
+        const mod = await import(loopTsPath);
+        const fn = mod.default ?? mod.shouldContinueLoop;
+        if (typeof fn === "function") script = fn as (ctx: LoopScriptCtx) => boolean;
+      }
+    } catch {
+      // 加载失败走内联
+    }
+    this._loopScriptCache.set(agentName, script);
+    return script;
   }
 
   /** 该工具调用后是否终止 loop（收尾型，如 task_finish）。 */

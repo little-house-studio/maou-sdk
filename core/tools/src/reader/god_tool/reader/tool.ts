@@ -98,11 +98,11 @@ export class ReadTool extends Tool {
 
     // 图片检测
     if (isImagePath(filePath)) {
-      return this._readImage(ctx.projectRoot, filePath);
+      return this._readImage(ctx.workingDir || ctx.projectRoot, filePath);
     }
 
-    // 本地文件读取
-    return this._readLocalFile(ctx.projectRoot, filePath, params, ctx.sessionId);
+    // 本地文件读取（用 workingDir 作根：agent 真实工作目录，非 maou 安装目录）
+    return this._readLocalFile(ctx.workingDir || ctx.projectRoot, filePath, params, ctx.sessionId);
   }
 
   /**

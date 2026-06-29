@@ -136,7 +136,7 @@ export class BrowserTool extends Tool {
     }
 
     const session = String(params.session ?? "default").trim();
-    const cwd = ctx.projectRoot;
+    const cwd = ctx.workingDir || ctx.projectRoot;
 
     try {
       // ── 编排类 ──

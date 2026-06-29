@@ -63,10 +63,7 @@ export type {
   MessageQueueOptions,
 } from "./agent/message-queue.js";
 
-// ── 「文件即 Agent」物化骨架（coding/reviewer/... 共用）──────────────────────
-export { materializeAgent } from "./agent/materialize.js";
-export type { MaterializeAgentOptions } from "./agent/materialize.js";
-export { DEFAULT_AGENT_ROUND_LIMIT as DEFAULT_MATERIALIZE_ROUND_LIMIT } from "./agent/materialize.js";
+// ── 「文件即 Agent」物化（引用模式）── createAgentFromTemplate 见 ./agent/index.js ──
 
 // ── 通用 Agent 句柄接口 ──────────────────────────────────────────────────────
 export type { AgentHandle } from "./agent/handle.js";

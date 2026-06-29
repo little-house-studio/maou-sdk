@@ -128,7 +128,7 @@ export class CodeSearchTool extends Tool {
       return createToolResponse(false, "sqry 未安装。请运行: cargo install sqry");
     }
 
-    const cwd = resolve(ctx.projectRoot);
+    const cwd = resolve(ctx.workingDir || ctx.projectRoot);
     try {
       await sqry.ensureIndex(cwd);
     } catch (e) {

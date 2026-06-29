@@ -67,7 +67,7 @@ export class LspTool extends Tool {
     const action = String(params.action ?? "").trim();
     if (!action) return createToolResponse(false, '❌ lsp 缺少必填参数 action（操作类型）。正确用法示例：\n{"tool": "lsp", "params": {"action": "check", "file": "src/index.ts", "reason": "检查代码错误"}}\n可选 action: check, diagnostics, definition, references, type_definition, hover, rename, completion, symbols, workspace_symbols。请用正确的 action 参数重试。');
 
-    const root = resolve(ctx.projectRoot);
+    const root = resolve(ctx.workingDir || ctx.projectRoot);
     const fileParam = params.file ? String(params.file) : "";
     const absFile = fileParam ? safePath(root, fileParam) : "";
     // 1-based → 0-based

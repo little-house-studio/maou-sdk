@@ -171,9 +171,13 @@ export function decideCommand(command: string, agent: string, modeOverride?: Ter
     return { action: "deny", matched: bl, reason: `命中黑名单条目「${bl}」` };
   }
 
-  // 非名单 —— 标记为待定，使"原样重试即放行"对 ask/review 都生效
-  markBlocked(agent, norm);
-  if (mode === "auto") return { action: "review" };
+  // 非名单 —— auto 模式标记为待定（小模型审核 + "原样重试放行"语义）；
+  // normal 模式 ask 不标记：agent loop 里模型拿到 ask 后常原样重试，若 markBlocked 会自动入白名单，
+  // 绕过用户确认，安全语义被架空。normal 的放行只走 addToWhitelist 显式确认路径。
+  if (mode === "auto") {
+    markBlocked(agent, norm);
+    return { action: "review" };
+  }
   return { action: "ask" };
 }
 

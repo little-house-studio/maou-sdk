@@ -25,9 +25,13 @@ import { normalizePostLogRecord, type NormalizePostLogOptions } from "./post-log
 // 注意：@smithy/core/event-streams 仅 Bedrock 二进制流需要，改为动态 import（见 _readBedrockEventStream），
 // 避免把它带进浏览器静态依赖图。
 export { ProtocolGateway };
-const MAX_RETRIES = 8;
-/** 基础重试延迟 (ms) */
-const BASE_RETRY_DELAY = 1000;
+const MAX_RETRIES = 10;
+/** 基础重试延迟 (ms) —— 设计要求 10s 一周期（指数退避以此起步，封顶 30s） */
+const BASE_RETRY_DELAY = 10_000;
+/** 网络探测间隔：网络故障时先 ping 网络（而非盲目重试 LLM），每 3s 探测一次 */
+const NETWORK_PROBE_INTERVAL_MS = 3_000;
+/** 网络探测总上限（ms），超过则放弃、抛出网络错误 */
+const NETWORK_PROBE_TIMEOUT_MS = 120_000;
 
 /** Bedrock 二进制事件流的 content-type */
 const BEDROCK_EVENTSTREAM_CONTENT_TYPE = "application/vnd.amazon.eventstream";
@@ -1220,6 +1224,27 @@ export class LLMClient {
     return Math.max(0, Math.round(capped + j));
   }
 
+  /**
+   * 网络故障探测：设计要求"网络问题一直 ping 网络，而不是一直重试 llm 发送"。
+   * 用轻量 HEAD 请求探测连通性，每 NETWORK_PROBE_INTERVAL_MS 探测一次，
+   * 直到通或超过 NETWORK_PROBE_TIMEOUT_MS。返回 true=网络已恢复，false=超时。
+   * 不抛错——网络探测本身的失败只是"还没通"。
+   */
+  private async _waitForNetwork(): Promise<boolean> {
+    const deadline = Date.now() + NETWORK_PROBE_TIMEOUT_MS;
+    const probeUrl = "https://www.google.com/generate_204";
+    while (Date.now() < deadline) {
+      try {
+        await this._fetch(probeUrl, { method: "HEAD", signal: AbortSignal.timeout(5000) } as RequestInit);
+        return true; // 任何 HTTP 响应都算"网络通"（即使非 204）
+      } catch {
+        // 探测失败：等下一轮
+        await sleep(NETWORK_PROBE_INTERVAL_MS);
+      }
+    }
+    return false;
+  }
+
   /** 判断某状态码/错误是否可重试（先按策略，再让 onError 覆盖） */
   private _decideRetry(ctx: ErrorHookContext): "retry" | "fail" | { delayMs: number } {
     if (this._onError) return this._onError(ctx);
@@ -1356,8 +1381,17 @@ export class LLMClient {
         // 网络错误，记录本次重试信息
         retryHistory.push(`attempt ${attempt + 1}: ${lastError.message.slice(0, 200)}`);
 
-        // 网络错误，重试
+        // 网络错误，重试（设计要求：网络问题先 ping 网络恢复，而非盲目重试 LLM）
         if (attempt < maxRetries) {
+          // 前 2 次可能是瞬时抖动，快速退避重试；持续失败（attempt>=2）才进入网络探测模式，
+          // 避免网络实际畅通时浪费 3-5s 探测。
+          if (attempt >= 2) {
+            const recovered = await this._waitForNetwork();
+            if (!recovered) {
+              // 网络探测超时（>120s 仍不通）：放弃，抛出网络错误
+              throw new Error(`网络持续不可达 ${NETWORK_PROBE_TIMEOUT_MS}ms，放弃重试: ${lastError.message}`);
+            }
+          }
           const waitMs = this._computeBackoff(attempt);
           await sleep(waitMs);
           continue;

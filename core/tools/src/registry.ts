@@ -123,7 +123,6 @@ export class ToolRegistry {
     const allowAll = whitelist?.has("*");
     const effectiveWhitelist = allowAll ? undefined : whitelist;
     const seen = new Set<number>();
-    const debugInfo: string[] = [];
 
     for (const tool of this._tools.values()) {
       const id = getObjectUid(tool);
@@ -131,50 +130,51 @@ export class ToolRegistry {
       seen.add(id);
 
       const name = tool.definition.name;
-      const hasSchemaDir = Boolean(tool.schemaDir);
       // 白名单过滤
       if (effectiveWhitelist && !effectiveWhitelist.has(name)) {
         const aliases: string[] = tool.definition.aliases ?? [];
         if (!aliases.some(a => effectiveWhitelist!.has(a))) {
-          debugInfo.push(`${name}:filtered_out`);
           continue;
         }
       }
 
       const prompt = this._readToolPromptCached(tool);
-      debugInfo.push(`${name}:schemaDir=${hasSchemaDir},prompt=${prompt ? prompt.length + 'chars' : 'null'}`);
       if (prompt) {
         prompts.set(name, prompt);
       }
     }
-    console.log(`[ToolRegistry] getToolPrompts debug: tools=${this._tools.size}, whitelist=${whitelist ? [...whitelist].join(',') : 'all'}, results=[${debugInfo.join('; ')}]`);
+    // 重建完成：清 dirty 标志（下次文件变化再置 true 触发重建）
+    this._toolPromptCacheDirty = false;
     return prompts;
   }
 
-  /** 读取工具提示词（带缓存） */
+  /** 读取工具提示词（带缓存：mtime 未变则返回缓存，避免每轮全量重读） */
   private _readToolPromptCached(tool: Tool): string | null {
     if (!tool.schemaDir) return null;
     const promptPath = join(tool.schemaDir, "TOOL.md");
 
-    // 读取文件并更新缓存
     const fileExists = existsSync(promptPath);
     if (!fileExists) {
-      console.log(`[ToolRegistry] TOOL.md NOT FOUND for ${tool.definition.name}: path=${promptPath}, schemaDir=${tool.schemaDir}`);
       this._toolPromptCache.delete(tool.definition.name);
       return null;
     }
 
+    // 缓存快路径：比对文件真实 mtime，未变且未 dirty 则直接返回缓存
     try {
+      const stat = statSync(promptPath);
+      const cached = this._toolPromptCache.get(tool.definition.name);
+      if (cached && !this._toolPromptCacheDirty && cached.mtimeMs === stat.mtimeMs) {
+        return cached.content;
+      }
+
       const content = readFileSync(promptPath, "utf-8");
       if (!content.trim()) {
-        console.log(`[ToolRegistry] TOOL.md EMPTY for ${tool.definition.name}: path=${promptPath}`);
+        this._toolPromptCache.delete(tool.definition.name);
         return null;
       }
-      this._toolPromptCache.set(tool.definition.name, { content, mtimeMs: Date.now() });
-      console.log(`[ToolRegistry] TOOL.md LOADED for ${tool.definition.name}: ${content.length} chars from ${promptPath}`);
+      this._toolPromptCache.set(tool.definition.name, { content, mtimeMs: stat.mtimeMs });
       return content;
-    } catch (err) {
-      console.log(`[ToolRegistry] TOOL.md READ ERROR for ${tool.definition.name}: ${err}`);
+    } catch {
       return null;
     }
   }

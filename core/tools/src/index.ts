@@ -9,6 +9,10 @@ export type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, T
 export { ToolRegistry } from './registry.js'
 export { ToolExecutor } from './executor.js'
 export { registerBuiltins } from './impls/index.js'
+export { createToolScaffold } from './scaffold.js'
+export type { ScaffoldOptions } from './scaffold.js'
+// 裁判评分工具（不进 registerBuiltins，裁判 agent 装配时单独注册）
+export { GradeTool } from './eval/grade/tool.js'
 
 // 终端引擎（Rust 驱动，harness/agent 运行时需要）
 export {
@@ -44,16 +48,6 @@ export type { TerminalMode, TerminalReviewer, PolicyAction, PolicyDecision } fro
 // 技能管理（从 context 下放到此；context 包会从这里再导出）
 export { SkillScanner, SkillContextManager } from './skill-context.js'
 export type { SkillEntry, SkillChange, SkillContextResult } from './skill-context.js'
-
-// ── 文件即工具 API（对标 Vercel Eve） ──
-export { defineTool, DefinedToolAdapter, approval } from './define-tool.js'
-export type {
-  DefineToolConfig,
-  ApprovalPredicate,
-  ApprovalDecision,
-  ToModelOutput,
-  ModelOutputValue,
-} from './define-tool.js'
 
 // ── 动态工具加载器 ──
 export { DynamicToolLoader } from './dynamic-tool-loader.js'

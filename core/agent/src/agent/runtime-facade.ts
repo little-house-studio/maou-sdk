@@ -20,7 +20,7 @@ import type { APIPreset } from "@little-house-studio/llm";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { LLMPostLogger } from "@little-house-studio/llm";
 import type { LLMPostLogRecord } from "@little-house-studio/llm";
-import { ToolExecutor, TASK_MANAGER } from "@little-house-studio/tools";
+import { ToolExecutor, TASK_MANAGER, initTerminalEngine } from "@little-house-studio/tools";
 import type { ToolRegistry, Task } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { ConfigStore } from "@little-house-studio/types";
@@ -91,6 +91,12 @@ export class Runtime {
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.summarizer = options.summarizer;
     this.gitWatcher = new GitWatcher(this.maouRoot, this.projectRoot);
+
+    // 终端引擎初始化（幂等）：SDK 独立使用时无 harness server，此处保证引擎可用。
+    // 持久化路径与 harness 一致（<projectRoot>/.maou/terminals.json）。
+    try {
+      initTerminalEngine(undefined, join(this.projectRoot, ".maou", "terminals.json"));
+    } catch { /* 已初始化或引擎不可用，忽略 */ }
 
     // ContextEngine 压缩闭环装配：
     // - 显式注入 harnessStore/taskStore 时优先用注入值

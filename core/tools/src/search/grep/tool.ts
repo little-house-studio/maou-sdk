@@ -302,7 +302,7 @@ export class GrepTool extends Tool {
     }
 
     const searchPath = String(params.path ?? ".").trim();
-    const rootResolved = resolve(ctx.projectRoot);
+    const rootResolved = resolve(ctx.workingDir || ctx.projectRoot);
     const searchDir = resolve(rootResolved, searchPath);
 
     if (!searchDir.startsWith(rootResolved) && searchDir !== rootResolved) {

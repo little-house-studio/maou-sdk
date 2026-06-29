@@ -158,6 +158,19 @@ export type {
   EvalRunResult,
 } from "./define-eval.js";
 
+// ── 裁判测试体系（EvalSuite：问题集 + 裁判 agent 评分 + 成绩单 + index 隔离）──
+
+export { EvalSuite } from "./eval-suite.js";
+export type {
+  TestCase,
+  TestSuiteManifest,
+  SubjectResult,
+  JudgeResult,
+  TestCaseReport,
+  TestReport,
+  AgentSend,
+} from "./eval-suite.js";
+
 // ── 指令注册表 ──────────────────────────────────────────────────────────
 
 export { CommandRegistry, registerBuiltinCommands, defineCommand } from "./command-registry.js";

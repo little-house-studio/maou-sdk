@@ -3,7 +3,7 @@
  * 渲染后写入实例的 .cache/PREVIEW/ 目录，方便开发调试。
  */
 
-import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync, watch } from "node:fs";
 import { join } from "node:path";
 import { PromptCompiler } from "@little-house-studio/prompt";
 import { getTemplateRef } from "./template-ref.js";
@@ -59,4 +59,54 @@ export function renderAgentPreview(agentDir: string, templateDirOrProjectRoot?: 
       writeFileSync(join(previewDir, out), `${stamp}[渲染失败: ${err}]`, "utf-8");
     }
   }
+}
+
+/** 已注册 watch 的 agentDir 集合（去重，避免重复监听）。 */
+const _watched = new Set<string>();
+
+/**
+ * 监听 agent 模板源文件（system/before_user/compression）变化，自动重新渲染 PREVIEW。
+ * 设计要求"检测到上面的内容变了，下面就直接渲染到文件内"。
+ * 幂等：同一 agentDir 只 watch 一次。返回取消监听函数。
+ */
+export function watchAgentPreview(agentDir: string, templateDirOrProjectRoot?: string): () => void {
+  if (_watched.has(agentDir)) return () => {};
+  _watched.add(agentDir);
+
+  // 确定要监听的 promptRoot（与 renderAgentPreview 同逻辑）
+  let promptRoot: string;
+  const instancePrompt = join(agentDir, "prompt", "system", "system.md");
+  if (existsSync(instancePrompt)) {
+    promptRoot = join(agentDir, "prompt");
+  } else {
+    const templateDir = getTemplateRef(agentDir);
+    promptRoot = templateDir && existsSync(join(templateDir, "prompt", "system", "system.md"))
+      ? join(templateDir, "prompt")
+      : join(agentDir, "prompt");
+  }
+
+  const sources = [
+    join(promptRoot, "system", "system.md"),
+    join(promptRoot, "before_user", "before_user.md"),
+    join(promptRoot, "compression", "compression.md"),
+  ];
+
+  const watchers = sources
+    .filter((p) => existsSync(p))
+    .map((p) => {
+      // 防抖：fs.watch 可能多次触发，500ms 内合并
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const w = watch(p, () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          try { renderAgentPreview(agentDir, templateDirOrProjectRoot); } catch { /* ignore */ }
+        }, 500);
+      });
+      return w;
+    });
+
+  return () => {
+    _watched.delete(agentDir);
+    for (const w of watchers) w.close();
+  };
 }

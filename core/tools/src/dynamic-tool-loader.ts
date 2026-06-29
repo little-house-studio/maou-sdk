@@ -4,9 +4,8 @@
  * 核心机制：
  * 1. 扫描 agent 的 tools/ 目录下的 .ts 文件
  * 2. 动态 import 每个 .ts 文件
- * 3. 期望文件 export default 一个 defineTool() 返回的函数
- * 4. 用文件名（去掉扩展名）作为工具名，调用该函数获得 DefinedToolAdapter
- * 5. 注册到 ToolRegistry
+ * 3. 期望文件 export default 一个旧式 Tool 实例（new XxxTool()）或类（XxxTool）
+ * 4. 用文件名（去掉扩展名）作为工具名，注册到 ToolRegistry
  *
  * 也支持 .json schema 文件（纯 schema，无可执行逻辑，仅供 LLM 调用参考）
  */
@@ -14,7 +13,8 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, basename, resolve } from "node:path";
 import type { ToolRegistry } from "./registry.js";
-import { DefinedToolAdapter } from "./define-tool.js";
+import type { Tool } from "./base.js";
+import { Tool as ToolClass } from "./base.js";
 
 /** 加载结果 */
 export interface DynamicToolLoadResult {
@@ -169,13 +169,14 @@ export class DynamicToolLoader {
   /**
    * 加载单个工具 .ts 文件
    *
-   * 期望文件 export default 一个函数（defineTool 的返回值），
-   * 调用该函数并传入工具名，得到 DefinedToolAdapter 实例。
+   * 期望文件 export default 一个旧式 Tool：
+   *   - 实例：`export default new XxxTool()`（推荐）
+   *   - 类：`export default XxxTool`（自动实例化）
    */
   private static async _loadToolFile(
     filePath: string,
     toolName: string,
-  ): Promise<DefinedToolAdapter | null> {
+  ): Promise<Tool | null> {
     try {
       // 动态 import（支持 .ts 通过 tsx/ts-node 运行时，或编译后的 .mjs）
       const absolutePath = resolve(filePath);
@@ -184,49 +185,19 @@ export class DynamicToolLoader {
       const defaultExport = module.default;
       if (!defaultExport) return null;
 
-      // defineTool 返回的是一个函数 (name: string) => DefinedToolAdapter
-      if (typeof defaultExport === "function") {
-        const adapter = defaultExport(toolName);
-        if (adapter instanceof DefinedToolAdapter) {
-          return adapter;
-        }
-        // 如果返回的不是 DefinedToolAdapter，可能是一个简单的工具对象
-        // 尝试兼容处理
-        if (adapter && typeof adapter === "object" && "execute" in adapter) {
-          return DynamicToolLoader._wrapSimpleTool(toolName, adapter);
-        }
+      // 旧式 Tool 实例（extends Tool，export default new XxxTool()）
+      if (defaultExport instanceof ToolClass) {
+        return defaultExport;
       }
 
-      // 如果 export default 本身就是 DefinedToolAdapter 实例
-      if (defaultExport instanceof DefinedToolAdapter) {
-        return defaultExport;
+      // 旧式 Tool 类（export default XxxTool，未 new）—— 实例化
+      if (typeof defaultExport === "function" && defaultExport.prototype instanceof ToolClass) {
+        return new (defaultExport as new () => Tool)();
       }
 
       return null;
     } catch (err) {
       throw new Error(`加载工具文件 ${filePath} 失败: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }
-
-  /**
-   * 包装简单工具对象为 DefinedToolAdapter
-   * 兼容不是通过 defineTool 创建的工具
-   */
-  private static _wrapSimpleTool(
-    name: string,
-    tool: { description?: string; inputSchema?: any; execute: (...args: any[]) => any },
-  ): DefinedToolAdapter {
-    // 这种情况需要 import z，但避免循环依赖
-    // 使用一种简单方式：直接创建 DefinedToolAdapter 的子集
-    const { z } = require("zod") as typeof import("zod");
-    const { defineTool } = require("./define-tool.js") as typeof import("./define-tool.js");
-
-    const inputSchema = tool.inputSchema || z.object({});
-
-    return defineTool({
-      description: tool.description || name,
-      inputSchema,
-      execute: tool.execute,
-    })(name);
   }
 }
