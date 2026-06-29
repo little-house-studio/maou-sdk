@@ -36,6 +36,19 @@ export class SubagentTool extends Tool {
         name: { type: "string", description: "子 Agent 唯一名称（fork 时作为 taskId，可省略自动生成）" },
         task: { type: "string", description: "分配给子 Agent 的任务描述（fork 必填）" },
         description: { type: "string", description: "子 Agent 角色说明（可选）" },
+        fork_mode: {
+          type: "string",
+          enum: ["context_only", "context_and_config"],
+          description:
+            "fork 模式（默认 context_only）：" +
+            "context_only = 子 Agent 继承主 Agent 配置（仅 session 独立）；" +
+            "context_and_config = 子 Agent 用独立 agent 配置（需同时指定 agent_name）",
+        },
+        agent_name: {
+          type: "string",
+          description:
+            "fork_mode='context_and_config' 时必填：子 Agent 使用的 agent 名（必须是 AgentRegistry 中已存在的 agent）",
+        },
       },
       required: ["action"],
       additionalProperties: false,
@@ -48,13 +61,21 @@ export class SubagentTool extends Tool {
     const name = String(params.name ?? "").trim();
     const task = String(params.task ?? "").trim();
     const description = String(params.description ?? "").trim();
+    // fork 选项
+    const forkMode = params.fork_mode === "context_and_config" ? "context_and_config" : "context_only";
+    const agentName = String(params.agent_name ?? "").trim() || undefined;
+    // forkMode='context_and_config' 必须传 agent_name
+    if (forkMode === "context_and_config" && !agentName) {
+      return createToolResponse(false, "fork_mode='context_and_config' 时必须传 agent_name（指定子 Agent 使用的 agent 配置）。");
+    }
+    const forkOptions = { forkMode, agentName } as { forkMode: "context_only" | "context_and_config"; agentName?: string };
 
     // fork：真并行执行子 Agent（依赖 ctx.subagentExecutor 由 runtime 注入）
     if (action === "fork" || action === "create") {
-      return this.doFork(name || undefined, task, description, ctx);
+      return this.doFork(name || undefined, task, description, ctx, forkOptions);
     }
     if (action === "fork_layer") {
-      return this.doForkLayer(ctx);
+      return this.doForkLayer(ctx, forkOptions);
     }
 
     // 兼容旧 API（list/status/output/update-task/stop）——这些依赖 harness HTTP 路由，
@@ -83,6 +104,7 @@ export class SubagentTool extends Tool {
     task: string,
     _description: string,
     ctx: ToolContext,
+    forkOptions: { forkMode: "context_only" | "context_and_config"; agentName?: string },
   ): Promise<ToolResponse> {
     if (!task) return createToolResponse(false, "请提供 task（分配给子 Agent 的任务描述）。");
     if (!ctx.subagentExecutor) {
@@ -95,12 +117,13 @@ export class SubagentTool extends Tool {
 
     const taskId = name || `task-${Date.now().toString(36)}`;
     try {
-      const result = await ctx.subagentExecutor.fork(taskId, task);
+      const result = await ctx.subagentExecutor.fork(taskId, task, forkOptions);
       const status = result.ok ? "✅" : "❌";
       const lines = [
         `${status} 子 Agent 执行完成（${result.elapsedMs}ms）`,
         `taskId: ${result.taskId}`,
         `subSessionId: ${result.subSessionId}`,
+        `forkMode: ${forkOptions.forkMode}${forkOptions.agentName ? ` (agent=${forkOptions.agentName})` : ""}`,
         result.error ? `error: ${result.error}` : "",
         "── 输出 ──",
         result.output || "(无输出)",
@@ -120,7 +143,10 @@ export class SubagentTool extends Tool {
    *   1. LLM 调 task_manage fork_layer → 拿到 ready task 列表
    *   2. LLM 调 agent_message fork_layer → 真正并发 fork 这一层的所有 task
    */
-  private async doForkLayer(ctx: ToolContext): Promise<ToolResponse> {
+  private async doForkLayer(
+    ctx: ToolContext,
+    forkOptions: { forkMode: "context_only" | "context_and_config"; agentName?: string },
+  ): Promise<ToolResponse> {
     if (!ctx.subagentExecutor) {
       return createToolResponse(
         false,
@@ -138,6 +164,7 @@ export class SubagentTool extends Tool {
     try {
       const results = await ctx.subagentExecutor.forkLayer(
         ready.map((t) => ({ id: t.id, desc: t.desc })),
+        forkOptions,
       );
       const lines: string[] = [
         `⚡ 并发 fork ${ready.length} 个子 Agent 完成：`,

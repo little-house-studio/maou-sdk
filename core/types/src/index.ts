@@ -99,6 +99,55 @@ export interface ToolContext {
    * 缺省（undefined）→ agent_message 退回原 stub 行为（"暂未开放"）。
    */
   subagentExecutor?: SubagentExecutorLike
+  /**
+   * 调用主 Agent（监督模式专用）—— 由 harness 注入。
+   *
+   * supervisor_chat_main 工具调此函数把消息派给主 Agent，
+   * 主 Agent 执行一轮 loop 后把最终输出通过 AsyncGenerator yield 事件，
+   * 最后 return 主 Agent 的最终文本输出。
+   *
+   * 缺省（undefined）→ supervisor_chat_main 工具返回错误。
+   */
+  callMainAgent?: (message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>
+  /**
+   * 当前 session 是否处于监督模式（由 AgentRuntime 注入）。
+   * supervisor 工具据此判断调用上下文是否合法。
+   */
+  isSupervisorSession?: boolean
+  /**
+   * 监督模式管理器（由 AgentRuntime 注入）。
+   *
+   * supervisor_task_control / supervisor_chat_main 工具通过它查询/更新绑定。
+   * 用最小契约接口避免 tools → agent 的循环依赖；agent 包实现并注入 SUPERVISOR_MANAGER 单例。
+   */
+  supervisorManager?: SupervisorManagerLike
+}
+
+/**
+ * SupervisorManager 的最小契约（types 包不依赖 agent 包）。
+ * 真实实现见 @little-house-studio/agent 的 SUPERVISOR_MANAGER。
+ */
+export interface SupervisorManagerLike {
+  getBySupervisor(supervisorSessionId: string): SupervisorBindingLike | undefined
+  getByMain(mainSessionId: string): SupervisorBindingLike | undefined
+  getByChat(chatKey: string): SupervisorBindingLike | undefined
+  updateState(mainSessionId: string, state: SupervisorState): SupervisorBindingLike | undefined
+  updatePlan(mainSessionId: string, plan: string): SupervisorBindingLike | undefined
+  unbind(mainSessionId: string): SupervisorBindingLike | undefined
+  isSupervisorSession(sessionId: string): boolean
+  isSupervisorMode(mainSessionId: string): boolean
+  list(): SupervisorBindingLike[]
+}
+
+export type SupervisorState = "planning" | "started" | "confirming" | "ended"
+
+export interface SupervisorBindingLike {
+  mainSessionId: string
+  supervisorSessionId: string
+  state: SupervisorState
+  plan?: string
+  createdAt: number
+  chatKey?: string
 }
 
 /**
@@ -107,9 +156,33 @@ export interface ToolContext {
  */
 export interface SubagentExecutorLike {
   /** fork 单个子 Agent 执行任务。 */
-  fork(taskId: string, task: string): Promise<SubagentResultLike>
+  fork(taskId: string, task: string, options?: ForkOptions): Promise<SubagentResultLike>
   /** 并发 fork 一层 task（同层可并行）。 */
-  forkLayer(tasks: Array<{ id: string; desc: string }>): Promise<SubagentResultLike[]>
+  forkLayer(tasks: Array<{ id: string; desc: string }>, options?: ForkOptions): Promise<SubagentResultLike[]>
+}
+
+/**
+ * fork 子 Agent 时的选项。
+ *
+ * forkMode：
+ *   - 'context_only'（默认）：子 Agent 继承主 Agent 的 agent 配置（同一个 agentName）
+ *     仅 session 上下文独立（新 session、独立历史），agent 配置完全用主 Agent 的
+ *   - 'context_and_config'：子 Agent 用独立 agent 配置
+ *     必须传 agentName 指定使用哪个 agent（必须是 AgentRegistry 中已存在的 agent）
+ *     若同时传 configOverrides，会创建临时 agent 文件（fork 自 agentName 配置 + 覆盖字段）
+ *     临时 agent 仅对当前子 session 生效，子 session 结束后清理
+ *
+ * agentName：forkMode='context_and_config' 时必填
+ * configOverrides：覆盖 agent.json 字段（如 system prompt / tool 白名单 / model 等）
+ */
+export interface ForkOptions {
+  forkMode?: 'context_only' | 'context_and_config'
+  /** 独立配置的 agent 名（forkMode='context_and_config' 时必填） */
+  agentName?: string
+  /** 临时覆盖 agent.json 字段（创建临时 agent 文件，子 session 结束清理） */
+  configOverrides?: Record<string, unknown>
+  /** 中断信号 */
+  abortSignal?: AbortSignal
 }
 
 export interface SubagentResultLike {
@@ -233,6 +306,12 @@ export interface SecurityConfig {
 export interface ApiConfig {
   presets: LLMPreset[]
   defaultPreset: number
+  /**
+   * 全局辅助模型 preset 索引（可选）。
+   * 用于压缩/loop判定/路由等辅助调用，未配置时辅助调用回退主 preset。
+   * 优先级：agent.json helperModel > 全局 helperPreset > 主模型 preset
+   */
+  helperPreset?: number
   agentRoundLimit: number
   contextSettings: ContextSettings
   pluginSettings?: PluginSettings

@@ -16,7 +16,7 @@
  * @see subagent-registry.ts（约定目录扫描 + schema 生成）
  */
 
-import type { StreamEvent, SubagentExecutorLike, SubagentResultLike } from "@little-house-studio/types";
+import type { StreamEvent, SubagentExecutorLike, SubagentResultLike, ForkOptions } from "@little-house-studio/types";
 
 /** harness 注入的 run 函数类型 */
 export type SubagentRunFn = (
@@ -25,7 +25,12 @@ export type SubagentRunFn = (
   taskDesc: string,
   options?: {
     parentSessionId?: string;
+    /** 子 Agent 使用的 agent 名（forkMode='context_and_config' 时必填） */
     agentName?: string;
+    /** fork 模式：context_only（同配置）/ context_and_config（独立配置） */
+    forkMode?: 'context_only' | 'context_and_config';
+    /** 临时覆盖 agent.json 字段（harness 创建临时 agent 文件，结束清理） */
+    configOverrides?: Record<string, unknown>;
     abortSignal?: AbortSignal;
   },
 ) => AsyncGenerator<StreamEvent, { finalOutput: string; ok: boolean; error?: string }>;
@@ -67,17 +72,35 @@ export class SubagentExecutor implements SubagentExecutorLike {
    * 实现 SubagentExecutorLike.fork 契约。
    *
    * @param taskId task 标识
-   * @param task 任务描述（自然语言，子 Agent 的输入）
+   * @param taskDesc 任务描述（自然语言，子 Agent 的输入）
+   * @param options fork 选项（forkMode/agentName/configOverrides）
    */
-  async fork(taskId: string, taskDesc: string): Promise<SubagentResultLike> {
+  async fork(taskId: string, taskDesc: string, options?: ForkOptions): Promise<SubagentResultLike> {
     const parentSessionId = this.parentSessionId;
     const subSessionId = this._idFactory(parentSessionId, taskId);
+    const forkMode = options?.forkMode ?? 'context_only';
     const start = Date.now();
-    this._log("info", `[FORK] task=${taskId} sub_session=${subSessionId} desc="${taskDesc.slice(0, 60)}"`);
+    this._log("info", `[FORK] task=${taskId} mode=${forkMode} agent=${options?.agentName ?? "(inherit)"} sub_session=${subSessionId} desc="${taskDesc.slice(0, 60)}"`);
+
+    // forkMode='context_and_config' 必须传 agentName
+    if (forkMode === 'context_and_config' && !options?.agentName) {
+      return {
+        taskId,
+        subSessionId,
+        output: "",
+        ok: false,
+        error: "forkMode='context_and_config' 必须传 agentName",
+        elapsedMs: 0,
+      };
+    }
 
     try {
       const gen = this._runFn(subSessionId, taskId, taskDesc, {
         parentSessionId,
+        agentName: options?.agentName,
+        forkMode,
+        configOverrides: options?.configOverrides,
+        abortSignal: options?.abortSignal,
       });
       let finalOutput = "";
       let ok = true;
@@ -127,8 +150,9 @@ export class SubagentExecutor implements SubagentExecutorLike {
    * 实现 SubagentExecutorLike.forkLayer 契约。
    *
    * @param tasks 同层可并行执行的 task 数组（由 TaskScheduler.selectLayer 给出）
+   * @param options fork 选项（应用到本层所有 task）
    */
-  async forkLayer(tasks: Array<{ id: string; desc: string }>): Promise<SubagentResultLike[]> {
+  async forkLayer(tasks: Array<{ id: string; desc: string }>, options?: ForkOptions): Promise<SubagentResultLike[]> {
     if (tasks.length === 0) return [];
 
     this._log("info", `[FORK_LAYER] 并行 fork ${tasks.length} 个子 Agent: ${tasks.map((t) => t.id).join(", ")}`);
@@ -138,7 +162,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
     for (let i = 0; i < tasks.length; i += this._maxConcurrency) {
       const batch = tasks.slice(i, i + this._maxConcurrency);
       const batchResults = await Promise.all(
-        batch.map((t) => this.fork(t.id, t.desc)),
+        batch.map((t) => this.fork(t.id, t.desc, options)),
       );
       results.push(...batchResults);
     }

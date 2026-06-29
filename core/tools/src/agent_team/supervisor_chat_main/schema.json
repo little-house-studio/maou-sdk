@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "supervisor_chat_main",
+  "description": "监督 Agent → 主 Agent 沟通工具（仅 /goal 监督模式下可用）",
+  "type": "object",
+  "properties": {
+    "message": {
+      "type": "string",
+      "description": "发给主 Agent 的指令/消息"
+    },
+    "wait": {
+      "type": "boolean",
+      "description": "是否等待主 Agent 完成（默认 true）"
+    }
+  },
+  "required": ["message"],
+  "additionalProperties": false
+}

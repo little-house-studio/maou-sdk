@@ -8,7 +8,7 @@
     - 每个工具都有：
         - src/  工具调用功能代码
         - 工具schema文件
-        - 工具注入的系统提示词（在系统提示词的tool区中注入，可选）
+        - 工具注入的系统提示词文件（在系统提示词的tool区中注入，可选）
         - 工具配置文件（同轮次下多次调用为并行执行还是串行执行，是否阻塞，包括调用后是否进入loop的下一轮等等。。）
     - 最基本的工具：终端，很多工具都依赖它
     - 其他工具：工具集中可以存在，但具体有没有还是要agent.json中配置的
@@ -43,40 +43,55 @@
         - 消息队列模式：完整task结束后、该loop结束后、当前轮结束后、立刻打断并发送、仅打断停止内容
         - 防工具下一轮无返回的报错自动修复与防止机制（llm层与context层的内容）
         - 防消息插入到tool_call和tool_result之间的机制。
-    - eve系统与配置文件（包含初始化和加载，支持动态加载渲染）
+    - 
+    - agent模板系统与配置文件（包含初始化和加载，支持动态加载渲染）
         - 具有agent模板与创建agent实例化能力
         - 会在绑定的路径的.maou/AGENT/<agent-name>里面识别
-        - 路径结构：
-            - prompt/
-                - system/
-                    - system.md （系统提示词文件，每次自动解析渲染内部嵌套内容）
-                    - README.md 
-                - before_user/
-                    - before_user.md （用户输入前注入的提示词文件，每次自动解析渲染内部嵌套内容）
-                    - README.md 
-                - compression/
-                    - compression.md （压缩上下文的时候的提示词，每次自动解析渲染内部嵌套内容）
-                    - README.md 
-                - PREVIEW/   （上面文件修改自动执行渲染到下面位置，方便调试开发，检测到上面的内容变了，下面就直接渲染到文件内）
-                    - PREVIEW_SYSTEM.md
-                    - PREVIEW_BEFORE_USER.md
-                    - PREVIEW_COMPRESSION.md
-                    - README.md 
-            - memory/ 会被注入到烘焙区的内容
-                - USER.md （只是案例，不一定会有这个文件）   
-            - hook/
-                - 里面的自定义脚本监听hook事件触发，比如用户输入、用户输入前、压缩上下文前、压缩上下文后、loop结束等
-                - README.md 
-            - loop/
-                - end.md  （loop结束的判定标准，每次loop周期结束后会有agent检查是否达标，不达标会反馈给ai，继续干）
-                - loop.ts  （loop判定标准的脚本，默认为“有loop标注的工具调用返回结果就继续返回并下一轮”）
-                - README.md 
-            - triggers/  (自动运行里面的脚本，脚本内容是脚本发消息给ai，例如定时器、监听某个网站的具体位置有数据发生大幅度变化、智能家居检测到有人进来等等一个外部拓展的maoumessage标准的脚本路劲)
-                - README.md 
-            - command/（指令执行脚本，文件名=指令名）
-                - README.md 
-            - skill/（仅仅是这个agent可用的skill列表）
-            - agent.json（配置：工具白名单、自动重试次数、单轮loop次数限制）
+        - 模板：
+            - 路径通常在依赖agent层的自定义的agent包项目路径中（使用创建agent初始化模板程序创建）
+            - 结构：
+                - <agent_name>
+                    - prompt/
+                        - system/
+                            - system.md （系统提示词文件，每次自动解析渲染内部嵌套内容）
+                            - README.md 
+                        - before_user/
+                            - before_user.md （用户输入前注入的提示词文件，每次自动解析渲染内部嵌套内容）
+                            - README.md 
+                        - compression/
+                            - compression.md （压缩上下文的时候的提示词，每次自动解析渲染内部嵌套内容）
+                            - README.md 
+                        - PREVIEW/   （上面文件修改自动执行渲染到下面位置，方便调试开发，检测到上面的内容变了，下面就直接渲染到文件内）
+                            - PREVIEW_SYSTEM.md
+                            - PREVIEW_BEFORE_USER.md
+                            - PREVIEW_COMPRESSION.md
+                            - README.md 
+                    - hook/
+                        - 里面的自定义脚本监听hook事件触发，比如用户输入、用户输入前、压缩上下文前、压缩上下文后、loop结束等
+                        - README.md 
+                    - loop/
+                        - end.md  （loop结束的判定标准，每次loop周期结束后会有agent检查是否达标，不达标会反馈给ai，继续干）
+                        - loop.ts  （loop判定标准的脚本，默认为“有loop标注的工具调用返回结果就继续返回并下一轮”）
+                        - README.md 
+                    - command/（指令执行脚本，文件名=指令名）
+                        - README.md 
+                    - agent.json（配置：工具白名单、自动重试次数、单轮loop次数限制）
+
+        - 实例化：
+            - 实例化是指向模板，依赖模板的agent实例，具有一定可编辑性
+            - 实例化路径：.maou/AGENT/<agent-name>
+            - 结构：
+                - <project_root>/.maou/agent/<agent_name>/
+                    - memory/ 会被注入到烘焙区的内容
+                        - USER.md （只是案例，不一定会有这个文件）   
+                    - triggers/  (自动运行里面的脚本，脚本内容是脚本发消息给ai，例如定时器、监听某个网站的具体位置有数据发生大幅度变化、智能家居检测到有人进来等等一个外部拓展的maoumessage标准的脚本路劲)
+                        - README.md 
+                    - command/（自定义指令）
+                        - README.md 
+                    - sessions/（会话记录）
+                    - skill/（仅仅是这个agent可用的skill列表）
+                        - README.md 
+                    - agent.local.json（可选，内部有配置会覆盖模板agent.json的配置）
     - 消息接口与hook（可以从这个接口给agent发消息，并且agent的反应可以触发hook回调）
     - 工具引擎
         - 所有工具的能力依赖层，例如终端、lsp、浏览器、sqry等等。
@@ -99,4 +114,8 @@
         - 网络问题会一直ping网络，而不是一直重试llm发送，网络没问题就继续llm内容。
         - 模型其他非我们网络原因的报错就可以重试
     - 自带diff文件变化动态区注入（不加入上下文），例如我这个项目里面非.gitignored的文件变化，会自动注入到上下文动态区。例如写着距离上次对话的变化文件名单：增加的文件、删除的文件、修改的文件。
+    - 
+
+## agent工厂
+- 流程：实例化程序 -> [agent模板文件夹] -> [agent创建到路径]
     - 

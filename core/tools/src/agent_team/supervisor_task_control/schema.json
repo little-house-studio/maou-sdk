@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "supervisor_task_control",
+  "description": "监督 Agent 生命周期控制工具（仅 /goal 监督模式下可用）",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["start", "confirm_end", "end"],
+      "description": "start=启动监督 | confirm_end=发起验收 | end=完全结束监督"
+    },
+    "plan": {
+      "type": "string",
+      "description": "任务计划 MD（action=start 时必填）"
+    },
+    "summary": {
+      "type": "string",
+      "description": "任务总结（action=confirm_end 时建议填）"
+    }
+  },
+  "required": ["action"],
+  "additionalProperties": false
+}

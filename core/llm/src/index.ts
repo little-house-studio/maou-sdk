@@ -88,6 +88,15 @@ export type {
 export { ModelCaller } from './caller.js'
 export type { ModelCallResult, CallerStreamEvent } from './caller.js'
 
+// ─── 辅助模型调用器（统一辅助调用管道：压缩/判定/路由等）────────────────────
+export { AuxModelCaller, resolveHelperPreset } from './aux-caller.js'
+export type {
+  AuxCallParams,
+  AuxCallResult,
+  AuxJsonCallResult,
+  AuxUsageStats,
+} from './aux-caller.js'
+
 // ─── 适配器底层类型（写自定义协议适配器或直接用 LLMClient 时需要）─────────
 export type {
   ModelResponse,

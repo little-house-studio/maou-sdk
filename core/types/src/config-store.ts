@@ -47,6 +47,12 @@ const PluginSettingsSchema = z.object({
 const ApiConfigSchema = z.object({
   presets: z.array(LLMPresetSchema).default([]),
   defaultPreset: z.number().int().min(0).default(0),
+  /**
+   * 全局辅助模型 preset 索引（可选）。
+   * 用于压缩/loop判定/路由等辅助调用，未配置时辅助调用回退主 preset。
+   * 优先级：agent.json helperModel > 全局 helperPreset > 主模型 preset
+   */
+  helperPreset: z.number().int().min(0).optional(),
   agentRoundLimit: z.number().int().positive().default(50),
   contextSettings: ContextSettingsSchema.default({}),
   pluginSettings: PluginSettingsSchema.optional(),

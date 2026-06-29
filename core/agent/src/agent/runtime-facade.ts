@@ -15,7 +15,7 @@ import { PromptCompiler } from "@little-house-studio/prompt";
 import { SessionStore } from "@little-house-studio/context";
 import { HarnessSessionStore, TaskSessionStore } from "@little-house-studio/context";
 import type { TaskPlanEntry, Summarizer } from "@little-house-studio/context";
-import { ModelCaller } from "@little-house-studio/llm";
+import { ModelCaller, AuxModelCaller, resolveHelperPreset } from "@little-house-studio/llm";
 import type { APIPreset } from "@little-house-studio/llm";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { LLMPostLogger } from "@little-house-studio/llm";
@@ -25,6 +25,7 @@ import type { ToolRegistry, Task } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { ConfigStore } from "@little-house-studio/types";
 import { AgentRuntime } from "./runtime.js";
+import { AgentRegistry } from "./registry.js";
 import { AgentFactory } from "./factory.js";
 import { GitWatcher } from "../agent_factory/git-watcher.js";
 import { createAppLogger } from "./app-logger.js";
@@ -255,6 +256,34 @@ export class Runtime {
       // 创建 ToolExecutor
       const toolExecutor = new ToolExecutor(this.toolRegistry);
 
+      // 创建 AuxModelCaller（统一辅助调用管道：压缩/loop判定/路由等）
+      // 与 ModelCaller 分离：非流式、无工具、独立 token 统计、简单重试
+      const auxCaller = new AuxModelCaller({ client: this.llmClient, maxRetries: 1 });
+
+      // 辅助模型 preset 解析函数
+      // 优先级：agent.json helperModel > 全局 helperPreset > 主模型 preset
+      // 每次 run 时由 runtime 调用，传入 agentName 和主 preset，返回辅助 preset
+      const resolveHelperPresetFn = (agentName: string, mainPreset: APIPreset): APIPreset => {
+        try {
+          // 动态读取最新配置（避免 config reload 后用旧值）
+          const cfg = this.configStore.get();
+          const presets = cfg.api.presets ?? [];
+          const globalHelperIdx = cfg.api.helperPreset;
+          // 读 agent.json 的 helperModel（轻量：AgentRegistry 构造只设路径）
+          const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
+          const entry = registry.get(agentName);
+          // LLMPreset（无 index signature）→ APIPreset（有 index signature）
+          return resolveHelperPreset(
+            entry?.helperModel,
+            presets as unknown as APIPreset[],
+            globalHelperIdx,
+            mainPreset,
+          );
+        } catch {
+          return mainPreset;
+        }
+      };
+
       this.agentRuntime = new AgentRuntime({
         compiler,
         sessions: this.sessionStore,
@@ -278,6 +307,8 @@ export class Runtime {
         harnessStore: this.harnessStore,
         taskStore: this.taskStore,
         summarizer: this.summarizer,
+        auxModelCaller: auxCaller,
+        resolveHelperPreset: resolveHelperPresetFn,
       });
     }
     return this.agentRuntime;
@@ -300,6 +331,8 @@ export class Runtime {
     platformContext?: string;
     source?: string;
     traceId?: string;
+    /** 绑定级项目根路径（飞书 binding.project_root → 覆盖运行时 projectRoot） */
+    projectRoot?: string;
   }): AsyncGenerator<StreamEvent> {
     const preset = params.preset as unknown as APIPreset;
     const sessionKey = params.sessionId || "unknown";
@@ -335,6 +368,7 @@ export class Runtime {
         userName: params.userName,
         abortSignal: params.abortSignal,
         platformContext: params.platformContext,
+        bindingProjectRoot: params.projectRoot,
       });
     } finally {
       // 引用计数 -1，归零时才删除，避免并发 run 互相误删
@@ -358,7 +392,6 @@ export class Runtime {
   /** 列出所有 agent */
   async listAgents(): Promise<Record<string, unknown>[]> {
     try {
-      const { AgentRegistry } = await import("./registry.js");
       const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
       return registry.list();
     } catch {
@@ -366,9 +399,11 @@ export class Runtime {
     }
   }
 
-  /** 初始化新 agent —— 由业务层 createAgentFromTemplate 负责，此处仅占位 */
+  /** 初始化新 agent —— 在项目级物化 agent 实例（从全局模板复制到 <project>/.maou/agents/<name>/） */
   async initAgent(name: string): Promise<Record<string, unknown>> {
-    return { ok: true, name, note: "agent 初始化已迁移到业务层 createAgentFromTemplate" };
+    const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
+    const result = registry.ensureProjectAgent(name);
+    return { ok: true, name, ...result };
   }
 
   /** 获取 Agent 工厂预设 */

@@ -63,6 +63,17 @@ export interface CommandRuntimeRef {
   clearTaskState: (sessionId: string) => void;
   /** 清理消息队列 */
   clearMessageQueue: (sessionId: string) => void;
+  /**
+   * 启动监督模式（/goal 指令调用）：
+   * 创建监督 Agent session + 绑定到主 session。
+   * 返回监督 Agent 的 sessionId，前端据此切换聊天对象。
+   */
+  startSupervisorMode?: (mainSessionId: string, agentName: string, chatKey?: string) => string;
+  /**
+   * 结束监督模式（supervisor_task_control end 调用）：
+   * 清除绑定，返回主 session ID，前端据此切回主 Agent。
+   */
+  endSupervisorMode?: (supervisorSessionId: string) => string | undefined;
   /** 中断信号 */
   abortSignal?: AbortSignal;
 }
@@ -229,6 +240,41 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
       }
       text += "\n💡 指令不需要 AI 处理，直接执行。";
       return { content: text };
+    },
+  }));
+
+  // /goal：启动监督模式 —— fork 监督 Agent 监督主 Agent 完成任务
+  registry.register(defineCommand({
+    name: "goal",
+    usage: "[任务描述]",
+    description: "启动监督模式：fork 监督 Agent 跟你确认任务，监督主 Agent 干活到完成",
+    execute: (ctx) => {
+      const args = ctx.args?.trim() ?? "";
+      if (!ctx.runtime.startSupervisorMode) {
+        return {
+          content: "❌ 监督模式未启用（harness 未注入 startSupervisorMode 函数）。",
+        };
+      }
+      // 创建监督 Agent session（agentName="supervisor"）+ 绑定到主 session
+      const supervisorSessionId = ctx.runtime.startSupervisorMode(
+        ctx.sessionId,
+        "supervisor",
+        undefined, // chatKey 由前端注入（飞书层在监听 session 切换事件时回填）
+      );
+      // 首条消息：如果有 args，作为任务描述传给监督 Agent；否则让监督 Agent 主动询问
+      const initialMessage = args
+        ? `用户启动了监督模式，任务描述：\n\n${args}\n\n请根据这个描述，向用户提问关键问题，整理出完整的任务计划 MD 大纲（含任务要求、细节、验收标准），让用户确认。`
+        : `用户启动了监督模式。请向用户询问任务目标、细节、验收标准等关键问题，整理出完整的任务计划 MD 大纲，让用户确认。`;
+      return {
+        content: `🎯 监督模式已启动。\n\n聊天对象已切换为监督 Agent。请跟监督 Agent 对话确认任务计划。\n\n${args ? `任务描述：${args}` : "请描述你要完成的任务。"}`,
+        meta: {
+          sessionId: supervisorSessionId,
+          newSession: true,
+          supervisorMode: true,
+          mainSessionId: ctx.sessionId,
+          initialMessage, // 监督 Agent 的首条消息（harness 据此启动监督 Agent run）
+        },
+      };
     },
   }));
 }

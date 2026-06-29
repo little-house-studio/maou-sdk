@@ -1,0 +1,116 @@
+/**
+ * SupervisorManager —— 管理 /goal 模式下的「主 Agent ↔ 监督 Agent」绑定。
+ *
+ * 职责：
+ *   - 维护 mainSessionId ↔ supervisorSessionId 双向映射
+ *   - 记录监督状态（plan / started / confirming / ended）
+ *   - 提供 isSupervisorSession / isSupervisorMode 查询
+ *
+ * 全局单例，进程内状态（不持久化 —— 监督模式重启后失效）。
+ */
+
+/** 监督状态 */
+export type SupervisorState = "planning" | "started" | "confirming" | "ended";
+
+/** 监督绑定记录 */
+export interface SupervisorBinding {
+  /** 主 Agent session ID（用户原始 session） */
+  mainSessionId: string;
+  /** 监督 Agent session ID（fork 出的临时 session） */
+  supervisorSessionId: string;
+  /** 当前状态 */
+  state: SupervisorState;
+  /** 任务计划 MD（用户确认后写入） */
+  plan?: string;
+  /** 创建时间戳 */
+  createdAt: number;
+  /** chat key（飞书层用，便于路由层查询） */
+  chatKey?: string;
+}
+
+class SupervisorManagerImpl {
+  private mainToSupervisor = new Map<string, SupervisorBinding>();
+  private supervisorToMain = new Map<string, SupervisorBinding>();
+  private chatToBinding = new Map<string, SupervisorBinding>();
+
+  /** 绑定主 Agent 和监督 Agent */
+  bind(binding: Omit<SupervisorBinding, "createdAt" | "state"> & { state?: SupervisorState }): SupervisorBinding {
+    const full: SupervisorBinding = {
+      ...binding,
+      state: binding.state ?? "planning",
+      createdAt: Date.now(),
+    };
+    this.mainToSupervisor.set(binding.mainSessionId, full);
+    this.supervisorToMain.set(binding.supervisorSessionId, full);
+    if (binding.chatKey) {
+      this.chatToBinding.set(binding.chatKey, full);
+    }
+    return full;
+  }
+
+  /** 解除绑定（监督结束时调用） */
+  unbind(mainSessionId: string): SupervisorBinding | undefined {
+    const binding = this.mainToSupervisor.get(mainSessionId);
+    if (!binding) return undefined;
+    this.mainToSupervisor.delete(binding.mainSessionId);
+    this.supervisorToMain.delete(binding.supervisorSessionId);
+    if (binding.chatKey) this.chatToBinding.delete(binding.chatKey);
+    return binding;
+  }
+
+  /** 通过主 session ID 查监督绑定 */
+  getByMain(mainSessionId: string): SupervisorBinding | undefined {
+    return this.mainToSupervisor.get(mainSessionId);
+  }
+
+  /** 通过监督 session ID 查监督绑定 */
+  getBySupervisor(supervisorSessionId: string): SupervisorBinding | undefined {
+    return this.supervisorToMain.get(supervisorSessionId);
+  }
+
+  /** 通过 chat key 查监督绑定（飞书层路由用） */
+  getByChat(chatKey: string): SupervisorBinding | undefined {
+    return this.chatToBinding.get(chatKey);
+  }
+
+  /** 更新状态 */
+  updateState(mainSessionId: string, state: SupervisorState): SupervisorBinding | undefined {
+    const binding = this.mainToSupervisor.get(mainSessionId);
+    if (!binding) return undefined;
+    binding.state = state;
+    return binding;
+  }
+
+  /** 更新计划 */
+  updatePlan(mainSessionId: string, plan: string): SupervisorBinding | undefined {
+    const binding = this.mainToSupervisor.get(mainSessionId);
+    if (!binding) return undefined;
+    binding.plan = plan;
+    return binding;
+  }
+
+  /** 判断 session 是否是监督 Agent session */
+  isSupervisorSession(sessionId: string): boolean {
+    return this.supervisorToMain.has(sessionId);
+  }
+
+  /** 判断主 session 是否处于监督模式 */
+  isSupervisorMode(mainSessionId: string): boolean {
+    return this.mainToSupervisor.has(mainSessionId);
+  }
+
+  /** 列出所有活跃绑定（调试用） */
+  list(): SupervisorBinding[] {
+    return Array.from(this.mainToSupervisor.values());
+  }
+
+  /** 清空所有绑定（测试用） */
+  clear(): void {
+    this.mainToSupervisor.clear();
+    this.supervisorToMain.clear();
+    this.chatToBinding.clear();
+  }
+}
+
+/** 全局单例 */
+export const SUPERVISOR_MANAGER = new SupervisorManagerImpl();

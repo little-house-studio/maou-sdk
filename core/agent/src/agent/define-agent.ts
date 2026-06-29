@@ -39,6 +39,12 @@ export interface DefineAgentConfig {
   /** 模型标识，格式："provider/model"（如 "anthropic/claude-sonnet-4.6"） */
   model: string | ModelFallback;
 
+  /** 辅助模型标识（可选）—— 用于压缩/loop判定/路由等辅助调用。
+   * 字符串匹配 preset name 或 model id；未配置时回退主模型。
+   * 优先级：agent.json helperModel > 全局 helperPreset > 主模型 preset
+   */
+  helperModel?: string;
+
   /** Agent 显示名称（可选，默认用目录名） */
   name?: string;
 
@@ -80,6 +86,9 @@ export interface DefinedAgent {
 
   /** 模型配置 */
   model: string | ModelFallback;
+
+  /** 辅助模型配置（可选） */
+  helperModel?: string;
 
   /** 显示名称 */
   name?: string;
@@ -135,6 +144,7 @@ export function defineAgent(config: DefineAgentConfig): DefinedAgent {
     _source: "file",
 
     model: config.model,
+    helperModel: config.helperModel,
     name: config.name,
     description: config.description,
     maxSteps: config.maxSteps ?? 0,
@@ -169,6 +179,7 @@ export function defineAgent(config: DefineAgentConfig): DefinedAgent {
         created_at: new Date().toISOString().replace("T", " ").slice(0, 19),
         updated_at: new Date().toISOString().replace("T", " ").slice(0, 19),
         model: modelStr,
+        helperModel: config.helperModel,
         tools: config.tools ?? ["*"],
         round_limit: config.roundLimit ?? 0,
         _defineAgent: true,
