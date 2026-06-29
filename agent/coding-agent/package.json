@@ -16,7 +16,7 @@
       "import": "./dist/cli/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": ["dist", "templates", "README.md"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
