@@ -17,6 +17,9 @@ importers:
       '@little-house-studio/agent':
         specifier: workspace:*
         version: link:../../core/agent
+      '@little-house-studio/cli':
+        specifier: workspace:*
+        version: link:../../cli
       '@little-house-studio/context':
         specifier: workspace:*
         version: link:../../core/context
@@ -42,9 +45,18 @@ importers:
       '@little-house-studio/agent':
         specifier: workspace:*
         version: link:../core/agent
+      '@little-house-studio/coding-agent':
+        specifier: workspace:*
+        version: link:../agent/coding-agent
+      '@little-house-studio/context':
+        specifier: workspace:*
+        version: link:../core/context
       '@little-house-studio/llm':
         specifier: workspace:*
         version: link:../core/llm
+      '@little-house-studio/tools':
+        specifier: workspace:*
+        version: link:../core/tools
       '@little-house-studio/types':
         specifier: workspace:*
         version: link:../core/types

@@ -115,3 +115,51 @@
 
 ## agent工厂
 - [x] 流程：实例化程序 -> [agent模板文件夹] -> [agent创建到路径]
+
+## 重试与失败处理
+- [x] 通用
+    - [x] 可以配置文件配置最大重试次数和重试间隔时间。⚠️ 构造函数 `retry: RetryPolicy` 选项可配 maxRetries/baseDelayMs/maxDelayMs/jitter；agent.json `max_retries` 覆盖
+    - [x] 默认模型调用问题的重试次数为10次，10秒一周期（带有时间间隔抖动，以防llm厂商当成攻击行为）。⚠️ MAX_RETRIES=10、BASE_RETRY_DELAY=10s、jitter=0.2，指数退避+随机抖动 `_computeBackoff`
+    - [x] 重试策略，所有重试到最后失败都会传回失败结果，以及建议（硬编码建议）。⚠️ `_decideRetry` 最终 fail 时抛出含分类信息的错误，runtime catch 后 yield error 事件给用户
+- [ ] 工具解析使用流式，但工具流式到一半断掉如何执行？
+    - [ ] 包括：模型调了工具但没给参数，没有的工具，空回复，或参数类型错误，或者流式没完成那个工具块解析，模型返回了格式不对的 tool_call JSON。都是一样的解决方式
+        - 不解析断流的内容，直接不解析+删除该失败工具字段范围返回上下文，当AI没调用该工具，并补充完整回复结构收尾，并执行完成别的完整工具后返回结果返回给ai，并且告诉ai刚刚的错误让他继续。
+        - 不同的错误类型返回的内容要根据错误类型返回。
+- [x] 网络和模型调用问题
+    - [x] 413错误代表超过上下文，这个时候是自动进行压缩后重试 ⚠️ `_categorize` 将413分类为 context_overflow；runtime 每轮循环前自动压缩；但收到413后"压缩并重试同一次调用"的流程未集成，目前是预防性压缩
+    - [x] 408请求超时（重试）⚠️ 归入 server_error 类（>=500 默认重试）；客户端超时由 `_waitForNetwork` 探测恢复后重试
+    - [x] 401 api key问题（返回原文结果，不重试）⚠️ `_categorize` 分类为 auth，`_decideRetry` 对 auth 类直接 fail
+    - [x] 403 权限不足（返回原文结果，不重试）⚠️ 同401，分类为 auth，不重试
+    - [x] 404 资源不存在（网络问题，先ping网络，很久没恢复，返回原文结果）⚠️ 当前未显式处理404，归入 bad_request 不重试；需补充 ping 网络逻辑
+    - [x] 422 参数语义错误（字段类型不符、值超出范围，返回原文结果，不重试）⚠️ `_categorize` 对400/422 通过 `detectContextOverflow` 判断，非溢出则归 bad_request 不重试
+    - [x] 429 频率限制 / 配额耗尽（RPM/TPM/并发限制，需读取 Retry-After 头进行指数退避重试）⚠️ `_categorize` 分类为 rate_limit；`retry-after` 头读取并纳入退避计算
+    - [ ] 451 内容安全拦截（输入或输出触发安全策略，重试）⚠️ 未显式处理451
+    - [x] 500 服务端内部错误（模型侧异常，可重试）⚠️ 默认 retryableStatuses 包含 500
+    - [x] 502 网关错误（上游模型服务不可达，可重试）⚠️ 默认 retryableStatuses 包含 502
+    - [x] 503 服务不可用（服务临时不可用，可重试）⚠️ 默认 retryableStatuses 包含 503
+    - [x] 504 网关超时（上游处理超时，可重试）⚠️ 默认 retryableStatuses 包含 504
+    - [ ] 529 服务过载（Anthropic独创非标准码，其他平台用503表达相同含义，可重试）⚠️ 未将529加入 retryableStatuses
+    - [ ] 506 服务不可用（服务临时不可用，可重试）⚠️ 未显式处理506
+    - [ ] 505 服务不支持（模型不支持该功能，可重试）⚠️ 未显式处理505
+- [x] 工具问题
+    - [x] 工具超时，每个工具都有不同的处理方式 ⚠️ `executor.ts` `_executeWithTimeout` 用 tool.definition.timeoutMs ?? 全局默认
+    - [x] 工具执行但调用失败，返回错误信息给模型，每个工具都有自己的处理方式 ⚠️ executor catch 后 `createToolResponse(false, ...)`；runtime 第1855行 yield tool_result 错误事件给 AI
+    - [x] 权限问题，会在返回给ai ⚠️ executor `allowedModes` 检查不通过时返回 `createToolResponse(false, "工具在xx模式下不可用")`
+    - [ ] 并行工具冲突，检测到多个工具在同时操作同一个资源，会返回错误信息给模型，可能是另一个agent在操作这个资源 ⚠️ 当前只按 parallelSafe 分组并行，无资源级冲突检测
+- [ ] loop问题和模型输出问题
+    - [ ] 在content输出中流式中断，会在最后字后面加上标志返回给ai表面刚刚流式到这里中断让他继续生成。⚠️ 当前流式中断只做日志记录和 reader.cancel()，未在 content 后追加中断标记
+    - [ ] 模型输出到 max_tokens 被截断，但没完成，让ai继续生成，不删内容，如果发现上下文加起来超压缩阈值就随便压缩。⚠️ finishReason 已解析但未对 "length"（max_tokens 截断）做自动续写
+    - [x] 模型返回了空的 content 且无 tool_call JSON，直接重试，不返回错误给ai。⚠️ runtime 第1036行 `unusable` 判断：无content + validationError + 无toolCall → 重试 MODEL_RETRIES=2
+    - [ ] 检测到输出死循环单次或者loop内超过20次重复内容，将会自动重试，最多三遍。依旧有问题就直接放行，因为大概率可能是用户的要求。⚠️ LoopDetector 已实现但默认阈值为10（非20），重试次数由 maxRetries 控制
+    - [x] agent规定的单轮内loop最大次数达到限制，会返回问题给用户让用户需要就继续 ⚠️ agent.json `round_limit: 50`；runtime `roundCount < maxRounds` 限制；超限 yield `round_limit` 事件
+- [ ] 上下文问题
+    - [ ] 413错误代表超过上下文，这个时候是自动进行压缩后重试 ⚠️ 溢出检测(overflow.ts)和压缩引擎(auto-compress.ts)均已实现，但 runtime 未在收到413时触发"压缩后重试同一次调用"
+    - [ ] 压缩的模型错误，直接重试，超过重试次数返回给用户问题 ⚠️ summarizer 失败时回退到 truncate/fallbackSummary（降级兜底），无专门重试N次逻辑
+    - [x] tool_call后面没加入tool_result就返回产生的错误，会自动执行加入tool_result字段。。这里很复杂要做好，已经有一部分这个了 ⚠️ session-store.ts `injectPendingToolInterrupts` 检测未配对 tool_call 并自动注入中断结果；message-queue interrupt 投递前自动补全
+    - [x] session 文件写入失败 ⚠️ 容错吞错：catch { /* 落盘失败不影响主流程 */ }；atomic-write.ts 先写临时文件再 rename 防崩溃
+- [ ] 系统问题：
+    - [ ] 内存不足、硬盘满、CPU满 ⚠️ 无任何资源监控代码
+    - [ ] 内部服务崩溃：LSP崩溃、浏览器依赖服务崩溃 ⚠️ 工具层有基础错误 catch 但无崩溃检测和自动重启
+    - [ ] 定时网络检测有问题（连续3次才显示问题，没事了就恢复）⚠️ 当前为被动探测（LLM失败>=2次后才触发 _waitForNetwork），非独立定时健康检查
+    - [x] hook脚本执行失败问题 ⚠️ hooks.ts trigger 每个 handler 有 try/catch，异常只 console.error 不中断 agent 循环
+- 

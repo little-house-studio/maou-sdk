@@ -14,6 +14,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js"
+    },
     "./image": {
       "types": "./dist/image/ascii.d.ts",
       "import": "./dist/image/ascii.js"
@@ -39,7 +43,10 @@
   },
   "dependencies": {
     "@little-house-studio/agent": "workspace:*",
+    "@little-house-studio/coding-agent": "workspace:*",
+    "@little-house-studio/context": "workspace:*",
     "@little-house-studio/llm": "workspace:*",
+    "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/types": "workspace:*",
     "ink": "^5.0.1",
     "react": "^18.2.0",

@@ -14,6 +14,10 @@
     "./cli": {
       "types": "./dist/cli/index.d.ts",
       "import": "./dist/cli/index.js"
+    },
+    "./cli-config": {
+      "types": "./dist/cli-config.d.ts",
+      "import": "./dist/cli-config.js"
     }
   },
   "files": ["dist", "templates", "README.md"],
@@ -27,7 +31,8 @@
     "@little-house-studio/llm": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/context": "workspace:*",
-    "@little-house-studio/agent": "workspace:*"
+    "@little-house-studio/agent": "workspace:*",
+    "@little-house-studio/cli": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

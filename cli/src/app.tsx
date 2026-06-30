@@ -1,27 +1,30 @@
-/** Maou CLI 主应用 —— 响应式布局 + 键盘 + (可toggle)鼠标 + 流式驱动 */
+/** Maou CLI 主应用 —— 响应式布局 + 键盘 + (可toggle)鼠标 + 流式驱动（通用框架，接 AgentCliConfig） */
 import React, { useState, useEffect, useRef } from "react";
 import { useApp } from "ink";
 import { Box } from "ink";
 import { useStdout } from "ink";
 import { currentTheme, setTheme, THEMES } from "./theme.js";
-import { useStore } from "./state/store.js";
-import { runChat } from "./sdk/index.js";
+import { useStore, setConfig } from "./state/store.js";
+import { runAgentCli } from "@little-house-studio/agent";
+import type { AgentCliConfig } from "./types.js";
 import { TopBar, Sidebar, Hud, StatusBar, Toast } from "./components/Hud.js";
 import { ChatView } from "./components/Chat.js";
 import { InputBox, colToCharIndex } from "./components/InputBox.js";
 import { Panel } from "./components/Panel.js";
 import { Collapsible } from "./components/Collapsible.js";
-import { ModelPicker, CommandPalette, HelpModal } from "./components/Modals.js";
+import { ModelPicker, CommandPalette, HelpModal, SessionPicker } from "./components/Modals.js";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
 import { useMouse } from "./hooks/useMouse.js";
 import { useCleanInput } from "./hooks/useCleanInput.js";
 import { useImeCursor } from "./hooks/useImeCursor.js";
 import { openExternalEditor } from "./hooks/useExternalEditor.js";
 import { osc52 } from "./clipboard.js";
+import { join } from "node:path";
 
 type Focus = "input" | "sidebar" | "hud" | "chat";
 
-export function App() {
+export function App({ config }: { config: AgentCliConfig }) {
+  setConfig(config); // 全局缓存供 Modals 等组件读取
   const { exit } = useApp();
   const term = useTerminalSize();
   const { stdout } = useStdout();
@@ -29,6 +32,9 @@ export function App() {
   const [input, setInput] = useState("");
   const [cursor, setCursor] = useState(0);
   const [focus, setFocus] = useState<Focus>("input");
+  // agent 句柄缓存（首次 doSend 时创建）
+  const agentRef = useRef<ReturnType<AgentCliConfig["createAgent"]> | null>(null);
+  const maouRoot = join(process.env.HOME ?? "", ".maou");
   const [frame, setFrame] = useState(0);
   const [mouseOn, setMouseOn] = useState(false); // 默认关 → 终端原生可拖选复制
   const [chatOffset, setChatOffset] = useState(0); // 对话滚动（消息粒度，0=最新）
@@ -88,16 +94,31 @@ export function App() {
     if (!text || store.streaming) return;
     setInput(""); setCursor(0); setChatOffset(0); setSel(null);
     store.send(text);
-    const history = [...useStore.getState().messages].map((m) => ({ role: m.role, content: m.content })) as any;
+
+    // 首次发送时创建 agent 句柄（装配依赖 + 物化）
+    if (!agentRef.current) {
+      try {
+        agentRef.current = config.createAgent(process.cwd(), maouRoot);
+      } catch (e) {
+        useStore.getState().toastMsg(`agent 创建失败: ${String(e).slice(0, 50)}`, "err");
+        useStore.getState().finishStream();
+        return;
+      }
+    }
+
     abortRef.current = new AbortController();
     try {
-      await runChat({
-        provider: store.provider,
-        model: store.model,
-        systemPrompt: "你是 Vampire，一个高傲又可爱的吸血鬼 AI 助手。回答简洁有个性。",
-        history,
-        signal: abortRef.current.signal,
+      const preset = config.getPreset(store.provider, store.model);
+      const sessionId = useStore.getState().sessionId ?? agentRef.current.startSession();
+      if (!useStore.getState().sessionId) useStore.getState().setSessionId(sessionId);
+
+      await runAgentCli(text, {
+        runtime: agentRef.current.runtime,
+        sessionId,
+        preset,
         onEvent: (ev) => useStore.getState().onStream(ev),
+        signal: abortRef.current.signal,
+        source: "cli",
       });
     } catch (e) {
       useStore.getState().toastMsg(String(e).slice(0, 60), "err");
@@ -108,7 +129,8 @@ export function App() {
   const runCommand = (id: string) => {
     store.setModal(null);
     switch (id) {
-      case "new": case "clear": store.clearMessages(); store.toastMsg("已清空", "ok"); break;
+      case "new": case "clear": store.clearMessages(); useStore.getState().setSessionId(""); store.toastMsg("已清空，新会话", "ok"); break;
+      case "sessions": store.setModal("sessions"); break;
       case "model": store.setModal("model"); break;
       case "help": store.setModal("help"); break;
       case "theme": { const names = Object.keys(THEMES); const next = names[(names.indexOf(currentTheme.name) + 1) % names.length]!; setTheme(next); store.toastMsg(`主题: ${next}`, "ok"); break; }
@@ -142,9 +164,30 @@ export function App() {
     }
 
     if (focus === "input") {
+      // alt/meta+enter 换行（插入 \n）；enter 发送
+      if (key.return && key.meta) {
+        setSel(null);
+        setInput((v) => v.slice(0, cursor) + "\n" + v.slice(cursor));
+        setCursor((c) => c + 1);
+        return;
+      }
       if (key.return) return void doSend();
       if (key.leftArrow) { setSel(null); return setCursor((c) => Math.max(0, c - 1)); }
       if (key.rightArrow) { setSel(null); return setCursor((c) => Math.min(input.length, c + 1)); }
+      // alt/meta+退格：快速退词（删到上一个空格/标点）
+      if ((key.backspace || key.delete) && key.meta) {
+        setSel(null);
+        if (cursor > 0) {
+          const before = input.slice(0, cursor);
+          // 找到上一个非空白字符的词边界
+          const trimmed = before.replace(/[\s\n]+$/, "");
+          const wordStart = trimmed.search(/[\s\n][^\s\n]*$/);
+          const newCursor = wordStart === -1 ? 0 : wordStart + 1;
+          setInput((v) => v.slice(0, newCursor) + v.slice(cursor));
+          setCursor(newCursor);
+        }
+        return;
+      }
       if (key.backspace || key.delete) {
         setSel(null);
         if (cursor > 0) { setInput((v) => v.slice(0, cursor - 1) + v.slice(cursor)); setCursor((c) => c - 1); }
@@ -174,6 +217,7 @@ export function App() {
       {store.modal === "model" && <ModelPicker />}
       {store.modal === "command" && <CommandPalette onRun={runCommand} />}
       {store.modal === "help" && <HelpModal />}
+      {store.modal === "sessions" && <SessionPicker />}
     </Box>
   );
 }
