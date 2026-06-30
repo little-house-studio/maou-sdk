@@ -25,6 +25,8 @@ interface BoardEntry {
   category: string;
   owner: string;
   description: string;
+  /** session scope 条目归属的 sessionId（其它 scope 为空）。用于多 session 并发隔离。 */
+  sessionId?: string;
   created_at: string;
   updated_at: string;
 }
@@ -88,11 +90,16 @@ export class BoardStore {
     return this.load();
   }
 
-  /** 清空所有 session 作用域的条目，返回删除数量 */
-  clearSession(_sessionId?: string): number {
+  /** 清空指定 session 的 session-scoped 条目，返回删除数量（不影响其它 session） */
+  clearSession(sessionId?: string): number {
     const entries = this.load();
     const before = entries.length;
-    const kept = entries.filter((e) => e.scope !== "session");
+    // 有 sessionId：只删该 session 的 session 条目；无 sessionId：删全部 session 条目（兼容旧调用）
+    const kept = entries.filter((e) => {
+      if (e.scope !== "session") return true;
+      if (!sessionId) return false;
+      return e.sessionId !== sessionId;
+    });
     this.save(kept);
     return before - kept.length;
   }
@@ -107,13 +114,13 @@ export class BoardStore {
     return this.load().filter((e) => (e.category ?? "").trim() === category);
   }
 
-  add(scope: string, name: string, value: string, vtype: string, category: string, owner: string, description: string): string {
+  add(scope: string, name: string, value: string, vtype: string, category: string, owner: string, description: string, sessionId?: string): string {
     if (value.length > MAX_VALUE_LENGTH) throw new Error(`值超过 ${MAX_VALUE_LENGTH} 字限制（当前 ${value.length} 字）`);
     const entries = this.load();
     if (findIndex(entries, scope, name) >= 0) throw new Error(`'${scope}:${name}' 已存在，请用 replace 或 edit`);
 
     const now = nowTs();
-    entries.push({ scope, name, value, type: vtype, category, owner, description, created_at: now, updated_at: now });
+    entries.push({ scope, name, value, type: vtype, category, owner, description, sessionId: scope === "session" ? sessionId : undefined, created_at: now, updated_at: now });
     this.save(entries);
     return `<board>${scope}:${name} 已创建</board>`;
   }
@@ -230,8 +237,12 @@ export class BoardTool extends Tool {
 
   /**
    * 会话开始时清理 session-scoped 条目
+   * 注意：onSessionStart 早于 execute，_maouRoot 可能未初始化（race）。
+   * 此处只在 _maouRoot 已知时清理；未初始化时跳过（execute 首次调用时会补清理），
+   * 避免清理打到 cwd 错误路径。
    */
   onSessionStart(sessionId: string): void {
+    if (!this._maouRoot) return; // 等 execute 首次调用设置 root 后再清
     const store = getStore(this._maouRoot);
     const cleared = store.clearSession(sessionId);
     if (cleared > 0) {
@@ -240,6 +251,7 @@ export class BoardTool extends Tool {
   }
 
   private _maouRoot = "";
+  private _cleanedSessions = new Set<string>();
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
     const action = String(params.action ?? "").trim().toLowerCase();
@@ -252,8 +264,13 @@ export class BoardTool extends Tool {
     const name = String(params.name ?? "").trim();
     if (action !== "list" && action !== "get" && !name) return createToolResponse(false, "action 为 add/replace/edit/del 时 name 必填");
 
-    // 设置 maouRoot 供 onSessionStart 使用
-    if (!this._maouRoot) this._maouRoot = ctx.projectRoot;
+    // 设置 maouRoot（用 sandboxRoot/workingDir，与 store 实际写入路径一致）
+    if (!this._maouRoot) this._maouRoot = ctx.sandboxRoot || ctx.workingDir || ctx.projectRoot;
+    // 补 onSessionStart 跳过的清理（首帧）
+    if (ctx.sessionId && !this._cleanedSessions.has(ctx.sessionId)) {
+      this._cleanedSessions.add(ctx.sessionId);
+      getStore(this._maouRoot).clearSession(ctx.sessionId);
+    }
 
     const store = getStore(ctx.sandboxRoot || ctx.workingDir);
 
@@ -285,7 +302,7 @@ export class BoardTool extends Tool {
         const vtype = String(params.type ?? "").trim();
         const owner = String(params.owner ?? "").trim();
         const desc = String(params.description ?? "").trim();
-        const msg = store.add(scope, name, value, vtype, category, owner, desc);
+        const msg = store.add(scope, name, value, vtype, category, owner, desc, ctx.sessionId);
         return createToolResponse(true, msg);
       }
 

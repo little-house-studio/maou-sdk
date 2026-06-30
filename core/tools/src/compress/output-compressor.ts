@@ -98,10 +98,12 @@ export function compressOutput(text: string, opts: CompressOptions = {}): string
     dedupe = true,
     stripAnsiCodes = true,
   } = opts;
-  let s = stripAnsiCodes ? stripNoise(text) : text;
+  // 基准用去噪后文本（与压缩结果同基准），避免带噪声原文让 applyNeverWorse 误判
+  const denoised = stripAnsiCodes ? stripNoise(text) : text;
+  let s = denoised;
   if (dedupe) s = dedupeConsecutive(s);
   if (s.split("\n").length > maxLines) s = truncateMiddle(s, headLines, tailLines);
-  return applyNeverWorse(text, s);
+  return applyNeverWorse(denoised, s);
 }
 
 // ─── 终端语义压缩 ─────────────────────────────────────────────────────────────
@@ -117,8 +119,9 @@ const SUMMARY_RE = /(test result:|tests?\s+(passed|failed|run)|passed|failed|ski
 export function compressTestOutput(text: string, level: CompressLevel = "normal"): string {
   if (level === "off") return text;
   const th = levelThresholds(level)!;
-  const lines = stripNoise(text).split("\n");
-  if (lines.length <= th.maxLines) return applyNeverWorse(text, dedupeConsecutive(lines.join("\n")));
+  const denoised = stripNoise(text);
+  const lines = denoised.split("\n");
+  if (lines.length <= th.maxLines) return applyNeverWorse(denoised, dedupeConsecutive(lines.join("\n")));
 
   const hasFailure = lines.some((l) => FAIL_RE.test(l));
   if (!hasFailure) {

@@ -13,7 +13,7 @@
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
-import { errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { errToString, safePath } from "../../browser/god_tool/use_browser/_util.js";
 import {
   undo,
   undoByToolCallId,
@@ -95,9 +95,17 @@ export class UndoEditTool extends Tool {
         );
       }
 
-      // 撤销单次（可选指定 path）
+      // 撤销单次（可选指定 path）—— 历史记录存绝对路径，需把相对 path 转绝对才能匹配
       const userPath = String(params.path ?? params.file_path ?? "").trim();
-      const result = undo(sessionId, userPath || undefined);
+      let absPath: string | undefined;
+      if (userPath) {
+        try {
+          absPath = safePath(ctx.workingDir || ctx.projectRoot, userPath);
+        } catch (err) {
+          return createToolResponse(false, errToString(err));
+        }
+      }
+      const result = undo(sessionId, absPath);
       return createToolResponse(result.ok, result.message, {
         payload: result.record
           ? { path: result.record.path, action: result.record.action, timestamp: result.record.timestamp, tool: result.record.toolName }

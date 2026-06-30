@@ -122,8 +122,9 @@ export class BrowserTool extends Tool {
     },
     allowedModes: ["execute"],
     paramGuards: {
+      // 需要 text 参数的 action（缺失则被 caller 预校验拦截）：
       "type": "true", "fill": "true", "keys": "true", "select": "true",
-      "click": "true", "eval": "true",
+      // click 不需要 text；eval 需要 js 而非 text —— 不列入，避免被误丢弃
     },
   };
 

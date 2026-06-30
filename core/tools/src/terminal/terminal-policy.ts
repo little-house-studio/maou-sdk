@@ -185,7 +185,8 @@ export function decideCommand(command: string, agent: string, modeOverride?: Ter
 export function recordReviewReject(agent: string, command: string): void {
   const norm = normalizeCommand(command);
   addToBlacklist(agent, norm);
-  markBlocked(agent, norm);
+  // 不 markBlocked：review-reject 是小模型主动拒绝（非误报），
+  // 若 markBlocked 会被"原样重试放行"覆盖、黑名单被一次重试清除，安全语义失效。
 }
 
 /** 小模型审核通过后调用：入白名单。 */

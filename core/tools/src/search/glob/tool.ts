@@ -5,7 +5,7 @@
 
 import { exec } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
-import { resolve, relative, join } from "node:path";
+import { resolve, relative, join, sep } from "node:path";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
@@ -189,7 +189,7 @@ export class GlobTool extends Tool {
     const rootResolved = resolve(ctx.workingDir || ctx.projectRoot);
     const searchDir = resolve(rootResolved, searchPath);
 
-    if (!searchDir.startsWith(rootResolved)) {
+    if (searchDir !== rootResolved && !searchDir.startsWith(rootResolved + sep)) {
       return createToolResponse(false, `路径越过了项目根目录: ${searchPath}`);
     }
 

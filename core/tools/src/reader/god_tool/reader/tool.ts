@@ -154,9 +154,10 @@ export class ReadTool extends Tool {
         }
       }
 
-      const startLine = params.start_line != null ? Number(params.start_line) : 1;
-      const endLine = params.end_line != null ? Number(params.end_line) : totalLines;
-      const maxChars = params.max_chars != null ? Number(params.max_chars) : 0;
+      // Number.isFinite 防护：非数字字符串会得 NaN，导致 slice/ clamp 崩溃
+      const startLine = params.start_line != null && Number.isFinite(Number(params.start_line)) ? Number(params.start_line) : 1;
+      const endLine = params.end_line != null && Number.isFinite(Number(params.end_line)) ? Number(params.end_line) : totalLines;
+      const maxChars = params.max_chars != null && Number.isFinite(Number(params.max_chars)) ? Number(params.max_chars) : 0;
 
       const clampedStart = Math.max(1, Math.min(startLine, totalLines));
       const clampedEnd = Math.max(clampedStart, Math.min(endLine, totalLines));

@@ -237,7 +237,8 @@ export class TerminalTool extends Tool {
       const compressed = result.output
         ? compressTerminalOutput(command, result.output, ctx.compressionLevel ?? "normal")
         : "";
-      const body = compressed || (ok ? "（无输出）" : `命令${status}`);
+      // 前台也按 result_limit 截断（与后台一致），避免压缩后输出仍过长撑大上下文
+      const body = (compressed ? applyResultLimit(compressed, resultLimit) : "") || (ok ? "（无输出）" : `命令${status}`);
 
       return createToolResponse(ok, `${body}\n\n${meta}`, {
         payload: {
