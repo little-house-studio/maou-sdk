@@ -40,8 +40,19 @@ export type TerminalReviewer = (
   ctx: { agentName: string; cwd?: string },
 ) => Promise<{ approve: boolean; reason: string }>;
 
+/**
+ * 交互式审批器：normal 模式 ask 分支调用，弹菜单让用户选 Yes/No。
+ * 由 TUI 层注入（需交互能力）。返回 approve + persist（是否持久化到白/黑名单）。
+ * 未注入时（非 TUI 场景如 harness/飞书）走旧文字 ask 兜底。
+ */
+export type TerminalApprover = (
+  command: string,
+  ctx: { agentName: string; cwd?: string },
+) => Promise<{ approve: boolean; persist?: "whitelist" | "blacklist" | "none" }>;
+
 let policyRoot = join(homedir(), ".maou");
 let reviewer: TerminalReviewer | null = null;
+let approver: TerminalApprover | null = null;
 
 /** 重复放行窗口：被拒/被问后多久内原样重试算"确认"（默认 10 分钟）。 */
 const REPEAT_WINDOW_MS = 10 * 60 * 1000;
@@ -60,6 +71,15 @@ export function setTerminalReviewer(fn: TerminalReviewer | null): void {
 
 export function getTerminalReviewer(): TerminalReviewer | null {
   return reviewer;
+}
+
+/** 注入交互式审批器（normal 模式 ask 用，TUI 场景注入）。 */
+export function setTerminalApprover(fn: TerminalApprover | null): void {
+  approver = fn;
+}
+
+export function getTerminalApprover(): TerminalApprover | null {
+  return approver;
 }
 
 function policyPath(agent: string): string {

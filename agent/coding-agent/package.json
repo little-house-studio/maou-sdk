@@ -24,15 +24,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "start": "maou @little-house-studio/coding-agent/cli-config"
   },
   "dependencies": {
     "@little-house-studio/types": "workspace:*",
     "@little-house-studio/llm": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/context": "workspace:*",
-    "@little-house-studio/agent": "workspace:*",
-    "@little-house-studio/cli": "workspace:*"
+    "@little-house-studio/agent": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -33,17 +33,18 @@ export {
   cleanupWorkspaceLsp,
 } from './code/lsp/tool.js'
 
-// 终端审批策略（normal/auto/yolo + 黑白名单 + 小模型审核器注入）
+// 终端审批策略（normal/auto/yolo + 黑白名单 + 小模型审核器注入 + 交互式审批器注入）
 export {
   setTerminalPolicyRoot,
   setTerminalReviewer,
+  setTerminalApprover,
   getMode as getTerminalMode,
   setMode as setTerminalMode,
   addToWhitelist as addTerminalWhitelist,
   addToBlacklist as addTerminalBlacklist,
   decideCommand as decideTerminalCommand,
 } from './terminal/terminal-policy.js'
-export type { TerminalMode, TerminalReviewer, PolicyAction, PolicyDecision } from './terminal/terminal-policy.js'
+export type { TerminalMode, TerminalReviewer, TerminalApprover, PolicyAction, PolicyDecision } from './terminal/terminal-policy.js'
 
 // 技能管理（从 context 下放到此；context 包会从这里再导出）
 export { SkillScanner, SkillContextManager } from './skill-context.js'

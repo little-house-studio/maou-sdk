@@ -1,112 +1,85 @@
 #!/usr/bin/env node
-/** Maou CLI 入口 —— 通用框架，加载任意 agent cli 配置
- *
- * 用法:
- *   maou                          → 默认 coding agent
- *   maou <path>                   → 加载指定 agent cli 文件/目录
- *   maou --theme <name>           → 指定主题
- *   maou -h / --help              → 帮助
- *
- * <path> 可以是:
- *   - .ts/.js/.tsx 文件 → 直接 import，取 default: AgentCliConfig
- *   - 目录 → 尝试 <dir>/cli.ts → <dir>/index.ts → <dir>/agent-cli.ts
- */
+/** Maou CLI 入口 — maou [path] --theme <name> */
 import React from "react";
 import { render } from "ink";
 import { App } from "./app.js";
-import { setTheme, THEMES } from "./theme.js";
+import { installExitGuard } from "./hooks/useExitGuard.js";
 import type { AgentCliConfig } from "./types.js";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-// 默认 coding-agent 的 cli 配置路径
-const DEFAULT_CONFIG_PATH = "@little-house-studio/coding-agent/cli-config";
-
 async function loadConfig(target?: string): Promise<AgentCliConfig> {
   if (!target) {
-    // 默认：加载 coding-agent 的 cli-config
-    const mod = await import(DEFAULT_CONFIG_PATH);
+    const mod = await import("@little-house-studio/coding-agent/cli-config");
     return (mod.default ?? mod) as AgentCliConfig;
   }
-
   const abs = resolve(target);
-  let importPath: string;
-
-  if (existsSync(abs) && !abs.endsWith("/")) {
-    // 是文件
-    importPath = abs;
-  } else {
-    // 是目录，尝试几个常见文件名
-    for (const name of ["cli.ts", "index.ts", "agent-cli.ts", "cli-config.ts"]) {
-      const candidate = `${abs}/${name}`;
-      if (existsSync(candidate)) { importPath = candidate; break; }
+  let importPath = abs;
+  if (!existsSync(abs) || abs.endsWith("/")) {
+    for (const n of ["cli.ts", "index.ts", "agent-cli.ts", "cli-config.ts"]) {
+      const c = `${abs}/${n}`;
+      if (existsSync(c)) { importPath = c; break; }
     }
-    if (!importPath!) {
-      // 可能是包名（node_modules 里的 agent 包）
-      try {
-        const mod = await import(target);
-        return (mod.default ?? mod) as AgentCliConfig;
-      } catch {
-        console.error(`❌ 找不到 agent cli 配置: ${target}\n尝试: ${abs}/{cli,index,agent-cli}.ts 或包名`);
-        process.exit(1);
-      }
+    if (importPath === abs) {
+      const mod = await import(target);
+      return (mod.default ?? mod) as AgentCliConfig;
     }
   }
-
   const mod = await import(importPath);
-  const config = (mod.default ?? mod) as AgentCliConfig;
-  if (!config || typeof config.createAgent !== "function") {
-    console.error(`❌ ${importPath} 没有 export default AgentCliConfig（需含 createAgent）`);
-    process.exit(1);
-  }
-  return config;
+  const cfg = (mod.default ?? mod) as AgentCliConfig;
+  if (!cfg?.createAgent) { console.error(`❌ ${importPath} 缺少 createAgent`); process.exit(1); }
+  return cfg;
 }
 
-// CLI 参数解析
 const argv = process.argv.slice(2);
-let targetPath: string | undefined;
-let themeName: string | undefined;
-
+let target: string | undefined;
+let themePath: string | undefined;
 for (let i = 0; i < argv.length; i++) {
-  const arg = argv[i]!;
-  if (arg === "--theme") { themeName = argv[++i]!; continue; }
-  if (arg === "-h" || arg === "--help") {
-    const themeNames = Object.keys(THEMES).join("|");
-    console.log(`Maou CLI — 通用 agent 测试界面
-
-用法:
-  maou                    默认 coding agent
-  maou <path>             加载 agent cli 文件/目录/包名
-  maou --theme <name>     主题: ${themeNames}
-
-<path>:
-  文件: /path/to/my-agent/cli.ts
-  目录: /path/to/my-agent/（自动找 cli.ts/index.ts/agent-cli.ts）
-  包名: my-agent（node_modules 里）
-
-agent cli 文件需 export default AgentCliConfig（含 createAgent/getPreset）。
-agent 绑定到当前目录（cwd）。`);
+  if (argv[i] === "-h" || argv[i] === "--help") {
+    console.log(`Maou CLI — 终端 AI 对话（磁带复古未来主义）\n\n用法:\n  maou              默认 coding agent\n  maou <path>       加载 agent cli 配置\n  maou --theme <p>  加载主题 JSON（默认 Tau Ceti）`);
     process.exit(0);
-  }
-  if (arg === "--test") { continue; }
-  // 非选项参数 = agent cli 路径
-  if (!arg.startsWith("-")) { targetPath = arg; }
+  } else if (argv[i] === "--theme") {
+    themePath = argv[++i];
+  } else if (!argv[i]!.startsWith("-")) target = argv[i];
 }
 
-if (themeName) setTheme(themeName);
+// pino 日志不污染 Ink stdout
+process.env.NODE_ENV = "production";
 
-// 异步加载 config 后启动
-loadConfig(targetPath).then((config) => {
-  // 进入备用屏（全屏 TUI）
-  process.stdout.write("\x1b[?1049h\x1b[H");
-  process.stdout.write("\x1b[?25l");
-  const { waitUntilExit } = render(<App config={config} />, { exitOnCtrlC: false });
-  waitUntilExit().then(() => {
-    process.stdout.write("\x1b[?25h");
-    process.stdout.write("\x1b[?1049l");
-    process.stdout.write("\x1b[?1006l\x1b[?1000l");
+// 退出安全网：crash/SIGINT/SIGTERM/uncaught 都恢复终端
+installExitGuard();
+
+// 重定向 console.log/warn 到 stderr（SDK 内部的 console.log 会撕裂 Ink 备用屏画面，
+// stderr 不进 Ink 渲染，且 patchConsole:false 让 Ink 不拦截 console）
+const origLog = console.log;
+const origWarn = console.warn;
+console.log = (...a: unknown[]) => { process.stderr.write(a.join(" ") + "\n"); };
+console.warn = (...a: unknown[]) => { process.stderr.write(a.join(" ") + "\n"); };
+console.error = (...a: unknown[]) => { process.stderr.write(a.join(" ") + "\n"); };
+
+// 过滤 stdin：剥离鼠标 SGR/SS3/OSC 序列，防止 react-ink-textarea 把它们当文本插入乱码
+import { createFilteredStdin } from "./input/filtered-stdin.js";
+const filteredStdin = process.env.MAOU_NO_FILTER === "1" ? process.stdin : createFilteredStdin(process.stdin);
+
+// 过滤 stdout：剥离 Ink #935 的 \e[3J（抹 scrollback），保留 \e[2J\e[H 清视口。
+// 防止内容超视口时顶部 border 丢失 + 残留。对应 upstream PR #936（未合并）。
+import { createFilteredStdout } from "./input/filtered-stdout.js";
+const filteredStdout = process.env.MAOU_NO_FILTER === "1" ? process.stdout : createFilteredStdout(process.stdout);
+
+loadConfig(target).then(async (config) => {
+  // 进备用屏 + 隐藏光标
+  filteredStdout.write("\x1b[?1049h\x1b[H\x1b[?25l");
+  const { waitUntilExit } = render(<App config={config} themePath={themePath} />, {
+    exitOnCtrlC: false,
+    stdin: filteredStdin as NodeJS.ReadStream,
+    stdout: filteredStdout,
+    patchConsole: false,  // 不拦截 console（已重定向到 stderr），避免 SDK log 撕裂画面
   });
-}).catch((err) => {
-  console.error(`❌ 加载 agent 配置失败: ${err?.message ?? err}`);
+  waitUntilExit().then(() => {
+    // 正常退出序列（exitGuard 也兜底）
+    filteredStdout.write("\x1b[?25h\x1b[?1049l\x1b[?1006l\x1b[?1000l");
+  });
+}).catch(err => {
+  process.stderr.write(`❌ ${err?.message ?? err}\n`);
   process.exit(1);
 });

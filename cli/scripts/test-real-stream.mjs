@@ -1,0 +1,35 @@
+import React from "react";
+import { render } from "ink-testing-library";
+import { EventEmitter } from "node:events";
+import { homedir } from "node:os";
+const { App } = await import("file:///Users/mac/Documents/vscodeProject/maou-sdk/cli/dist/app.js");
+const cfg = (await import("file:///Users/mac/Documents/vscodeProject/maou-sdk/agent/coding-agent/dist/cli-config.js")).default;
+const { useStore } = await import("file:///Users/mac/Documents/vscodeProject/maou-sdk/cli/dist/state/store.js");
+const { runAgentCli } = await import("file:///Users/mac/Documents/vscodeProject/maou-sdk/core/agent/dist/index.js");
+const strip = s => s.replace(/\x1b\[[0-9;?]*[a-zA-Z~<]/g,"").replace(/\x1b[()][AB0-2]/g,"").replace(/\r/g,"");
+const out = Object.assign(new EventEmitter(), { columns: 100, rows: 32, isTTY: true, write:()=>true });
+const inn = Object.assign(new EventEmitter(), { isTTY: true, setEncoding:()=>{}, setRawMode:()=>inn, ref:()=>{}, unref:()=>{}, resume:()=>inn, pause:()=>inn, read:()=>null });
+Object.defineProperty(process, "stdout", { value: out, configurable: true });
+Object.defineProperty(process, "stdin", { value: inn, configurable: true });
+const w = (s) => process.stderr.write(String(s) + "\n");
+const { frames, unmount } = render(React.createElement(App, { config: cfg }), { stdout: out, stdin: inn, patchConsole: false });
+await new Promise(r=>setTimeout(r,300));
+useStore.getState().setAgentMeta("coding","xfyun-qwen-coding","xopqwen36v35b",128000);
+const handle = cfg.createAgent(process.cwd(), homedir()+"/.maou");
+const preset = cfg.getPreset("xfyun-qwen-coding","xopqwen36v35b");
+useStore.getState().pushUserMessage("只回复收到两个字");
+useStore.getState().setStreaming(true);
+try {
+  await runAgentCli("只回复收到两个字", { runtime: handle.runtime, sessionId: handle.startSession(), preset, onEvent: ev => useStore.getState().onStream(ev), source: "cli" });
+} catch(e) { w("ERR: " + e.message); }
+const s = strip(frames[frames.length-1]||"");
+const lines = s.split("\n");
+w("=== 真实对话流式渲染 ===");
+w("有user消息: " + lines.some(l=>l.includes("只回复收到")));
+w("有assistant内容: " + lines.some(l=>l.includes("收到")&&!l.includes("只回复")));
+const status = lines.find(l=>/coding/.test(l))||"";
+w("状态栏: " + JSON.stringify(status.trim().slice(0,95)));
+w("有token: " + /k\//.test(status));
+w("done(ch.01): " + /ch\.01/.test(status));
+w("有思考块: " + lines.some(l=>/thinking|思考/.test(l)));
+unmount(); process.exit(0);

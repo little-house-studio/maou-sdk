@@ -40,6 +40,10 @@ export interface AppRuntimeOptions {
   llmClient: LLMClient;
   maouRoot?: string;
   projectRoot?: string;
+  /** Runtime 日志函数（默认 console.log）。CLI 传 () => {} 静默。 */
+  log?: (level: string, message: string) => void;
+  /** 是否启用 LLM postLogger（写 raw.jsonl + pino 日志）。CLI 传 false 静默。 */
+  enablePostLogger?: boolean;
   /**
    * ContextEngine 压缩闭环开关。
    * - true（缺省）：自动按 agentName 构造 HarnessSessionStore + TaskSessionStore，
@@ -74,6 +78,8 @@ export class Runtime {
   private summarizer?: Summarizer;
   private agentRuntime: AgentRuntime | null = null;
   private appLogger = createAppLogger();
+  private customLog?: (level: string, message: string) => void;
+  private postLoggerEnabled: boolean = true;
   /**
    * 按 sessionId 隔离的请求上下文。
    * 同一 session 并发 run 时，用引用计数避免后者覆盖前者 / finally 误删前者。
@@ -87,6 +93,8 @@ export class Runtime {
     this.sessionStore = options.sessionStore;
     this.toolRegistry = options.toolRegistry;
     this.llmClient = options.llmClient;
+    this.customLog = options.log;
+    this.postLoggerEnabled = options.enablePostLogger ?? true;
     this.maouRoot = options.maouRoot ?? join(process.env.HOME ?? '', '.maou');
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.summarizer = options.summarizer;
@@ -171,7 +179,8 @@ export class Runtime {
       const requestContextMap = this.lastRequestContext;
 
       // 启用完整 body 压缩存储
-      (this.llmClient as { setPostLogOptions?: (opts: { keepFullBody?: boolean }) => void }).setPostLogOptions?.({ keepFullBody: true });
+      if (this.postLoggerEnabled) {
+        (this.llmClient as { setPostLogOptions?: (opts: { keepFullBody?: boolean }) => void }).setPostLogOptions?.({ keepFullBody: true });
 
       (this.llmClient as { setPostLogger?: (fn: LLMPostLogger) => void }).setPostLogger?.(
         (record: LLMPostLogRecord) => {
@@ -248,6 +257,7 @@ export class Runtime {
           }
         },
       );
+      } // end if (postLoggerEnabled)
 
       // 创建 ModelCaller 用于 LLM 调用
       const caller = new ModelCaller({
@@ -307,7 +317,7 @@ export class Runtime {
           nativeToolCalling: params.nativeToolCalling,
           abortSignal: params.abortSignal,
         }),
-        log: (level, msg) => console[level === "error" ? "error" : "log"](`[Runtime] ${msg}`),
+        log: this.customLog ?? ((level, msg) => console[level === "error" ? "error" : "log"](`[Runtime] ${msg}`)),
         maouRoot: this.maouRoot,
         projectRoot: this.projectRoot,
         harnessStore: this.harnessStore,

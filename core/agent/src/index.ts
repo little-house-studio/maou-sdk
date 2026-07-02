@@ -71,3 +71,4 @@ export type { AgentHandle } from "./agent/handle.js";
 // ── 通用 CLI 驱动（所有 agent 复用，避免各自实现事件循环）──────────────────────
 export { runAgentCli } from "./cli/run-agent-cli.js";
 export type { AgentCliOptions } from "./cli/run-agent-cli.js";
+export type { AgentCliConfig } from "./cli/agent-cli-config.js";

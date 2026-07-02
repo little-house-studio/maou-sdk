@@ -91,12 +91,9 @@ export interface RuntimeOptions {
   /** 可插拔 LLM 摘要器（compress 时生成真摘要；缺省回退确定性 truncate）。 */
   summarizer?: Summarizer;
   /**
-   * 辅助模型调用器（可选）—— 统一辅助调用管道（压缩/loop判定/路由等）。
-   * 注入后：
-   *   - judgeLoopEnd 走 auxModelCaller（独立 token 统计，不混入主调用）
-   *   - 若同时注入了 summarizer，summarizer 仍用旧路径（向后兼容）
-   *   - 若注入了 auxModelCaller 但没注入 summarizer，summarizer 自动用 auxModelCaller 构建
-   * 未注入：judgeLoopEnd 回退旧路径（用 callModelFn + 主 preset）。
+   * 辅助模型调用器（可选）—— 统一辅助调用管道（压缩/路由等）。
+   * 注入后：若同时注入了 summarizer，summarizer 仍用旧路径（向后兼容）；
+   * 若注入了 auxModelCaller 但没注入 summarizer，summarizer 自动用 auxModelCaller 构建。
    */
   auxModelCaller?: AuxModelCaller;
   /**
@@ -560,15 +557,6 @@ export class AgentRuntime {
       return undefined;
     })();
 
-    // ── eve: 加载 loop/end.md 达标标准（loop 结束后用小判定再检查是否真完成）──
-    let loopEndCriteria = "";
-    try {
-      if (agentPromptRoot) {
-        const endPath = join(agentPromptRoot, "..", "loop", "end.md");
-        if (existsSync(endPath)) loopEndCriteria = readFileSync(endPath, "utf-8").trim();
-      }
-    } catch { /* 无则跳过 */ }
-
     // ── 注入实际工作目录（让 agent 知道自己驻扎在哪、所有相对路径基于此）──
     // effectiveWorkingDir 已在上方从 agent.json working_dir 计算
     systemPrompt = `${systemPrompt}\n\n<workspace>\n你当前的工作目录（所有文件读写、终端命令、相对路径均以此为根）：${effectiveWorkingDir}\n</workspace>`;
@@ -732,9 +720,6 @@ export class AgentRuntime {
     // 完成前自动验证（#9）：失败则注入结果让模型自修，最多 MAX_VERIFY_FIX 次
     let verifyAttempts = 0;
     const MAX_VERIFY_FIX = 2;
-    // eve loop/end.md 达标检查：不达标则反馈让 AI 继续，最多 MAX_LOOP_CHECK 次
-    let loopCheckAttempts = 0;
-    const MAX_LOOP_CHECK = 2;
     // #16 可观测：本次 run 的累计重试次数与 token
     let totalRetries = 0;
     let totalTokens = 0;
@@ -1161,23 +1146,6 @@ export class AgentRuntime {
         yield this.event("verification", { ok: true, command: verifyCommand });
       }
 
-      // ── eve: loop/end.md 达标检查（小判定）──
-      // 模型准备收尾时，按 end.md 标准判断是否真完成；不达标则把反馈喂回，继续 loop。
-      if (loopEndCriteria && loopCheckAttempts < MAX_LOOP_CHECK && !effectiveAbortSignal.aborted) {
-        yield this.event("status", { text: "loop 达标检查..." });
-        const verdict = await prof.async("loop_end_check", () => this.judgeLoopEnd(loopEndCriteria, sessionId!, preset, agentName, options.abortSignal), { round: currentRound });
-        if (verdict && verdict.done === false) {
-          loopCheckAttempts++;
-          yield this.logEvent("warning", `loop 未达标（${loopCheckAttempts}/${MAX_LOOP_CHECK}）：${verdict.feedback?.slice(0, 80)}`);
-          this.sessions.appendMessage(sessionId!, "user", `<loop-not-done>\n按完成标准检查，本次任务尚未达标：${verdict.feedback}\n请继续完成后再结束。\n</loop-not-done>`, { source: "loop_end", round: currentRound });
-          yield this.event("loop_check", { done: false, attempt: loopCheckAttempts });
-          this.hooks?.agentStop(currentRound);
-          roundCount++;
-          continue;
-        }
-        if (verdict) yield this.event("loop_check", { done: true });
-      }
-
       // 无工具调用（且验证通过/无验证）→ 检查消息队列再决定退出
       // round_end：投递 after_round_complete 模式的消息，有投递则继续下一轮让 LLM 处理
       const roundEndMessages = this.messageQueue.dequeueIfReady(sessionId!, "round_end", {
@@ -1565,69 +1533,6 @@ export class AgentRuntime {
    * 运行完成前验证命令（如 npm run typecheck）。
    * 在项目根用 shell 执行，限时 120s，截断输出。失败/超时返回 ok:false + 输出。
    */
-  /**
-   * eve loop/end.md 达标检查：用一次性模型调用判断任务是否真完成。
-   * 返回 {done, feedback}；解析失败视为完成（不卡死）；判定异常返回 null（调用方视为通过）。
-   *
-   * 调用路径优先级：
-   *   1. auxModelCaller（统一辅助调用管道，独立 token 统计）—— 用辅助 preset
-   *   2. callModelFn（旧路径，混入主调用 token）—— 用主 preset
-   */
-  private async judgeLoopEnd(
-    criteria: string,
-    sessionId: string,
-    preset: APIPreset,
-    agentName: string,
-    abortSignal?: AbortSignal,
-  ): Promise<{ done: boolean; feedback: string } | null> {
-    try {
-      const sess = this.sessions.load(sessionId);
-      const recent = (sess?.messages ?? []).slice(-8)
-        .map((m) => `[${m.role}] ${String(m.content ?? "").slice(0, 800)}`).join("\n").slice(0, 8000);
-      const systemPrompt = `你是任务达标检查员。根据「完成标准」判断对话中的任务是否已真正完成。\n\n完成标准：\n${criteria}\n\n只输出一行 JSON：{"done": true/false, "feedback": "若未完成简述还差什么"}`;
-      const userPrompt = `近期对话：\n${recent}`;
-
-      // 优先走 auxModelCaller（统一辅助调用管道）
-      if (this.auxModelCaller) {
-        const helperPreset = this.resolveHelperPresetFn
-          ? this.resolveHelperPresetFn(agentName, preset)
-          : preset;
-        const result = await this.auxModelCaller.callJson(
-          {
-            preset: helperPreset,
-            systemPrompt,
-            userPrompt,
-            abortSignal,
-            context: { sessionId, tag: "loop_judge" },
-          },
-          preset, // fallback 主 preset
-        );
-        if (!result.ok) return null;
-        if (!result.json) return { done: true, feedback: "" };
-        return {
-          done: result.json.done !== false,
-          feedback: String(result.json.feedback ?? ""),
-        };
-      }
-
-      // 旧路径：callModelFn（混入主调用 token）
-      const messages: Record<string, unknown>[] = [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ];
-      const gen = this.callModelFn({ preset, messages, stream: false, toolSchemas: null, nativeToolCalling: false, autoFormat: false, jsonSettings: null, sessionId, round: 0, abortSignal });
-      let r = await gen.next();
-      while (!r.done) r = await gen.next();
-      const content = String((r.value as ModelCallResult).content ?? "");
-      const m = content.match(/\{[\s\S]*\}/);
-      if (!m) return { done: true, feedback: "" };
-      const parsed = JSON.parse(m[0]) as { done?: boolean; feedback?: string };
-      return { done: parsed.done !== false, feedback: String(parsed.feedback ?? "") };
-    } catch {
-      return null;
-    }
-  }
-
   private async runVerify(command: string): Promise<{ ok: boolean; code: number; output: string }> {
     const { exec } = await import("node:child_process");
     return await new Promise((resolve) => {

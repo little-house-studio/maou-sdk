@@ -1,0 +1,44 @@
+{
+  "name": "@little-house-studio/tui",
+  "version": "0.1.0",
+  "description": "Maou TUI — 通用 agent 终端 UI 库（磁带复古未来主义，基于 Pi TUI）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "maou": "./bin/maou.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./src/index.ts"
+    },
+    "./preload": "./preload.mjs"
+  },
+  "files": ["dist", "bin", "preload.mjs", "src", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --import ./preload.mjs src/maou-entry.ts @little-house-studio/coding-agent/cli-config",
+    "probe": "node --import ./preload.mjs tests/probe.ts",
+    "hello": "node --import ./preload.mjs tests/hello.ts",
+    "test-llm": "node --import ./preload.mjs tests/test-llm.ts",
+    "dev:coding": "node --import ./preload.mjs src/maou-entry.ts ../agent/coding-agent/src/cli-config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@little-house-studio/agent": "workspace:*",
+    "@little-house-studio/tools": "workspace:*",
+    "@little-house-studio/types": "workspace:*",
+    "@oh-my-pi/pi-tui": "16.2.13",
+    "get-east-asian-width": "^1.6.0"
+  },
+  "devDependencies": {
+    "@lydell/node-pty": "1.2.0-beta.12",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -22,7 +22,7 @@ import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { compressTerminalOutput, compressOutput } from "../../compress/output-compressor.js";
 import { createToolResponse } from "../../base.js";
 import { truncateMiddle, formatMetadata, errToString } from "../../browser/god_tool/use_browser/_util.js";
-import { decideCommand, getTerminalReviewer, recordReviewApprove, recordReviewReject } from "../terminal-policy.js";
+import { decideCommand, getTerminalReviewer, getTerminalApprover, addToWhitelist, addToBlacklist, recordReviewApprove, recordReviewReject } from "../terminal-policy.js";
 
 // Rust 终端引擎
 import * as engine from "@little-house-studio/terminal-engine";
@@ -169,6 +169,27 @@ export class TerminalTool extends Tool {
     }
 
     if (decision.action === "ask") {
+      // 交互式审批：TUI 注入 approver 时弹菜单让用户选 Yes/No
+      const approver = getTerminalApprover();
+      if (approver) {
+        try {
+          const verdict = await approver(command, { agentName: agent, cwd: ctx.workingDir || ctx.projectRoot });
+          if (verdict.approve) {
+            if (verdict.persist === "whitelist") addToWhitelist(agent, command);
+            return null; // 放行，继续执行
+          }
+          if (verdict.persist === "blacklist") addToBlacklist(agent, command);
+          return createToolResponse(false,
+            `⛔ 用户拒绝执行：\`${command}\``,
+            { payload: { policy: "ask-denied", command } });
+        } catch (err) {
+          // 用户取消/超时 → 保持原 ask 文字行为兜底
+          return createToolResponse(false,
+            `🔐 命令审批被取消：\`${command}\`（${errToString(err)}）`,
+            { payload: { policy: "ask-cancelled", command } });
+        }
+      }
+      // 未注入 approver（非 TUI 场景）→ 旧文字兜底
       return createToolResponse(false,
         `🔐 命令需确认（normal 模式，不在白名单）：\`${command}\`\n如确认安全，原样再次执行相同命令即放行（自动加入白名单）；或切换 auto/yolo 模式。`,
         { payload: { policy: "ask", command } });

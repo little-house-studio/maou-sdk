@@ -1,7 +1,7 @@
 {
   "name": "@little-house-studio/cli",
-  "version": "0.2.0",
-  "description": "Maou CLI — RPG 风格终端 AI 对话界面（Ink + React）",
+  "version": "0.3.0",
+  "description": "Maou CLI — 极简终端 AI 对话界面",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -17,14 +17,6 @@
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js"
-    },
-    "./image": {
-      "types": "./dist/image/ascii.d.ts",
-      "import": "./dist/image/ascii.js"
-    },
-    "./canvas": {
-      "types": "./dist/canvas/primitives.d.ts",
-      "import": "./dist/canvas/primitives.js"
     }
   },
   "files": [
@@ -36,10 +28,7 @@
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
-    "clean": "rm -rf dist",
-    "dev:demo": "tsx src/demo.tsx",
-    "demo": "node dist/demo.js",
-    "test:demo": "FORCE_COLOR=3 MAOU_DEMO_TEST=1 tsx scripts/smoke-demo.mjs"
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "@little-house-studio/agent": "workspace:*",
@@ -48,15 +37,22 @@
     "@little-house-studio/llm": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/types": "workspace:*",
-    "ink": "^5.0.1",
-    "react": "^18.2.0",
-    "pngjs": "^3.3.3",
+    "ansi-escapes": "^7.3.0",
+    "cli-highlight": "^2.1.0",
+    "ink": "^7.0.0",
+    "marked": "^12.0.0",
+    "react": "^19.0.0",
+    "react-ink-textarea": "^0.2.2",
     "string-width": "^7.1.0",
     "zustand": "^4.5.2"
   },
   "devDependencies": {
+    "@lydell/node-pty": "1.2.0-beta.12",
     "@types/node": "^22.0.0",
-    "@types/react": "^18.2.0",
+    "@types/react": "^19.0.0",
+    "@xterm/headless": "^6.0.0",
+    "ink-testing-library": "^4.0.0",
+    "node-pty": "^1.1.0",
     "tsx": "^4.7.0",
     "typescript": "^5.7.0"
   },

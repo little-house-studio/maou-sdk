@@ -7,5 +7,5 @@
 - 前台超时会自动转后台，不会丢失进程。
 - result_limit 控制返回内容长度，大输出建议设小值（如 2000），避免 token 浪费。
 - manage_action=list 查看所有终端，manage_action=logs 查看后台终端输出。
-- 不要用终端执行文件读写操作——有专门的 read_file/write_file/edit_file 工具。
+- 不要用终端执行文件读写操作——有专门的阅读工具/write_file/edit_file 工具。
 - 破坏性命令（rm -rf、drop table 等）先向用户确认再执行。

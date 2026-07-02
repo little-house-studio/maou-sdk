@@ -86,6 +86,10 @@ export interface CodingAgentOptions {
   enableCompression?: boolean;
   /** 可插拔 LLM 摘要器（缺省回退确定性 truncate）。 */
   summarizer?: Summarizer;
+  /** Runtime 日志函数。CLI 传 () => {} 静默（避免污染 Ink stdout）。 */
+  log?: (level: string, message: string) => void;
+  /** 是否启用 LLM postLogger（pino + raw.jsonl）。CLI 传 false 静默。 */
+  enablePostLogger?: boolean;
   // ── 基础设施依赖（由应用层装配后注入）──
   configStore: ConfigStore;
   sessionStore: SessionStore;
@@ -152,6 +156,8 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     enableCompression: opts.enableCompression,
     agentName: name,
     summarizer: opts.summarizer,
+    log: opts.log ?? ((level, msg) => console[level === "error" ? "error" : "log"](`[Runtime] ${msg}`)),
+    enablePostLogger: opts.enablePostLogger ?? true,
   });
 
   return {
