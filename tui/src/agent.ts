@@ -13,14 +13,16 @@
 import { runAgentCli } from "@little-house-studio/agent";
 import type { AgentHandle, AgentCliConfig } from "@little-house-studio/agent";
 export type { AgentCliConfig };
-import { SelectList } from "@oh-my-pi/pi-tui";
-import type { TUI, SelectItem } from "@oh-my-pi/pi-tui";
-import { setTerminalApprover, addTerminalWhitelist, addTerminalBlacklist } from "@little-house-studio/tools";
+import { SelectList, TERMINAL, isNotificationSuppressed } from "@oh-my-pi/pi-tui";
+import type { TUI, SelectItem, TerminalNotification } from "@oh-my-pi/pi-tui";
+import { setTerminalApprover, addTerminalWhitelist, addTerminalBlacklist, getTerminalMode, setTerminalMode } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { UIState } from "./state/types.js";
 import { selectListTheme } from "./app.js";
 import { reduce } from "./state/reducer.js";
 import { uid } from "./state/reducer.js";
+import { SoundManager } from "./sound.js";
+import type { SoundConfig } from "./sound.js";
 import { existsSync, statSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { createRequire } from "node:module";
@@ -110,6 +112,8 @@ export interface AgentDriverOpts {
   setState: (updater: (s: UIState) => UIState) => void;
   /** 渲染后回调（app 可在此检查 exitRequested）。 */
   onRender?: () => void;
+  /** 音效配置（环境变量 > 此处 > 默认值）。 */
+  soundConfig?: Partial<SoundConfig>;
 }
 
 export class AgentDriver {
@@ -121,6 +125,7 @@ export class AgentDriver {
   private agent: AgentHandle | null = null;
   private abortController: AbortController | null = null;
   private maouRoot: string;
+  private sound: SoundManager;
 
   constructor(config: AgentCliConfig, opts: AgentDriverOpts) {
     this.config = config;
@@ -129,9 +134,35 @@ export class AgentDriver {
     this.setState = opts.setState;
     this.onRender = opts.onRender;
     this.maouRoot = join(process.env.HOME ?? "", ".maou");
+    this.sound = new SoundManager(opts.soundConfig);
   }
 
-  /** 应用 reducer patch 到 state 并触发渲染。 */
+  /** 获取音效管理器（供 Ctrl+S 切换等外部操作）。 */
+  getSoundManager(): SoundManager {
+    return this.sound;
+  }
+
+  /** 获取当前 agent 的工具白名单（供 /tools 命令显示）。 */
+  getToolWhitelist(): readonly string[] {
+    return this.agent?.toolWhitelist ?? [];
+  }
+
+  /** 获取当前终端审批模式（normal/auto/yolo，供状态栏显示）。 */
+  getApprovalMode(): string {
+    try { return getTerminalMode(this.agent?.agentName ?? "coding"); } catch { return "normal"; }
+  }
+
+  /** 获取可用 provider 列表（供设置菜单 API 配置用）。 */
+  getProviders(): { id: string; name?: string }[] {
+    try { return this.config.getProviders?.() ?? []; } catch { return []; }
+  }
+
+  /** 获取某 provider 下的 model 列表。 */
+  getModels(provider: string): { id: string; name?: string }[] {
+    try { return this.config.getModels?.(provider) ?? []; } catch { return []; }
+  }
+
+  /** 应用 reducer patch 到 state 并触发渲染 + 音效。 */
   private applyEvent(ev: StreamEvent): void {
     this.setState(s => {
       const patch = reduce(s, ev);
@@ -139,6 +170,53 @@ export class AgentDriver {
     });
     this.tui.requestRender();
     this.onRender?.();
+
+    // ── 音效触发（副作用，不在 reducer 中） ──────────────
+    this.triggerSound(ev);
+  }
+
+  /** 根据事件类型触发音效 + 桌面通知。 */
+  private triggerSound(ev: StreamEvent): void {
+    switch (ev.type) {
+      case "done": {
+        this.sound.play("done", {
+          title: "MAOU",
+          body: "任务完成",
+          urgency: "low",
+        } as TerminalNotification);
+        this.sound.clearIdleTimer();
+        break;
+      }
+      case "error": {
+        this.sound.play("error", {
+          title: "MAOU",
+          body: "运行出错",
+          urgency: "critical",
+        } as TerminalNotification);
+        this.sound.clearIdleTimer();
+        break;
+      }
+      case "log": {
+        const level = ev.level as string | undefined;
+        if (level === "error" || level === "warning" || level === "warn") {
+          this.sound.play("warning");
+        }
+        // 空闲计时：log 事件也算活跃
+        if (this.getState().streaming) this.sound.resetIdleTimer();
+        break;
+      }
+      case "model.error":
+      case "model.loop_detected":
+      case "round_limit": {
+        this.sound.play("warning");
+        break;
+      }
+      default: {
+        // 其他事件：streaming 中重置空闲计时器
+        if (this.getState().streaming) this.sound.resetIdleTimer();
+        break;
+      }
+    }
   }
 
   /** 发送用户消息，驱动 agent。 */
@@ -162,7 +240,7 @@ export class AgentDriver {
     const handle = this.agent;
 
     // pushUserMessage（移植自 store.pushUserMessage）
-    const userMsg = { id: `u${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, role: "user" as const, content: text, ts: Date.now() };
+    const userMsg = { id: `u${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, role: "user" as const, blocks: [{ type: "text" as const, content: text }], ts: Date.now() };
     this.setState(s => ({
       ...s,
       messages: [...s.messages, userMsg],
@@ -172,6 +250,7 @@ export class AgentDriver {
       toast: null,
     }));
     this.tui.requestRender();
+    this.sound.startIdleTimer();
 
     this.abortController = new AbortController();
     try {
@@ -196,6 +275,7 @@ export class AgentDriver {
       // 兜底：确保 streaming 关闭（reducer 可能没收到 error 事件）
       this.toast(String(e).slice(0, 60), "err");
       this.setState(s => ({ ...s, streaming: false, aborting: false }));
+      this.sound.clearIdleTimer();
       this.tui.requestRender();
     }
   }
@@ -206,6 +286,7 @@ export class AgentDriver {
     if (state.aborting) return;
     this.setState(s => ({ ...s, aborting: true }));
     this.abortController?.abort();
+    this.sound.clearIdleTimer();
     this.toast("已中断", "info");
   }
 
@@ -215,6 +296,13 @@ export class AgentDriver {
    * 选项：Yes（本次）/ Yes且不再问（加白名单）/ No（拒绝）/ No且不再问（加黑名单）。
    */
   requestApproval(command: string, agentName: string): Promise<{ approve: boolean; persist?: "whitelist" | "blacklist" | "none" }> {
+    // 弹出审批时播放提示音
+    this.sound.play("approval", {
+      title: "MAOU",
+      body: "需要审批",
+      urgency: "critical",
+    } as TerminalNotification);
+
     return new Promise((resolve) => {
       const items: SelectItem[] = [
         { value: "yes", label: "Yes", description: "执行本次" },
@@ -240,6 +328,112 @@ export class AgentDriver {
       };
       list.onCancel = () => { handle.hide(); resolve({ approve: false, persist: "none" }); };
     });
+  }
+
+  /**
+   * 设置菜单：用 overlay 栈做多级菜单（和斜杠命令分开）。
+   * 一级菜单选设置项 → 关一级弹二级选具体值。
+   * 比 SettingsList 简单可控（SettingsList 对 CJK label 渲染有问题）。
+   */
+  showSettings(): void {
+    const agentName = this.agent?.agentName ?? "coding";
+    const currentMode = this.getApprovalMode();
+    // 一级菜单：设置项列表
+    const items: SelectItem[] = [
+      { value: "apiConfig", label: "API 配置", description: `当前: ${this.getState().provider}/${this.getState().model}` },
+      { value: "approvalMode", label: "审批模式", description: `当前: ${currentMode}` },
+    ];
+    const list = new SelectList(items, 8, selectListTheme, { overflowSearch: false });
+    const handle = this.tui.showOverlay(list, {
+      anchor: "bottom-center",
+      width: "100%",
+      maxHeight: 8,
+    });
+    list.onSelect = (item) => {
+      handle.hide();
+      if (item.value === "approvalMode") {
+        this.showApprovalModeSubmenu(agentName);
+      } else if (item.value === "apiConfig") {
+        this.showApiConfigSubmenu();
+      }
+    };
+    list.onCancel = () => { handle.hide(); };
+    this.tui.requestRender();
+  }
+
+  /** API 配置子菜单：先选 provider → 再选 model */
+  private showApiConfigSubmenu(): void {
+    const providers = this.getProviders();
+    if (providers.length === 0) {
+      this.toast("无可用 API 配置（~/.maou/config.json 为空）", "warn");
+      return;
+    }
+    const providerItems: SelectItem[] = providers.map(p => ({
+      value: p.id,
+      label: p.name ?? p.id,
+      description: p.id,
+    }));
+    const list = new SelectList(providerItems, 8, selectListTheme, { overflowSearch: false });
+    const handle = this.tui.showOverlay(list, {
+      anchor: "bottom-center",
+      width: "100%",
+      maxHeight: 10,
+    });
+    list.onSelect = (item) => {
+      handle.hide();
+      this.showModelSubmenu(item.value);
+    };
+    list.onCancel = () => { handle.hide(); };
+    this.tui.requestRender();
+  }
+
+  /** Model 子菜单：选 provider 后选具体 model */
+  private showModelSubmenu(provider: string): void {
+    const models = this.getModels(provider);
+    if (models.length === 0) {
+      this.toast(`provider ${provider} 下无可用模型`, "warn");
+      return;
+    }
+    const modelItems: SelectItem[] = models.map(m => ({
+      value: m.id,
+      label: m.name ?? m.id,
+      description: m.id,
+    }));
+    const list = new SelectList(modelItems, 8, selectListTheme, { overflowSearch: false });
+    const handle = this.tui.showOverlay(list, {
+      anchor: "bottom-center",
+      width: "100%",
+      maxHeight: 10,
+    });
+    list.onSelect = (item) => {
+      handle.hide();
+      this.setProviderModel(provider, item.value);
+      this.toast(`API → ${provider}/${item.value}`, "ok");
+    };
+    list.onCancel = () => { handle.hide(); };
+    this.tui.requestRender();
+  }
+
+  /** 二级菜单：审批模式选择（normal/auto/yolo） */
+  private showApprovalModeSubmenu(agentName: string): void {
+    const subItems: SelectItem[] = [
+      { value: "normal", label: "Normal", description: "每次命令需确认" },
+      { value: "auto", label: "Auto", description: "小模型审核自动放行" },
+      { value: "yolo", label: "Yolo", description: "全部放行不确认" },
+    ];
+    const subList = new SelectList(subItems, 8, selectListTheme, { overflowSearch: false });
+    const subHandle = this.tui.showOverlay(subList, {
+      anchor: "bottom-center",
+      width: "100%",
+      maxHeight: 8,
+    });
+    subList.onSelect = (item) => {
+      subHandle.hide();
+      setTerminalMode(agentName, item.value as "normal" | "auto" | "yolo");
+      this.toast(`审批模式 → ${item.value}`, "ok");
+    };
+    subList.onCancel = () => { subHandle.hide(); };
+    this.tui.requestRender();
   }
 
   /** 设置 provider/model（启动时由 index 从 preset 推断，或未来 ModelDialog 用）。 */

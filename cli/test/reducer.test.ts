@@ -44,7 +44,7 @@ describe("reducer: 27 StreamEvent types", () => {
     expect(s.messages[0]!.content).toBe("Hello world");
   });
 
-  it("assistant: 完整消息 + usage.max_context 更新窗口（陷阱③）", () => {
+  it("assistant: 完整消息 + usage.max_context 更新窗口（陷阱③，区别于 model.usage）", () => {
     let s = apply(freshState(), { type: "assistant_delta", delta: "hi" });
     s = apply(s, {
       type: "assistant", content: "hi", round: 1,
@@ -54,8 +54,23 @@ describe("reducer: 27 StreamEvent types", () => {
     expect(s.messages[0]!.streaming).toBe(false);
     expect(s.messages[0]!.usage?.maxContext).toBe(200000);
     expect(s.maxContext).toBe(200000);
-    expect(s.currentRoundUsage.input).toBe(100);
+    // assistant 不再累加 currentRoundUsage：runtime 同一轮会先发 model.usage 再发 assistant，
+    // 二者携带同一份 result.usage，若 assistant 也累加会导致 input/output 翻倍（缓存率被压低）。
+    // 真实 runtime 中 model.usage 总在 assistant 之前发出并完成累计。
+    expect(s.currentRoundUsage.input).toBe(0);
+    expect(s.currentRoundUsage.output).toBe(0);
+  });
+
+  it("model.usage → assistant: token 由 model.usage 累计，assistant 不翻倍", () => {
+    let s = apply(freshState(), { type: "assistant_delta", delta: "hi" });
+    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 100, completion_tokens: 50 } });
+    s = apply(s, {
+      type: "assistant", content: "hi", round: 1,
+      usage: { prompt_tokens: 100, completion_tokens: 50, max_context: 200000 },
+    });
+    expect(s.currentRoundUsage.input).toBe(100);  // 不翻倍
     expect(s.currentRoundUsage.output).toBe(50);
+    expect(s.maxContext).toBe(200000);
   });
 
   it("tool_call: ev.tool 是对象（陷阱④）", () => {
@@ -103,6 +118,32 @@ describe("reducer: 27 StreamEvent types", () => {
     expect(s.currentRoundUsage.output).toBe(20);
     // 不含 max_context，不应更新 maxContext
     expect(s.maxContext).toBe(100000);
+  });
+
+  it("model.usage: cacheRead 在多步轮次中累加（非 ?? 覆盖）", () => {
+    let s = apply(freshState(), { type: "model.usage", usage: { prompt_tokens: 100, completion_tokens: 10, cached_tokens: 500 } });
+    // 同一轮第二次 LLM 调用（agent 模式带工具）
+    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 80, completion_tokens: 5, cached_tokens: 700 } });
+    expect(s.currentRoundUsage.cacheRead).toBe(1200);  // 500 + 700，而非 700
+    expect(s.currentRoundUsage.input).toBe(180);        // 100 + 80
+  });
+
+  it("cacheHistory: 合并平均缓存率（sum(cacheRead)/sum(input)，非 mean-of-rates）+ 0 缓存轮次纳入", () => {
+    let s = freshState();
+    // 第1轮：cache=900, input=1000 → 命中率 90%
+    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 1000, completion_tokens: 10, cached_tokens: 900 } });
+    s = apply(s, { type: "agent_round", round: 2 });
+    // 第2轮：cache=0, input=100 → 命中率 0%（必须纳入，否则平均偏高）
+    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 100, completion_tokens: 5, cached_tokens: 0 } });
+    s = apply(s, { type: "done", rounds: 2 });
+    expect(s.cacheHistory).toHaveLength(2);
+    // 合并：900/(1000+100) = 81.8% → 82%（若用 mean-of-rates 会得 45%；若排除0轮次会得 90%）
+    const sumCache = s.cacheHistory.reduce((a, c) => a + c.cacheRead, 0);
+    const sumInput = s.cacheHistory.reduce((a, c) => a + c.input, 0);
+    expect(Math.round((sumCache / sumInput) * 100)).toBe(82);
+    // 缓存率公式 = cacheRead/input（input 是 prompt_tokens，已含 cache）
+    expect(sumCache).toBe(900);
+    expect(sumInput).toBe(1100);
   });
 
   it("done: 结束 streaming + 归档 rounds", () => {
@@ -174,11 +215,40 @@ describe("reducer: 27 StreamEvent types", () => {
     s = apply(s, { type: "tool_pending", tool: { name: "read" } });
     s = apply(s, { type: "tool_result", toolCallId: "t1", name: "read", content: "ok", ok: true });
     s = apply(s, { type: "assistant_delta", delta: " done" });
+    // 真实 runtime 顺序：model.usage 先于 assistant 发出（同一份 result.usage），
+    // token 由 model.usage 累计，assistant 仅刷新消息展示，不再翻倍。
+    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 50, completion_tokens: 20 } });
     s = apply(s, { type: "assistant", content: "let me read done", round: 1, usage: { prompt_tokens: 50, completion_tokens: 20, max_context: 100000 } });
     s = apply(s, { type: "done", rounds: 1 });
     expect(s.streaming).toBe(false);
     expect(s.messages.find(m => m.role === "assistant")!.toolCalls).toHaveLength(1);
     expect(s.messages.find(m => m.role === "assistant")!.toolCalls![0]!.done).toBe(true);
     expect(s.rounds).toHaveLength(1);
+    expect(s.rounds[0]!.input).toBe(50);  // 不翻倍
   });
 });
+
+  it("xfyun qwen 真实 usage 形状解析（prompt_tokens_details.cached_tokens 提取）", () => {
+    // 真实捕获的 xfyun last_usage 形状（from /Users/mac/.maou/agents/main/sessions/last.json）
+    const xfyunUsage = {
+      prompt_tokens: 6135,
+      completion_tokens: 472,
+      total_tokens: 6607,
+      prompt_tokens_details: { cached_tokens: 5504 },
+      completion_tokens_details: { reasoning_tokens: 175 },
+      prompt_cache_hit_tokens: 5504,
+      prompt_cache_miss_tokens: 631,
+    };
+    let s = apply(freshState(), { type: "model.usage", usage: xfyunUsage });
+    // parseUsage 应从 prompt_tokens_details.cached_tokens 提取
+    expect(s.currentRoundUsage.cacheRead).toBe(5504);
+    expect(s.currentRoundUsage.input).toBe(6135);
+    s = apply(s, { type: "done", rounds: 1 });
+    expect(s.cacheHistory).toHaveLength(1);
+    expect(s.cacheHistory[0]!.cacheRead).toBe(5504);
+    expect(s.cacheHistory[0]!.input).toBe(6135);
+    // 缓存率 = cached/prompt_tokens = 5504/6135 = 89.7% → 90%
+    const sumCache = s.cacheHistory.reduce((a, c) => a + c.cacheRead, 0);
+    const sumInput = s.cacheHistory.reduce((a, c) => a + c.input, 0);
+    expect(Math.round((sumCache / sumInput) * 100)).toBe(90);
+  });

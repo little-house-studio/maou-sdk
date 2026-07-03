@@ -22,7 +22,7 @@ import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { compressTerminalOutput, compressOutput } from "../../compress/output-compressor.js";
 import { createToolResponse } from "../../base.js";
 import { truncateMiddle, formatMetadata, errToString } from "../../browser/god_tool/use_browser/_util.js";
-import { decideCommand, getTerminalReviewer, getTerminalApprover, addToWhitelist, addToBlacklist, recordReviewApprove, recordReviewReject } from "../terminal-policy.js";
+import { decideCommand, getTerminalReviewer, getTerminalApprover, addToWhitelist, addToBlacklist, commandPrefix, recordReviewApprove, recordReviewReject } from "../terminal-policy.js";
 
 // Rust 终端引擎
 import * as engine from "@little-house-studio/terminal-engine";
@@ -175,10 +175,11 @@ export class TerminalTool extends Tool {
         try {
           const verdict = await approver(command, { agentName: agent, cwd: ctx.workingDir || ctx.projectRoot });
           if (verdict.approve) {
-            if (verdict.persist === "whitelist") addToWhitelist(agent, command);
+            // "Yes且不再问"：按命令前缀放行（如 curl *），同类命令不再审批
+            if (verdict.persist === "whitelist") addToWhitelist(agent, commandPrefix(command));
             return null; // 放行，继续执行
           }
-          if (verdict.persist === "blacklist") addToBlacklist(agent, command);
+          if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
           return createToolResponse(false,
             `⛔ 用户拒绝执行：\`${command}\``,
             { payload: { policy: "ask-denied", command } });

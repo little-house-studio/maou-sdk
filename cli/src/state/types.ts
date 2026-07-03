@@ -54,6 +54,12 @@ export interface RoundUsage {
   cacheRead?: number;
 }
 
+/** 单轮缓存统计原始量（用于正确计算合并缓存率，避免 mean-of-rates 偏差） */
+export interface CacheStat {
+  cacheRead: number;
+  input: number;
+}
+
 export type OverlayKind = null | "command" | "model" | "sessions" | "help";
 
 export interface UIState {
@@ -69,7 +75,7 @@ export interface UIState {
   round: number;
   thinkingLevel: number;
   rounds: RoundUsage[];          // 每轮 token（sparkline 用，最近 20）
-  cacheHistory: number[];        // 最近 20 轮缓存率
+  cacheHistory: CacheStat[];     // 最近 20 轮缓存统计（cacheRead/input，合并算平均率）
   currentRoundUsage: RoundUsage; // 本轮累计
   eventBlock: EventBlock;
   toast: Toast | null;

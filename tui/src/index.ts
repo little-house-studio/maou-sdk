@@ -104,12 +104,34 @@ export function runTui(config: AgentCliConfig, opts?: RunTuiOptions): void {
   handle.driver.initProviderModel();
   handle.app.startTimers();
 
-  // Ctrl+C：streaming 时中断，否则退出
-  // Ctrl+C：用 Pi keybindings 识别（tui.select.cancel = ctrl+c/escape），
-  // 与 Pi 键位体系一致，支持用户自定义键位。abort vs 退出是 app 业务语义。
+  // 键位交互（参考 Claude Code）：
+  //   Esc   (\x1b)：streaming 时中断当前运行（比 Ctrl+C 温和，不退出）；
+  //                非 streaming 时清空输入框，让用户快速重输。
+  //   Ctrl+C(\x03)：streaming 时中断；否则退出进程。
+  //   Ctrl+O：toggle 工具卡片展开/折叠（模仿 oh-my-pi coding-agent）。
+  //   Ctrl+S：切换音效开/关。
+  //
+  // 注意：kb.matches(data,"tui.select.cancel") 同时匹配 escape 和 ctrl+c
+  // （默认键位 ["escape","ctrl+c"]）。要区分两者，先精确匹配 data。
   const kb = getKeybindings();
   handle.tui.addInputListener((data: string) => {
-    if (kb.matches(data, "tui.select.cancel")) {
+    // Esc 键（纯 \x1b，非 Alt+x 组合）。
+    // 有可见 overlay（审批下拉/斜杠补全等）时不消费——让 overlay 的
+    // SelectList 自行处理 Esc/onCancel；否则：
+    //   streaming 时 → 中断当前运行（比 Ctrl+C 温和，不退出）；
+    //   非 streaming  → 清空输入框，让用户快速重输。
+    if (data === "\x1b") {
+      if (handle.tui.hasOverlay()) return undefined;
+      if (handle.box.state.streaming) {
+        handle.driver.abort();
+      } else {
+        handle.editor.setText("");
+        handle.tui.requestRender();
+      }
+      return { consume: true };
+    }
+    // Ctrl+C：streaming 时中断，否则退出
+    if (data === "\x03" || kb.matches(data, "tui.select.cancel")) {
       if (handle.box.state.streaming) {
         handle.driver.abort();
         return { consume: true };
@@ -117,6 +139,19 @@ export function runTui(config: AgentCliConfig, opts?: RunTuiOptions): void {
       handle.app.stopTimers();
       handle.tui.stop();
       process.exit(130);
+    }
+    if (data === "\x0f") { // Ctrl+O
+      handle.box.state = { ...handle.box.state, toolsExpanded: !handle.box.state.toolsExpanded };
+      handle.app.setState(handle.box.state);
+      handle.tui.requestRender();
+      return { consume: true };
+    }
+    if (data === "\x13") { // Ctrl+S — 切换音效开/关
+      const sm = handle.driver.getSoundManager();
+      const newState = !sm.isEnabled();
+      sm.updateConfig({ enabled: newState });
+      handle.driver.toast(newState ? "🔊 音效已开启" : "🔇 音效已关闭", "info");
+      return { consume: true };
     }
     return undefined;
   });

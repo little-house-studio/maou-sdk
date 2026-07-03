@@ -16,7 +16,7 @@
  */
 
 import type { StreamEvent } from "@little-house-studio/types";
-import type { UIState, ChatMessage, ToolCardState, RoundUsage, Toast } from "./types.js";
+import type { UIState, ChatMessage, Block, RoundUsage, Toast } from "./types.js";
 
 let idc = 0;
 export const uid = (): string => `m${Date.now()}_${idc++}`;
@@ -31,23 +31,28 @@ function makeToast(text: string, kind: Toast["kind"]): Toast {
   return { text: text.slice(0, 80), kind, expiresAt: Date.now() + TOAST_TTL };
 }
 
-/** 从 usage 对象取 input/output token（兼容各家字段名） */
+/** 从 usage 对象取 input/output/cacheRead token（兼容各家字段名） */
 function parseUsage(u: Record<string, unknown> | undefined): { input: number; output: number; cacheRead?: number } {
   if (!u) return { input: 0, output: 0 };
   const input = Number(u.prompt_tokens ?? u.input_tokens ?? u.inputTokens ?? 0) || 0;
   const output = Number(u.completion_tokens ?? u.output_tokens ?? u.outputTokens ?? 0) || 0;
   const details = u.prompt_tokens_details as { cached_tokens?: number } | undefined;
-  const cacheRead = Number(u.cached_tokens ?? u.cache_read_input_tokens ?? details?.cached_tokens ?? 0) || undefined;
-  return { input, output, cacheRead: cacheRead || undefined };
+  // 注意：保留 cacheRead=0（不转 undefined），让 0% 缓存轮次也进入 cacheHistory，
+  // 否则平均值会只算有命中的轮次，导致偏高。
+  const cacheRead = Number(u.cached_tokens ?? u.cache_read_input_tokens ?? details?.cached_tokens ?? 0) || 0;
+  return { input, output, cacheRead };
 }
 
 function pushRound(state: UIState, usage: RoundUsage): Patch {
   const full: RoundUsage = { ...usage, total: usage.total ?? (usage.input + usage.output) };
   const rounds = [...state.rounds, full].slice(-HISTORY);
+  // 存原始量 {cacheRead, input}，而非预算比率 ——
+  // 平均缓存率必须用 sum(cacheRead)/sum(cacheRead+input) 合并计算，
+  // 否则 mean-of-rates 在分母差异大的轮次间会产生显著偏差。
+  // cacheRead 0 也纳入（0 缓存轮次拉低平均，反映真实命中率）。
   let cacheHistory = state.cacheHistory;
-  if (usage.cacheRead !== undefined && usage.input > 0) {
-    const rate = usage.cacheRead / (usage.cacheRead + usage.input);
-    cacheHistory = [...state.cacheHistory, rate].slice(-HISTORY);
+  if (usage.input > 0 || (usage.cacheRead ?? 0) > 0) {
+    cacheHistory = [...state.cacheHistory, { cacheRead: usage.cacheRead ?? 0, input: usage.input }].slice(-HISTORY);
   }
   return { rounds, cacheHistory };
 }
@@ -69,17 +74,13 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     // ── 思考增量 ──────────────────────────────────────────
     case "thinking_delta": {
       const delta = ev.delta ?? "";
-      const blocks = state.messages.find(m => m.id === state.currentAssistantId)?.thinkingBlocks ?? [];
-      let newBlocks: ChatMessage["thinkingBlocks"];
-      const last = blocks[blocks.length - 1];
-      if (last?.streaming) {
-        newBlocks = [...blocks.slice(0, -1), { ...last, content: last.content + delta }];
-      } else {
-        newBlocks = [...blocks, { id: uid(), content: delta, streaming: true }];
-      }
-      return patchCurrentAssistant(state, { thinkingBlocks: newBlocks }) ?? {
-        eventBlock: { ...state.eventBlock, mode: "thinking" },
-      };
+      return patchCurrentAssistantBlocks(state, blocks => {
+        const last = blocks[blocks.length - 1];
+        if (last?.type === "thinking" && last.streaming) {
+          return [...blocks.slice(0, -1), { ...last, content: last.content + delta }];
+        }
+        return [...blocks, { type: "thinking", id: uid(), content: delta, streaming: true }];
+      }) ?? { eventBlock: { ...state.eventBlock, mode: "thinking" } };
     }
 
     // ── 助手文本增量 ──────────────────────────────────────
@@ -90,9 +91,13 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       let currentAssistantId = id;
       if (!id || !messages.find(m => m.id === id)) {
         currentAssistantId = uid();
-        messages = [...messages, { id: currentAssistantId, role: "assistant", content: "", streaming: true, ts: Date.now(), thinkingBlocks: [] }];
+        messages = [...messages, { id: currentAssistantId, role: "assistant", blocks: [], streaming: true, ts: Date.now() }];
       }
-      messages = messages.map(m => m.id === currentAssistantId ? { ...m, content: m.content + delta, streaming: true } : m);
+      messages = messages.map(m => m.id === currentAssistantId ? {
+        ...m,
+        blocks: appendTextBlock(m.blocks, delta),
+        streaming: true,
+      } : m);
       return {
         messages,
         currentAssistantId,
@@ -106,32 +111,31 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const usage = parseUsage(ev.usage as Record<string, unknown> | undefined);
       const maxContext = Number((ev.usage as { max_context?: number } | undefined)?.max_context) || undefined;
       const round = ev.round ?? state.round;
-      // 追加完整 assistant 消息（若已有流式占位则更新）
       const id = state.currentAssistantId;
       let messages = state.messages;
       if (id && messages.find(m => m.id === id)) {
         messages = messages.map(m => m.id === id ? {
-          ...m, content: content || m.content, streaming: false,
+          ...m,
+          blocks: content ? finalizeTextBlocks(m.blocks, content) : m.blocks,
+          streaming: false,
           usage: { input: usage.input, output: usage.output, maxContext },
         } : m);
       } else {
-        messages = [...messages, { id: uid(), role: "assistant", content, streaming: false, ts: Date.now(), usage: { input: usage.input, output: usage.output, maxContext } }];
+        messages = [...messages, { id: uid(), role: "assistant", blocks: content ? [{ type: "text", content }] : [], streaming: false, ts: Date.now(), usage: { input: usage.input, output: usage.output, maxContext } }];
       }
       const patch: Patch = {
         messages,
-        currentAssistantId: null,
+        // 轮内 assistant 事件不清 currentAssistantId——同一轮多次 LLM 调用（工具间）
+        // 后续 assistant_delta 应复用同一消息，避免创建多条空 ai 消息。
+        // currentAssistantId 只在 done 事件清。
         maxContext: maxContext ?? state.maxContext,
       };
-      // 累计本轮 usage（assistant 事件通常是一轮结束）
       const cur = state.currentRoundUsage;
-      const merged: RoundUsage = {
-        input: cur.input + usage.input,
-        output: cur.output + usage.output,
-        cacheRead: usage.cacheRead ?? cur.cacheRead,
-      };
-      patch.currentRoundUsage = merged;
-      patch.eventBlock = { ...state.eventBlock, upTokens: merged.input, downTokens: merged.output };
-      void round; // round 字段在此无单独语义（agent_round 维护），保留避免 lint
+      // 注意：runtime 同一轮会先发 model.usage 再发 assistant，二者携带同一份 result.usage。
+      // model.usage 已累计 token 到 currentRoundUsage；assistant 仅用于刷新消息展示，
+      // 不应再累加，否则 input/output 会被翻倍（cacheRead 用 ?? 不翻倍 → 缓存率被压低）。
+      patch.eventBlock = { ...state.eventBlock, upTokens: cur.input, downTokens: cur.output };
+      void round;
       return patch;
     }
 
@@ -141,19 +145,20 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const id = state.currentAssistantId ?? uid();
       let messages = state.messages;
       if (!state.currentAssistantId || !messages.find(m => m.id === id)) {
-        messages = [...messages, { id, role: "assistant", content: "", streaming: true, ts: Date.now(), thinkingBlocks: [] }];
+        messages = [...messages, { id, role: "assistant", blocks: [], streaming: true, ts: Date.now() }];
       }
-      const tc: ToolCardState = {
+      const toolBlock: Block = {
+        type: "tool",
         id: tool?.id ?? uid(),
         name: tool?.name ?? "?",
         args: JSON.stringify(tool?.parameters ?? {}),
         done: false,
       };
-      messages = messages.map(m => m.id === id ? { ...m, toolCalls: [...(m.toolCalls ?? []), tc] } : m);
+      messages = messages.map(m => m.id === id ? { ...m, blocks: [...m.blocks, toolBlock] } : m);
       return {
         messages,
         currentAssistantId: id,
-        eventBlock: { ...state.eventBlock, mode: "tool_pending", detail: tc.name },
+        eventBlock: { ...state.eventBlock, mode: "tool_pending", detail: toolBlock.name },
       };
     }
 
@@ -163,14 +168,14 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const name = ev.name as string | undefined;
       const content = typeof ev.content === "string" ? ev.content : JSON.stringify(ev.content ?? "");
       const ok = ev.ok !== false;
-      const messages = state.messages.map(m => m.toolCalls ? {
+      const messages = state.messages.map(m => ({
         ...m,
-        toolCalls: m.toolCalls.map(tc =>
-          (tc.id === toolCallId || (!toolCallId && tc.name === name && !tc.done))
-            ? { ...tc, result: content.slice(0, MAX_RESULT), isError: !ok, done: true }
-            : tc
+        blocks: m.blocks.map(b =>
+          (b.type === "tool" && (b.id === toolCallId || (!toolCallId && b.name === name && !b.done)))
+            ? { ...b, result: content.slice(0, MAX_RESULT), isError: !ok, done: true }
+            : b
         ),
-      } : m);
+      }));
       return { messages, eventBlock: { ...state.eventBlock, mode: ok ? "generating" : "error", detail: name } };
     }
 
@@ -184,10 +189,12 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     case "model.usage": {
       const usage = parseUsage(ev.usage as Record<string, unknown> | undefined);
       const cur = state.currentRoundUsage;
+      // cacheRead 也累加（多步轮次：agent 模式下一轮可能多次 LLM 调用，每次都有 cache）。
+      // 之前用 ?? 会丢弃前几次的 cache，导致缓存率偏低。
       const merged: RoundUsage = {
         input: cur.input + usage.input,
         output: cur.output + usage.output,
-        cacheRead: usage.cacheRead ?? cur.cacheRead,
+        cacheRead: (cur.cacheRead ?? 0) + (usage.cacheRead ?? 0),
       };
       return {
         currentRoundUsage: merged,
@@ -249,10 +256,11 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
           ? { ...m, streaming: false }
           : m
       );
-      // 关闭所有 thinkingBlock 流式
-      const messagesClosed = messages.map(m => m.thinkingBlocks ? {
-        ...m, thinkingBlocks: m.thinkingBlocks.map(b => ({ ...b, streaming: false })),
-      } : m);
+      // 关闭所有 thinking block 流式
+      const messagesClosed = messages.map(m => ({
+        ...m,
+        blocks: m.blocks.map(b => b.type === "thinking" ? { ...b, streaming: false } : b),
+      }));
       // round：runtime done 事件的 rounds 字段硬编码 0（已知 bug），不可靠。
       // 优先用 agent_round 累加的 state.round；仅当 ev.rounds 更大时采用。
       const evRounds = ev.rounds as number | undefined;
@@ -297,10 +305,28 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
   }
 }
 
-/** 把 patch 应用到当前 assistant 消息（thinking_delta 用） */
-function patchCurrentAssistant(state: UIState, patch: Partial<ChatMessage>): Patch | null {
+/** 把 blocks 更新应用到当前 assistant 消息（thinking_delta 用） */
+function patchCurrentAssistantBlocks(state: UIState, updater: (blocks: Block[]) => Block[]): Patch | null {
   const id = state.currentAssistantId;
   if (!id || !state.messages.find(m => m.id === id)) return null;
-  const messages = state.messages.map(m => m.id === id ? { ...m, ...patch } : m);
+  const messages = state.messages.map(m => m.id === id ? { ...m, blocks: updater(m.blocks) } : m);
   return { messages };
+}
+
+/** 追加文本到末尾 text block；若末尾非 text 则新建 text block（保证 tool/thinking 后的文本穿插） */
+function appendTextBlock(blocks: Block[], delta: string): Block[] {
+  const last = blocks[blocks.length - 1];
+  if (last?.type === "text") {
+    return [...blocks.slice(0, -1), { type: "text", content: last.content + delta }];
+  }
+  return [...blocks, { type: "text", content: delta }];
+}
+
+/** 完整 assistant 消息收尾：用最终 content 替换末尾 text block（若无 text block 则追加） */
+function finalizeTextBlocks(blocks: Block[], content: string): Block[] {
+  const last = blocks[blocks.length - 1];
+  if (last?.type === "text") {
+    return [...blocks.slice(0, -1), { type: "text", content }];
+  }
+  return [...blocks, { type: "text", content }];
 }

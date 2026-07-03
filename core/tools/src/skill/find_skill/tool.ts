@@ -6,7 +6,9 @@
  * - install: 安装 skill 到本地 agent 目录
  */
 
-import { execSync } from "node:child_process";
+import { exec as execAsync } from "node:child_process";
+import { promisify } from "node:util";
+const execAsyncP = promisify(execAsync);
 import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -77,9 +79,9 @@ export class FindSkillTool extends Tool {
     }
 
     if (mode === "search") {
-      return this.handleSearch(query, ctx);
+      return await this.handleSearch(query, ctx);
     } else if (mode === "install") {
-      return this.handleInstall(query, ctx);
+      return await this.handleInstall(query, ctx);
     } else {
       return createToolResponse(false, `未知模式: ${mode}，请使用 search 或 install`);
     }
@@ -87,7 +89,7 @@ export class FindSkillTool extends Tool {
 
   // ─── 搜索模式 ───────────────────────────────────────────────────────────
 
-  private handleSearch(query: string, _ctx: ToolContext): ToolResponse {
+  private async handleSearch(query: string, _ctx: ToolContext): Promise<ToolResponse> {
     try {
       // 解析搜索语法
       const parsed = this.parseSearchQuery(query);
@@ -109,7 +111,14 @@ export class FindSkillTool extends Tool {
       const cmd = `npx skills find "${searchTerm}" 2>&1`;
 
       console.log(`[find_skill] 执行搜索: ${cmd}`);
-      const output = execSync(cmd, { encoding: "utf-8", timeout: 30000 });
+      // 异步执行，避免阻塞事件循环（execSync 会冻结 TUI 渲染/输入）
+      let output: string;
+      try {
+        const { stdout } = await execAsyncP(cmd, { encoding: "utf-8", timeout: 30000 } as Record<string, unknown>);
+        output = stdout;
+      } catch (e) {
+        output = (e as { stdout?: string; stderr?: string }).stdout ?? (e as { stderr?: string }).stderr ?? String(e);
+      }
 
       // 解析结果
       let results = this.parseSearchOutput(output);
@@ -252,7 +261,7 @@ export class FindSkillTool extends Tool {
 
   // ─── 安装模式 ───────────────────────────────────────────────────────────
 
-  private handleInstall(source: string, ctx: ToolContext): ToolResponse {
+  private async handleInstall(source: string, ctx: ToolContext): Promise<ToolResponse> {
     try {
       // 确定安装目录：agent 所属的 .maou/skills
       // 全局 agent: ~/.maou/skills
@@ -298,7 +307,14 @@ export class FindSkillTool extends Tool {
       const addCmd = `cd "${tempDir}" && npx skills add ${parsed.ownerRepo}@${parsed.skill} --copy -y 2>&1`;
       console.log(`[find_skill] 执行: ${addCmd}`);
 
-      const addOutput = execSync(addCmd, { encoding: "utf-8", timeout: 60000, cwd: tempDir });
+      // 异步执行，避免阻塞事件循环（execSync 会冻结 TUI 渲染/输入）
+      let addOutput: string;
+      try {
+        const { stdout } = await execAsyncP(addCmd, { encoding: "utf-8", timeout: 60000, cwd: tempDir } as Record<string, unknown>);
+        addOutput = stdout;
+      } catch (e) {
+        addOutput = (e as { stdout?: string; stderr?: string }).stdout ?? (e as { stderr?: string }).stderr ?? String(e);
+      }
 
       // 检查临时目录中的 skill
       const tempSkillDir = join(tempDir, "skills", parsed.skill);

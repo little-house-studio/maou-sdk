@@ -12,29 +12,22 @@
  * 改用纯 state 对象 + tui.requestRender() 驱动渲染，故无 store action。
  */
 
-export interface ToolCardState {
-  id: string;
-  name: string;
-  args: string;          // JSON.stringify(parameters)
-  result?: string;       // 截断后
-  isError?: boolean;
-  done: boolean;
-}
-
-export interface ThinkingBlock {
-  id: string;
-  content: string;
-  streaming: boolean;
-}
+/**
+ * 对话内容块 —— 有序数组，按事件到达顺序穿插（text/thinking/tool）。
+ * 模仿 oh-my-pi 的 content: Block[] 模型，替代 content+toolCalls+thinkingBlocks 三字段分离。
+ */
+export type Block =
+  | { type: "text"; content: string }
+  | { type: "thinking"; id: string; content: string; streaming: boolean }
+  | { type: "tool"; id: string; name: string; args: string; result?: string; isError?: boolean; done: boolean };
 
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
-  content: string;
+  /** 有序内容块（text/thinking/tool 按时序穿插）。user 消息通常单个 text block。 */
+  blocks: Block[];
   ts: number;
   streaming?: boolean;
-  toolCalls?: ToolCardState[];
-  thinkingBlocks?: ThinkingBlock[];
   usage?: { input: number; output: number; maxContext?: number };
 }
 
@@ -61,6 +54,12 @@ export interface RoundUsage {
   cacheRead?: number;
 }
 
+/** 单轮缓存统计原始量（用于正确计算合并缓存率，避免 mean-of-rates 偏差） */
+export interface CacheStat {
+  cacheRead: number;
+  input: number;
+}
+
 export interface UIState {
   messages: ChatMessage[];
   currentAssistantId: string | null;
@@ -74,10 +73,12 @@ export interface UIState {
   round: number;
   thinkingLevel: number;
   rounds: RoundUsage[];          // 每轮 token（sparkline 用，最近 20）
-  cacheHistory: number[];        // 最近 20 轮缓存率
+  cacheHistory: CacheStat[];     // 最近 20 轮缓存统计（cacheRead/input，合并算平均率）
   currentRoundUsage: RoundUsage; // 本轮累计
   eventBlock: EventBlock;
   toast: Toast | null;
+  /** 工具卡片展开状态（ctrl+o toggle，默认折叠） */
+  toolsExpanded: boolean;
   /** 退出请求（app 主循环监听后调 tui.stop + process.exit） */
   exitRequested: boolean;
 }
@@ -101,6 +102,7 @@ export function initialState(): UIState {
     currentRoundUsage: { input: 0, output: 0 },
     eventBlock: { mode: "idle", upTokens: 0, downTokens: 0 },
     toast: null,
+    toolsExpanded: false,
     exitRequested: false,
   };
 }

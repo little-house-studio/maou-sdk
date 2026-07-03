@@ -29,8 +29,16 @@ export function StatusBar() {
   const ctxTokens = lastRound ? (lastRound.total ?? (lastRound.input + lastRound.output)) : currentTokens;
   const ctxPct = maxContext > 0 ? Math.min(1, ctxTokens / maxContext) : 0;
   const barColor = ctxPct > 0.8 ? t.err : ctxPct > 0.5 ? t.warn : t.accent;
+  // 平均缓存率：sum(cacheRead)/sum(cacheRead+input) 合并计算（非 mean-of-rates）。
+  // cacheHistory 存 {cacheRead,input} 对。
+  // 注意：input 是 prompt_tokens（已含 cache）。真实命中率 = cacheRead/input。
+  // （xfyun/qwen/openai-compat: prompt_tokens = cached + miss，故 cached/pt 即命中率）
   const cacheAvg = cacheHistory.length > 0
-    ? Math.round((cacheHistory.reduce((a, b) => a + b, 0) / cacheHistory.length) * 100)
+    ? (() => {
+        const sumCache = cacheHistory.reduce((a, c) => a + (c.cacheRead ?? 0), 0);
+        const sumInput = cacheHistory.reduce((a, c) => a + (c.input ?? 0), 0);
+        return sumInput > 0 ? Math.round((sumCache / sumInput) * 100) : null;
+      })()
     : null;
 
   // 响应式裁剪：窄列下隐藏次要元素，避免溢出覆盖对话区

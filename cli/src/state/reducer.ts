@@ -26,17 +26,22 @@ function parseUsage(u: Record<string, unknown> | undefined): { input: number; ou
   const input = Number(u.prompt_tokens ?? u.input_tokens ?? u.inputTokens ?? 0) || 0;
   const output = Number(u.completion_tokens ?? u.output_tokens ?? u.outputTokens ?? 0) || 0;
   const details = u.prompt_tokens_details as { cached_tokens?: number } | undefined;
-  const cacheRead = Number(u.cached_tokens ?? u.cache_read_input_tokens ?? details?.cached_tokens ?? 0) || undefined;
-  return { input, output, cacheRead: cacheRead || undefined };
+  // 注意：保留 cacheRead=0（不转 undefined），让 0% 缓存轮次也进入 cacheHistory，
+  // 否则平均值会只算有命中的轮次，导致偏高。
+  const cacheRead = Number(u.cached_tokens ?? u.cache_read_input_tokens ?? details?.cached_tokens ?? 0) || 0;
+  return { input, output, cacheRead };
 }
 
 function pushRound(state: UIState, usage: RoundUsage): Patch {
   const full: RoundUsage = { ...usage, total: usage.total ?? (usage.input + usage.output) };
   const rounds = [...state.rounds, full].slice(-HISTORY);
+  // 存原始量 {cacheRead, input}，而非预算比率 ——
+  // 平均缓存率必须用 sum(cacheRead)/sum(cacheRead+input) 合并计算，
+  // 否则 mean-of-rates 在分母差异大的轮次间会产生显著偏差。
+  // cacheRead 0 也纳入（0 缓存轮次拉低平均，反映真实命中率）。
   let cacheHistory = state.cacheHistory;
-  if (usage.cacheRead !== undefined && usage.input > 0) {
-    const rate = usage.cacheRead / (usage.cacheRead + usage.input);
-    cacheHistory = [...state.cacheHistory, rate].slice(-HISTORY);
+  if (usage.input > 0 || (usage.cacheRead ?? 0) > 0) {
+    cacheHistory = [...state.cacheHistory, { cacheRead: usage.cacheRead ?? 0, input: usage.input }].slice(-HISTORY);
   }
   return { rounds, cacheHistory };
 }
@@ -111,15 +116,10 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
         currentAssistantId: null,
         maxContext: maxContext ?? state.maxContext,
       };
-      // 累计本轮 usage（assistant 事件通常是一轮结束）
-      const cur = state.currentRoundUsage;
-      const merged: RoundUsage = {
-        input: cur.input + usage.input,
-        output: cur.output + usage.output,
-        cacheRead: usage.cacheRead ?? cur.cacheRead,
-      };
-      patch.currentRoundUsage = merged;
-      patch.eventBlock = { ...state.eventBlock, upTokens: merged.input, downTokens: merged.output };
+      // 注意：runtime 同一轮会先发 model.usage 再发 assistant，二者携带同一份 result.usage。
+      // model.usage 已累计 token 到 currentRoundUsage；assistant 仅用于刷新消息展示，
+      // 不应再累加，否则 input/output 会被翻倍（cacheRead 用 ?? 不翻倍 → 缓存率被压低）。
+      patch.eventBlock = { ...state.eventBlock, upTokens: state.currentRoundUsage.input, downTokens: state.currentRoundUsage.output };
       return patch;
     }
 
@@ -172,10 +172,12 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     case "model.usage": {
       const usage = parseUsage(ev.usage as Record<string, unknown> | undefined);
       const cur = state.currentRoundUsage;
+      // cacheRead 也累加（多步轮次：agent 模式下一轮可能多次 LLM 调用，每次都有 cache）。
+      // 之前用 ?? 会丢弃前几次的 cache，导致缓存率偏低。
       const merged: RoundUsage = {
         input: cur.input + usage.input,
         output: cur.output + usage.output,
-        cacheRead: usage.cacheRead ?? cur.cacheRead,
+        cacheRead: (cur.cacheRead ?? 0) + (usage.cacheRead ?? 0),
       };
       return {
         currentRoundUsage: merged,

@@ -28,27 +28,36 @@ import type {
   NativeScrollbackLiveRegion, NativeScrollbackCommittedRows,
 } from "@oh-my-pi/pi-tui";
 import type { AgentDriver, AgentCliConfig } from "./agent.js";
-import type { UIState, ChatMessage, ToolCardState, ThinkingBlock } from "./state/types.js";
+import type { UIState, ChatMessage, Block } from "./state/types.js";
+import type { SoundConfig } from "./sound.js";
+import { FileHistoryStorage } from "./history.js";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-// ── Tau Ceti 调色板（真彩 ANSI 38;2;R;G;B） ──────────────────────────
+// ── 配色：Marathon 酸性（黑底 + 签名黄绿 C1FD05 标题 + 绿色AI/橙色user/电光蓝/红/紫） ──
 const C = {
-  bg: "0C0A08",
-  panelBg: "14110D",
-  fg: "D7CFC4",
-  muted: "6B6358",
-  dim: "443F38",
-  border: "2A2520",
-  borderAccent: "FF8A3D",
-  accent: "FF8A3D",   // 火焰橙
-  accent2: "26C6DA",  // 数据青
-  ok: "66D6A0",
-  warn: "FFC44D",
-  err: "FF5252",
-  info: "4DD0E1",
-  user: "FFAB78",
-  assistant: "D7CFC4",
-  system: "B39DDB",
-  tool: "FFD18A",
+  bg: "0A0A0A",        // 主背景（近黑）
+  panelBg: "141414",   // 面板/卡片底
+  inputBg: "141414",   // 输入框底
+  fg: "E8E8E8",        // 主文字（近白，高对比）
+  muted: "8A8A8A",     // 次要文字
+  dim: "555555",       // 暗淡
+  border: "2A2A2A",    // 边框
+  borderAccent: "3A4A0A", // 选中面板边框（签名色暗版）
+  accent: "C1FD05",    // 标题/强调（Marathon 签名酸性黄绿，最亮）
+  accent2: "0A64FE",   // 电光蓝（链接/信息）
+  ok: "39FF14",        // 霓虹绿（成功/状态）
+  warn: "FF5E00",      // 电光橙（警告）
+  err: "FC0D01",       // 纯红（错误）
+  info: "0A64FE",      // 电光蓝（信息）
+  highlight: "FFF01F", // 霓虹黄（选中/匹配）
+  magenta: "BC13FE",   // 霓虹紫（系统提示）
+  cardBg: "2A2600",    // 工具卡片背景（暗黄底，衬托黄色边框+内容）
+  user: "FF5E00",      // user 消息（电光橙，区别于 AI）
+  assistant: "39FF14", // assistant 消息（霓虹绿）
+  system: "BC13FE",    // system（紫）
+  tool: "FFF01F",      // 工具名（黄）
+  cache: "39FF14",     // 缓存率（霓虹绿）
 };
 
 /** 真彩前景色函数：text → \x1b[38;2;R;G;Bm{text}\x1b[0m */
@@ -59,6 +68,14 @@ function fg(hex: string): (t: string) => string {
   return (t: string) => `\x1b[38;2;${r};${g};${b}m${t}\x1b[0m`;
 }
 
+/** 真彩背景色函数：text → \x1b[48;2;R;G;Bm{text}\x1b[0m（填满整行需配合 pad） */
+function bg(hex: string): (t: string) => string {
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  return (t: string) => `\x1b[48;2;${r};${g};${b}m${t}\x1b[0m`;
+}
+
 // ── 装饰符号（与 cli/theme/tokens SYMBOLS 对齐） ─────────────────────
 const SYM = {
   separator: "//",
@@ -67,7 +84,6 @@ const SYM = {
   recDot: "●",
   // spinner 从 symbolTheme.spinnerFrames 取（与 Pi Loader 一致，不重复定义）
 };
-const SPARK_CHARS = "▁▂▃▄▅▆▇█";
 
 // ── 装饰元素（移植自 cli/layout/decorators.ts） ───────────────────────
 function timecode(d: Date): string {
@@ -82,17 +98,6 @@ function compact(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
-function sparkline(values: number[], width = 12): string {
-  if (values.length === 0) return "·".repeat(width);
-  const recent = values.slice(-width);
-  const max = Math.max(...recent, 1);
-  const chars = recent.map(v => {
-    const idx = Math.min(SPARK_CHARS.length - 1, Math.floor((v / max) * SPARK_CHARS.length));
-    return SPARK_CHARS[idx]!;
-  });
-  while (chars.length < width) chars.unshift("·");
-  return chars.join("");
-}
 
 // ── Pi TUI truncateToWidth 适配：返回纯文本截断（带省略号） ──────────
 /** CJK 安全截断：按可见宽度截断，超宽追加 … */
@@ -104,7 +109,7 @@ function trunc(s: string, maxCols: number): string {
 const symbolTheme: SymbolTheme = {
   cursor: SYM.index,
   inputCursor: SYM.index,
-  boxRound: { topLeft: "╭", topRight: "╮", bottomLeft: "╰", bottomRight: "╯", horizontal: "─", vertical: "│" },
+  boxRound: { topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘", horizontal: "─", vertical: "│" },
   boxSharp: { topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘", horizontal: "─", vertical: "│", teeDown: "┬", teeUp: "┴", teeLeft: "├", teeRight: "┤", cross: "┼" },
   table: { topLeft: "┌", topRight: "┐", bottomLeft: "└", bottomRight: "┘", horizontal: "─", vertical: "│", teeDown: "┬", teeUp: "┴", teeLeft: "├", teeRight: "┤", cross: "┼" },
   quoteBorder: "│",
@@ -123,11 +128,21 @@ export const selectListTheme: SelectListTheme = {
   symbols: symbolTheme,
 };
 
-/** 斜杠命令（Pi autocomplete 用，执行逻辑仍在 Editor.onSubmit）。 */
+/** 斜杠命令（Pi autocomplete 用，执行逻辑在 Editor.onSubmit）。
+ *  这是命令的单一真源——autocomplete 和 onSubmit 都从这里读。 */
 const slashCommands: SlashCommand[] = [
+  { name: "new", description: "新建会话" },
   { name: "quit", description: "退出会话" },
   { name: "exit", description: "退出会话", aliases: ["q"] },
-  { name: "new", description: "新建会话" },
+  { name: "help", description: "显示所有命令", aliases: ["?"] },
+  { name: "clear", description: "清空对话（同 /new）" },
+  { name: "tools", description: "显示当前 agent 的工具列表" },
+  { name: "model", description: "切换模型" },
+  { name: "compact", description: "手动压缩上下文" },
+  { name: "history", description: "搜索输入历史" },
+  { name: "expand", description: "展开所有工具卡片", aliases: ["e"] },
+  { name: "collapse", description: "折叠所有工具卡片", aliases: ["c"] },
+  { name: "settings", description: "打开设置菜单（审批模式等）", aliases: ["s"] },
 ];
 
 const editorTheme: EditorTheme = {
@@ -139,16 +154,16 @@ const editorTheme: EditorTheme = {
 };
 
 const markdownTheme: MarkdownTheme = {
-  heading: fg(C.accent),
-  link: fg(C.accent2),
-  linkUrl: fg(C.muted),
-  code: fg(C.accent2),
-  codeBlock: fg(C.info),
+  heading: fg(C.accent),      // 标题：签名黄绿（最醒目）
+  link: fg(C.accent2),        // 链接：电光蓝
+  linkUrl: fg(C.dim),         // 链接 URL：暗
+  code: fg(C.highlight),      // 行内代码：霓虹黄
+  codeBlock: fg(C.accent2),   // 代码块：电光蓝
   codeBlockBorder: fg(C.border),
-  quote: fg(C.muted),
-  quoteBorder: fg(C.dim),
+  quote: fg(C.magenta),       // 引用：霓虹紫
+  quoteBorder: fg(C.magenta),
   hr: fg(C.dim),
-  listBullet: fg(C.accent),
+  listBullet: fg(C.accent),   // 列表项：黄绿
   bold: (t) => `\x1b[1m${t}\x1b[22m`,
   italic: (t) => `\x1b[3m${t}\x1b[23m`,
   strikethrough: (t) => `\x1b[9m${t}\x1b[29m`,
@@ -197,6 +212,8 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
   private tui: TUI;
   /** Markdown 实例缓存：msgId → { content, width, instance } */
   private mdCache = new Map<string, { content: string; width: number; instance: Markdown }>();
+  /** 输入历史存储（上键填充历史） */
+  private historyStorage = new FileHistoryStorage();
 
   // ── 对话区行缓存（稳定区 + 活跃区） ──
   /** 已 finalize 消息渲染成的稳定行（字节冻结，可进 scrollback） */
@@ -224,30 +241,75 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
     this.editor.setPromptGutter(`${SYM.marker} `);
     // Pi 原生 autocomplete：斜杠命令 + 文件路径补全（@ fuzzy / Tab 路径）
     this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands));
+    // Pi 原生输入历史导航：上键空输入/首行时填充历史
+    this.editor.setHistoryStorage(this.historyStorage);
     // Editor 文本变化时触发重渲染（Pi Editor 不自动 requestRender）
     this.editor.onChange = () => this.tui.requestRender();
     this.editor.onSubmit = (text) => {
       const t = text.trim();
       if (!t) return;
-      if (t === "/quit" || t === "/exit") {
-        this.requestExit();
-        return;
+      // 斜杠命令处理
+      if (t.startsWith("/")) {
+        const cmd = t.slice(1).split(/\s+/)[0] ?? "";
+        const handled = this.handleSlashCommand(cmd);
+        if (handled) {
+          this.editor.addToHistory(t);
+          this.editor.setText("");
+          return;
+        }
+        // 未知命令当普通消息发给 agent（让 agent 处理）
       }
-      if (t === "/new") {
-        this.driver.clearMessages();
-        this.editor.setText("");
-        this.mdCache.clear();
-        return;
-      }
-      // streaming 时 send 会静默 return——这里不清空输入框，
-      // 让用户的消息保留（避免丢失），并提示「运行中」。
+      // streaming 时 send 会静默 return——提示运行中
       if (this.state.streaming) {
         this.driver.toast("运行中，请等待或 Ctrl+C 中断", "warn");
         return;
       }
       void this.driver.send(t);
+      this.editor.addToHistory(t);
       this.editor.setText("");
     };
+  }
+
+  /** 处理斜杠命令，返回 true 表示已处理。 */
+  private handleSlashCommand(cmd: string): boolean {
+    switch (cmd) {
+      case "quit": case "exit": case "q":
+        this.requestExit();
+        return true;
+      case "new": case "clear":
+        this.driver.clearMessages();
+        this.editor.setText("");
+        this.mdCache.clear();
+        return true;
+      case "help": case "?": {
+        const lines = slashCommands.map(c => `/${c.name}${c.aliases ? ` (${c.aliases.map(a=>"/"+a).join(",")})` : ""} — ${c.description}`);
+        this.driver.toast(lines.join(" | ").slice(0, 80), "info");
+        return true;
+      }
+      case "tools": {
+        const tools = this.driver.getToolWhitelist();
+        this.driver.toast(`工具: ${tools.join(", ")}`.slice(0, 80), "info");
+        return true;
+      }
+      case "expand": case "e":
+        this.state = { ...this.state, toolsExpanded: true };
+        this.tui.requestRender();
+        return true;
+      case "collapse": case "c":
+        this.state = { ...this.state, toolsExpanded: false };
+        this.tui.requestRender();
+        return true;
+      case "settings": case "s":
+        this.driver.showSettings();
+        return true;
+      case "model":
+      case "compact":
+      case "history":
+        this.driver.toast(`/${cmd} 暂未实现，敬请期待`, "warn");
+        return true;
+      default:
+        return false; // 未知命令，当普通消息发给 agent
+    }
   }
 
   /** 启动 spinner 定时器（tui.start 后调用）。 */
@@ -346,7 +408,11 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
     const rows: string[] = [];
     rows.push(...this.renderTopBar(width));
     rows.push(...chatRows);
-    rows.push(...this.renderEventBlock(width));
+    // 系统提示（toast）居中显示，颜色按 kind 区分
+    if (this.state.toast && this.state.toast.expiresAt > Date.now()) {
+      rows.push(...this.renderToast(width));
+    }
+    // 事件块已删除：顶栏显示运行状态（● 运行中），状态栏显示 token 计数，信息不冗余。
     rows.push(...this.renderInput(width, inputHeight));
     rows.push(...this.renderStatusBar(width));
     return rows;
@@ -372,7 +438,7 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
 
     // ── 活跃区：当前流式消息（streaming 中或刚 done 但本轮的） ──
     const liveMsg = streamingId ? msgs.find(m => m.id === streamingId) : null;
-    const liveSig = `${liveMsg?.id ?? ""}:${liveMsg?.content.length ?? 0}:${liveMsg?.thinkingBlocks?.map(t => t.content.length).join(",") ?? ""}:${width}`;
+    const liveSig = `${liveMsg?.id ?? ""}:${liveMsg?.blocks.map(b => b.type === "text" || b.type === "thinking" ? b.content.length : b.type === "tool" ? (b.result?.length ?? 0) : 0).join(",") ?? ""}:${width}`;
     let liveRows: readonly string[] = [];
     if (liveMsg) {
       const rows: string[] = [];
@@ -392,11 +458,11 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
     }
   }
 
-  // ── 顶栏：▌ MAOU // <agentName> ────── REC ●/○ ──────────────────────
+  // ── 顶栏：▌ MAOU // <agentName> ────── ●运行中/○待命 ────────────────
   private renderTopBar(width: number): string[] {
     const left = `${fg(C.accent)(SYM.index)} ${fg(C.fg)("MAOU")} ${fg(C.muted)(codename(this.state.agentName))}`;
     const status = this.state.streaming
-      ? `${fg(C.err)(`REC ${SYM.recDot}`)} ${fg(C.muted)(this.state.aborting ? "中断中" : "运行中")}`
+      ? `${fg(C.accent)(`${SYM.recDot} ${this.state.aborting ? "中断中" : "运行中"}`)}`
       : `${fg(C.dim)("○ 待命")}`;
     const leftW = visibleWidth(left);
     const statusW = visibleWidth(status);
@@ -409,36 +475,37 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
       `${fg(C.dim)("─".repeat(Math.min(width, 50)))}`,
       `${fg(C.muted)(`${SYM.separator} 欢迎使用 MAOU TUI`)}`,
       `${fg(C.muted)("输入消息后回车发送，Alt+Enter 换行")}`,
-      `${fg(C.dim)("/new 新会话  /quit 退出")}`,
+      `${fg(C.dim)("/new /quit /help /tools /expand /collapse  · 输入 / 查看所有命令")}`,
     ];
     return lines;
   }
 
   private renderMessage(msg: ChatMessage, width: number): string[] {
     const rows: string[] = [];
-    // 角色头
+    // user 消息前加实心块分割（标示新一轮 loop 开始）+ 块 id
+    if (msg.role === "user") {
+      const round = this.state.round;
+      const blockId = msg.id.slice(-6);
+      const sep = fg(C.borderAccent)("▆".repeat(Math.min(width, 60)));
+      const label = fg(C.dim)(` loop #${round} · ${blockId} `);
+      rows.push(sep);
+      rows.push(label);
+    }
+    // 角色头（含块 id，便于回溯定位）
     const roleColor = msg.role === "user" ? fg(C.user) : msg.role === "system" ? fg(C.system) : fg(C.assistant);
     const roleLabel = msg.role === "user" ? "user" : msg.role === "system" ? "sys" : "ai";
     const ts = new Date(msg.ts);
-    rows.push(`${roleColor(`${SYM.index} ${roleLabel}`)} ${fg(C.dim)(timecode(ts))} ${fg(C.muted)(codename(msg.role))}`);
+    const blockId = msg.id.slice(-6);
+    rows.push(`${roleColor(`${SYM.index} ${roleLabel}`)} ${fg(C.dim)(timecode(ts))} ${fg(C.dim)(`#${blockId}`)} ${fg(C.muted)(codename(msg.role))}`);
 
-    // thinking 块
-    if (msg.thinkingBlocks && msg.thinkingBlocks.length > 0) {
-      for (const tb of msg.thinkingBlocks) {
-        rows.push(...this.renderThinking(tb, width));
-      }
-    }
-
-    // 正文（Markdown）。流式消息保留实例复用 streaming lex cache；
-    // finalize 消息靠 Pi Markdown 的模块级 L2 LRU，不自己缓存。
-    if (msg.content) {
-      rows.push(...this.renderMarkdown(msg.id, msg.content, width, !!msg.streaming));
-    }
-
-    // 工具卡片（Box 边框）
-    if (msg.toolCalls && msg.toolCalls.length > 0) {
-      for (const tc of msg.toolCalls) {
-        rows.push(...this.renderToolCard(tc, width));
+    // 按 blocks 顺序渲染（text/thinking/tool 天然穿插，按时序）
+    for (const block of msg.blocks) {
+      if (block.type === "text" && block.content) {
+        rows.push(...this.renderMarkdown(msg.id, block.content, width, !!msg.streaming));
+      } else if (block.type === "thinking") {
+        rows.push(...this.renderThinking(block, width));
+      } else if (block.type === "tool") {
+        rows.push(...this.renderToolCard(block, width));
       }
     }
 
@@ -446,7 +513,7 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
     return rows;
   }
 
-  private renderThinking(tb: ThinkingBlock, width: number): string[] {
+  private renderThinking(tb: Extract<Block, { type: "thinking" }>, width: number): string[] {
     const prefix = fg(C.dim)(`${SYM.marker} `);
     const lines = tb.content.split("\n").filter(l => l.length > 0);
     if (lines.length === 0) {
@@ -456,44 +523,69 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
       const shown = lines.slice(-2);
       return shown.map(l => `${prefix}${fg(C.muted)(trunc(l, width - 2))}`);
     }
-    // 完成：折叠为首行 + 计数
     const first = trunc(lines[0]!, width - 12);
     const more = lines.length > 1 ? ` ${fg(C.dim)(`[+${lines.length - 1}行]`)}` : "";
     return [`${prefix}${fg(C.muted)(first)}${more}`];
   }
 
-  private renderToolCard(tc: ToolCardState, width: number): string[] {
-    const head = tc.done
-      ? `${fg(C.tool)(`${SYM.marker} ${tc.name}`)} ${fg(C.dim)(tc.isError ? "✗" : "✓")}`
-      : `${fg(C.warn)(`${symbolTheme.spinnerFrames[this.spinnerFrame % symbolTheme.spinnerFrames.length]} ${tc.name}`)} ${fg(C.dim)("…")}`;
-    const innerRows: string[] = [head];
+  private renderToolCard(tc: Extract<Block, { type: "tool" }>, width: number): string[] {
+    const expanded = this.state.toolsExpanded;
+    const status = tc.done
+      ? fg(C.dim)(tc.isError ? "✗" : "✓")
+      : fg(C.warn)(`${symbolTheme.spinnerFrames[this.spinnerFrame % symbolTheme.spinnerFrames.length]}…`);
+    const name = fg(C.tool)(tc.name);
 
-    // 参数（折叠到一行）。Box 内 contentWidth = width - 2(边框) - 2(paddingX)，
-    // 这里预留同样的缩进空间。
+    // 折叠：head 行 = 工具名 + 状态 + 参数摘要（单行），有更多内容加 …
+    if (!expanded) {
+      const argsPreview = (tc.args && tc.args !== "{}")
+        ? ` ${fg(C.dim)(trunc(tc.args, width - tc.name.length - 8))}`
+        : "";
+      const hasMore = (tc.result && tc.result.split("\n").filter(l => l.trim()).length > 0);
+      const more = hasMore ? ` ${fg(C.dim)("…")}` : "";
+      const head = `${SYM.marker} ${name} ${status}${argsPreview}${more}`;
+      // 自己画边框+背景（Pi Box bgFn 只填内容区不填边框行）
+      return this.drawCardFrame([head], width);
+    }
+
+    // 展开：head + 完整 args + result 12 行 + 折叠提示
+    const innerRows: string[] = [`${SYM.marker} ${name} ${status}`];
     if (tc.args && tc.args !== "{}") {
       innerRows.push(`  ${fg(C.dim)(trunc(tc.args, width - 6))}`);
     }
-    // 结果（折叠）
     if (tc.result) {
-      const resultLines = tc.result.split("\n").slice(0, 3);
+      const allLines = tc.result.split("\n").filter(l => l.trim().length > 0);
+      const resultLines = allLines.slice(0, 12);
       const color = tc.isError ? fg(C.err) : fg(C.ok);
       for (const l of resultLines) {
         innerRows.push(`  ${color(trunc(l, width - 6))}`);
       }
-      const total = tc.result.split("\n").length;
-      if (total > 3) innerRows.push(`  ${fg(C.dim)(`[+${total - 3}行]`)}`);
+      const total = allLines.length;
+      if (total > 12) {
+        innerRows.push(`  ${fg(C.dim)(`[+${total - 12}行]`)}`);
+      }
     }
+    innerRows.push(`  ${fg(C.dim)("[ctrl+o: 折叠]")}`);
+    return this.drawCardFrame(innerRows, width);
+  }
 
-    // 用 Pi Box 渲染边框（paddingX=1 自动缩进，border 自动画 ┌─┐│└─┘ + 宽度 pad）
-    try {
-      const box = new Box(1, 0, undefined, toolCardBorder);
-      box.addChild(new Lines(innerRows));
-      const rows = box.render(width);
-      return [...rows];
-    } catch {
-      // 降级：不加边框
-      return innerRows;
+  /** 画工具卡片边框+背景：每行 pad 到 width + bg(C.cardBg) 整行填色 */
+  private drawCardFrame(rows: string[], width: number): string[] {
+    const borderColor = fg(C.border);
+    const h = "─".repeat(Math.max(0, width - 2));
+    const bgFn = bg(C.cardBg);
+    const padBg = (s: string) => {
+      const w = visibleWidth(s);
+      return bgFn(s + " ".repeat(Math.max(0, width - w)));
+    };
+    const result: string[] = [
+      padBg(borderColor(`┌${h}┐`)),
+    ];
+    for (const row of rows) {
+      const padded = row + " ".repeat(Math.max(0, width - visibleWidth(row) - 2));
+      result.push(padBg(borderColor("│") + padded + borderColor("│")));
     }
+    result.push(padBg(borderColor(`└${h}┘`)));
+    return result;
   }
 
   /**
@@ -539,65 +631,87 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
     }
   }
 
-  // ── 事件块：模式 + token 上下行 ─────────────────────────────────────
-  private renderEventBlock(width: number): string[] {
-    const eb = this.state.eventBlock;
-    if (!this.state.streaming && eb.mode === "idle") {
-      const spark = this.state.rounds.length > 0 ? sparkline(this.state.rounds.map(r => r.total ?? (r.input + r.output)), 12) : "";
-      const left = fg(C.dim)("─".repeat(Math.min(width, 30)));
-      const right = spark ? fg(C.accent2)(spark) : "";
-      const lw = visibleWidth(left);
-      const rw = visibleWidth(right);
-      const gap = Math.max(1, width - lw - rw);
-      return [left + " ".repeat(gap) + right];
-    }
+  // ── 系统提示（toast）：居中框，颜色按 kind 区分 ─────────────────────
+  private renderToast(width: number): string[] {
+    const t = this.state.toast;
+    if (!t) return [];
+    const color = t.kind === "err" ? fg(C.err) : t.kind === "warn" ? fg(C.warn) : t.kind === "ok" ? fg(C.ok) : fg(C.magenta);
+    const text = ` ${t.text} `;
+    const tw = visibleWidth(text);
+    const pad = Math.max(0, Math.floor((width - tw) / 2));
+    const line = " ".repeat(pad) + color(text);
+    return [line];
+  }
+
+  // ── 输入框：Pi Editor（直角框 + 灰底 + 空 placeholder） ────────────
+  private renderInput(width: number, _height: number): string[] {
+    void _height;
+    // 流式事件状态：显示在输入框顶边框（oh-my-pi 风格，替代独立事件块）
     const modeLabel: Record<string, string> = {
       thinking: "思考中",
       generating: "生成中",
-      tool_pending: `工具 ${eb.detail ?? ""}`,
+      tool_pending:  `工具 ${this.state.eventBlock.detail ?? ""}`,
       error: "错误",
       idle: "待命",
     };
+    const eb = this.state.eventBlock;
+    const isActive = this.state.streaming || eb.mode !== "idle";
+    const spinner = isActive ? symbolTheme.spinnerFrames[this.spinnerFrame % symbolTheme.spinnerFrames.length] : "";
     const modeColor = eb.mode === "error" ? fg(C.err)
       : eb.mode === "tool_pending" ? fg(C.warn)
       : eb.mode === "thinking" ? fg(C.info)
-      : fg(C.accent);
-    const spinner = this.state.streaming ? symbolTheme.spinnerFrames[this.spinnerFrame % symbolTheme.spinnerFrames.length] : "";
-    const left = `${modeColor(spinner + (modeLabel[eb.mode] ?? "处理中"))} ${eb.detail && eb.mode !== "tool_pending" ? fg(C.dim)(trunc(eb.detail, 20)) : ""}`;
-    const right = `${codename("tokens")} ${fg(C.muted)(`${compact(eb.upTokens)}↑ ${compact(eb.downTokens)}↓`)}`;
-    const lw = visibleWidth(left);
-    const rw = visibleWidth(right);
-    const gap = Math.max(1, width - lw - rw);
-    return [left + " ".repeat(gap) + right];
-  }
-
-  // ── 输入框：Pi Editor（带边框） ────────────────────────────────────
-  private renderInput(width: number, _height: number): string[] {
-    const topBorder = this.state.streaming
-      ? fg(C.warn)(`${SYM.marker} ${codename("input")} ${fg(C.dim)("[Alt+Enter 换行 / Ctrl+C 中断]")}`)
-      : fg(C.accent)(`${SYM.marker} ${codename("input")} ${fg(C.dim)("[Alt+Enter 换行 / Enter 发送]")}`);
-    void _height;
-    try {
-      this.editor.setTopBorder({ content: topBorder, width: visibleWidth(topBorder) });
-    } catch {
-      // setTopBorder 可能要求特定格式，忽略错误用默认边框
+      : eb.mode === "generating" ? fg(C.accent)
+      : fg(C.dim);
+    const modeText = isActive ? `${spinner}${modeLabel[eb.mode] ?? "处理中"}` : "";
+    const tokenText = isActive ? `${fg(C.muted)(`${compact(eb.upTokens)}↑ ${compact(eb.downTokens)}↓`)}` : "";
+    const topText = [modeText, tokenText].filter(Boolean).join("  ");
+    if (topText) {
+      try { this.editor.setTopBorder({ content: topText, width: visibleWidth(topText) }); }
+      catch { /* 忽略 */ }
+    } else {
+      try { this.editor.setTopBorder(undefined); } catch { /* 忽略 */ }
     }
-    const rows = this.editor.render(width);
-    return [...rows];
+    const rows = [...this.editor.render(width)];
+    // 空输入时：加灰底背景 + placeholder 提示文字
+    const isEmpty = this.editor.getText().length === 0;
+    if (isEmpty) {
+      const placeholder = fg(C.dim)("input [Alt+Enter 换行 / Enter 发送]");
+      const bgFn = bg(C.inputBg);
+      // 给每行加背景色，底行在光标后加 placeholder
+      for (let i = 0; i < rows.length; i++) {
+        const line = rows[i]!;
+        const padded = line + " ".repeat(Math.max(0, width - visibleWidth(line)));
+        rows[i] = bgFn(padded);
+      }
+      // 底行（光标行）追加 placeholder
+      const last = rows.length - 1;
+      if (last >= 0) {
+        rows[last] = rows[last]!.replace(/\x1b\[0m$/, "") + placeholder + "\x1b[0m";
+      }
+    }
+    return rows;
   }
 
   // ── 状态栏：单行截断（Pi TruncatedText）──────────────────────────────
   private renderStatusBar(width: number): string[] {
     const s = this.state;
-    const rec = s.streaming ? `${fg(C.err)("REC ")} ` : "";
-    const name = fg(C.accent)(`${SYM.index} ${s.agentName}`);
+    const mode = fg(C.accent)(this.driver.getApprovalMode());
     const currentTokens = s.currentRoundUsage.input + s.currentRoundUsage.output;
     const lastRound = s.rounds[s.rounds.length - 1];
     const ctxTokens = lastRound ? (lastRound.total ?? (lastRound.input + lastRound.output)) : currentTokens;
     const ctxPct = s.maxContext > 0 ? Math.min(1, ctxTokens / s.maxContext) : 0;
     const model = fg(C.muted)(`${s.provider}/${s.model || "?"}`);
     const pct = fg(C.dim)(`${Math.round(ctxPct * 100)}%`);
-    const text = `${rec}${name} ${fg(C.dim)("·")} ${model} ${fg(C.dim)("·")} ${compact(ctxTokens)}/${compact(s.maxContext)} ${pct}`;
+    // 平均缓存率：sum(cacheRead)/sum(cacheRead+input) 合并计算（非 mean-of-rates）。
+    let cacheSeg = "";
+    if (s.cacheHistory.length > 0) {
+      const sumCache = s.cacheHistory.reduce((a, c) => a + (c.cacheRead ?? 0), 0);
+      const sumInput = s.cacheHistory.reduce((a, c) => a + (c.input ?? 0), 0);
+      const rate = sumInput > 0 ? sumCache / sumInput : 0;
+      cacheSeg = ` ${fg(C.dim)("·")} ${fg(C.cache)(`c${Math.round(rate * 100)}%`)}`;
+    }
+    // 前面加空格对齐输入框 paddingX=1
+    const text = ` ${mode} ${fg(C.dim)("·")} ${model} ${fg(C.dim)("·")} ${compact(ctxTokens)}/${compact(s.maxContext)} ${pct}${cacheSeg}`;
     return [...new TruncatedText(text, 0, 0).render(width)];
   }
 }
@@ -625,6 +739,48 @@ export interface AppHandle {
 }
 
 /**
+ * 从 ~/.maou/config.json 读取 ui.sounds 配置段。
+ * 轻量读取，不依赖 ConfigStore（避免 zod/jsonc-parser 重依赖）。
+ */
+function loadSoundConfig(): Partial<SoundConfig> | undefined {
+  const maouRoot = process.env.HOME ?? "";
+  const cfgPath = join(maouRoot, ".maou", "config.json");
+  if (!existsSync(cfgPath)) return undefined;
+  try {
+    const raw = JSON.parse(readFileSync(cfgPath, "utf-8")) as Record<string, unknown>;
+    const ui = raw.ui as Record<string, unknown> | undefined;
+    if (!ui) return undefined;
+    const sounds = ui.sounds as Record<string, unknown> | undefined;
+    if (!sounds) return undefined;
+    // 逐步提取，保持和 SoundConfig.events 结构兼容
+    const result: Partial<SoundConfig> = {};
+    if (typeof sounds.enabled === "boolean") result.enabled = sounds.enabled;
+    if (typeof sounds.volume === "number") result.volume = sounds.volume;
+    if (typeof sounds.idleTimeout === "number" || typeof sounds.idleTimeoutSec === "number") {
+      result.idleTimeoutSec = typeof sounds.idleTimeoutSec === "number" ? sounds.idleTimeoutSec : sounds.idleTimeout as number;
+    }
+    // 每事件开关
+    const evtDone = typeof sounds.done === "boolean" ? sounds.done : undefined;
+    const evtError = typeof sounds.error === "boolean" ? sounds.error : undefined;
+    const evtWarning = typeof sounds.warning === "boolean" ? sounds.warning : undefined;
+    const evtApproval = typeof sounds.approval === "boolean" ? sounds.approval : undefined;
+    if (evtDone !== undefined || evtError !== undefined || evtWarning !== undefined || evtApproval !== undefined) {
+      // SoundManager.updateConfig / constructor 中会用 { ...DEFAULT.events, ...partial.events } 合并
+      // 所以这里只需传非 undefined 的字段即可
+      result.events = {
+        done: evtDone ?? true,
+        error: evtError ?? true,
+        warning: evtWarning ?? true,
+        approval: evtApproval ?? true,
+      };
+    }
+    return result;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * 完整组装：tui + box + driver + app。index.ts 用这个（已 loadConfig）。
  * 返回的 handle.box.state 是唯一真源；driver 与 app 都指向它。
  */
@@ -637,6 +793,9 @@ export function createAppWithConfig(
   const tui = new TUI(terminal, false);
   const box: StateBox = { state };
 
+  // 加载音效配置
+  const soundConfig = loadSoundConfig();
+
   // driver 接线到 box + tui
   const driver = new DriverCtor(config, {
     tui,
@@ -645,6 +804,7 @@ export function createAppWithConfig(
       box.state = updater(box.state);
       app.setState(box.state);  // 同步到 app（app 持有旧引用，需显式更新）
     },
+    soundConfig,
   });
 
   const app = new App(box.state, driver, tui);

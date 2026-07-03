@@ -114,11 +114,36 @@ export function normalizeCommand(cmd: string): string {
   return cmd.trim().replace(/\s+/g, " ");
 }
 
-/** 名单是否命中：完全相等或「条目 + 空格」前缀。 */
+/**
+ * 提取命令的"放行前缀"——用于"Yes且不再问"按命令类放行（而非完整命令串）。
+ * 规则（模仿 Claude Code 的 Bash(prefix:*) 语义）：
+ *   - 取命令第一个 token 作命令名（如 `curl -s "https://..."` → `curl`）
+ *   - 返回 `命令名 *` 形式，匹配时按命令名前缀放行同类命令
+ *   - 这样同意一次 curl，所有 curl 命令都放行（用户显式同意该命令类）
+ */
+export function commandPrefix(cmd: string): string {
+  const norm = normalizeCommand(cmd);
+  const firstToken = norm.split(" ")[0] ?? "";
+  return firstToken ? `${firstToken} *` : norm;
+}
+
+/**
+ * 名单是否命中。条目支持两种形式：
+ *   - `命令名 *`：按命令名前缀放行同类（如 `curl *` 匹配所有 `curl ...`）
+ *   - 无 `*`：完全相等或「条目 + 空格」前缀（原逻辑，兼容旧条目/精确匹配）
+ */
 function listMatches(list: string[], norm: string): string | null {
+  const cmdName = norm.split(" ")[0] ?? "";
   for (const entry of list) {
     const e = normalizeCommand(entry);
     if (!e) continue;
+    // 前缀通配：`命令名 *` → 同名命令都命中
+    if (e.endsWith(" *")) {
+      const prefix = e.slice(0, -2); // 去掉 " *"
+      if (prefix && (norm === prefix || cmdName === prefix)) return entry;
+      continue;
+    }
+    // 精确：完全相等或「条目+空格」前缀
     if (norm === e || norm.startsWith(e + " ")) return entry;
   }
   return null;

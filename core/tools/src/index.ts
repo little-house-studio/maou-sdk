@@ -43,6 +43,8 @@ export {
   addToWhitelist as addTerminalWhitelist,
   addToBlacklist as addTerminalBlacklist,
   decideCommand as decideTerminalCommand,
+  normalizeCommand as normalizeTerminalCommand,
+  commandPrefix as terminalCommandPrefix,
 } from './terminal/terminal-policy.js'
 export type { TerminalMode, TerminalReviewer, TerminalApprover, PolicyAction, PolicyDecision } from './terminal/terminal-policy.js'
 
