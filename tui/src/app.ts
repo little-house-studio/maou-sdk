@@ -95,6 +95,7 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
     this.editor.setMaxHeight(8);
     this.editor.setPromptGutter(`${SYM.marker} `);
     // Pi 原生 autocomplete：斜杠命令 + 文件路径补全（@ fuzzy / Tab 路径）
+    // 初始用静态命令列表，agent 物化后通过 refreshAutocomplete() 动态更新
     this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommands));
     // Pi 原生输入历史导航：上键空输入/首行时填充历史
     this.editor.setHistoryStorage(this.historyStorage);
@@ -138,6 +139,14 @@ export class App implements Component, NativeScrollbackLiveRegion, NativeScrollb
 
   /** 清空 Markdown 实例缓存（/new /clear 用）。 */
   clearMdCache(): void { this.mdCache.clear(); }
+
+  /** agent 物化后刷新 autocomplete（合并 TUI 内置 + agent 层命令） */
+  refreshAutocomplete(): void {
+    const { getSlashCommands } = require("./commands/slash-commands.js") as typeof import("./commands/slash-commands.js");
+    const cmds = getSlashCommands(this);
+    this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider(cmds));
+    this.tui.requestRender();
+  }
 
   // ── 生命周期 ──
 

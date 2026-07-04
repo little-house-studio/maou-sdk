@@ -30,12 +30,19 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
   const term = useTerminalSize();
   const mouseCursorCol = useStore((s) => s.mouseCursorCol);
   const setMouseCursorCol = useStore((s) => s.setMouseCursorCol);
+  const setInputLineCount = useStore((s) => s.setInputLineCount);
+  const inputCursorShift = useStore((s) => s.inputCursorShift);
   const taRef = useRef<TextAreaHandle>(null);
   const [cursor, setCursor] = useState<[number, number]>([0, 0]);
   const [forcedCursor, setForcedCursor] = useState<[number, number] | null>(null);
   const [showComp, setShowComp] = useState(false);
   const [compItems, setCompItems] = useState<CompletionItem[]>([]);
   const [compSel, setCompSel] = useState(0);
+
+  // 上报当前内容行数到 store（供鼠标滚轮分流判断 >viewportLines）
+  useEffect(() => {
+    setInputLineCount(Math.max(1, value.split("\n").length));
+  }, [value, setInputLineCount]);
 
   // 鼠标点击移光标：mouseCursorCol（字符列）→ 字符索引 → 一次性设 cursorPosition
   useEffect(() => {
@@ -48,14 +55,33 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     return () => clearTimeout(id);
   }, [mouseCursorCol, value, setMouseCursorCol]);
 
+  // 滚轮驱动 InputBar 光标移动（内容 >4 行时，鼠标在输入框行内滚轮）
+  // nonce 变化即触发一次；dir=up 光标上移一行，down 下移一行（让 textarea 内部滚动跟随）
+  useEffect(() => {
+    if (inputCursorShift === null) return;
+    const [line, col] = cursor;
+    if (inputCursorShift.dir === "up" && line > 0) {
+      setForcedCursor([line - 1, col]);
+    } else if (inputCursorShift.dir === "down") {
+      setForcedCursor([line + 1, col]);
+    }
+    const id = setTimeout(() => setForcedCursor(null), 50);
+    return () => clearTimeout(id);
+  }, [inputCursorShift, cursor]);
+
   // IME 硬件光标定位（输入框获焦时显示，候选窗跟随）
+  // 传 cursorLine 修正多行场景的硬件光标行位置（避免双光标）
+  // colOffset=4：paddingX(1) + " ❯ "(3) = 4 列（0-based），与 InputBar 渲染结构一致
+  // inputRowFromBottom=2：状态栏(1) + InputBar(2)，与 hit-test.ts LayoutRect 一致
   useImeCursor({
     focused: !streaming,
     value,
     cursor: cursor[1],
     rows: term.rows,
     inputRowFromBottom: 2,
-    colOffset: 2,
+    colOffset: 4,
+    cursorLine: cursor[0],
+    viewportLines: 4,
   });
 
   const handleChange = (v: string) => {

@@ -23,8 +23,9 @@ interface DragState {
 
 export interface MouseCallbacks {
   onInputCursor?: (charIndex: number) => void;  // 点击 InputBar 移光标
-  onChatScroll?: (dir: "up" | "down") => void;  // 滚轮滚动
+  onChatScroll?: (dir: "up" | "down") => void;  // 滚轮滚动对话区
   onSelectText?: (text: string) => void;        // 拖选松手复制
+  onInputScroll?: (dir: "up" | "down") => void; // 滚轮滚动 InputBar 内容（>viewportLines 时）
 }
 
 export function useMouseInput(
@@ -60,12 +61,15 @@ export function useMouseInput(
     const target = hitTest(e.col, e.row, rows, rect);
     const store = useStore.getState();
 
-    if (e.type === "wheelUp") {
-      cbRef.current.onChatScroll?.("up");
-      return;
-    }
-    if (e.type === "wheelDown") {
-      cbRef.current.onChatScroll?.("down");
+    if (e.type === "wheelUp" || e.type === "wheelDown") {
+      const dir = e.type === "wheelUp" ? "up" : "down";
+      // 按光标位置分流：鼠标在 InputBar 行内且内容超 viewportLines(4) → 滚 InputBar；
+      // 否则滚对话区。全屏编辑器开时 target 不会命中 input（rect.inputRowFromBottom=0）。
+      if (target.kind === "input" && store.inputLineCount > 4) {
+        cbRef.current.onInputScroll?.(dir);
+      } else {
+        cbRef.current.onChatScroll?.(dir);
+      }
       return;
     }
     if (e.type === "down") {

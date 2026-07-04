@@ -418,6 +418,11 @@ export class Runtime {
     return this.agentRuntime;
   }
 
+  /** 获取 commandRegistry（供 TUI 拉取 agent 层命令列表做 autocomplete） */
+  get commandRegistry() {
+    return this.agentRuntime?.commandRegistry ?? null;
+  }
+
   /** 运行 agent 循环 */
   async *run(params: {
     sessionId?: string;

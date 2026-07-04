@@ -36,6 +36,11 @@ interface Store extends UIState {
   setMouseCursorCol: (col: number | null) => void;
   chatScrollOffset: number;          // 对话区滚动偏移（滚轮驱动）
   scrollChat: (dir: "up" | "down") => void;
+  // InputBar 滚轮驱动（内容 >viewportLines 时，鼠标在输入框行内滚轮 → 移光标）
+  inputLineCount: number;            // InputBar 当前内容行数（InputBar 上报）
+  setInputLineCount: (n: number) => void;
+  inputCursorShift: { dir: "up" | "down"; nonce: number } | null;  // 滚轮→InputBar 光标移动指令
+  shiftInputCursor: (dir: "up" | "down") => void;
 }
 
 const initialState: UIState = {
@@ -110,6 +115,11 @@ export const useStore = create<Store>((set) => ({
   setMouseCursorCol: (col) => set({ mouseCursorCol: col }),
   chatScrollOffset: 0,
   scrollChat: (dir) => set((s) => ({ chatScrollOffset: Math.max(0, s.chatScrollOffset + (dir === "up" ? 1 : -1)) })),
+
+  inputLineCount: 1,
+  setInputLineCount: (n) => set({ inputLineCount: n }),
+  inputCursorShift: null,
+  shiftInputCursor: (dir) => set((s) => ({ inputCursorShift: { dir, nonce: (s.inputCursorShift?.nonce ?? 0) + 1 } })),
 
   onStream: (ev) => set((s) => reduce(s, ev)),
 }));

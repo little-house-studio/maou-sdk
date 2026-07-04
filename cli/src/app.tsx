@@ -16,6 +16,7 @@ import { openExternalEditor } from "./hooks/useExternalEditor.js";
 import { useStore } from "./state/store.js";
 import { useAgent } from "./events/useAgent.js";
 import { useMouseInput } from "./input/useMouseInput.js";
+import type { LayoutRect } from "./input/hit-test.js";
 import type { AgentCliConfig } from "./types.js";
 
 export function App({ config, themePath }: { config: AgentCliConfig; themePath?: string }) {
@@ -82,9 +83,19 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   // 鼠标：MAOU_MOUSE=1 开启点击移光标/拖选OSC52/滚轮。
   // filtered-stdin 已剥离 SGR 防止 react-ink-textarea 乱码，可安全开鼠标。
   const mouseEnabled = process.env.MAOU_MOUSE === "1";
-  useMouseInput(mouseEnabled, { inputRowFromBottom: 2, chatTop: 2, chatBottom: term.rows - 3 }, {
+  // 全屏编辑器开时切换鼠标 rect：输入框不再在底部，全屏文本区占据整屏。
+  const fullEditorOpen = fullEditorInitial !== null;
+  const mouseRect: LayoutRect = fullEditorOpen
+    ? { inputRowFromBottom: 0, chatTop: 2, chatBottom: term.rows - 3 }
+    : { inputRowFromBottom: 2, chatTop: 2, chatBottom: term.rows - 3 };
+  useMouseInput(mouseEnabled, mouseRect, {
     onInputCursor: (col) => { useStore.getState().setMouseCursorCol(col); },
-    onChatScroll: (dir) => { useStore.getState().scrollChat(dir); },
+    onChatScroll: (dir) => {
+      // 全屏编辑器开时，滚轮走 onInputScroll（移光标让全屏 textarea 滚动）
+      if (fullEditorOpen) useStore.getState().shiftInputCursor(dir);
+      else useStore.getState().scrollChat(dir);
+    },
+    onInputScroll: (dir) => { useStore.getState().shiftInputCursor(dir); },
     onSelectText: (text) => useStore.getState().toastMsg(`已复制 ${text.length} 字`, "ok"),
   });
 

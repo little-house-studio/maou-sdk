@@ -8,17 +8,15 @@ import { Box, Text } from "ink";
 import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { compact, codename } from "../layout/decorators.js";
-import { VuMeter } from "./VuMeter.js";
 
 export function EventBlock() {
   const t = useTheme();
-  const { eventBlock, streaming, rounds } = useStore();
+  const { eventBlock, streaming } = useStore();
 
   if (!streaming && eventBlock.mode === "idle") {
     return (
-      <Box flexShrink={0} paddingX={1} justifyContent="space-between">
+      <Box flexShrink={0} paddingX={1}>
         <Text color={t.dim}>{"─".repeat(30)}</Text>
-        {rounds.length > 0 && <VuMeter width={10} />}
       </Box>
     );
   }
@@ -43,10 +41,7 @@ export function EventBlock() {
           <Text color={t.dim}>{eventBlock.detail}</Text>
         )}
       </Box>
-      <Box gap={1}>
-        <VuMeter width={10} />
-        <Text color={t.dim}>{codename("tokens")} {compact(eventBlock.upTokens)}↑ {compact(eventBlock.downTokens)}↓</Text>
-      </Box>
+      <Text color={t.dim}>{codename("tokens")} {compact(eventBlock.upTokens)}↑ {compact(eventBlock.downTokens)}↓</Text>
     </Box>
   );
 }

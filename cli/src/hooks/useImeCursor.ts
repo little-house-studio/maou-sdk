@@ -1,45 +1,29 @@
 /** useImeCursor — 硬件光标定位，支持 IME 中文输入法
- *  Ink raw 模式隐藏硬件光标 → IME 候选窗无法定位。
- *  此 hook 在输入框获焦时：计算光标屏幕坐标 → ANSI 移动硬件光标 → 显示。
- *  失焦时隐藏。不与 Ink 渲染冲突（不用 inverse 反显，只用硬件光标）。
+ *
+ *  已禁用：硬件光标定位与 Ink 帧渲染持续竞争（Ink 每帧 \x1b[H 回原点重绘备用屏，
+ *  把硬件光标拉到帧末尾右下角），导致光标在"输入位置"和"右下角"之间闪烁。
+ *  react-ink-textarea 也不暴露视觉行坐标，多行/wrap 时无法精确定位。
+ *
+ *  现策略：完全依赖软件光标（react-ink-textarea 的 \x1b[7m 反显，永远准确）。
+ *  IME 候选窗定位交给操作系统输入法管理器（macOS IME 能跟随焦点控件）。
+ *  保留 hook 签名以兼容调用方，但内部 no-op。
  */
 import { useEffect } from "react";
-import stringWidth from "string-width";
 
 export interface ImeCursorOptions {
   focused: boolean;
   value: string;
   cursor: number;
   rows: number;
-  /** 输入框在终端的行位置（从底部往上数，0=最底状态栏，1=输入框行） */
   inputRowFromBottom?: number;
-  /** 文本起始列（0-indexed，含 prompt "❯ " = 2） */
   colOffset?: number;
+  cursorLine?: number;
+  viewportLines?: number;
 }
 
-export function useImeCursor({ focused, value, cursor, rows, inputRowFromBottom = 1, colOffset = 2 }: ImeCursorOptions): void {
+export function useImeCursor(_opts: ImeCursorOptions): void {
+  // 确保 raw 模式下硬件光标保持隐藏（Ink 软件光标负责显示）
   useEffect(() => {
-    if (!focused) {
-      process.stdout.write("\x1b[?25l");
-      return;
-    }
-
-    // 计算光标在屏幕上的列位置
-    const beforeCursor = [...value.slice(0, cursor)];
-    let col = colOffset;
-    for (const ch of beforeCursor) {
-      col += stringWidth(ch);
-    }
-
-    // 计算行位置（1-indexed ANSI，从底部往上）
-    const row = rows - inputRowFromBottom;
-
-    // 移动硬件光标 + 显示
-    process.stdout.write(`\x1b[${row};${col + 1}H\x1b[?25h`);
-
-    return () => {
-      // 组件卸载或失焦时隐藏
-      process.stdout.write("\x1b[?25l");
-    };
-  }, [focused, value, cursor, rows, inputRowFromBottom, colOffset]);
+    process.stdout.write("\x1b[?25l");
+  }, []);
 }

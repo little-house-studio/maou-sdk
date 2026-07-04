@@ -153,6 +153,21 @@ export class AgentDriver {
     return this.agent?.agentName ?? "coding";
   }
 
+  /** 从 agent runtime 拉取命令列表（供 TUI autocomplete 动态合并）。 */
+  getAgentCommands(): { name: string; description: string; aliases?: string[] }[] {
+    try {
+      const registry = this.agent?.runtime?.commandRegistry;
+      if (!registry) return [];
+      return registry.list().map(cmd => ({
+        name: cmd.name,
+        description: cmd.description ?? "",
+        aliases: cmd.usage?.match(/--(\w+)/g)?.map(a => a.slice(2)) ?? undefined,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   /** 获取当前 provider/model（供设置菜单一级菜单显示用）。 */
   getProviderModel(): { provider: string; model: string } {
     const s = this.getState();
