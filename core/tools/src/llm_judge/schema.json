@@ -1,0 +1,24 @@
+{
+  "name": "llm_judge",
+  "description": "调用辅助 LLM 做独立判断（安全检查/代码审查/路由判定/二次确认等）。辅助模型与主模型分离，独立 token 统计。仅在需要独立模型审视时使用——简单判断主模型自己即可。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "question": {
+        "type": "string",
+        "description": "要判断的问题。例如：'以下命令是否安全执行？'、'这段代码是否有 bug？'、'用户意图更接近方案 A 还是方案 B？'。请把判断条件写清楚。"
+      },
+      "context": {
+        "type": "string",
+        "description": "给辅助模型的上下文（可选）。如待审查的代码片段、待检查的命令、方案选项列表等。"
+      },
+      "format": {
+        "type": "string",
+        "enum": ["text", "json"],
+        "description": "返回格式（可选，默认 text）。text=自由文本判断；json=JSON 对象（适合结构化判定，如 { safe: true, reason }）。"
+      }
+    },
+    "required": ["question"],
+    "additionalProperties": false
+  }
+}

@@ -567,11 +567,31 @@ export class InternetSearchTool extends Tool {
       const stdout = await this.curlGet(url, "en-US,en;q=0.9");
       if (!stdout) return null;
 
-      // 提取 ytInitialData JSON
-      const match = stdout.match(/var ytInitialData\s*=\s*(\{[\s\S]*?\});/);
-      if (!match) return null;
+      // 提取 ytInitialData JSON —— 用平衡括号匹配而非贪婪正则
+      const marker = "var ytInitialData = ";
+      const startIdx = stdout.indexOf(marker);
+      if (startIdx < 0) return null;
+      const jsonStart = startIdx + marker.length;
+      // 从 jsonStart 开始平衡括号匹配
+      let depth = 0;
+      let jsonEnd = -1;
+      let inString = false;
+      let escape = false;
+      for (let i = jsonStart; i < stdout.length; i++) {
+        const ch = stdout[i];
+        if (escape) { escape = false; continue; }
+        if (ch === "\\") { escape = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === "{") depth++;
+        else if (ch === "}") {
+          depth--;
+          if (depth === 0) { jsonEnd = i + 1; break; }
+        }
+      }
+      if (jsonEnd < 0) return null;
 
-      const data = JSON.parse(match[1]);
+      const data = JSON.parse(stdout.slice(jsonStart, jsonEnd));
       // 导航到搜索结果
       const contents = data?.contents?.twoColumnSearchResultsRenderer
         ?.primaryContents?.sectionListRenderer?.contents?.[0]

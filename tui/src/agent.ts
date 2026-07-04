@@ -15,10 +15,11 @@ import type { AgentHandle, AgentCliConfig } from "@little-house-studio/agent";
 export type { AgentCliConfig };
 import { SelectList, TERMINAL, isNotificationSuppressed } from "@oh-my-pi/pi-tui";
 import type { TUI, SelectItem, TerminalNotification } from "@oh-my-pi/pi-tui";
-import { setTerminalApprover, addTerminalWhitelist, addTerminalBlacklist, getTerminalMode, setTerminalMode } from "@little-house-studio/tools";
+import { setTerminalApprover, addTerminalWhitelist, addTerminalBlacklist, getTerminalMode } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { UIState } from "./state/types.js";
-import { selectListTheme } from "./app.js";
+import { selectListTheme } from "./theme/themes.js";
+import { showSettings } from "./commands/settings-menu.js";
 import { reduce } from "./state/reducer.js";
 import { uid } from "./state/reducer.js";
 import { SoundManager } from "./sound.js";
@@ -147,9 +148,20 @@ export class AgentDriver {
     return this.agent?.toolWhitelist ?? [];
   }
 
+  /** 获取当前 agent 名（供设置菜单传入 setTerminalMode 用）。 */
+  getAgentName(): string {
+    return this.agent?.agentName ?? "coding";
+  }
+
+  /** 获取当前 provider/model（供设置菜单一级菜单显示用）。 */
+  getProviderModel(): { provider: string; model: string } {
+    const s = this.getState();
+    return { provider: s.provider, model: s.model };
+  }
+
   /** 获取当前终端审批模式（normal/auto/yolo，供状态栏显示）。 */
   getApprovalMode(): string {
-    try { return getTerminalMode(this.agent?.agentName ?? "coding"); } catch { return "normal"; }
+    try { return getTerminalMode(this.getAgentName()); } catch { return "normal"; }
   }
 
   /** 获取可用 provider 列表（供设置菜单 API 配置用）。 */
@@ -331,109 +343,11 @@ export class AgentDriver {
   }
 
   /**
-   * 设置菜单：用 overlay 栈做多级菜单（和斜杠命令分开）。
-   * 一级菜单选设置项 → 关一级弹二级选具体值。
-   * 比 SettingsList 简单可控（SettingsList 对 CJK label 渲染有问题）。
+   * 设置菜单：委托给 commands/settings-menu.ts（overlay 栈做多级菜单）。
+   * 详见 showSettings() 实现。
    */
   showSettings(): void {
-    const agentName = this.agent?.agentName ?? "coding";
-    const currentMode = this.getApprovalMode();
-    // 一级菜单：设置项列表
-    const items: SelectItem[] = [
-      { value: "apiConfig", label: "API 配置", description: `当前: ${this.getState().provider}/${this.getState().model}` },
-      { value: "approvalMode", label: "审批模式", description: `当前: ${currentMode}` },
-    ];
-    const list = new SelectList(items, 8, selectListTheme, { overflowSearch: false });
-    const handle = this.tui.showOverlay(list, {
-      anchor: "bottom-center",
-      width: "100%",
-      maxHeight: 8,
-    });
-    list.onSelect = (item) => {
-      handle.hide();
-      if (item.value === "approvalMode") {
-        this.showApprovalModeSubmenu(agentName);
-      } else if (item.value === "apiConfig") {
-        this.showApiConfigSubmenu();
-      }
-    };
-    list.onCancel = () => { handle.hide(); };
-    this.tui.requestRender();
-  }
-
-  /** API 配置子菜单：先选 provider → 再选 model */
-  private showApiConfigSubmenu(): void {
-    const providers = this.getProviders();
-    if (providers.length === 0) {
-      this.toast("无可用 API 配置（~/.maou/config.json 为空）", "warn");
-      return;
-    }
-    const providerItems: SelectItem[] = providers.map(p => ({
-      value: p.id,
-      label: p.name ?? p.id,
-      description: p.id,
-    }));
-    const list = new SelectList(providerItems, 8, selectListTheme, { overflowSearch: false });
-    const handle = this.tui.showOverlay(list, {
-      anchor: "bottom-center",
-      width: "100%",
-      maxHeight: 10,
-    });
-    list.onSelect = (item) => {
-      handle.hide();
-      this.showModelSubmenu(item.value);
-    };
-    list.onCancel = () => { handle.hide(); };
-    this.tui.requestRender();
-  }
-
-  /** Model 子菜单：选 provider 后选具体 model */
-  private showModelSubmenu(provider: string): void {
-    const models = this.getModels(provider);
-    if (models.length === 0) {
-      this.toast(`provider ${provider} 下无可用模型`, "warn");
-      return;
-    }
-    const modelItems: SelectItem[] = models.map(m => ({
-      value: m.id,
-      label: m.name ?? m.id,
-      description: m.id,
-    }));
-    const list = new SelectList(modelItems, 8, selectListTheme, { overflowSearch: false });
-    const handle = this.tui.showOverlay(list, {
-      anchor: "bottom-center",
-      width: "100%",
-      maxHeight: 10,
-    });
-    list.onSelect = (item) => {
-      handle.hide();
-      this.setProviderModel(provider, item.value);
-      this.toast(`API → ${provider}/${item.value}`, "ok");
-    };
-    list.onCancel = () => { handle.hide(); };
-    this.tui.requestRender();
-  }
-
-  /** 二级菜单：审批模式选择（normal/auto/yolo） */
-  private showApprovalModeSubmenu(agentName: string): void {
-    const subItems: SelectItem[] = [
-      { value: "normal", label: "Normal", description: "每次命令需确认" },
-      { value: "auto", label: "Auto", description: "小模型审核自动放行" },
-      { value: "yolo", label: "Yolo", description: "全部放行不确认" },
-    ];
-    const subList = new SelectList(subItems, 8, selectListTheme, { overflowSearch: false });
-    const subHandle = this.tui.showOverlay(subList, {
-      anchor: "bottom-center",
-      width: "100%",
-      maxHeight: 8,
-    });
-    subList.onSelect = (item) => {
-      subHandle.hide();
-      setTerminalMode(agentName, item.value as "normal" | "auto" | "yolo");
-      this.toast(`审批模式 → ${item.value}`, "ok");
-    };
-    subList.onCancel = () => { subHandle.hide(); };
-    this.tui.requestRender();
+    showSettings(this, this.tui);
   }
 
   /** 设置 provider/model（启动时由 index 从 preset 推断，或未来 ModelDialog 用）。 */

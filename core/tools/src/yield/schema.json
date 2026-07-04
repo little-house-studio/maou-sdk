@@ -1,0 +1,23 @@
+{
+  "name": "yield",
+  "description": "子 Agent 提交结构化结果并结束运行。仅在作为子 Agent（被 agent_message fork / subagent_delegate 调用）时使用——主 Agent 不要调用。调用后 fork 检测到 yield 即结束子 Agent 循环并把结果交回父 Agent；若父 Agent 设了 outputSchema，结果会先校验，校验失败会反馈让你重新 yield。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "result": {
+        "type": "string",
+        "description": "提交的结果（必填）。可以是纯文本，也可以是 JSON 字符串（若父 Agent 设了 outputSchema，应按 schema 输出 JSON 字符串）。这是子 Agent 给父 Agent 的最终结构化产出，请确保完整、准确。"
+      },
+      "summary": {
+        "type": "string",
+        "description": "简短摘要（可选，200 字内）。一句话说明结果要点，便于父 Agent 快速预览。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复？说明工具不可替代的作用。"
+      }
+    },
+    "required": ["result", "reason"],
+    "additionalProperties": false
+  }
+}

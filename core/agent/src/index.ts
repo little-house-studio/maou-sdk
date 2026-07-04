@@ -52,6 +52,10 @@ export { compileDynamicContext, formatAgentStatus } from "./dynamic-context.js";
 export { SubagentExecutor } from "./agent/subagent-executor.js";
 export type { SubagentRunFn, SubagentExecutorOptions } from "./agent/subagent-executor.js";
 
+// 子 Agent 事件总线（P1-6 进度追踪 + 生命周期事件）
+export { SubagentEventBus, SUBAGENT_EVENT_BUS } from "./agent/event-bus.js";
+export type { SubagentChannel, LifecycleEvent } from "./agent/event-bus.js";
+
 // 消息队列系统（5 模式 + 防 tool_call/tool_result 中间插入）
 export { MessageQueue, MESSAGE_QUEUE } from "./agent/message-queue.js";
 export type {

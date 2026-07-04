@@ -85,3 +85,9 @@ export {
   readBefore as readFileBefore,
 } from './file/file-edit-history.js'
 export type { FileEditRecord } from './file/file-edit-history.js'
+
+// ── 子 Agent 委托工具（文件即子 Agent 约定）──
+// 不进 registerBuiltins：真正的工具实例由 AgentRuntime 在 run() 工具初始化阶段
+// 通过 createSubagentDelegateTool() 按发现的子 Agent 动态创建并注册为 subagent_<name>。
+// SubagentDelegateTool 类仅用于类型导出/文档化契约。
+export { SubagentDelegateTool, createSubagentDelegateTool } from './agent_team/subagent_delegate/tool.js'

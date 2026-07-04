@@ -21,7 +21,7 @@
  *   maou ./agents/foo
  */
 
-import { createAppWithConfig } from "./app.js";
+import { createAppWithConfig } from "./assembly.js";
 import { AgentDriver, loadAgentConfig } from "./agent.js";
 export { loadAgentConfig };
 import { initialState } from "./state/types.js";

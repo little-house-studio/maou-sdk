@@ -27,6 +27,8 @@ import type { ConfigStore } from "@little-house-studio/types";
 import { AgentRuntime } from "./runtime.js";
 import { AgentRegistry } from "./registry.js";
 import { AgentFactory } from "./factory.js";
+import { SubagentExecutor } from "./subagent-executor.js";
+import type { SubagentRunFn } from "./subagent-executor.js";
 import { GitWatcher } from "../agent_factory/git-watcher.js";
 import { createAppLogger } from "./app-logger.js";
 import { join } from "node:path";
@@ -326,6 +328,92 @@ export class Runtime {
         auxModelCaller: auxCaller,
         resolveHelperPreset: resolveHelperPresetFn,
       });
+
+      // ── 装配默认 SubagentExecutor（让 subagent_delegate / agent_message 工具能 fork 子 Agent）──
+      // 纯 SDK 场景（无 harness 注入 runFn）时，提供默认 runFn：
+      //   1. 为子 Agent 创建/复用独立 session
+      //   2. 从 configStore 取主 preset（子 Agent 默认用主模型；未来可扩展读 agent.json model）
+      //   3. 调 this.agentRuntime.run() 跑子 session，消费流式事件取 finalOutput
+      // 注入后 AgentRuntime 的 subagent_delegate 工具调 ctx.subagentExecutor.fork() 即可真并行委托。
+      const runtimeRef = this.agentRuntime;
+      const configStore = this.configStore;
+      const runFn: SubagentRunFn = async function* (
+        subSessionId,
+        taskId,
+        taskDesc,
+        options,
+      ) {
+        // 1. 确保 sub session 存在（若已存在则复用，支持监督 Agent 持久化场景）
+        const existing = sessionStore.load(subSessionId);
+        if (!existing) {
+          sessionStore.create({
+            sessionId: subSessionId,
+            agentName: options?.agentName ?? "main",
+            title: `fork: ${taskId}`,
+          });
+        }
+
+        // 2. 从 configStore 获取 preset（子 Agent 默认用主 preset；
+        //    未来可扩展：forkMode='context_and_config' 时读 agent.json 的 model 字段）
+        let preset: APIPreset | undefined;
+        try {
+          const config = configStore.get();
+          const presets = config.api.presets ?? [];
+          const idx = config.api.defaultPreset ?? 0;
+          preset = (presets[idx] ?? presets[0]) as unknown as APIPreset | undefined;
+        } catch {
+          preset = undefined;
+        }
+        if (!preset) {
+          return { finalOutput: "", ok: false, error: "无可用 preset" };
+        }
+
+        // 3. 启动子 Agent（共享主 Runtime 的 toolRegistry/compiler 等）
+        //    P2-4：若 inheritMcp !== false，executor 会传 mcpProxyTools，
+        //    在此注册到子 Agent 的 ToolRegistry（runtimeRef.run 内会纳入白名单）。
+        if (options?.mcpProxyTools && options.mcpProxyTools.length > 0) {
+          try {
+            runtimeRef.registerMcpProxyTools(options.mcpProxyTools);
+          } catch { /* 注册失败不阻塞子 Agent 运行 */ }
+        }
+        let finalOutput = "";
+        let ok = true;
+        let error: string | undefined;
+
+        try {
+          for await (const event of runtimeRef.run(subSessionId, taskDesc, {
+            preset,
+            initAgentName: options?.agentName,
+            stream: true,
+            abortSignal: options?.abortSignal,
+            // P2-4：把 proxy 工具名透传，run() 内会把它们加入工具白名单
+            mcpProxyToolNames: options?.mcpProxyTools?.map((t) => t.definition.name),
+          })) {
+            // 事件 yield 给 SubagentExecutor.fork（当前实现只消费 finalOutput，事件本身被丢弃）
+            yield event as StreamEvent;
+            if (event.type === "assistant" && typeof (event as { content?: unknown }).content === "string") {
+              finalOutput = (event as { content: string }).content;
+            }
+          }
+        } catch (err) {
+          ok = false;
+          error = err instanceof Error ? err.message : String(err);
+        }
+
+        return { finalOutput, ok, error };
+      };
+
+      const executor = new SubagentExecutor({
+        runFn,
+        log: (level, msg) => {
+          const log = this.customLog ?? ((l, m) => console[l === "error" ? "error" : "log"](`[Subagent] ${m}`));
+          log(level, msg);
+        },
+        // P2-1：注入 runtime 的 yield 回调注册函数，让 fork 能为子 Agent 注册 yieldResult 回调
+        // runtime.processToolCalls 会从该 map 读取并注入到子 Agent 的 ToolContext.yieldResult
+        setYieldHandlerFn: (sessionId, handler) => runtimeRef.setYieldHandler(sessionId, handler),
+      });
+      this.agentRuntime.setSubagentExecutor(executor);
     }
     return this.agentRuntime;
   }

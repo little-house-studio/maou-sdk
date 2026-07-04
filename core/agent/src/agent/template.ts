@@ -42,6 +42,14 @@ export interface CreateAgentOptions {
   /** 已存在时是否强制覆盖（否则幂等跳过） */
   force?: boolean;
   /**
+   * 是否自动生成 agent.custom.json。
+   * true（默认）：将传入的参数（tools/role/roundLimit 等）写入 agent.custom.json，覆盖模板对应字段。
+   * false：不写 agent.custom.json，运行时完全使用模板 agent.json 的值。
+   * 设为 false 后，模板更新工具白名单等配置可即时生效。
+   * 注意：即使设为 false，后续手动创建 agent.custom.json 仍会生效（resolveAgentConfig 会读取）。
+   */
+  noCustomConfig?: boolean;
+  /**
    * 实例目录路径（可选）。默认 <maouRoot>/agents/<name>（全局）；
    * 传入则写到指定目录（如 <projectRoot>/.maou/agents/<name> 项目级）。
    */
@@ -72,15 +80,17 @@ export function createAgentFromTemplate(name: string, maouRoot: string, opts: Cr
   // 写 .agent.ref（模板路径引用）
   writeFileSync(join(target, ".agent.ref"), templateDir, "utf-8");
 
-  // 如果有覆盖项，写入 agent.custom.json
+  // 如果有覆盖项，写入 agent.custom.json（noCustomConfig 时跳过）
   const custom: Record<string, unknown> = {};
-  if (typeof opts.roundLimit === "number") custom.round_limit = opts.roundLimit;
-  if (typeof opts.maxRetries === "number") custom.max_retries = opts.maxRetries;
-  if (opts.terminalMode) custom.terminal_mode = opts.terminalMode;
-  if (opts.reviewerRole) custom.reviewer_role = opts.reviewerRole;
-  if (opts.role) custom.role = opts.role;
-  if (opts.displayName) custom.display_name = opts.displayName;
-  if (opts.tools) custom.tools = [...opts.tools];
+  if (!opts.noCustomConfig) {
+    if (typeof opts.roundLimit === "number") custom.round_limit = opts.roundLimit;
+    if (typeof opts.maxRetries === "number") custom.max_retries = opts.maxRetries;
+    if (opts.terminalMode) custom.terminal_mode = opts.terminalMode;
+    if (opts.reviewerRole) custom.reviewer_role = opts.reviewerRole;
+    if (opts.role) custom.role = opts.role;
+    if (opts.displayName) custom.display_name = opts.displayName;
+    if (opts.tools) custom.tools = [...opts.tools];
+  }
 
   // 如果有提示词覆盖，写入实例目录（运行时优先读实例的覆盖文件）
   if (opts.systemPrompt) {

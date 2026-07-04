@@ -60,6 +60,25 @@ export class ToolRegistry {
   }
 
   /**
+   * Unregister a tool by name (also removes its aliases).
+   * 用于清理动态注册的工具（如 subagent_<name>），避免下次 run 时残留已失效的工具。
+   * @param name 工具名或别名
+   * @returns 被移除的 Tool 实例（若存在）
+   */
+  unregister(name: string): Tool | undefined {
+    const tool = this._tools.get(name);
+    if (!tool) return undefined;
+    // 移除主名 + 所有别名（同一 Tool 实例的多个映射全部删掉）
+    this._tools.delete(tool.definition.name);
+    for (const alias of tool.definition.aliases ?? []) {
+      this._tools.delete(alias);
+    }
+    // 清理 TOOL.md 缓存
+    this._toolPromptCache.delete(tool.definition.name);
+    return tool;
+  }
+
+  /**
    * Get tool by name or alias
    */
   get(name: string): Tool | undefined {

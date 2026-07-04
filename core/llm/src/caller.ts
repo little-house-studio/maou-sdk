@@ -34,6 +34,10 @@ export interface ModelCallResult {
     generationMs: number;
     totalMs: number;
   };
+  /** 流式被 abort 时已累积的内容（保留部分结果，上层不丢） */
+  partial?: string;
+  /** 本次调用是否因 abort 提前结束（true 时不重试） */
+  aborted?: boolean;
 }
 
 /** 流式事件类型 */
@@ -276,6 +280,30 @@ export class ModelCaller {
           lastResponse = response.content || accumulatedResponse;
           lastUsage = response.usage ?? lastUsage;
           lastModelResponse = response;
+
+          // abort：client 返回了带 partial 的响应。不重试，直接返回部分结果。
+          if (response.aborted) {
+            yield this.emitTraceEvent(sessionId, "model.aborted", {
+              round: roundIndex,
+              retry,
+              partial_length: response.partial?.length ?? accumulatedResponse.length,
+            });
+            return {
+              rawResponse: response.partial ?? accumulatedResponse,
+              content: response.partial ?? accumulatedResponse,
+              reasoningContent: response.reasoningContent,
+              retryIndex: retry,
+              validationError: "",
+              attemptDiagnostics,
+              nativeToolCalls: [],
+              usage: lastUsage,
+              rawRequest: response.rawPayload,
+              rawSSEEvents: response.rawEvents,
+              timing: response.timing,
+              partial: response.partial ?? accumulatedResponse,
+              aborted: true,
+            };
+          }
         } else {
           const response = await this.client.chat({
             preset,
@@ -329,7 +357,11 @@ export class ModelCaller {
           errStr.includes("ETIMEDOUT") || errStr.includes("socket hang up") ||
           errStr.includes("network");
         if (retry < this.maxRetries && retryable) {
-          yield this.emitLog("warn", `请求失败可重试（${errStr.slice(0, 80)}），第 ${retry + 1}/${this.maxRetries} 次重试`);
+          const attempt = retry + 1;
+          const delaySec = Math.min(2 ** retry, 16); // 指数退避：1,2,4,8,16s
+          yield this.emitEvent("status", { text: `API error · Retrying in ${delaySec}s · attempt ${attempt}/${this.maxRetries}` });
+          yield this.emitLog("warn", `请求失败可重试（${errStr.slice(0, 80)}），第 ${attempt}/${this.maxRetries} 次重试，${delaySec}s 后重试`);
+          await new Promise(r => setTimeout(r, delaySec * 1000));
           continue;
         }
         throw error;

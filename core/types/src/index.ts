@@ -121,6 +121,80 @@ export interface ToolContext {
    * 用最小契约接口避免 tools → agent 的循环依赖；agent 包实现并注入 SUPERVISOR_MANAGER 单例。
    */
   supervisorManager?: SupervisorManagerLike
+  /**
+   * 辅助模型调用器（由 AgentRuntime 注入；harness 提供 AuxModelCaller）。
+   *
+   * llm_judge 工具调此函数让 agent 在循环中调用辅助 LLM 做判断
+   * （安全检查 / 代码审查 / 路由判定 / 二次确认等）。
+   *
+   * 缺省（undefined）→ llm_judge 工具返回错误提示未启用。
+   * 用最小契约接口避免 types → llm 的循环依赖；@little-house-studio/llm 的
+   * AuxModelCaller 实现此契约，由 AgentRuntime 在 processToolCalls 中注入。
+   */
+  auxModelCaller?: AuxModelCallerLike
+  /**
+   * 当前 run 的主模型 preset（由 AgentRuntime 注入）。
+   * llm_judge 工具在未单独配置辅助模型时回退用它调用主模型。
+   */
+  mainPreset?: unknown
+  /**
+   * 辅助模型 preset 解析函数（由 AgentRuntime 注入）。
+   * 返回当前 agent 应使用的辅助模型 preset；未注入时 llm_judge 回退 mainPreset。
+   */
+  resolveHelperPreset?: (agentName: string, mainPreset: unknown) => unknown
+  /**
+   * 当前 agent 名称（由 AgentRuntime 注入）。
+   * llm_judge 工具用它在调用 resolveHelperPreset 时传入。
+   */
+  runtimeAgentName?: string
+  /**
+   * yield 结果回调（由 SubagentExecutor.fork 注入到子 Agent 的 ToolContext）。
+   *
+   * 子 Agent 完成任务后调 yield 工具提交结构化结果，yield 工具通过此回调把
+   * result + summary 上交给 fork；fork 检测到 yield 后结束子 Agent 循环。
+   *
+   * 仅在子 Agent 上下文中注入（主 Agent 为 undefined）。
+   * yield 工具在未注入时返回错误提示（说明当前不是子 Agent 上下文）。
+   * 用最小契约接口避免 types → tools 的循环依赖。
+   */
+  yieldResult?: (result: string, summary?: string) => void
+}
+
+/**
+ * AuxModelCaller 的最小契约（types 包不依赖 llm 包）。
+ * 真实实现见 @little-house-studio/llm 的 AuxModelCaller。
+ *
+ * llm_judge 工具通过此接口调用辅助模型做判断；runtime 负责把真实的
+ * AuxModelCaller 实例注入到 ToolContext.auxModelCaller。
+ */
+export interface AuxModelCallerLike {
+  callText(params: {
+    preset: unknown
+    systemPrompt: string
+    userPrompt: string
+    abortSignal?: AbortSignal
+    context?: { sessionId?: string; tag?: string }
+  }, fallbackPreset?: unknown): Promise<{
+    content: string
+    usage: unknown | null
+    ok: boolean
+    error?: string
+    presetName: string
+  }>
+  callJson(params: {
+    preset: unknown
+    systemPrompt: string
+    userPrompt: string
+    abortSignal?: AbortSignal
+    context?: { sessionId?: string; tag?: string }
+  }, fallbackPreset?: unknown): Promise<{
+    content: string
+    usage: unknown | null
+    ok: boolean
+    error?: string
+    presetName: string
+    json: Record<string, unknown> | null
+  }>
 }
 
 /**
@@ -183,6 +257,114 @@ export interface ForkOptions {
   configOverrides?: Record<string, unknown>
   /** 中断信号 */
   abortSignal?: AbortSignal
+  /**
+   * 当前递归深度（0 = 顶层父 Agent 直接 fork 子 Agent）。
+   * 由 runtime/executor 内部维护并向下传递；调用方通常无需显式设置。
+   * 到达 maxRecursionDepth 时 fork 被拒绝。
+   */
+  taskDepth?: number
+  /**
+   * 最大递归深度（默认 2）。
+   * 子 Agent 再 fork 子 Agent 的层数上限。例如 maxRecursionDepth=2 表示
+   * 父→子→孙 三层，孙再 fork 会被拒绝。
+   * 0 = 禁止任何 fork（fork 自身即拒绝）。
+   */
+  maxRecursionDepth?: number
+  /**
+   * 进度回调（P1-6）。fork 执行期间周期性上报子 Agent 进度。
+   * 调用方可通过此回调实时观察子 Agent 的工具调用 / token / 输出。
+   */
+  onProgress?: (progress: AgentProgress) => void
+  /**
+   * 是否继承父 Agent 的 MCP 工具（P2-4，默认 true）。
+   *
+   * true（默认）：fork 时把父 Agent 的 MCP 工具列表包装成 proxy 工具传给子 Agent，
+   *   子 Agent 调用 proxy 工具时转发给父 Agent 的 MCP 连接（不重建连接）。
+   * false：子 Agent 不继承父 Agent 的 MCP 工具（子 Agent 自己建连或无 MCP）。
+   *
+   * 父 Agent 的 MCP 工具列表通过 SubagentExecutor 的 parentMcpTools 字段注入
+   * （由 harness/AgentRuntime 在装配 executor 时传入）。proxy 工具通过 runFn
+   * 的 options.mcpProxyTools 传给子 Agent 运行时注册。
+   */
+  inheritMcp?: boolean
+  /**
+   * 是否在 git worktree 隔离环境里运行子 Agent（P2-2，默认 false）。
+   *
+   * true 时，SubagentExecutor.fork 会先调 IsolationRunner.createWorktree()
+   * 创建一个独立 worktree，把子 Agent 的 projectRoot 设为 worktree 路径，
+   * 让子 Agent 对工作区的改动与主工作区完全隔离。
+   * 子 Agent 结束后，executor 根据 mergeBack/patchBack 选项决定如何回收改动：
+   *   - 两者都未设 → removeWorktree（改动丢弃）
+   *   - mergeBack=true → merge 回主分支后 removeWorktree
+   *   - patchBack=true → 生成 patch 文件后 removeWorktree
+   *
+   * 仅对 forkMode='context_only' 有意义（子 Agent 继承主配置，但工作区隔离）；
+   * 非 git 仓库下 isolated 会被忽略（降级为非隔离）。
+   */
+  isolated?: boolean
+  /**
+   * worktree 隔离的基线分支（P2-2，默认 "HEAD"）。
+   * 仅 isolated=true 时生效。指定 worktree 的起点分支/commit。
+   */
+  isolationBaseBranch?: string
+  /**
+   * 隔离 worktree 结束后是否 merge 回主分支（P2-2，默认 false）。
+   * 仅 isolated=true 时生效。true → mergeBack；false 且 patchBack 也未设 → removeWorktree。
+   */
+  mergeBack?: boolean
+  /**
+   * 隔离 worktree 结束后是否生成 patch 文件（P2-2，默认 false）。
+   * 仅 isolated=true 且 mergeBack=false 时生效。
+   */
+  patchBack?: boolean
+  /**
+   * 是否后台 detached 运行子 Agent（P2-3，默认 false）。
+   *
+   * true 时，父 Agent 的 agent_message 工具调用立即返回（不阻塞等待子 Agent 完成），
+   * fork 返回一个 taskId，父 Agent 可通过 agent_manage list 或 EventBus 查进度。
+   * 子 Agent 后台运行，结果通过 SUBAGENT_EVENT_BUS 异步上报（lifecycle: fork_end）。
+   *
+   * detached=true 时 fork 返回的 SubagentResultLike.output 为占位提示（"已后台启动"），
+   * ok=true，真实结果异步到达。
+   */
+  detached?: boolean
+  /**
+   * 输出 JSON Schema（P2-1）。用于校验子 Agent yield 提交的 result。
+   *
+   * 设置后，fork 会在子 Agent 调 yield 时用此 schema 校验 result：
+   *   - result 是字符串：尝试 JSON.parse 后校验；解析失败则要求子 Agent 重新 yield
+   *   - 校验通过 → fork 接受结果并结束子 Agent
+   *   - 校验失败 → fork 注入错误反馈让子 Agent 重试（最多 MAX_YIELD_RETRIES 次）
+   * 缺省（undefined）→ 不校验，yield 即接受。
+   */
+  outputSchema?: Record<string, unknown>
+}
+
+/**
+ * 子 Agent 执行进度快照（P1-6 进度追踪）。
+ *
+ * fork 执行期间由 SubagentExecutor 从 runFn 的事件流里提取并上报，
+ * 通过 ForkOptions.onProgress 回调送给调用方（不阻塞主流程）。
+ */
+export interface AgentProgress {
+  /** 子 Agent taskId */
+  taskId: string
+  /** 子 sessionId */
+  subSessionId: string
+  /** 当前正在执行（或最近一次执行）的工具名 */
+  currentTool?: string
+  /** 最近 N 条工具调用记录（name + ok） */
+  recentTools?: Array<{ name: string; ok: boolean }>
+  /** 最近一条 assistant 文本输出（截断） */
+  recentOutput?: string
+  /** 累计 token 用量（input + output） */
+  tokens?: number
+  /** LLM 请求轮数（agent_round 计数） */
+  requests?: number
+  /** 累计费用估算（美元） */
+  cost?: number
+  /** 已运行毫秒数 */
+  elapsedMs?: number
 }
 
 export interface SubagentResultLike {
@@ -192,7 +374,72 @@ export interface SubagentResultLike {
   ok: boolean
   error?: string
   elapsedMs: number
+  /** 累计 token 用量（P1-2） */
+  tokens?: number
+  /** LLM 请求轮数（P1-2） */
+  requests?: number
+  /** 是否被中断（P1-2：超时/预算超限/runtime abort） */
+  aborted?: boolean
+  /** 中断原因（P1-2：'timeout' | 'budget' | 'abort_signal' | ...） */
+  abortReason?: string
+  /**
+   * 子 Agent 通过 yield 工具提交的结构化结果（P2-1）。
+   *
+   * fork 结束后，若子 Agent 调过 yield 工具，此字段为子 Agent 提交的 result 原文；
+   * 否则 undefined（output 字段仍为子 Agent 的最终 assistant 文本）。
+   * 父 Agent 可据此拿到结构化产出，而非解析自然语言输出。
+   */
+  yieldedResult?: string
+  /** yield 提交的简短摘要（P2-1，子 Agent 调 yield 时附带的 summary）。 */
+  yieldedSummary?: string
+  /**
+   * yield 校验状态（P2-1）。
+   * - 'passed'：通过 outputSchema 校验
+   * - 'failed'：校验失败且重试次数耗尽（结果仍 salvage 返回）
+   * - 'no_yield'：子 Agent 未调 yield 工具
+   * - 'no_schema'：未设 outputSchema，yield 即接受
+   */
+  yieldStatus?: 'passed' | 'failed' | 'no_yield' | 'no_schema'
 }
+
+/**
+ * MCP 工具描述符（P2-4）。
+ *
+ * 描述父 Agent 持有的一个 MCP 工具，用于 fork 时包装成子 Agent 可用的 proxy 工具。
+ * 由 harness/AgentRuntime 从已建立的 MCP 连接中提取（连接名 + 工具 schema），
+ * 注入到 SubagentExecutor.parentMcpTools。
+ */
+export interface McpToolDescriptor {
+  /** proxy 工具名（注册到子 Agent 的 ToolRegistry）。建议 mcp__<conn>__<tool>。 */
+  name: string
+  /** 工具描述（来自 MCP server listTools） */
+  description: string
+  /** 工具参数 JSON Schema（来自 MCP server listTools） */
+  parameters: JsonSchema
+  /** 来源 MCP 连接名 */
+  connectionName: string
+  /** 原始 MCP 工具名（MCP server 端的真实名，可能与 name 不同） */
+  originalName: string
+}
+
+/**
+ * MCP 工具调用器（P2-4）。
+ *
+ * proxy 工具执行时调此函数把调用转发给父 Agent 的 MCP 连接。
+ * harness/AgentRuntime 注入真实实现（调用 McpClient.callTool）。
+ * 缺省（undefined）→ proxy 工具返回错误提示 MCP 未连接。
+ */
+export interface McpToolInvoker {
+  /**
+   * 转发工具调用到父 Agent 的 MCP 连接。
+   * @param connectionName MCP 连接名
+   * @param toolName MCP server 端工具名
+   * @param args 工具参数
+   * @returns 工具响应文本（或错误信息）
+   */
+  (connectionName: string, toolName: string, args: Record<string, unknown>): Promise<string>
+}
+
 export interface ToolResponse {
   ok: boolean
   message: string

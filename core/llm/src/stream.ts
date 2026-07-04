@@ -342,6 +342,13 @@ export function stream(model: StreamModel, context: Context, options: StreamOpti
       }
     }
 
+    // client/caller 在 abort 时返回带 partial 的结果（不再 throw），
+    // 这里同步标记 aborted 并补齐部分内容，确保 stopReason 正确、内容不丢。
+    if (result?.aborted) {
+      aborted = true;
+      if (!content && result.partial) content = result.partial;
+    }
+
     // 构建最终 AssistantMessage（即便 abort/error，也保留部分内容/usage）
     const toolCalls = result?.nativeToolCalls ?? [];
     const blocks: AssistantMessage["content"] = [];

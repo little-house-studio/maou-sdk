@@ -245,7 +245,7 @@ export class LLMClient {
       retryableStatuses: options?.retry?.retryableStatuses ?? [429, 500, 502, 503, 504],
     };
     this._onError = options?.onError ?? null;
-    this._streamStallMs = options?.streamStallMs ?? 60_000;
+    this._streamStallMs = options?.streamStallMs ?? 30_000;
     this._connectTimeoutMs = options?.connectTimeoutMs ?? 60_000;
   }
 
@@ -592,8 +592,38 @@ export class LLMClient {
         const text = faux.content ?? "";
         // 按词切片模拟流式
         const chunks = text.length > 0 ? text.match(/\s*\S+|\s+/g) ?? [text] : [];
+        const emitted: string[] = [];
         for (const chunk of chunks) {
-          if (abortSignal?.aborted) throw new DOMException("The user aborted a request.", "AbortError");
+          if (abortSignal?.aborted) {
+            // abort 时返回部分内容（与真实流式分支语义一致）
+            const partial = emitted.join("");
+            const totalMs = Math.max(0, Date.now() - startedAt);
+            const usage = faux.usage ?? null;
+            const finishReason = "aborted";
+            if (this._logger || this._postLogger) {
+              this._emitLog(url, headers, rawPayload, [JSON.stringify(faux)], partial, "application/json", 200, startedAt, `aborted (partial ${partial.length} chars)`, _logContext, [], usage);
+            }
+            return {
+              content: partial,
+              rawEvents: [JSON.stringify(faux)],
+              contentType: "application/json",
+              finishReason,
+              httpStatus: 200,
+              rawEventCount: 1,
+              reasoningFallbackUsed: !!faux.reasoningContent,
+              firstOutputSeconds: 0,
+              firstOutputMs: 0,
+              requestId: null,
+              protocol: "faux",
+              toolCalls: [],
+              usage,
+              rawPayload,
+              timing: { firstByteMs: 0, generationMs: totalMs, totalMs },
+              partial,
+              aborted: true,
+            };
+          }
+          emitted.push(chunk);
           yield { delta: chunk, rawEvent: null, finishReason: null };
         }
         return this._fauxModelResponse(faux, rawPayload, url, headers, startedAt, _logContext);
@@ -742,6 +772,36 @@ export class LLMClient {
             _logContext, toolCalls, accumulatedUsage,
           );
         }
+        // abort 时不再 throw：返回带 partial 的 ModelResponse，让上层保留已生成内容
+        if (isAbort) {
+          if (toolCalls.length === 0 && toolChunks.size > 0) {
+            try { toolCalls = adapter.collectToolCalls(toolChunks); } catch { /* 部分工具调用可能不完整 */ }
+          }
+          const finishedAt = Date.now();
+          const totalMs = finishedAt - startedAt;
+          const firstByteMs = firstOutputMs !== null ? firstOutputMs : totalMs;
+          const generationMs = totalMs - firstByteMs;
+          return {
+            content: responseBody,
+            reasoningContent: reasoningContent || undefined,
+            rawEvents,
+            contentType,
+            finishReason: "aborted",
+            httpStatus,
+            rawEventCount: rawEvents.length,
+            reasoningFallbackUsed,
+            firstOutputSeconds,
+            firstOutputMs,
+            requestId,
+            protocol,
+            toolCalls,
+            usage: accumulatedUsage,
+            rawPayload,
+            timing: { firstByteMs, generationMs, totalMs },
+            partial: responseBody,
+            aborted: true,
+          };
+        }
         throw streamErr;
       } finally {
         // 安全释放 reader：先 cancel 关闭底层流，再 releaseLock。
@@ -789,6 +849,33 @@ export class LLMClient {
             isAbort ? `aborted (partial ${responseBody.length} chars)` : String(streamErr),
             _logContext, toolCalls, accumulatedUsage,
           );
+        }
+        // abort 时不再 throw：返回带 partial 的 ModelResponse（与 SSE 分支一致）
+        if (isAbort) {
+          const finishedAt = Date.now();
+          const totalMs = finishedAt - startedAt;
+          const firstByteMs = firstOutputMs !== null ? firstOutputMs : totalMs;
+          const generationMs = totalMs - firstByteMs;
+          return {
+            content: responseBody,
+            reasoningContent: reasoningContent || undefined,
+            rawEvents,
+            contentType,
+            finishReason: "aborted",
+            httpStatus,
+            rawEventCount: rawEvents.length,
+            reasoningFallbackUsed,
+            firstOutputSeconds,
+            firstOutputMs,
+            requestId,
+            protocol,
+            toolCalls,
+            usage: accumulatedUsage,
+            rawPayload,
+            timing: { firstByteMs, generationMs, totalMs },
+            partial: responseBody,
+            aborted: true,
+          };
         }
         throw streamErr;
       }

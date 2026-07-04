@@ -28,7 +28,6 @@ import type { ToolRegistry } from "@little-house-studio/tools";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { ConfigStore } from "@little-house-studio/types";
 import { fileURLToPath } from "node:url";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /**
@@ -58,6 +57,7 @@ export const CODING_TOOL_WHITELIST = [
   "search_internet",
   "use_skill",
   "find_skill",
+  "task_manage",
   "task_finish",
 ] as const;
 
@@ -119,7 +119,9 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
   const maouRoot = opts.maouRoot ?? join(process.env.HOME ?? "", ".maou");
   const toolWhitelist = opts.toolWhitelist ?? CODING_TOOL_WHITELIST;
 
-  // 引用模式物化：.agent.ref 指向包内 coding 模板 + agent.custom.json 覆盖项。
+  // 引用模式物化：.agent.ref 指向包内 coding 模板。
+  // noCustomConfig=true：不写 agent.custom.json，运行时完全使用模板 agent.json，
+  // 这样模板更新工具白名单等配置后可即时生效（重启 CLI 即可）。
   // coding agent 只服务项目级：实例写到 <projectRoot>/.maou/agents/<name>。
   const targetDir = join(projectRoot, ".maou", "agents", name);
   createAgentFromTemplate(name, maouRoot, {
@@ -130,17 +132,8 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     tools: toolWhitelist,
     roundLimit: opts.roundLimit ?? DEFAULT_CODING_ROUND_LIMIT,
     force: opts.forceMaterialize,
+    noCustomConfig: true,
   });
-  // toolCompression 写进 agent.custom.json（createAgentFromTemplate 未直接支持该字段）
-  if (opts.toolCompression && opts.toolCompression !== "normal") {
-    try {
-      const customPath = join(targetDir, "agent.custom.json");
-      const existing = existsSync(customPath) ? JSON.parse(readFileSync(customPath, "utf-8")) : {};
-      existing.tool_compression = opts.toolCompression;
-      existing.updated_at = new Date().toISOString();
-      writeFileSync(customPath, JSON.stringify(existing, null, 2), "utf-8");
-    } catch { /* 覆盖失败不影响创建 */ }
-  }
 
   // Runtime 门面自动按 enableCompression + agentName 装配：
   //   - HarnessSessionStore + TaskSessionStore

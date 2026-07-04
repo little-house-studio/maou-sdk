@@ -143,6 +143,36 @@ export type { SubagentEntry } from "./subagent-registry.js";
 export { SubagentExecutor } from "./subagent-executor.js";
 export type { SubagentRunFn, SubagentExecutorOptions } from "./subagent-executor.js";
 
+// ── worktree 隔离执行器（P2-2：子 Agent 在独立 git worktree 里运行）──────────
+
+export { IsolationRunner } from "./isolation-runner.js";
+export type { WorktreeHandle, MergeBackResult, PatchBackResult } from "./isolation-runner.js";
+
+// ── MCP 代理工具（P2-4：子 Agent 复用父 Agent 的 MCP 连接）───────────────────
+
+export { createMcpProxyTools, createMcpProxyTool } from "./mcp-proxy.js";
+export type { McpProxyToolInput } from "./mcp-proxy.js";
+
+// ── 子 Agent 事件总线（P1-6 进度追踪 + 生命周期事件）─────────────────────────
+
+export { SubagentEventBus, SUBAGENT_EVENT_BUS } from "./event-bus.js";
+export type { SubagentChannel, LifecycleEvent } from "./event-bus.js";
+
+// ── Agent 间消息总线（P1-3 进程内 IRC 式 mailbox）─────────────────────────
+
+export { MessageBus } from "./message-bus.js";
+export type {
+  BusMessage,
+  DeliveryReceipt,
+  SendOptions,
+  WaitFilter,
+} from "./message-bus.js";
+
+// ── Agent 生命周期管理（P1-4 running/idle/parked/aborted + TTL park）────
+
+export { AgentLifecycleManager } from "./agent-lifecycle.js";
+export type { AgentStatus, AdoptOptions } from "./agent-lifecycle.js";
+
 // ── 监督模式管理器（/goal 模式：主 Agent ↔ 监督 Agent 绑定）─────────────────
 
 export { SUPERVISOR_MANAGER } from "./supervisor-manager.js";

@@ -1,6 +1,6 @@
 ## 使用指引
 - 说明：
-  - 必须指定 time 参数：d（24小时）、w（一周）、m（一月）、y（一年）。搜最新信息用 d 或 w。
+  - 建议指定 time 参数：d（24小时）、w（一周）、m（一月）、y（一年）。搜最新信息用 d 或 w。不填则不限时间。
   - sub_queries 很重要：把复杂问题拆成多个具体子查询并发搜索，效果远好于单一查询。
     - 例：搜"React 19 新特性" → sub_queries: ["React 19 new features", "React 19 breaking changes", "React 19 migration guide"]
   - query 是主搜索词，sub_queries 是补充维度。两者都会被搜索。
@@ -9,12 +9,6 @@
   - 尽可能多关键词与单轮同时多次。
 - 分类搜索（category 参数）：
   - 指定 category 后，优先调用该分类下的原生 API（免费、无需 Key），再补充通用搜索引擎结果。
-  - 实测可用的原生 API：
-    - GitHub Search API → coding / tools（免费，无需 Key，10次/分钟，搜仓库+Issues）
-    - HN Algolia API → knowledge / news（免费，无需 Key）
-    - Arxiv API → academic（免费，无需 Key）
-    - Wikipedia API → academic（免费，无需 Key）
-    - YouTube ytInitialData → video（免费，无需 Key）
   - coding：编程资源 — GitHub（原生 API，搜仓库+Issues）+ SO, MDN, npm, PyPI（通用搜索）
   - academic：学术权威 — Arxiv + Wikipedia（原生 API）+ Scholar（通用搜索）
   - knowledge：知识经验 — Hacker News（原生 API）+ 知乎, Reddit, StackExchange（通用搜索）
@@ -23,13 +17,6 @@
   - social：社交媒体 — Reddit, X（通用搜索 site: 限定）
   - video：视频教程 — YouTube（原生 API）+ B站（通用搜索）
   - general：不限（默认），搜索全互联网
-  - 例：搜论文 → category: "academic"，搜技术讨论 → category: "knowledge"，搜视频教程 → category: "video"
-- 站内搜索：
-    - 支持通过 `site:` 语法限定搜索范围。例如：
-      - 搜知乎：`site:zhihu.com 关键词`
-      - 搜GitHub：`site:github.com 关键词`
-      - 搜StackOverflow：`site:stackoverflow.com 关键词`
-    - 当用户明确要求搜索特定网站时，自动在 query 前加 `site:域名`
 - 使用技巧：
     - 尽可能根据可能的信息范围带有时间范围
     - 尽可能一次性调用多次、多关键词，从精准角度与广度角度获取信息。

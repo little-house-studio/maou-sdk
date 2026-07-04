@@ -42,10 +42,13 @@ import type { LLMToolCall, APIPreset } from "@little-house-studio/llm";
 import { AuxModelCaller, resolveHelperPreset } from "@little-house-studio/llm";
 import { deriveJsonSettings, StreamJsonAccumulator } from "@little-house-studio/llm";
 import { SUPERVISOR_MANAGER } from "./supervisor-manager.js";
+import { SubagentRegistry } from "./subagent-registry.js";
+import { AgentLifecycleManager } from "./agent-lifecycle.js";
+import { MessageBus } from "./message-bus.js";
 import type { ToolRegistry, ToolExecutor } from "@little-house-studio/tools";
 import type { ToolContext } from "@little-house-studio/tools";
+import { cleanupAgentTerminals, listTerminals, getTerminalLogs, setTerminalMode, SkillContextManager, TASK_MANAGER, createSubagentDelegateTool } from "@little-house-studio/tools";
 import type { SubagentExecutorLike } from "@little-house-studio/types";
-import { cleanupAgentTerminals, listTerminals, getTerminalLogs, setTerminalMode, SkillContextManager, TASK_MANAGER } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import { Profiler } from "@little-house-studio/types";
 import type { Hooks } from "./hooks.js";
@@ -176,6 +179,13 @@ export interface RunOptions {
   platformContext?: string;
   /** 绑定级项目根路径 —— 由插件（如飞书）提供，覆盖 AgentRuntime.projectRoot */
   bindingProjectRoot?: string;
+  /**
+   * MCP 代理工具名列表（P2-4）。
+   * fork 子 Agent 时，若 inheritMcp !== false，SubagentExecutor 把父 Agent 的 MCP 工具
+   * 包装成 proxy Tool 实例传给 runFn；runFn 调 AgentRuntime.registerMcpProxyTools() 注册后，
+   * 把工具名列表通过此字段传入 run()，run() 会把它们加入工具白名单（避免被 nativeToolSchemas 过滤）。
+   */
+  mcpProxyToolNames?: string[];
 }
 
 // ─── AgentRuntime ──────────────────────────────────────────────────────────
@@ -219,8 +229,29 @@ export class AgentRuntime {
    * 注入到 ToolContext.subagentExecutor，agent_message 工具据此 fork 子 Agent。
    */
   private subagentExecutor?: SubagentExecutorLike;
+  /** 已注册的子 Agent delegate 工具名（subagent_<name>），用于下次 run 前清理，
+   * 避免上一次 run 注册的 subagent_<name> 在子 Agent 目录变更后残留。 */
+  private _registeredSubagentTools: Set<string> = new Set();
   /** 调用主 Agent（监督模式专用）—— 由 harness 注入 */
   private callMainAgentFn?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
+
+  /**
+   * per-session yield 结果回调（P2-1）。
+   *
+   * SubagentExecutor.fork 在运行子 Agent 前调 setYieldHandler(sessionId, handler)
+   * 注册；processToolCalls 构建 ToolContext 时从该 map 读取并注入到 ctx.yieldResult。
+   * 子 Agent 调 yield 工具时，回调把 result 上交给 fork；fork 检测到后结束子 Agent。
+   * run 结束时清理（clearYieldHandler）。
+   */
+  private yieldHandlers = new Map<string, (result: string, summary?: string) => void>();
+
+  /**
+   * 当前 run() 内每轮 LLM 调用使用的 preset。
+   * 初始为 options.preset；运行中可通过 switchPreset() 切换，下一轮生效。
+   * null 表示当前无运行中的 run。
+   * 支持「先快速模型规划→再慢模型执行」场景：外部在 run 进行中调 switchPreset 即可。
+   */
+  private currentPreset: APIPreset | null = null;
 
   // ── 可插拔工厂（缺省使用内部默认实现）──
   private createSessionManagerFn: (sessions: SessionStore, maouRoot: string) => SessionManager;
@@ -288,6 +319,14 @@ export class AgentRuntime {
     const session = prof.sync("ensure_session", () => this.sessions.ensure(sessionId ?? undefined, options.initAgentName));
     sessionId = session.id;
     this.log("info", `[RUN] start session=${sessionId} msg_len=${userMessage.length}`);
+
+    // ── P1-4 生命周期：adopt agent 并标记 running（main agent 跟踪 + subagent 复用）──
+    const lifecycle = AgentLifecycleManager.global();
+    const runAgentName = session.agentName || "main";
+    lifecycle.adopt(sessionId, runAgentName);
+    lifecycle.setStatus(sessionId, "running");
+    // P1-3 消息总线：注册 mailbox（让 broadcast / 其他 agent 能向本 session 投递）
+    MessageBus.global().register(runAgentName);
 
     // ── 1. 指令匹配：/xxx 指令直接执行，不走 AI ──
     const cmdCtx: CommandContext = {
@@ -621,7 +660,11 @@ export class AgentRuntime {
       }
     }
 
-    const preset = options.preset;
+    const initialPreset = options.preset;
+    // 初始化 currentPreset：支持运行时 switchPreset() 在下一轮生效。
+    // 循环内统一从 this.currentPreset 取当前 preset（而非 options.preset 固定值）。
+    this.currentPreset = initialPreset;
+    let lastPreset: APIPreset = initialPreset;
     const autoFormat = options.autoFormat ?? true;
     const agentMode = options.agentMode ?? true;
     const sandboxMode = options.sandboxMode ?? "normal";
@@ -640,6 +683,38 @@ export class AgentRuntime {
       const agentToolsDir = join(maouRoot, "agents", agentName, "tools");
       this.tools.addAgentToolsDir(agentToolsDir);
     } catch { /* ignore */ }
+
+    // ── 文件即子 Agent：扫描 subagents/ 目录，动态注册 subagent_<name> 工具 ──
+    // SubagentRegistry.loadForAgent 扫描 agents/<name>/subagents/<child>/ 目录，
+    // 发现子 Agent 后通过 createSubagentDelegateTool 动态注册工具。
+    // LLM 调用 subagent_<name> 时，工具内部调 ctx.subagentExecutor.fork() 委托任务。
+    try {
+      // 清理上次 run 注册的 subagent_<name> 工具（子 Agent 目录可能已变更）
+      for (const oldName of this._registeredSubagentTools) {
+        this.tools.unregister(oldName);
+      }
+      this._registeredSubagentTools.clear();
+
+      // ── P2-4 清理上次 run 注册的 MCP proxy 工具（跨 session 不残留）──
+      for (const oldName of this._registeredMcpProxyTools) {
+        this.tools.unregister(oldName);
+      }
+      this._registeredMcpProxyTools.clear();
+
+      const subReg = new SubagentRegistry(maouRoot);
+      const count = subReg.loadForAgent(agentName);
+      if (count > 0) {
+        for (const sub of subReg.listAll()) {
+          const tool = createSubagentDelegateTool(sub.name, sub.description);
+          this.tools.register(tool);
+          this._registeredSubagentTools.add(`subagent_${sub.name}`);
+        }
+        this.log("info", `[SUBAGENT] 发现 ${count} 个子 Agent: ${subReg.listAll().map(s => s.name).join(", ")}`);
+        yield this.logEvent("info", `已注册 ${count} 个子 Agent 委托工具（subagent_*）`);
+      }
+    } catch (err) {
+      this.log("warning", `[SUBAGENT] 子 Agent 扫描/注册失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     // 合并白名单：PERMISSION.jsonc ∩ agent.json tools
     // eve 结构：PERMISSION.jsonc 只在 agent 根目录下
@@ -680,8 +755,28 @@ export class AgentRuntime {
       }
     } catch { /* ignore */ }
 
+    // 子 Agent 委托工具纳入白名单：若 agent 配置了白名单（非 *），需把已注册的
+    // subagent_<name> 工具加入白名单，否则 nativeToolSchemas 会过滤掉它们。
+    if (toolWhitelist && this._registeredSubagentTools.size > 0) {
+      for (const name of this._registeredSubagentTools) {
+        toolWhitelist.add(name);
+      }
+    }
+
+    // ── P2-4 MCP proxy 工具纳入白名单 ──
+    // fork 子 Agent 时（inheritMcp !== false），executor 传 mcpProxyTools，
+    // runFn 调 registerMcpProxyTools() 注册后把工具名通过 RunOptions.mcpProxyToolNames 传入。
+    // 若 agent 配置了白名单（非 *），需把 proxy 工具名加入白名单，否则被 nativeToolSchemas 过滤。
+    const mcpProxyNames = options.mcpProxyToolNames ?? [];
+    if (toolWhitelist && mcpProxyNames.length > 0) {
+      for (const name of mcpProxyNames) {
+        toolWhitelist.add(name);
+      }
+    }
+
     const toolSchemas = this.tools.nativeToolSchemas?.(toolWhitelist) ?? null;
-    const nativeToolCalling = Boolean(preset.nativeToolCalling ?? true) && Boolean(toolSchemas?.length);
+    // nativeToolCalling 在循环内按当前 preset 每轮重算（支持 switchPreset 切换模型后
+    // 不同 tool-calling 能力）。toolSchemas 固定不变（白名单决定）。
 
     // ── 工具提示词注入（TOOL.md → systemPrompt）──
     // 每个工具目录下若有 TOOL.md，其内容作为该工具的补充说明注入系统提示词
@@ -725,6 +820,27 @@ export class AgentRuntime {
     let totalTokens = 0;
 
     while (roundCount < maxRounds) {
+      // ── P0-5: 每轮取当前 preset（支持运行时 switchPreset 切换 model）──
+      // 初始为 options.preset；运行中 switchPreset() 更新 this.currentPreset，
+      // 下一轮此处取到新 preset，所有后续 LLM 调用 / contextLimit / 日志都用新值。
+      const preset = this.currentPreset ?? initialPreset;
+      if (preset !== lastPreset) {
+        // 模型切换：发 model_switched 事件让 TUI 更新状态栏
+        yield {
+          type: "model_switched",
+          model: preset.model ?? "(unknown)",
+          previousModel: lastPreset.model ?? "(unknown)",
+          round: roundCount + 1,
+        } as StreamEvent;
+        yield this.logEvent(
+          "info",
+          `模型切换: ${lastPreset.model ?? "(unknown)"} → ${preset.model ?? "(unknown)"}（第 ${roundCount + 1} 轮生效）`,
+        );
+        lastPreset = preset;
+      }
+      // 每轮按当前 preset 重算 nativeToolCalling（不同模型 tool-calling 能力可能不同）
+      const nativeToolCalling = Boolean(preset.nativeToolCalling ?? true) && Boolean(toolSchemas?.length);
+
       // 检查中断信号（已合并外部 + 内部 interrupt）
       if (effectiveAbortSignal.aborted) {
         const reason = String(internalController.signal.reason ?? "unknown");
@@ -869,6 +985,7 @@ export class AgentRuntime {
           this.log("error", errMsg);
           yield this.event("error", { message: errMsg, round: currentRound });
           yield this.event("done", { sessionId, rounds: currentRound, error: errMsg });
+          this.currentPreset = null;
           return;
         }
       }
@@ -1232,6 +1349,10 @@ export class AgentRuntime {
     yield this.event("profile", { report });
 
     this.hooks?.sessionEnd(sessionId!);
+
+    // ── P1-4 生命周期：run 结束 → idle（arm TTL，TTL 后自动 park）──
+    lifecycle.setStatus(sessionId, "idle");
+
     yield this.event("done", {
       sessionId,
       rounds: roundCount,
@@ -1243,6 +1364,10 @@ export class AgentRuntime {
 
     // ── 6. 清理内部 AbortController（已退出主循环，不再需要 interrupt 能力）──
     this.abortControllers.delete(sessionId);
+    // 清理 currentPreset：标识 run 结束，避免 switchPreset 在无运行 run 时误生效
+    this.currentPreset = null;
+    // ── P2-1：清理 per-session yield 回调（子 Agent run 结束，回调不再有效）──
+    this.clearYieldHandler(sessionId);
   }
 
   /**
@@ -1264,6 +1389,29 @@ export class AgentRuntime {
   }
 
   /**
+   * 运行时切换 model preset —— 下一次 LLM 调用（下一轮）生效。
+   *
+   * 典型场景：先用快速模型规划 → 通过工具/外部触发切换到慢模型执行。
+   *
+   * - 仅对当前 run() 进行中的循环生效；无运行中的 run 时仅缓存无效
+   *   （下次 run() 启动会用 options.preset 覆盖）。
+   * - 下一轮循环开始时检查 currentPreset 与上一轮是否不同，
+   *   不同则 yield `model_switched` 事件让 TUI 更新状态栏。
+   * - 向后兼容：不调 switchPreset 时行为不变（整轮 run 用同一 preset）。
+   * - 不影响辅助调用管道（压缩/路由等仍用 options.preset 解析 helper preset）。
+   */
+  switchPreset(preset: APIPreset): void {
+    if (!this.currentPreset) {
+      // 无运行中的 run：仅记录（下次 run() 用 options.preset，不沿用此处缓存）
+      this.log("info", `[RUN] switchPreset 在无运行 run 时调用，将不生效（下次 run 用 options.preset）`);
+      return;
+    }
+    const oldModel = this.currentPreset.model ?? "(unknown)";
+    this.currentPreset = preset;
+    this.log("info", `[RUN] model 切换: ${oldModel} → ${preset.model ?? "(unknown)"}`);
+  }
+
+  /**
    * 查询指定 session 是否有运行中的 run（用于 harness 判断是否需要 enqueue interrupt 模式）。
    */
   isRunning(sessionId: string): boolean {
@@ -1278,6 +1426,55 @@ export class AgentRuntime {
   setSubagentExecutor(executor: SubagentExecutorLike): void {
     this.subagentExecutor = executor;
   }
+
+  /**
+   * 注册 per-session yield 结果回调（P2-1）。
+   *
+   * 由 SubagentExecutor.fork 在运行子 Agent 前调用：把子 sessionId 和回调绑定。
+   * processToolCalls 会从该 map 读取并注入到子 Agent 的 ToolContext.yieldResult。
+   * 子 Agent 调 yield 工具时触发回调 → fork 检测到 → 结束子 Agent 循环。
+   */
+  setYieldHandler(sessionId: string, handler: ((result: string, summary?: string) => void) | null): void {
+    if (handler) {
+      this.yieldHandlers.set(sessionId, handler);
+    } else {
+      this.yieldHandlers.delete(sessionId);
+    }
+  }
+
+  /**
+   * 取 per-session yield 回调（processToolCalls 用此注入 ToolContext.yieldResult）。
+   */
+  getYieldHandler(sessionId: string): ((result: string, summary?: string) => void) | undefined {
+    return this.yieldHandlers.get(sessionId);
+  }
+
+  /** 清理 per-session yield 回调（run 结束时调用）。 */
+  clearYieldHandler(sessionId: string): void {
+    this.yieldHandlers.delete(sessionId);
+  }
+
+  /**
+   * 注册 MCP 代理工具（P2-4）。
+   *
+   * fork 子 Agent 时（inheritMcp !== false），SubagentExecutor 把父 Agent 的 MCP 工具
+   * 包装成 proxy Tool 实例，通过 runFn 的 options.mcpProxyTools 传入。runFn 调此方法
+   * 把 proxy 工具注册到当前 Runtime 的 ToolRegistry，让子 Agent 能调用它们。
+   *
+   * 注册的工具会记录到 _registeredMcpProxyTools，下次 run() 开始时在工具初始化阶段
+   * 清理（与 _registeredSubagentTools 同样的清理时机），避免跨 session 残留。
+   *
+   * @param tools MCP proxy Tool 实例数组（由 createMcpProxyTools 生成）
+   */
+  registerMcpProxyTools(tools: import("@little-house-studio/tools").Tool[]): void {
+    for (const tool of tools) {
+      this.tools.register(tool);
+      this._registeredMcpProxyTools.add(tool.definition.name);
+    }
+  }
+
+  /** 已注册的 MCP proxy 工具名（P2-4），用于下次 run 前清理，避免跨 session 残留。 */
+  private _registeredMcpProxyTools: Set<string> = new Set();
 
   // ── 工具调用处理 ──
 
@@ -1335,6 +1532,21 @@ export class AgentRuntime {
       isSupervisorSession: SUPERVISOR_MANAGER.isSupervisorSession(sessionId ?? ""),
       // 注入 SUPERVISOR_MANAGER 单例（supervisor 工具通过它查询/更新绑定）
       supervisorManager: SUPERVISOR_MANAGER,
+      // ── llm_judge 工具注入：辅助模型调用器 + preset 解析 ──
+      // llm_judge 工具通过 ctx.auxModelCaller 调用辅助 LLM 做独立判断
+      // （安全检查/代码审查/路由判定等）。auxModelCaller / resolveHelperPresetFn
+      // 由 RuntimeOptions 注入（runtime-facade 创建）。未注入时 llm_judge 返回未启用提示。
+      auxModelCaller: this.auxModelCaller as never | undefined,
+      mainPreset: this.currentPreset as unknown,
+      resolveHelperPreset: this.resolveHelperPresetFn
+        ? (this.resolveHelperPresetFn as (agentName: string, mainPreset: unknown) => unknown)
+        : undefined,
+      runtimeAgentName: agentName,
+      // ── P2-1 yield 工具注入：per-session yield 回调（子 Agent 上下文才注入）──
+      // SubagentExecutor.fork 运行子 Agent 前调 setYieldHandler 注册回调。
+      // 子 Agent 调 yield 工具 → 回调触发 → fork 检测到 → 结束子 Agent 循环。
+      // 主 Agent session 无注册回调 → yieldResult 为 undefined → yield 工具返回未启用提示。
+      yieldResult: this.getYieldHandler(sessionId ?? ""),
     };
 
     // ── 按 parallelSafe / blocking 分组执行 ──

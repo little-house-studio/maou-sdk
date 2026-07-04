@@ -12,7 +12,7 @@
  * └── tools/              # 子 Agent 专属工具
  */
 
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import type { AgentRegistry } from "./registry.js";
 import type { DefinedAgent } from "./define-agent.js";
@@ -137,7 +137,7 @@ export class SubagentRegistry {
     let description = dirName;
     if (hasAgentJson) {
       try {
-        const content = require("node:fs").readFileSync(join(dir, "agent.json"), "utf-8");
+        const content = readFileSync(join(dir, "agent.json"), "utf-8");
         const data = JSON.parse(content);
         if (data.description) description = data.description;
         else if (data.display_name) description = data.display_name;

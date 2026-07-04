@@ -1,0 +1,11 @@
+{
+  "name": "reviewer",
+  "display_name": "Code Reviewer",
+  "role": "reviewer",
+  "scope": "subagent",
+  "description": "代码审查员子 Agent：审查代码质量、发现 bug、提出改进建议。只读工具 + llm_judge 辅助判断。适合「审查这段代码」「找潜在问题」等质量把关任务。",
+  "round_limit": 15,
+  "max_retries": 5,
+  "terminal_mode": "normal",
+  "tools": ["reader", "glob", "grep", "find_code", "llm_judge", "task_finish"]
+}

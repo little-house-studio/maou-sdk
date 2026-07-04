@@ -73,6 +73,10 @@ export interface ModelResponse {
     /** 总耗时（发出去到最后一个字母） */
     totalMs: number;
   };
+  /** 流式调用被 abort 时已累积的内容（供上层保留部分结果） */
+  partial?: string;
+  /** 本次响应是否因 abort 而提前结束（true 时上层不应重试） */
+  aborted?: boolean;
 }
 
 /** 流式增量 */
