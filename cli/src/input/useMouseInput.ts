@@ -17,6 +17,8 @@ import { hitTest, type LayoutRect } from "../input/hit-test.js";
 import { hitTestClick } from "../input/click-target.js";
 import { useStore } from "../state/store.js";
 
+const MOUSE_DEBUG = process.env.MAOU_MOUSE_DEBUG === "1";
+
 interface DragState {
   startCol: number;
   startRow: number;
@@ -47,9 +49,11 @@ export function useMouseInput(
     if (!enabled || !stdout) return;
     // 1000 模式：down/up/wheel。Shift+拖拽走终端原生选择（高亮+复制）。
     enableMouse(stdout, { drag: false });
+    if (MOUSE_DEBUG) useStore.getState().toastMsg(`mouse on cols=${stdout.columns} rows=${stdout.rows}`, "info");
 
     const onData = (buf: Buffer) => {
-      const events = parseMouse(buf.toString("latin1"));
+      const s = buf.toString("latin1");
+      const events = parseMouse(s);
       for (const e of events) {
         handleEvent(e);
       }
@@ -95,6 +99,7 @@ export function useMouseInput(
       if (movedRows > DRAG_THRESHOLD || movedCols > DRAG_THRESHOLD * 2) return;
 
       // 短按：点击命中
+      if (MOUSE_DEBUG) useStore.getState().toastMsg(`click ${e.col},${e.row}→${target.kind}`, "info");
       if (target.kind === "input") {
         cbRef.current.onInputCursor?.(target.col);
       } else {
