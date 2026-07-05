@@ -15,6 +15,7 @@ import { CommandPalette } from "../overlay/CommandPalette.js";
 import { ModelDialog } from "../overlay/ModelDialog.js";
 import { SessionDialog } from "../overlay/SessionDialog.js";
 import { HelpDialog } from "../overlay/HelpDialog.js";
+import { SettingsDialog } from "../overlay/SettingsDialog.js";
 import { FullScreenEditor } from "../render/FullScreenEditor.js";
 import { useStore } from "../state/store.js";
 import type { AgentCliConfig } from "../types.js";
@@ -55,11 +56,12 @@ export function Layout({
       {/* 状态栏 */}
       <StatusBar />
 
-      {/* Overlay：命令面板 / 模型 / 会话 / 帮助 */}
+      {/* Overlay：命令面板 / 模型 / 会话 / 帮助 / 设置 */}
       {overlay === "command" && <CommandPalette onRun={(id) => useStore.getState().runCommand(id)} />}
       {overlay === "model" && <ModelDialog config={config} />}
       {overlay === "sessions" && <SessionDialog />}
       {overlay === "help" && <HelpDialog />}
+      {overlay === "settings" && <SettingsDialog config={config} />}
 
       {/* Overlay：全屏编辑器（最上层） */}
       {fullEditorInitial !== null && (

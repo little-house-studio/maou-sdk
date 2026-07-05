@@ -1,48 +1,60 @@
 /**
- * ScrollHistory —— 视口模式渲染，规避 Ink #935（eraseLines 行数错导致顶部 border 丢失）。
+ * ScrollHistory —— 行级平滑滚动 + 自动跟随底部（网页感）。
  *
- * 不用 <Static>（它会写 scrollback 触发 Ink clearTerminal 抹顶部）。
- * 改全动态渲染 + 自管视口：算每条消息估算行数，从末尾累加到可用高度停止。
- * outputHeight 永远 ≤ 视口高度，Ink eraseLines 不算错，┌ border 保留。
- * chatScrollOffset 控制向上滚动看更早消息。
+ * 实现原理（参考 ByteLandTechnology/ink-scroll-view 的 ControlledScrollView）：
+ *   <Box ref={viewportRef} height={H} overflow="hidden">   ← 视口，固定高度，裁剪
+ *     <Box ref={contentRef} flexShrink={0} marginTop={-scrollTop}>  ← 内容，不压缩，上移
+ *       {所有消息}
+ *     </Box>
+ *   </Box>
+ *
+ * 关键点（经验证）：
+ *   - 内容 Box 必须 flexShrink={0}，否则 flexGrow 父级会把内容压成视口高度，
+ *     导致 contentHeight == viewportHeight，maxScrollTop=0，滚轮失效。
+ *   - 视口用固定 height（不用 flexGrow），Yoga 才能正确算视口高度。
+ *   - Ink <Box> 支持负数 marginTop（经 Yoga），配合 overflow="hidden" 实现行级滚动。
+ *   - useBoxMetrics 用 yogaNode.getComputedLayout() 拿元素自身布局高度，
+ *     不受 overflow 裁剪影响。
+ *
+ * offset 语义：0=看最新（底部），增大=向上看更早。
+ * marginTop = -(maxScroll - offset)：offset=0 时 mt=-maxScroll（内容上移到底部），
+ * offset=maxScroll 时 mt=0（内容顶部对齐视口顶部）。
+ *
+ * autoFollow：新消息到达时若用户在底部则自动跟随；用户上滚后停止跟随，回到底部重启。
  */
 
-import React, { useEffect, useState, useMemo } from "react";
-import { Box, Text } from "ink";
+import React, { useRef, useEffect } from "react";
+import { Box, Text, useBoxMetrics } from "ink";
 import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { MessageRow } from "./messages/MessageRow.js";
-import type { ChatMessage } from "../state/types.js";
-
-/** 估算单条消息渲染行数（含时码行/usage/内容/工具卡片/分隔线） */
-function estimateRows(msg: ChatMessage, cols: number): number {
-  const contentCols = Math.max(20, cols - 4); // 减边框+padding
-  let rows = 2; // 时码行 + 角色
-  if (msg.usage) rows += 1;
-  if (msg.content) rows += Math.ceil(msg.content.length / contentCols) + (msg.content.includes("\n") ? msg.content.split("\n").length - 1 : 0);
-  if (msg.thinkingBlocks) rows += msg.thinkingBlocks.reduce((a, b) => a + Math.max(1, Math.ceil(b.content.length / contentCols)), 0);
-  if (msg.toolCalls) rows += msg.toolCalls.length * 2; // 标题行 + 可能展开
-  rows += 1; // 分隔线
-  return Math.max(2, rows);
-}
 
 export function ScrollHistory({ frame }: { frame: number }) {
   const t = useTheme();
   const messages = useStore((s) => s.messages);
   const chatScrollOffset = useStore((s) => s.chatScrollOffset);
+  const maxChatScroll = useStore((s) => s.maxChatScroll);
+  const autoFollow = useStore((s) => s.autoFollow);
+  const setMaxChatScroll = useStore((s) => s.setMaxChatScroll);
   const term = useTerminalSize();
-  const [, force] = useState(0);
 
-  // 自适应节流（保留，规避高频重渲染）
-  useEffect(() => {
-    if (messages.length === 0) return;
-    const id = setTimeout(() => force(f => f + 1), 50);
-    return () => clearTimeout(id);
-  }, [messages]);
+  const viewportRef = useRef(null);
+  const contentRef = useRef(null);
+  const contentMetrics = useBoxMetrics(contentRef);
 
   // 可用高度：终端高 - 顶栏(1) - 对话区上下边框(2) - 事件块(1) - 输入框(1) - 状态栏(1) = rows - 6
   const availableRows = Math.max(4, term.rows - 6);
+
+  // 测量内容总高度，算 maxScrollTop 回写 store。
+  // 只依赖 contentHeight/viewportHeight（不依赖 maxChatScroll），避免回写触发循环。
+  // viewportHeight 用 availableRows 算（不测 viewportRef），减少一次测量和潜在循环。
+  const contentHeight = contentMetrics.height;
+  useEffect(() => {
+    const max = Math.max(0, contentHeight - availableRows);
+    setMaxChatScroll(max);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentHeight, availableRows]);
 
   if (messages.length === 0) {
     return (
@@ -54,24 +66,24 @@ export function ScrollHistory({ frame }: { frame: number }) {
     );
   }
 
-  // 从末尾倒取消息，累加行数到 availableRows 停止（+ offset 向上看更早）
-  const visible: ChatMessage[] = [];
-  let usedRows = 0;
-  const startIdx = Math.max(0, messages.length - 1 - chatScrollOffset);
-  for (let i = startIdx; i >= 0; i--) {
-    const m = messages[i]!;
-    const r = estimateRows(m, term.cols);
-    // 第一条总放（即使超视口），后续放不下就停
-    if (usedRows + r > availableRows && visible.length > 0) break;
-    visible.unshift(m);
-    usedRows += r;
-  }
-  const hiddenCount = startIdx - (messages.length - visible.length);
+  // offset=0 看底部：marginTop = -(max - offset)
+  // offset=max 看顶部：marginTop = 0
+  // autoFollow=true 时强制 offset=0（钉到底），不读 chatScrollOffset——避免回写循环
+  const rawOffset = Math.min(chatScrollOffset, maxChatScroll);
+  const offset = autoFollow ? 0 : rawOffset;
+  const marginTop = -(maxChatScroll - offset);
+  const hasNewer = offset > 0;       // 用户上滚看更早，底部有未看的更新内容
+  const hasOlder = offset < maxChatScroll;  // 上方还有更早内容
 
   return (
     <Box flexDirection="column" flexGrow={1}>
-      {hiddenCount > 0 && <Text color={t.dim}>▲ {hiddenCount} 条更早消息（滚轮向上看）</Text>}
-      {visible.map(m => <MessageRow key={m.id} msg={m} frame={frame} />)}
+      {hasOlder && <Text color={t.dim}>▲ 还有更早内容（滚轮向上看）</Text>}
+      <Box ref={viewportRef} height={availableRows} overflow="hidden" flexDirection="column">
+        <Box ref={contentRef} flexShrink={0} marginTop={marginTop} flexDirection="column">
+          {messages.map(m => <MessageRow key={m.id} msg={m} frame={frame} />)}
+        </Box>
+      </Box>
+      {hasNewer && <Text color={t.dim}>▼ 还有更新内容（滚轮向下看）</Text>}
     </Box>
   );
 }

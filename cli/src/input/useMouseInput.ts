@@ -1,31 +1,34 @@
 /**
- * useMouseInput —— 受控鼠标 + 命中分发 + 拖选 OSC52。
+ * useMouseInput —— 受控鼠标 + 命中分发。
  *
- * 默认 enabled=false（保留终端原生拖选复制）。
- * enabled=true 时开 1002 拖动模式：点击移 InputBar 光标、滚轮滚动 ChatPage、
- * 拖选自绘选区、松手 OSC52 复制。
+ * SGR 1000 模式（down/up/wheel，不上报 drag）。
+ *   - down + up（无显著移动）→ 点击，命中可点击元素或 InputBar 移光标
+ *   - 滚轮 → 对话区滚动
+ * 文字选择走终端原生：Shift+拖拽绕过 SGR，终端画高亮 + 复制剪贴板（可靠）。
  *
- * 复用 input/mouse.ts SGR-1006 解析（已完备）。
+ * 注：曾尝试 1002 模式 + 自绘选区 + OSC52，但 Ink 不暴露渲染后字符位置，
+ * 无法画选区高亮也无可靠文本提取，不可行。原生选择是终端协议唯一可靠方案。
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useStdout } from "ink";
 import { enableMouse, disableMouse, parseMouse, type MouseEvent } from "../input/mouse.js";
-import { osc52 } from "../input/osc52.js";
-import { hitTest, colToIndex, type LayoutRect } from "../input/hit-test.js";
+import { hitTest, type LayoutRect } from "../input/hit-test.js";
+import { hitTestClick } from "../input/click-target.js";
 import { useStore } from "../state/store.js";
 
 interface DragState {
   startCol: number;
   startRow: number;
-  text: string;
 }
 
+/** 移动超过这个阈值视为拖拽（不触发点击） */
+const DRAG_THRESHOLD = 2;
+
 export interface MouseCallbacks {
-  onInputCursor?: (charIndex: number) => void;  // 点击 InputBar 移光标
-  onChatScroll?: (dir: "up" | "down") => void;  // 滚轮滚动对话区
-  onSelectText?: (text: string) => void;        // 拖选松手复制
-  onInputScroll?: (dir: "up" | "down") => void; // 滚轮滚动 InputBar 内容（>viewportLines 时）
+  onInputCursor?: (charIndex: number) => void;
+  onChatScroll?: (dir: "up" | "down") => void;
+  onInputScroll?: (dir: "up" | "down") => void;
 }
 
 export function useMouseInput(
@@ -36,12 +39,12 @@ export function useMouseInput(
   const { stdout } = useStdout();
   const cbRef = useRef(cb);
   cbRef.current = cb;
-  const [drag, setDrag] = useState<DragState | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
   useEffect(() => {
     if (!enabled || !stdout) return;
-    enableMouse(stdout, { drag: true });
+    // 1000 模式：down/up/wheel。Shift+拖拽走终端原生选择（高亮+复制）。
+    enableMouse(stdout, { drag: false });
 
     const onData = (buf: Buffer) => {
       const events = parseMouse(buf.toString("latin1"));
@@ -63,9 +66,7 @@ export function useMouseInput(
 
     if (e.type === "wheelUp" || e.type === "wheelDown") {
       const dir = e.type === "wheelUp" ? "up" : "down";
-      // 按光标位置分流：鼠标在 InputBar 行内且内容超 viewportLines(4) → 滚 InputBar；
-      // 否则滚对话区。全屏编辑器开时 target 不会命中 input（rect.inputRowFromBottom=0）。
-      if (target.kind === "input" && store.inputLineCount > 4) {
+      if (store.fullEditorInitial !== null) {
         cbRef.current.onInputScroll?.(dir);
       } else {
         cbRef.current.onChatScroll?.(dir);
@@ -73,24 +74,26 @@ export function useMouseInput(
       return;
     }
     if (e.type === "down") {
-      // 点击 InputBar 移光标
-      if (target.kind === "input") {
-        // 需要 InputBar 的当前 value——通过回调拿不到，用 store 暂存
-        // 实际光标移动由 InputBar 监听 store.mouseCol 实现（简化）
-        cbRef.current.onInputCursor?.(target.col);
-      }
-      // 开始拖选（记录起点）
-      dragRef.current = { startCol: e.col, startRow: e.row, text: "" };
-      setDrag(dragRef.current);
+      dragRef.current = { startCol: e.col, startRow: e.row };
+      return;
     }
     if (e.type === "up") {
-      // 松手：若有拖选文本，OSC52 复制
-      if (dragRef.current && dragRef.current.text) {
-        cbRef.current.onSelectText?.(dragRef.current.text);
-        osc52(dragRef.current.text);
-      }
+      const d = dragRef.current;
       dragRef.current = null;
-      setDrag(null);
+      if (!d) return;
+
+      // 移动超过阈值视为拖拽（不触发点击，让终端原生选择处理）
+      const movedRows = Math.abs(e.row - d.startRow);
+      const movedCols = Math.abs(e.col - d.startCol);
+      if (movedRows > DRAG_THRESHOLD || movedCols > DRAG_THRESHOLD * 2) return;
+
+      // 短按：点击命中
+      if (target.kind === "input") {
+        cbRef.current.onInputCursor?.(target.col);
+      } else {
+        const hit = hitTestClick(e.col, e.row);
+        if (hit) hit.onClick();
+      }
     }
   };
 }

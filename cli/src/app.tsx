@@ -4,7 +4,7 @@
  * 全屏编辑器 / 命令面板通过 store 状态驱动 overlay。
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useApp } from "ink";
 import { ThemeProvider, TAU_CETI } from "./theme/theme-context.js";
 import type { ThemeTokens } from "./theme/tokens.js";
@@ -21,7 +21,7 @@ import type { AgentCliConfig } from "./types.js";
 
 export function App({ config, themePath }: { config: AgentCliConfig; themePath?: string }) {
   const { exit } = useApp();
-  const { send, abort } = useAgent(config);
+  const { send, abort, sound } = useAgent(config);
   const [frame, setFrame] = useState(0);
   const [inputValue, setInputValue] = useState("");
   const [theme, setTheme] = useState<ThemeTokens>(() => themePath ? (loadThemeFile(themePath) ?? TAU_CETI) : TAU_CETI);
@@ -58,6 +58,19 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     return () => clearInterval(id);
   }, [streaming]);
 
+  // 生成结束（streaming true→false）时自动发送排队的下一条消息
+  const prevStreaming = useRef(streaming);
+  useEffect(() => {
+    if (prevStreaming.current && !streaming) {
+      const next = useStore.getState().drainPendingMessage();
+      if (next) {
+        // 异步触发，避免在 reducer/setState 回调里直接 send
+        setTimeout(() => send(next), 0);
+      }
+    }
+    prevStreaming.current = streaming;
+  }, [streaming, send]);
+
   // 退出请求 → 调 Ink exit
   useEffect(() => {
     if (exitRequested) exit();
@@ -80,23 +93,21 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     }
   }, [pendingSubmit, fullEditorResult, send]);
 
-  // 鼠标：MAOU_MOUSE=1 开启点击移光标/拖选OSC52/滚轮。
+  // 鼠标：默认启用（备用屏内滚轮默认发方向键，会误触 textarea 光标移行；
+  // 启用 SGR 鼠标后滚轮走 wheelUp/wheelDown 事件，路由到对话区滚动）。
+  // MAOU_MOUSE=0 可关闭（恢复终端原生行为，但滚轮会变成方向键）。
   // filtered-stdin 已剥离 SGR 防止 react-ink-textarea 乱码，可安全开鼠标。
-  const mouseEnabled = process.env.MAOU_MOUSE === "1";
+  const mouseEnabled = process.env.MAOU_MOUSE !== "0";
   // 全屏编辑器开时切换鼠标 rect：输入框不再在底部，全屏文本区占据整屏。
   const fullEditorOpen = fullEditorInitial !== null;
   const mouseRect: LayoutRect = fullEditorOpen
     ? { inputRowFromBottom: 0, chatTop: 2, chatBottom: term.rows - 3 }
     : { inputRowFromBottom: 2, chatTop: 2, chatBottom: term.rows - 3 };
+
   useMouseInput(mouseEnabled, mouseRect, {
     onInputCursor: (col) => { useStore.getState().setMouseCursorCol(col); },
-    onChatScroll: (dir) => {
-      // 全屏编辑器开时，滚轮走 onInputScroll（移光标让全屏 textarea 滚动）
-      if (fullEditorOpen) useStore.getState().shiftInputCursor(dir);
-      else useStore.getState().scrollChat(dir);
-    },
+    onChatScroll: (dir) => { useStore.getState().scrollChat(dir); },
     onInputScroll: (dir) => { useStore.getState().shiftInputCursor(dir); },
-    onSelectText: (text) => useStore.getState().toastMsg(`已复制 ${text.length} 字`, "ok"),
   });
 
   // 全局快捷键（全屏编辑器开时由 FullScreenEditor 自己处理，不干预）
@@ -117,6 +128,7 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     }
     if (key.ctrl && char === "k") { useStore.getState().setOverlay("command"); return; }
     if (key.ctrl && char === "m") { useStore.getState().setOverlay("model"); return; }
+    if (key.ctrl && char === ",") { useStore.getState().setOverlay("settings"); return; }
     if (key.ctrl && char === "n") { useStore.getState().clearMessages(); useStore.getState().toastMsg("新会话", "ok"); return; }
     if (key.ctrl && char === "g") {
       const edited = openExternalEditor(inputValue);
@@ -125,6 +137,13 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     }
     // Ctrl+E 触发全屏编辑器（react-ink-textarea 已禁用其默认行尾行为）
     if (key.ctrl && char === "e") { useStore.getState().openFullEditor(inputValue); return; }
+    // Ctrl+S 切换音效开/关
+    if (key.ctrl && char === "s") {
+      const newState = !sound.isEnabled();
+      sound.updateConfig({ enabled: newState });
+      useStore.getState().toastMsg(newState ? "🔊 音效已开启" : "🔇 音效已关闭", "info");
+      return;
+    }
   });
 
   const handleSubmit = (text: string) => {

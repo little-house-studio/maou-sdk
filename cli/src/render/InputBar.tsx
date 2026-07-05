@@ -27,6 +27,7 @@ interface Props {
 export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
   const t = useTheme();
   const streaming = useStore((s) => s.streaming);
+  const pendingCount = useStore((s) => s.pendingMessages.length);
   const term = useTerminalSize();
   const mouseCursorCol = useStore((s) => s.mouseCursorCol);
   const setMouseCursorCol = useStore((s) => s.setMouseCursorCol);
@@ -74,7 +75,7 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
   // colOffset=4：paddingX(1) + " ❯ "(3) = 4 列（0-based），与 InputBar 渲染结构一致
   // inputRowFromBottom=2：状态栏(1) + InputBar(2)，与 hit-test.ts LayoutRect 一致
   useImeCursor({
-    focused: !streaming,
+    focused: true,
     value,
     cursor: cursor[1],
     rows: term.rows,
@@ -131,18 +132,26 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
         <Text color={t.accent} bold> ❯ </Text>
         <TextArea
           ref={taRef}
-          focus={!streaming}
+          focus
           value={value}
           cursorPosition={forcedCursor ?? undefined}
           onChange={handleChange}
           onSubmit={(v) => {
-            if (v.trim() && !streaming) {
+            if (v.trim()) {
+              useStore.getState().pushInputHistory(v.trim());
+              useStore.getState().resetHistoryIndex();
               onSubmit(v.trim());
               onChange("");
             }
           }}
           onTab={(shift) => { if (showComp) { if (shift) cycleCompletion(true); else acceptCompletion(); } }}
-          placeholder={streaming ? "生成中…（Esc 中断）" : "输入文字…（/ 命令 · Ctrl+E 全屏 · Ctrl+G 编辑器）"}
+          placeholder={
+            streaming
+              ? pendingCount > 0
+                ? `生成中… 已排队 ${pendingCount} 条（Enter 继续排队 · Esc 中断）`
+                : "生成中…（Enter 排队下一条 · Esc 中断）"
+              : "输入文字…（/ 命令 · Ctrl+E 全屏 · Ctrl+G 编辑器）"
+          }
           initialLineCount={1}
           viewportLines={4}
           highlightActiveLine
@@ -151,6 +160,16 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
           // 禁用 Ctrl+E 默认（行尾），交由外层 useCleanInput 触发全屏编辑器
           keybindings={{ "Ctrl+E": false }}
           onCursorChange={(pos) => setCursor(pos)}
+          onFirstLineUp={() => {
+            // 上键在第一行 → 回溯输入历史
+            const prev = useStore.getState().navigateHistory("up");
+            if (prev !== null) onChange(prev);
+          }}
+          onLastLineDown={() => {
+            // 下键在最后一行 → 前进历史（回到空 = 最新）
+            const next = useStore.getState().navigateHistory("down");
+            if (next !== null) onChange(next);
+          }}
           styles={{ text: { color: t.fg }, placeholder: { color: t.dim, italic: true } }}
         />
       </Box>

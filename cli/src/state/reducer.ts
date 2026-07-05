@@ -80,13 +80,17 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     case "assistant_delta": {
       const delta = ev.delta ?? "";
       const id = state.currentAssistantId;
+      const existing = id ? state.messages.find(m => m.id === id) : undefined;
+      // 若当前消息已有 toolCalls（上一轮带工具的），新建消息流式占位，不追加到旧消息
+      const shouldCreate = !id || !existing || !!existing.toolCalls?.length;
       let messages = state.messages;
       let currentAssistantId = id;
-      if (!id || !messages.find(m => m.id === id)) {
+      if (shouldCreate) {
         currentAssistantId = uid();
-        messages = [...messages, { id: currentAssistantId, role: "assistant", content: "", streaming: true, ts: Date.now(), thinkingBlocks: [] }];
+        messages = [...messages, { id: currentAssistantId, role: "assistant", content: delta, streaming: true, ts: Date.now(), thinkingBlocks: [] }];
+      } else {
+        messages = messages.map(m => m.id === currentAssistantId ? { ...m, content: m.content + delta, streaming: true } : m);
       }
-      messages = messages.map(m => m.id === currentAssistantId ? { ...m, content: m.content + delta, streaming: true } : m);
       return {
         messages,
         currentAssistantId,
@@ -100,10 +104,15 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const usage = parseUsage(ev.usage as Record<string, unknown> | undefined);
       const maxContext = Number((ev.usage as { max_context?: number } | undefined)?.max_context) || undefined;
       const round = ev.round ?? state.round;
-      // 追加完整 assistant 消息（若已有流式占位则更新）
+      // 完整 assistant 消息：若当前占位消息是本轮流式占位则更新；否则新建。
+      // 关键：若占位消息已有 toolCalls（上一轮带工具调用的消息），不能覆盖——
+      // 新轮次的回复必须是独立消息，否则回复被塞进上一轮工具卡片消息，
+      // 渲染时工具卡片"悬浮"在底部，回复显示顺序错乱。
       const id = state.currentAssistantId;
+      const existing = id ? state.messages.find(m => m.id === id) : undefined;
+      const canUpdate = existing && !existing.toolCalls?.length && existing.streaming;
       let messages = state.messages;
-      if (id && messages.find(m => m.id === id)) {
+      if (canUpdate) {
         messages = messages.map(m => m.id === id ? {
           ...m, content: content || m.content, streaming: false,
           usage: { input: usage.input, output: usage.output, maxContext },

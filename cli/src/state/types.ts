@@ -60,7 +60,7 @@ export interface CacheStat {
   input: number;
 }
 
-export type OverlayKind = null | "command" | "model" | "sessions" | "help";
+export type OverlayKind = null | "command" | "model" | "sessions" | "help" | "settings";
 
 export interface UIState {
   messages: ChatMessage[];

@@ -5,13 +5,15 @@
  * 6 级思考级别控制展开程度（thinkingLevel ≥ 3 自动展开写工具）。
  */
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import { Box, Text } from "ink";
+import type { DOMElement } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
 import { useStore } from "../../state/store.js";
 import type { ToolCardState } from "../../state/types.js";
 import { SYMBOLS } from "../../theme/tokens.js";
 import { DiffRenderer } from "./DiffRenderer.js";
+import { useClickTarget } from "../../input/click-target.js";
 
 const SPIN = SYMBOLS.spinner;
 const READ_TOOLS = new Set(["read", "glob", "grep", "ls", "list", "search", "find", "cat"]);
@@ -46,11 +48,17 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
   const status = tool.done ? (tool.isError ? "✗" : "✓") : SPIN[frame % SPIN.length];
   const preview = useMemo(() => extractPreview(tool.args), [tool.args]);
   const nearby = useMemo(() => extractNearbyLines(tool.result, 10), [tool.result]);
+
+  // 鼠标点击标题行切换折叠（仅工具有结果时可折叠）
+  const headerRef = useRef<DOMElement | null>(null);
+  const toggle = () => { if (tool.result !== undefined) setOpen(o => !o); };
+  useClickTarget(headerRef, toggle, [tool.result, tool.id]);
+
   const isDiff = useMemo(() => isWrite && !!tool.result && /^@@ |^--- |^\+\+\+ /m.test(tool.result), [tool.result, isWrite]);
 
   return (
     <Box paddingLeft={1} flexDirection="column">
-      <Box>
+      <Box ref={headerRef}>
         <Text color={t.dim}>{SYMBOLS.index}{String(index).padStart(2, "0")}</Text>
         <Text color={color}> {status} </Text>
         <Text color={t.tool} bold>{tool.name}</Text>

@@ -12,15 +12,27 @@ import type { AgentHandle } from "@little-house-studio/agent";
 import { useStore } from "../state/store.js";
 import type { AgentCliConfig } from "../types.js";
 import { join } from "node:path";
+import { SoundManager } from "../hooks/useSound.js";
 
 export function useAgent(config: AgentCliConfig) {
   const agentRef = useRef<AgentHandle | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const soundRef = useRef<SoundManager | null>(null);
   const maouRoot = join(process.env.HOME ?? "", ".maou");
+
+  if (!soundRef.current) soundRef.current = new SoundManager();
+  const sound = soundRef.current;
 
   async function send(text: string) {
     const store = useStore.getState();
-    if (!text.trim() || store.streaming) return;
+    if (!text.trim()) return;
+
+    // 生成中：入队，生成结束自动 drain（不中断当前生成）
+    if (store.streaming) {
+      store.enqueueMessage(text.trim());
+      store.toastMsg("已排队，生成完发送", "info");
+      return;
+    }
 
     if (!agentRef.current) {
       try {
@@ -34,6 +46,7 @@ export function useAgent(config: AgentCliConfig) {
     const handle = agentRef.current;
 
     store.pushUserMessage(text);
+    sound.startIdleTimer();
     abortRef.current = new AbortController();
     try {
       const preset = config.getPreset(store.provider, store.model);
@@ -43,7 +56,14 @@ export function useAgent(config: AgentCliConfig) {
         runtime: handle.runtime,
         sessionId,
         preset,
-        onEvent: (ev) => useStore.getState().onStream(ev),
+        onEvent: (ev) => {
+          // 音效触发（副作用，不在 reducer）
+          if (ev.type === "done") { sound.play("done"); sound.clearIdleTimer(); }
+          else if (ev.type === "error") { sound.play("error"); sound.clearIdleTimer(); }
+          else if (ev.type === "log" && (ev.level === "error" || ev.level === "warning" || ev.level === "warn")) sound.play("warning");
+          else if (ev.type === "model.error" || ev.type === "model.loop_detected" || ev.type === "round_limit") sound.play("warning");
+          useStore.getState().onStream(ev);
+        },
         signal: abortRef.current.signal,
         source: "cli",
       });
@@ -53,6 +73,8 @@ export function useAgent(config: AgentCliConfig) {
       // 兜底：确保 streaming 关闭（reducer 可能没收到 error 事件）
       useStore.getState().setStreaming(false);
       useStore.getState().setAborting(false);
+      // 出错时清空队列，避免持续失败
+      useStore.getState().clearPendingMessages();
     }
   }
 
@@ -61,8 +83,9 @@ export function useAgent(config: AgentCliConfig) {
     if (store.aborting) return;
     store.setAborting(true);
     abortRef.current?.abort();
+    sound.clearIdleTimer();
     store.toastMsg("已中断", "info");
   }
 
-  return { send, abort };
+  return { send, abort, sound };
 }

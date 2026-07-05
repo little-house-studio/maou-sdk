@@ -10,11 +10,16 @@ export interface MouseEvent {
 /**
  * 启用鼠标 SGR(1006)。
  * - drag=false：1000 模式（仅按下/释放/滚轮），尽量不破坏终端原生选区。
- * - drag=true：1002 模式（额外上报"按住拖动"），用于自绘选区拖选；
- *   此时终端原生拖选需配合 Shift(xterm)/Option(iTerm2) 修饰键绕过。
+ * - drag=true：1002 模式（额外上报"按住拖动"），用于自绘选区拖选。
+ *
+ * 同时发送 XTSHIFTESCAPE（CSI > 0 s）让 Shift 键能绕过鼠标协议做原生选择。
+ * 注：Mac 上 xterm.js 的 Shift 不生效（走 altKey 分支），需 Option+拖拽 +
+ * 终端开启 macOptionClickForcesSelection。XTSHIFTESCAPE 在 xterm 上有效。
  */
 export function enableMouse(out: NodeJS.WriteStream, opts: { drag?: boolean } = {}): void {
   out.write(opts.drag ? "\x1b[?1002h\x1b[?1006h" : "\x1b[?1000h\x1b[?1006h");
+  // 让 Shift 能绕过鼠标协议（xterm 规范，xterm.js 可能不支持但无害）
+  out.write("\x1b[>0s");
 }
 export function disableMouse(out: NodeJS.WriteStream): void {
   // 关掉所有可能开过的模式
