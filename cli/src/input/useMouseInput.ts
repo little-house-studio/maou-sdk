@@ -76,10 +76,10 @@ export function useMouseInput(
       return;
     }
     if (e.type === "down") {
-      // 首次点击提示文字选择方式
+      // 首次点击提示文字选择方式（Terminal.app 下 1000 模式与直接拖拽互斥）
       if (!hintShownRef.current) {
         hintShownRef.current = true;
-        store.toastMsg("选文字：Shift+拖拽（iTerm2 用 Option+拖拽）", "info");
+        store.toastMsg("选字：Ctrl+K → 切换鼠标捕获关闭后拖拽", "info");
       }
       dragRef.current = { startCol: e.col, startRow: e.row };
       return;

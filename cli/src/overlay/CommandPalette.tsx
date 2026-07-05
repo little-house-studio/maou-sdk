@@ -12,6 +12,7 @@ const COMMANDS: SelectItem[] = [
   { value: "sessions", label: "切换会话", description: "历史会话" },
   { value: "settings", label: "设置", description: "Ctrl+," },
   { value: "agents", label: "Agent 管理", description: "空输入框 ←" },
+  { value: "toggleMouse", label: "切换鼠标捕获", description: "选字时关闭" },
   { value: "help", label: "帮助", description: "快捷键" },
   { value: "thinking", label: "切换思考级别", description: "Shift+Tab" },
   { value: "quit", label: "退出", description: "Ctrl+C" },

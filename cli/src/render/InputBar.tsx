@@ -128,12 +128,23 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
           onSubmit={(v) => {
             // 补全菜单开时，Enter 先确认补全（不发送）
             if (useStore.getState().completion) { acceptCompletion(); return; }
-            if (v.trim()) {
-              useStore.getState().pushInputHistory(v.trim());
+            const trimmed = v.trim();
+            if (!trimmed) return;
+            // 斜杠命令拦截：匹配 /command 格式，不发送给 AI
+            const slashMatch = trimmed.match(/^\/(\w+)/);
+            if (slashMatch) {
+              const cmdId = slashMatch[1];
+              useStore.getState().pushInputHistory(trimmed);
               useStore.getState().resetHistoryIndex();
-              onSubmit(v.trim());
+              useStore.getState().runCommand(cmdId);
               onChange("");
+              return;
             }
+            // 普通消息
+            useStore.getState().pushInputHistory(trimmed);
+            useStore.getState().resetHistoryIndex();
+            onSubmit(trimmed);
+            onChange("");
           }}
           onTab={(_shift) => { if (showComp) acceptCompletion(); }}
           placeholder={

@@ -90,11 +90,10 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     }
   }, [pendingSubmit, fullEditorResult, send]);
 
-  // 鼠标：默认启用（备用屏内滚轮默认发方向键，会误触 textarea 光标移行；
-  // 启用 SGR 鼠标后滚轮走 wheelUp/wheelDown 事件，路由到对话区滚动）。
-  // MAOU_MOUSE=0 可关闭（恢复终端原生行为，但滚轮会变成方向键）。
-  // filtered-stdin 已剥离 SGR 防止 react-ink-textarea 乱码，可安全开鼠标。
-  const mouseEnabled = process.env.MAOU_MOUSE !== "0";
+  // 鼠标捕获：store.mouseCapture（运行时可切换）。Terminal.app 下 1000 模式与直接拖拽
+  // 选字互斥，默认开鼠标功能，按 Ctrl+Shift+M 切换关闭以选字。
+  const mouseCapture = useStore((s) => s.mouseCapture);
+  const mouseEnabled = mouseCapture;
   // 全屏编辑器开时切换鼠标 rect：输入框不再在底部，全屏文本区占据整屏。
   const fullEditorOpen = fullEditorInitial !== null;
   const mouseRect: LayoutRect = fullEditorOpen

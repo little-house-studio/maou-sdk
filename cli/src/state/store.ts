@@ -36,6 +36,10 @@ interface Store extends UIState {
   // 鼠标驱动
   mouseCursorCol: number | null;     // 鼠标点击输入框的目标列（InputBar 监听移光标）
   setMouseCursorCol: (col: number | null) => void;
+  // 鼠标捕获开关：true=启用 SGR 鼠标（点击/滚轮），false=关闭（恢复终端原生选字）。
+  // Terminal.app 下 1000 模式与直接拖拽选字互斥，提供运行时切换。
+  mouseCapture: boolean;
+  setMouseCapture: (b: boolean) => void;
   // 对话区滚动（行级，marginTop={-offset} 上移内容实现网页感滚动）
   chatScrollOffset: number;          // 当前滚动偏移（0=底部看最新）
   maxChatScroll: number;             // 最大滚动偏移（contentHeight - viewportHeight，组件回写）
@@ -157,7 +161,20 @@ export const useStore = create<Store>((set) => ({
       case "help": s.setOverlay("help"); break;
       case "settings": s.setOverlay("settings"); break;
       case "agents": s.setOverlay("agents"); break;
+      case "toggleMouse": {
+        const next = !s.mouseCapture;
+        s.setMouseCapture(next);
+        s.toastMsg(next ? "🖱 鼠标捕获开（点击/滚轮）· 选字需关" : "🖱 鼠标捕获关 · 可直接拖拽选字", "info");
+        break;
+      }
       case "quit": s.requestExit(); break;
+      case "clear": s.clearMessages(); s.toastMsg("消息已清空", "ok"); break;
+      case "thinking": {
+        const cur = s.thinkingLevel;
+        s.setThinking((cur + 1) % 6);
+        s.toastMsg(`思考级别: ${s.thinkingLevel}`, "info");
+        break;
+      }
     }
     set({ overlay: null });
   },
@@ -167,6 +184,8 @@ export const useStore = create<Store>((set) => ({
 
   mouseCursorCol: null,
   setMouseCursorCol: (col) => set({ mouseCursorCol: col }),
+  mouseCapture: process.env.MAOU_MOUSE !== "0",  // 默认开；MAOU_MOUSE=0 关
+  setMouseCapture: (b) => set({ mouseCapture: b }),
   // 行级平滑滚动（网页感）：marginTop={-(max-offset)} 上移内容。
   // offset 语义：0=看最新（底部），max=看最早（顶部）。
   // autoFollow=true 时新消息到达自动钉到底部（offset=0）；用户上滚后关闭，回到底部重启。
@@ -274,10 +293,18 @@ export const useStore = create<Store>((set) => ({
   closeCompletion: () => set({ completion: null }),
 
   // ToolCard 展开导致内容增高 delta 行：offset 同步增加，保持 marginTop 不变（卡片头不动）
-  // 仅在非 autoFollow 时调整（autoFollow 时 offset=0 钉底，展开后仍看底部）
+  // 展开/折叠导致内容增高 delta 行：同步 offset+=delta + maxChatScroll+=delta + autoFollow=false，
+  // 使 marginTop=-(max-offset) 不变 → 卡片头不动，新内容在下方长出（DESIGN）。
+  // 预增 maxChatScroll 让随后 ScrollHistory 测量 effect 的 `max===s.maxChatScroll` 守卫命中跳过，
+  // 避免与 setMaxChatScroll(followGrowth) 双重叠加 offset。
   expandShift: (delta) => set((s) => {
-    if (delta === 0 || s.autoFollow) return s;
-    return { chatScrollOffset: Math.max(0, Math.min(s.maxChatScroll, s.chatScrollOffset + delta)) };
+    if (delta === 0) return s;
+    const newMax = s.maxChatScroll + delta;
+    return {
+      maxChatScroll: Math.max(0, newMax),
+      chatScrollOffset: Math.max(0, Math.min(newMax, s.chatScrollOffset + delta)),
+      autoFollow: false,
+    };
   }),
 
   // agent 切换
