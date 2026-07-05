@@ -78,6 +78,10 @@ loadConfig(target).then(async (config) => {
   waitUntilExit().then(() => {
     // 正常退出序列（exitGuard 也兜底）
     filteredStdout.write("\x1b[?25h\x1b[?1049l\x1b[?1006l\x1b[?1000l");
+    // 强制退出：StatusBar 每秒 setInterval、SoundManager idleTimer、fs.watch 等
+    // ref handle 会阻止 Node 自然退出，导致"图形界面退了但进程挂起"。
+    // exitGuard 的 exit 事件会兜底 restore 终端，此处直接退。
+    process.exit(0);
   });
 }).catch(err => {
   process.stderr.write(`❌ ${err?.message ?? err}\n`);
