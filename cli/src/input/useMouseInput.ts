@@ -1,13 +1,13 @@
 /**
- * useMouseInput —— 受控鼠标 + 命中分发。
+ * useMouseInput —— ?1003 全追踪 + 自画选区 + OSC52 复制。
  *
- * SGR 1000 模式（down/up/wheel，不上报 drag）。
+ * 始终开 ?1003?1006（全追踪），收 hover/motion/click/wheel。
  *   - down + up（无显著移动）→ 点击，命中可点击元素或 InputBar 移光标
- *   - 滚轮 → 对话区滚动
- * 文字选择走终端原生：Shift+拖拽绕过 SGR，终端画高亮 + 复制剪贴板（可靠）。
+ *   - down + motion（移动超阈值）→ 拖拽选区，更新 store.selection，松手 OSC52 复制
+ *   - wheel → 对话区滚动
+ *   - hover（无按键 motion）→ 命中可点击元素设 hoverId
  *
- * 注：曾尝试 1002 模式 + 自绘选区 + OSC52，但 Ink 不暴露渲染后字符位置，
- * 无法画选区高亮也无可靠文本提取，不可行。原生选择是终端协议唯一可靠方案。
+ * 选区文本由 screenBuffer 提供（SelectableText 渲染时登记）。
  */
 
 import { useEffect, useRef } from "react";
@@ -16,12 +16,15 @@ import { enableMouse, disableMouse, parseMouse, type MouseEvent } from "../input
 import { hitTest, type LayoutRect } from "../input/hit-test.js";
 import { hitTestClick } from "../input/click-target.js";
 import { useStore } from "../state/store.js";
+import { extractSelection } from "../input/screen-buffer.js";
+import { osc52 } from "../input/osc52.js";
 
 const MOUSE_DEBUG = process.env.MAOU_MOUSE_DEBUG === "1";
 
 interface DragState {
   startCol: number;
   startRow: number;
+  moved: boolean; // 是否已超过拖拽阈值
 }
 
 /** 移动超过这个阈值视为拖拽（不触发点击） */
@@ -42,18 +45,14 @@ export function useMouseInput(
   const cbRef = useRef(cb);
   cbRef.current = cb;
   const dragRef = useRef<DragState | null>(null);
-  // 首次鼠标点击提示一次文字选择方式（终端原生选择，Ink 无法自绘反色）
-  const hintShownRef = useRef(false);
 
   useEffect(() => {
     if (!enabled || !stdout) return;
-    // 1000 模式：down/up/wheel。Shift+拖拽走终端原生选择（高亮+复制）。
-    enableMouse(stdout, { drag: false });
-    if (MOUSE_DEBUG) useStore.getState().toastMsg(`mouse on cols=${stdout.columns} rows=${stdout.rows}`, "info");
+    // ?1003 全追踪：点击/拖动/hover/wheel 全收。SGR 编码。
+    enableMouse(stdout, { drag: true, anyMotion: true });
 
     const onData = (buf: Buffer) => {
-      const s = buf.toString("latin1");
-      const events = parseMouse(s);
+      const events = parseMouse(buf.toString("latin1"));
       for (const e of events) {
         handleEvent(e);
       }
@@ -80,26 +79,44 @@ export function useMouseInput(
       return;
     }
     if (e.type === "down") {
-      // 首次点击提示文字选择方式（Terminal.app 下 1000 模式与直接拖拽互斥）
-      if (!hintShownRef.current) {
-        hintShownRef.current = true;
-        store.toastMsg("选字：Ctrl+K → 切换鼠标捕获关闭后拖拽", "info");
+      dragRef.current = { startCol: e.col, startRow: e.row, moved: false };
+      return;
+    }
+    if (e.type === "drag") {
+      // 按住左键移动（?1003 上报 drag）
+      const d = dragRef.current;
+      if (!d) return;
+      const movedRows = Math.abs(e.row - d.startRow);
+      const movedCols = Math.abs(e.col - d.startCol);
+      if (!d.moved && (movedRows > DRAG_THRESHOLD || movedCols > DRAG_THRESHOLD * 2)) {
+        d.moved = true;
+        // 开始选区
+        store.setSelection({ start: { row: d.startRow, col: d.startCol }, end: { row: e.row, col: e.col } });
+      } else if (d.moved) {
+        // 持续更新选区终点
+        store.setSelection({ start: { row: d.startRow, col: d.startCol }, end: { row: e.row, col: e.col } });
       }
-      dragRef.current = { startCol: e.col, startRow: e.row };
       return;
     }
     if (e.type === "up") {
       const d = dragRef.current;
       dragRef.current = null;
       if (!d) return;
-
-      // 移动超过阈值视为拖拽（不触发点击，让终端原生选择处理）
-      const movedRows = Math.abs(e.row - d.startRow);
-      const movedCols = Math.abs(e.col - d.startCol);
-      if (movedRows > DRAG_THRESHOLD || movedCols > DRAG_THRESHOLD * 2) return;
-
+      if (d.moved) {
+        // 拖拽结束 → 提取选区文本 → OSC52 复制
+        const sel = store.selection;
+        if (sel) {
+          const text = extractSelection(sel.start, sel.end);
+          if (text && text.trim()) {
+            osc52(text);
+            store.toastMsg(`已复制 ${text.length} 字`, "ok");
+          }
+          store.setSelection(null);
+        }
+        return;
+      }
       // 短按：点击命中
-      if (MOUSE_DEBUG) useStore.getState().toastMsg(`click ${e.col},${e.row}→${target.kind} line=${target.kind === "input" ? target.line : -1}`, "info");
+      if (MOUSE_DEBUG) useStore.getState().toastMsg(`click ${e.col},${e.row}→${target.kind}`, "info");
       if (target.kind === "input") {
         cbRef.current.onInputCursor?.(target.col, target.line);
       } else {

@@ -75,6 +75,12 @@ interface Store extends UIState {
   closeCompletion: () => void;
   // ToolCard 展开/折叠时调整滚动偏移（保持卡片头不动）
   expandShift: (delta: number) => void;
+  // 鼠标选区（自画反色 + OSC52 复制）
+  selection: { start: { row: number; col: number }; end: { row: number; col: number } } | null;
+  setSelection: (s: { start: { row: number; col: number }; end: { row: number; col: number } } | null) => void;
+  // hover 元素 id（鼠标悬浮可点击元素时设）
+  hoverId: string | null;
+  setHoverId: (id: string | null) => void;
   // agent 切换：AgentPanel 选择后触发，useAgent 监听 nonce 变化重建 handle
   pendingAgentName: string | null;
   agentSwitchNonce: number;
@@ -163,12 +169,6 @@ export const useStore = create<Store>((set) => ({
       case "help": s.setOverlay("help"); break;
       case "settings": s.setOverlay("settings"); break;
       case "agents": s.setOverlay("agents"); break;
-      case "toggleMouse": {
-        const next = !s.mouseCapture;
-        s.setMouseCapture(next);
-        s.toastMsg(next ? "🖱 鼠标捕获开（点击/滚轮）· 选字需关" : "🖱 鼠标捕获关 · 可直接拖拽选字", "info");
-        break;
-      }
       case "quit": s.requestExit(); break;
       case "clear": s.clearMessages(); s.toastMsg("消息已清空", "ok"); break;
       case "thinking": {
@@ -310,6 +310,12 @@ export const useStore = create<Store>((set) => ({
       autoFollow: false,
     };
   }),
+
+  // 鼠标选区
+  selection: null,
+  setSelection: (sel) => set({ selection: sel }),
+  hoverId: null,
+  setHoverId: (id) => set({ hoverId: id }),
 
   // agent 切换
   pendingAgentName: null,

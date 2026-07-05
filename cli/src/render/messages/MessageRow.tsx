@@ -13,6 +13,7 @@ import type { ChatMessage } from "../../state/types.js";
 import { MarkdownRenderer } from "./MarkdownRenderer.js";
 import { ToolCard } from "./ToolCard.js";
 import { ThinkingBlock } from "./ThinkingBlock.js";
+import { SelectableText } from "../SelectableText.js";
 import { timecode, codename, hr } from "../../layout/decorators.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 
@@ -25,7 +26,9 @@ export function MessageRow({ msg, frame }: { msg: ChatMessage; frame: number }) 
     return (
       <Box flexDirection="column">
         <Text color={t.dim}>{ts} {codename("user")}</Text>
-        <Text backgroundColor={t.userBg} color={t.user} wrap="wrap">▸ {msg.content}</Text>
+        <Box backgroundColor={t.userBg}>
+          <SelectableText color={t.user} wrap="wrap">{`▸ ${msg.content}`}</SelectableText>
+        </Box>
       </Box>
     );
   }

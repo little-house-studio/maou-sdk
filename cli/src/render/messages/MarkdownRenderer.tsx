@@ -8,6 +8,7 @@ import { Box, Text } from "ink";
 import { marked } from "marked";
 import { useTheme } from "../../theme/theme-context.js";
 import { CodeBlock } from "./CodeBlock.js";
+import { SelectableText } from "../SelectableText.js";
 import { hr } from "../../layout/decorators.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 
@@ -42,7 +43,7 @@ export function MarkdownRenderer({ md }: { md: string }) {
       out.push(<Text key={key++} color={t.mdHr}>{hr(term.cols)}</Text>);
     } else if (tk.type === "paragraph" || tk.type === "text") {
       const text = "text" in tk ? String((tk as { text: unknown }).text) : "";
-      if (text) out.push(<Text key={key++} color={t.fg} wrap="wrap">{text}</Text>);
+      if (text) out.push(<SelectableText key={key++} color={t.fg}>{text}</SelectableText>);
     }
   }
   return <>{out}</>;

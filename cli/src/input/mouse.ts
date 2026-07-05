@@ -9,17 +9,18 @@ export interface MouseEvent {
 
 /**
  * 启用鼠标 SGR(1006)。
- * - drag=false：1000 模式（仅按下/释放/滚轮），尽量不破坏终端原生选区。
- * - drag=true：1002 模式（额外上报"按住拖动"），用于自绘选区拖选。
- *
- * 同时发送 XTSHIFTESCAPE（CSI > 0 s）让 Shift 键能绕过鼠标协议做原生选择。
- * 注：Mac 上 xterm.js 的 Shift 不生效（走 altKey 分支），需 Option+拖拽 +
- * 终端开启 macOptionClickForcesSelection。XTSHIFTESCAPE 在 xterm 上有效。
+ * - drag=false, anyMotion=false：1000 模式（仅按下/释放/滚轮）
+ * - drag=true, anyMotion=false：1002 模式（额外上报按住拖动）
+ * - drag=true, anyMotion=true：1003 模式（全跟踪，含 hover motion）
+ * 1006 是纯编码格式，对选字零影响。
  */
-export function enableMouse(out: NodeJS.WriteStream, opts: { drag?: boolean } = {}): void {
-  out.write(opts.drag ? "\x1b[?1002h\x1b[?1006h" : "\x1b[?1000h\x1b[?1006h");
-  // 让 Shift 能绕过鼠标协议（xterm 规范，xterm.js 可能不支持但无害）
-  out.write("\x1b[>0s");
+export function enableMouse(out: NodeJS.WriteStream, opts: { drag?: boolean; anyMotion?: boolean } = {}): void {
+  const modes: string[] = [];
+  if (opts.anyMotion) modes.push("\x1b[?1003h");
+  else if (opts.drag) modes.push("\x1b[?1002h");
+  else modes.push("\x1b[?1000h");
+  modes.push("\x1b[?1006h");
+  out.write(modes.join(""));
 }
 export function disableMouse(out: NodeJS.WriteStream): void {
   // 关掉所有可能开过的模式
