@@ -102,7 +102,10 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     : { inputRowFromBottom: 2, inputLineCount, chatTop: 2, chatBottom: term.rows - 3 };
 
   useMouseInput(mouseEnabled, mouseRect, {
-    onInputCursor: (col) => { useStore.getState().setMouseCursorCol(col); },
+    onInputCursor: (col, line) => {
+      useStore.getState().setMouseCursorCol(col);
+      useStore.getState().setMouseCursorLine(line);
+    },
     onChatScroll: (dir) => { useStore.getState().scrollChat(dir); },
     onInputScroll: (dir) => { useStore.getState().shiftInputCursor(dir); },
   });

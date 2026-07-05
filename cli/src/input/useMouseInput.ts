@@ -28,7 +28,7 @@ interface DragState {
 const DRAG_THRESHOLD = 2;
 
 export interface MouseCallbacks {
-  onInputCursor?: (charIndex: number) => void;
+  onInputCursor?: (charIndex: number, line: number) => void;
   onChatScroll?: (dir: "up" | "down") => void;
   onInputScroll?: (dir: "up" | "down") => void;
 }
@@ -99,9 +99,9 @@ export function useMouseInput(
       if (movedRows > DRAG_THRESHOLD || movedCols > DRAG_THRESHOLD * 2) return;
 
       // 短按：点击命中
-      if (MOUSE_DEBUG) useStore.getState().toastMsg(`click ${e.col},${e.row}→${target.kind}`, "info");
+      if (MOUSE_DEBUG) useStore.getState().toastMsg(`click ${e.col},${e.row}→${target.kind} line=${target.kind === "input" ? target.line : -1}`, "info");
       if (target.kind === "input") {
-        cbRef.current.onInputCursor?.(target.col);
+        cbRef.current.onInputCursor?.(target.col, target.line);
       } else {
         const hit = hitTestClick(e.col, e.row);
         if (hit) hit.onClick();

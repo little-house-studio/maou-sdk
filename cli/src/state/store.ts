@@ -36,6 +36,8 @@ interface Store extends UIState {
   // 鼠标驱动
   mouseCursorCol: number | null;     // 鼠标点击输入框的目标列（InputBar 监听移光标）
   setMouseCursorCol: (col: number | null) => void;
+  mouseCursorLine: number | null;    // 鼠标点击输入框的目标行（0-based，多行场景）
+  setMouseCursorLine: (line: number | null) => void;
   // 鼠标捕获开关：true=启用 SGR 鼠标（点击/滚轮），false=关闭（恢复终端原生选字）。
   // Terminal.app 下 1000 模式与直接拖拽选字互斥，提供运行时切换。
   mouseCapture: boolean;
@@ -184,6 +186,8 @@ export const useStore = create<Store>((set) => ({
 
   mouseCursorCol: null,
   setMouseCursorCol: (col) => set({ mouseCursorCol: col }),
+  mouseCursorLine: null,
+  setMouseCursorLine: (line) => set({ mouseCursorLine: line }),
   mouseCapture: process.env.MAOU_MOUSE !== "0",  // 默认开；MAOU_MOUSE=0 关
   setMouseCapture: (b) => set({ mouseCapture: b }),
   // 行级平滑滚动（网页感）：marginTop={-(max-offset)} 上移内容。

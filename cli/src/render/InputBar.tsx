@@ -36,6 +36,8 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
   const term = useTerminalSize();
   const mouseCursorCol = useStore((s) => s.mouseCursorCol);
   const setMouseCursorCol = useStore((s) => s.setMouseCursorCol);
+  const mouseCursorLine = useStore((s) => s.mouseCursorLine);
+  const setMouseCursorLine = useStore((s) => s.setMouseCursorLine);
   const setInputLineCount = useStore((s) => s.setInputLineCount);
   const inputCursorShift = useStore((s) => s.inputCursorShift);
   const completion = useStore((s) => s.completion);
@@ -48,16 +50,18 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     setInputLineCount(Math.max(1, value.split("\n").length));
   }, [value, setInputLineCount]);
 
-  // 鼠标点击移光标：mouseCursorCol（字符列）→ 字符索引 → 一次性设 cursorPosition
+  // 鼠标点击移光标：mouseCursorCol（字符列）+ mouseCursorLine（0-based 行）→ 字符索引 → cursorPosition
   useEffect(() => {
     if (mouseCursorCol === null) return;
-    const idx = colToIndex(value, mouseCursorCol);
-    setForcedCursor([0, idx]);
+    const line = mouseCursorLine ?? 0;
+    const idx = colToIndex(value, mouseCursorCol, line);
+    setForcedCursor([line, idx]);
     setMouseCursorCol(null);
+    setMouseCursorLine(null);
     // 下一帧清掉，让键盘光标移动恢复
     const id = setTimeout(() => setForcedCursor(null), 50);
     return () => clearTimeout(id);
-  }, [mouseCursorCol, value, setMouseCursorCol]);
+  }, [mouseCursorCol, mouseCursorLine, value, setMouseCursorCol, setMouseCursorLine]);
 
   // 滚轮驱动 InputBar 光标移动（内容 >4 行时，鼠标在输入框行内滚轮）
   // nonce 变化即触发一次；dir=up 光标上移一行，down 下移一行（让 textarea 内部滚动跟随）
