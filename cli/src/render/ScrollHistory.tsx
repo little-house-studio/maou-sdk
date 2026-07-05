@@ -47,12 +47,14 @@ export function ScrollHistory({ frame }: { frame: number }) {
   const availableRows = Math.max(4, term.rows - 6);
 
   // 测量内容总高度，算 maxScrollTop 回写 store。
-  // 只依赖 contentHeight/viewportHeight（不依赖 maxChatScroll），避免回写触发循环。
-  // viewportHeight 用 availableRows 算（不测 viewportRef），减少一次测量和潜在循环。
+  // 守卫：max 无变化时不 set，避免流式每 delta 触发无意义重渲（闪烁根因之一）。
+  // !autoFollow 时（用户上滚钉住视口）：max 增大 Δ，offset 同步加 Δ，使 marginTop 不变，
+  // 新内容在底部增长、视口内容不动——修复"不在底部却跟着生成移动"。
+  // autoFollow 时 offset=0 钉底，新内容到达跟随到底部（期望行为）。
   const contentHeight = contentMetrics.height;
   useEffect(() => {
     const max = Math.max(0, contentHeight - availableRows);
-    setMaxChatScroll(max);
+    setMaxChatScroll(max, /*followGrowth=*/ true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentHeight, availableRows]);
 

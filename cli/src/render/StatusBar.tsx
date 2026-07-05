@@ -9,7 +9,7 @@ import { Box, Text } from "ink";
 import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
-import { timecode, channel, thinkingLabel, compact, bar } from "../layout/decorators.js";
+import { timecode, channel, thinkingLabel, compact, bar, truncate } from "../layout/decorators.js";
 import { Sparkline } from "./sparkline.js";
 
 export function StatusBar() {
@@ -49,7 +49,6 @@ export function StatusBar() {
   const showCache = w >= 100;
   const showModel = w >= 80;
   const barWidth = w < 50 ? 4 : w < 70 ? 6 : 8;
-  const truncate = (s: string, n: number) => s.length > n ? s.slice(0, n - 1) + "…" : s;
   const modelStr = `${provider}/${model || "?"}`;
   // model 截断更激进，确保状态栏单行不换行
   const modelMax = w < 90 ? 14 : w < 110 ? 20 : 28;

@@ -8,11 +8,14 @@ import { Box, Text } from "ink";
 import { marked } from "marked";
 import { useTheme } from "../../theme/theme-context.js";
 import { CodeBlock } from "./CodeBlock.js";
+import { hr } from "../../layout/decorators.js";
+import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 
 marked.setOptions({ breaks: true, gfm: true });
 
 export function MarkdownRenderer({ md }: { md: string }) {
   const t = useTheme();
+  const term = useTerminalSize();
   const tokens = marked.lexer(md);
   const out: React.ReactNode[] = [];
   let key = 0;
@@ -36,7 +39,7 @@ export function MarkdownRenderer({ md }: { md: string }) {
       const text = (tk as { text: string }).text;
       out.push(<Text key={key++} color={t.mdQuote}><Text color={t.mdQuoteBorder}>│ </Text>{text}</Text>);
     } else if (tk.type === "hr") {
-      out.push(<Text key={key++} color={t.mdHr}>{"─".repeat(40)}</Text>);
+      out.push(<Text key={key++} color={t.mdHr}>{hr(term.cols)}</Text>);
     } else if (tk.type === "paragraph" || tk.type === "text") {
       const text = "text" in tk ? String((tk as { text: unknown }).text) : "";
       if (text) out.push(<Text key={key++} color={t.fg} wrap="wrap">{text}</Text>);

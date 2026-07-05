@@ -16,6 +16,7 @@ import { ModelDialog } from "../overlay/ModelDialog.js";
 import { SessionDialog } from "../overlay/SessionDialog.js";
 import { HelpDialog } from "../overlay/HelpDialog.js";
 import { SettingsDialog } from "../overlay/SettingsDialog.js";
+import { AgentPanel } from "../overlay/AgentPanel.js";
 import { FullScreenEditor } from "../render/FullScreenEditor.js";
 import { useStore } from "../state/store.js";
 import type { AgentCliConfig } from "../types.js";
@@ -62,6 +63,7 @@ export function Layout({
       {overlay === "sessions" && <SessionDialog />}
       {overlay === "help" && <HelpDialog />}
       {overlay === "settings" && <SettingsDialog config={config} />}
+      {overlay === "agents" && <AgentPanel config={config} />}
 
       {/* Overlay：全屏编辑器（最上层） */}
       {fullEditorInitial !== null && (

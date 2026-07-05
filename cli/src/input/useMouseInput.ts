@@ -40,6 +40,8 @@ export function useMouseInput(
   const cbRef = useRef(cb);
   cbRef.current = cb;
   const dragRef = useRef<DragState | null>(null);
+  // 首次鼠标点击提示一次文字选择方式（终端原生选择，Ink 无法自绘反色）
+  const hintShownRef = useRef(false);
 
   useEffect(() => {
     if (!enabled || !stdout) return;
@@ -74,6 +76,11 @@ export function useMouseInput(
       return;
     }
     if (e.type === "down") {
+      // 首次点击提示文字选择方式
+      if (!hintShownRef.current) {
+        hintShownRef.current = true;
+        store.toastMsg("选文字：Shift+拖拽（iTerm2 用 Option+拖拽）", "info");
+      }
       dragRef.current = { startCol: e.col, startRow: e.row };
       return;
     }

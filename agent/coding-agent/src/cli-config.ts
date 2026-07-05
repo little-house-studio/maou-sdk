@@ -14,6 +14,7 @@ import { ToolRegistry, registerBuiltins } from "@little-house-studio/tools";
 import { LLMClient } from "@little-house-studio/llm";
 import type { APIPreset } from "@little-house-studio/llm";
 import { createCodingAgent } from "./index.js";
+import { AgentRegistry } from "@little-house-studio/agent";
 import type { AgentCliConfig } from "@little-house-studio/agent";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -90,6 +91,16 @@ const codingCliConfig: AgentCliConfig = {
     return presets
       .filter(p => p.name === provider)
       .map(p => ({ id: p.model ?? p.name ?? "unknown", name: p.model ?? p.name ?? "unknown" }));
+  },
+
+  listAgents() {
+    // 合并全局 ~/.maou/agents + 项目级 .maou/agents（项目级覆盖同名）
+    const maouRoot = join(homedir(), ".maou");
+    try {
+      return new AgentRegistry(maouRoot, process.cwd()).list();
+    } catch {
+      return [];
+    }
   },
 };
 

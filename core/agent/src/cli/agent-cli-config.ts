@@ -13,6 +13,7 @@
  */
 
 import type { AgentHandle } from "../agent/handle.js";
+import type { AgentEntry } from "../agent/registry.js";
 
 export interface AgentCliConfig {
   /** agent 名称（显示用，与 AgentHandle.agentName 互为校验） */
@@ -30,4 +31,10 @@ export interface AgentCliConfig {
   getProviders?: () => { id: string; name?: string }[];
   /** 列出 provider 下的 model（可选） */
   getModels?: (provider: string) => { id: string; name?: string }[];
+  /**
+   * 列出所有 agent（main + 子agent），供 CLI 的 agent 管理面板使用（可选）。
+   * 同步返回 AgentEntry 摘要（name/display_name/status/role/team/parent 等）。
+   * 实现通常委托 AgentRegistry.list()。
+   */
+  listAgents?: () => AgentEntry[];
 }

@@ -7,16 +7,18 @@ import React from "react";
 import { Box, Text } from "ink";
 import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
-import { compact, codename } from "../layout/decorators.js";
+import { compact, codename, hr } from "../layout/decorators.js";
+import { useTerminalSize } from "../hooks/useTerminalSize.js";
 
 export function EventBlock() {
   const t = useTheme();
   const { eventBlock, streaming } = useStore();
+  const term = useTerminalSize();
 
   if (!streaming && eventBlock.mode === "idle") {
     return (
       <Box flexShrink={0} paddingX={1}>
-        <Text color={t.dim}>{"─".repeat(30)}</Text>
+        <Text color={t.dim}>{hr(term.cols, "─", 8, 30)}</Text>
       </Box>
     );
   }

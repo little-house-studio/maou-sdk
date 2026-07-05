@@ -51,12 +51,9 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     }
   }, [config, setAgentMeta]);
 
-  // 动画帧：仅流式时（spinner/REC 闪烁）
-  useEffect(() => {
-    if (!streaming) return;
-    const id = setInterval(() => setFrame(f => f + 1), 200);
-    return () => clearInterval(id);
-  }, [streaming]);
+  // spinner 动画已局部化到 MessageRow/ToolCard（各自 interval），
+  // 不再全 App 每 200ms 重渲（闪烁根因之一）。frame 仅作 fallback 静态值。
+  void setFrame;
 
   // 生成结束（streaming true→false）时自动发送排队的下一条消息
   const prevStreaming = useRef(streaming);
@@ -111,14 +108,39 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   });
 
   // 全局快捷键（全屏编辑器开时由 FullScreenEditor 自己处理，不干预）
+  // Ctrl+C 双击退出：第一次警告，3 秒内第二次退出（streaming 时第一次中断生成）
+  const ctrlCAtRef = useRef(0);
   useCleanInput((char, key) => {
     if (fullEditorInitial !== null) return;
-    if (key.ctrl && char === "c") { exit(); return; }
+    if (key.ctrl && char === "c") {
+      // streaming 时：第一次 Ctrl+C 中断；非 streaming 或已中断后再按才走双击退出
+      if (streaming && !useStore.getState().aborting) {
+        abort();
+        return;
+      }
+      const now = Date.now();
+      if (now - ctrlCAtRef.current < 3000) {
+        useStore.getState().requestExit();
+      } else {
+        ctrlCAtRef.current = now;
+        useStore.getState().toastMsg("再按一次 Ctrl+C 退出", "warn");
+      }
+      return;
+    }
     if (key.escape) {
+      // 补全菜单开时，Esc 关闭补全（优先级高于 overlay/streaming）
+      if (useStore.getState().completion) { useStore.getState().closeCompletion(); return; }
       if (overlay) { useStore.getState().setOverlay(null); return; }
       if (streaming) { abort(); return; }
       return;
     }
+    // 补全菜单开时，上下键选菜单（InputBar 已禁用 Up/Down，按键冒泡到这里）
+    if (useStore.getState().completion) {
+      if (key.upArrow) { useStore.getState().cycleCompletion("up"); return; }
+      if (key.downArrow) { useStore.getState().cycleCompletion("down"); return; }
+    }
+    // agents overlay 开时，→ 键返回聊天界面
+    if (overlay === "agents" && key.rightArrow) { useStore.getState().setOverlay(null); return; }
     if (overlay) return;
     // Shift+Tab 循环思考级别（react-ink-textarea 的 Tab 用于补全，Shift+Tab 这里捕获）
     if (key.tab && key.shift) {

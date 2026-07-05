@@ -53,3 +53,14 @@ export function compact(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
+
+/** 分隔线：响应终端宽度，避免硬编码 repeat(40) 在窄终端溢出 / 宽终端过短 */
+export function hr(cols: number, char = "─", minWidth = 8, maxWidth = 200): string {
+  const w = Math.max(minWidth, Math.min(maxWidth, cols - 2));
+  return char.repeat(w);
+}
+
+/** 截断：超长字符串加省略号（响应式裁剪用） */
+export function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, Math.max(1, max - 1)) + "…" : s;
+}

@@ -6,7 +6,7 @@
  * 但若 runAgentCli 在 error 事件前就抛，需这里补）。
  */
 
-import { useRef } from "react";
+import { useRef, useEffect } from "react";
 import { runAgentCli } from "@little-house-studio/agent";
 import type { AgentHandle } from "@little-house-studio/agent";
 import { useStore } from "../state/store.js";
@@ -22,6 +22,23 @@ export function useAgent(config: AgentCliConfig) {
 
   if (!soundRef.current) soundRef.current = new SoundManager();
   const sound = soundRef.current;
+
+  // agent 切换：监听 agentSwitchNonce，重置 handle（下次 send 重建）+ 清消息 + 更新状态栏
+  const switchNonce = useStore((s) => s.agentSwitchNonce);
+  useEffect(() => {
+    const name = useStore.getState().pendingAgentName;
+    if (name === null) return;
+    // 中断当前生成
+    abortRef.current?.abort();
+    agentRef.current = null;
+    useStore.getState().clearMessages();
+    useStore.getState().clearPendingMessages();
+    useStore.getState().setAgentMeta(name, "", "", 0);
+    useStore.getState().setSessionId(null);
+    useStore.getState().toastMsg(`切换到 ${name}（新会话）`, "ok");
+    useStore.getState().clearPendingAgentSwitch();
+    useStore.getState().setOverlay(null);
+  }, [switchNonce]);
 
   async function send(text: string) {
     const store = useStore.getState();

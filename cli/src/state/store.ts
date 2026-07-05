@@ -4,14 +4,16 @@
 
 import { create } from "zustand";
 import type { StreamEvent } from "@little-house-studio/types";
-import type { UIState, ChatMessage, Toast } from "./types.js";
+import type { UIState, ChatMessage, Toast, CompletionState } from "./types.js";
+import type { CompletionItem } from "../overlay/Completer.js";
+import { complete } from "../overlay/Completer.js";
 import { reduce } from "./reducer.js";
 
 interface Store extends UIState {
   setAgentMeta: (agentName: string, provider: string, model: string, maxContext: number) => void;
   setThinking: (level: number) => void;
   setOverlay: (kind: UIState["overlay"]) => void;
-  setSessionId: (id: string) => void;
+  setSessionId: (id: string | null) => void;
   setProviderModel: (p: string, m: string) => void;
   pushUserMessage: (text: string) => void;
   clearMessages: () => void;
@@ -40,7 +42,7 @@ interface Store extends UIState {
   autoFollow: boolean;               // 是否自动跟随底部（新消息到达时滚到底）
   scrollChat: (dir: "up" | "down") => void;
   setChatScrollOffset: (n: number) => void;
-  setMaxChatScroll: (n: number) => void;
+  setMaxChatScroll: (n: number, followGrowth?: boolean) => void;
   setAutoFollow: (b: boolean) => void;
   scrollToBottom: () => void;
   // InputBar 滚轮驱动（内容 >viewportLines 时，鼠标在输入框行内滚轮 → 移光标）
@@ -59,6 +61,19 @@ interface Store extends UIState {
   pushInputHistory: (text: string) => void;
   navigateHistory: (dir: "up" | "down") => string | null;
   resetHistoryIndex: () => void;
+  // 补全菜单（提升到 store，供 InputBar 与 app.tsx 全局按键共享）
+  completion: CompletionState | null;
+  updateCompletion: (input: string) => void;   // 输入变化时重算候选
+  cycleCompletion: (dir: "up" | "down") => void;
+  acceptCompletion: () => string | null;       // 返回补全后的文本（不含已有前缀外的部分）
+  closeCompletion: () => void;
+  // ToolCard 展开/折叠时调整滚动偏移（保持卡片头不动）
+  expandShift: (delta: number) => void;
+  // agent 切换：AgentPanel 选择后触发，useAgent 监听 nonce 变化重建 handle
+  pendingAgentName: string | null;
+  agentSwitchNonce: number;
+  requestAgentSwitch: (name: string) => void;
+  clearPendingAgentSwitch: () => void;
 }
 
 const initialState: UIState = {
@@ -141,6 +156,7 @@ export const useStore = create<Store>((set) => ({
       case "sessions": s.setOverlay("sessions"); break;
       case "help": s.setOverlay("help"); break;
       case "settings": s.setOverlay("settings"); break;
+      case "agents": s.setOverlay("agents"); break;
       case "quit": s.requestExit(); break;
     }
     set({ overlay: null });
@@ -167,7 +183,18 @@ export const useStore = create<Store>((set) => ({
     return { chatScrollOffset: next, autoFollow: atBottom };
   }),
   setChatScrollOffset: (n) => set((s) => ({ chatScrollOffset: Math.max(0, Math.min(s.maxChatScroll, n)) })),
-  setMaxChatScroll: (n) => set({ maxChatScroll: Math.max(0, n) }),
+  // maxChatScroll 回写：内容高度变化时由 ScrollHistory 调用。
+  // followGrowth=true（流式内容增长）：!autoFollow 时 max 增大 Δ，offset 同步加 Δ 保持视口钉住。
+  // 守卫：max 无变化时不 set（避免闪烁）。
+  setMaxChatScroll: (n, followGrowth = false) => set((s) => {
+    const max = Math.max(0, n);
+    if (max === s.maxChatScroll) return s;
+    const delta = max - s.maxChatScroll;
+    if (followGrowth && !s.autoFollow && delta > 0) {
+      return { maxChatScroll: max, chatScrollOffset: Math.max(0, Math.min(max, s.chatScrollOffset + delta)) };
+    }
+    return { maxChatScroll: max };
+  }),
   setAutoFollow: (b) => set({ autoFollow: b }),
   scrollToBottom: () => set({ chatScrollOffset: 0, autoFollow: true }),
 
@@ -195,7 +222,7 @@ export const useStore = create<Store>((set) => ({
   historyIndex: -1,
   pushInputHistory: (text) => set((s) => {
     if (!text.trim() || s.inputHistory[s.inputHistory.length - 1] === text) return s;
-    const next = [...s.inputHistory, text].slice(-100);  // 最多 100 条
+    const next = [...s.inputHistory, text].slice(-20);  // 最多 20 条（DESIGN）
     saveInputHistory(next);
     return { inputHistory: next };
   }),
@@ -220,6 +247,47 @@ export const useStore = create<Store>((set) => ({
     return result;
   },
   resetHistoryIndex: () => set({ historyIndex: -1 }),
+
+  // 补全菜单：输入变化时重算候选（同步 complete()）
+  completion: null,
+  updateCompletion: (input) => {
+    const { items, prefix } = complete(input);
+    set({ completion: items.length > 0 ? { items, sel: 0, prefix } : null });
+  },
+  cycleCompletion: (dir) => set((s) => {
+    if (!s.completion || s.completion.items.length === 0) return s;
+    const n = s.completion.items.length;
+    const next = dir === "up" ? (s.completion.sel - 1 + n) % n : (s.completion.sel + 1) % n;
+    return { completion: { ...s.completion, sel: next } };
+  }),
+  acceptCompletion: (): string | null => {
+    let result: string | null = null;
+    set((s) => {
+      if (!s.completion) return s;
+      const sel = s.completion.items[s.completion.sel];
+      if (!sel) return s;
+      result = sel.value + " ";
+      return { completion: null };
+    });
+    return result;
+  },
+  closeCompletion: () => set({ completion: null }),
+
+  // ToolCard 展开导致内容增高 delta 行：offset 同步增加，保持 marginTop 不变（卡片头不动）
+  // 仅在非 autoFollow 时调整（autoFollow 时 offset=0 钉底，展开后仍看底部）
+  expandShift: (delta) => set((s) => {
+    if (delta === 0 || s.autoFollow) return s;
+    return { chatScrollOffset: Math.max(0, Math.min(s.maxChatScroll, s.chatScrollOffset + delta)) };
+  }),
+
+  // agent 切换
+  pendingAgentName: null,
+  agentSwitchNonce: 0,
+  requestAgentSwitch: (name) => set((s) => ({
+    pendingAgentName: name,
+    agentSwitchNonce: s.agentSwitchNonce + 1,
+  })),
+  clearPendingAgentSwitch: () => set({ pendingAgentName: null }),
 
   onStream: (ev) => set((s) => reduce(s, ev)),
 }));

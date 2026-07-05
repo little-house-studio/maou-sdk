@@ -7,6 +7,8 @@
  *  - model.usage 裸 {usage}；assistant.usage 含 max_context
  */
 
+import type { CompletionItem } from "../overlay/Completer.js";
+
 export interface ToolCardState {
   id: string;
   name: string;
@@ -60,7 +62,14 @@ export interface CacheStat {
   input: number;
 }
 
-export type OverlayKind = null | "command" | "model" | "sessions" | "help" | "settings";
+export type OverlayKind = null | "command" | "model" | "sessions" | "help" | "settings" | "agents";
+
+/** 补全菜单状态（提升到 store，供 InputBar 与 app.tsx 全局按键共享） */
+export interface CompletionState {
+  items: CompletionItem[];
+  sel: number;        // 当前选中索引
+  prefix: string;     // 触发补全的前缀（/ 或 @path）
+}
 
 export interface UIState {
   messages: ChatMessage[];

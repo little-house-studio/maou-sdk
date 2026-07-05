@@ -5,8 +5,8 @@
  * 6 级思考级别控制展开程度（thinkingLevel ≥ 3 自动展开写工具）。
  */
 
-import React, { useState, useMemo, useRef } from "react";
-import { Box, Text } from "ink";
+import React, { useState, useMemo, useRef, useEffect } from "react";
+import { Box, Text, useBoxMetrics } from "ink";
 import type { DOMElement } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
 import { useStore } from "../../state/store.js";
@@ -14,6 +14,8 @@ import type { ToolCardState } from "../../state/types.js";
 import { SYMBOLS } from "../../theme/tokens.js";
 import { DiffRenderer } from "./DiffRenderer.js";
 import { useClickTarget } from "../../input/click-target.js";
+import { truncate, hr } from "../../layout/decorators.js";
+import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 
 const SPIN = SYMBOLS.spinner;
 const READ_TOOLS = new Set(["read", "glob", "grep", "ls", "list", "search", "find", "cat"]);
@@ -45,19 +47,42 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
   const [userToggle] = useState(false);
 
   const color = tool.isError ? t.err : tool.done ? t.ok : t.warn;
-  const status = tool.done ? (tool.isError ? "✗" : "✓") : SPIN[frame % SPIN.length];
-  const preview = useMemo(() => extractPreview(tool.args), [tool.args]);
+  // spinner 局部化：工具运行中时自己 interval，不依赖全 App frame
+  const [spin, setSpin] = useState(0);
+  useEffect(() => {
+    if (tool.done) return;
+    const id = setInterval(() => setSpin(s => (s + 1) % SPIN.length), 200);
+    return () => clearInterval(id);
+  }, [tool.done]);
+  const status = tool.done ? (tool.isError ? "✗" : "✓") : SPIN[spin];
+  const term = useTerminalSize();
+  const preview = useMemo(() => truncate(extractPreview(tool.args), Math.max(10, term.cols - 30)), [tool.args, term.cols]);
   const nearby = useMemo(() => extractNearbyLines(tool.result, 10), [tool.result]);
 
   // 鼠标点击标题行切换折叠（仅工具有结果时可折叠）
   const headerRef = useRef<DOMElement | null>(null);
+  const rootRef = useRef<DOMElement | null>(null);
+  const rootMetrics = useBoxMetrics(rootRef);
+  const prevHeightRef = useRef<number>(0);
   const toggle = () => { if (tool.result !== undefined) setOpen(o => !o); };
   useClickTarget(headerRef, toggle, [tool.result, tool.id]);
+
+  // 展开/折叠导致自身高度变化 Δ：调 expandShift 同步调整 chatScrollOffset，
+  // 使 marginTop 不变 → 卡片头不动，新内容在下方长出（DESIGN）。
+  // autoFollow 时 expandShift 内部跳过（钉底，展开后仍看底部）。
+  useEffect(() => {
+    const h = rootMetrics.height ?? 0;
+    const delta = h - prevHeightRef.current;
+    if (prevHeightRef.current > 0 && delta !== 0) {
+      useStore.getState().expandShift(delta);
+    }
+    prevHeightRef.current = h;
+  }, [rootMetrics.height]);
 
   const isDiff = useMemo(() => isWrite && !!tool.result && /^@@ |^--- |^\+\+\+ /m.test(tool.result), [tool.result, isWrite]);
 
   return (
-    <Box paddingLeft={1} flexDirection="column">
+    <Box ref={rootRef} paddingLeft={1} flexDirection="column">
       <Box ref={headerRef}>
         <Text color={t.dim}>{SYMBOLS.index}{String(index).padStart(2, "0")}</Text>
         <Text color={color}> {status} </Text>
