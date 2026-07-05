@@ -96,9 +96,10 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   const mouseEnabled = mouseCapture;
   // 全屏编辑器开时切换鼠标 rect：输入框不再在底部，全屏文本区占据整屏。
   const fullEditorOpen = fullEditorInitial !== null;
+  const inputLineCount = useStore((s) => s.inputLineCount);
   const mouseRect: LayoutRect = fullEditorOpen
-    ? { inputRowFromBottom: 0, chatTop: 2, chatBottom: term.rows - 3 }
-    : { inputRowFromBottom: 2, chatTop: 2, chatBottom: term.rows - 3 };
+    ? { inputRowFromBottom: 0, inputLineCount, chatTop: 2, chatBottom: term.rows - 3 }
+    : { inputRowFromBottom: 2, inputLineCount, chatTop: 2, chatBottom: term.rows - 3 };
 
   useMouseInput(mouseEnabled, mouseRect, {
     onInputCursor: (col) => { useStore.getState().setMouseCursorCol(col); },

@@ -1,12 +1,12 @@
 /**
  * MessageRow —— 单条消息布局（角色色块 + 时码 + 代号）。
  *
- * spinner 动画局部化：streaming 消息自己维护 frame state + interval（200ms），
- * 不再依赖全 App frame prop（避免每帧重渲整个 App 树——闪烁根因之一）。
- * frame prop 仅作 fallback，流式时被局部 state 覆盖。
+ * 流式时 spinner 用静态字符（不动画）——避免每 200ms 重渲 MessageRow
+ * 触发 MarkdownRenderer 重新 marked.lexer 解析（卡顿根因）。流式进度由
+ * EventBlock 显示。
  */
 
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { Box, Text } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
 import type { ChatMessage } from "../../state/types.js";
@@ -16,20 +16,10 @@ import { ThinkingBlock } from "./ThinkingBlock.js";
 import { timecode, codename, hr } from "../../layout/decorators.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 
-const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-
 export function MessageRow({ msg, frame }: { msg: ChatMessage; frame: number }) {
   const t = useTheme();
   const ts = timecode(new Date(msg.ts));
   const term = useTerminalSize();
-  // 流式时局部 spinner（仅本消息重渲，不波及全 App）
-  const [spin, setSpin] = useState(0);
-  useEffect(() => {
-    if (!msg.streaming) return;
-    const id = setInterval(() => setSpin(s => (s + 1) % SPIN.length), 200);
-    return () => clearInterval(id);
-  }, [msg.streaming]);
-  const spinChar = msg.streaming ? SPIN[spin] : SPIN[frame % SPIN.length];
 
   if (msg.role === "user") {
     return (
@@ -44,7 +34,7 @@ export function MessageRow({ msg, frame }: { msg: ChatMessage; frame: number }) 
       <Box flexDirection="column">
         <Text color={t.dim}>{ts} {codename("assistant")}</Text>
         <Box>
-          <Text color={t.assistant}>{msg.streaming ? spinChar : "●"}</Text>
+          <Text color={t.assistant}>{msg.streaming ? "◐" : "●"}</Text>
           {msg.usage && (
             <Text color={t.dim}> {msg.usage.input}↑{msg.usage.output}↓{msg.usage.maxContext ? `/${Math.round(msg.usage.maxContext / 1000)}k` : ""}</Text>
           )}
