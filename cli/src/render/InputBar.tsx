@@ -160,8 +160,9 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
           activeLineColor={t.selectedBg}
           disableCursorBlink={false}
           // 禁用 Ctrl+E 默认（行尾），交由外层 useCleanInput 触发全屏编辑器
-          // 禁用 autoNewLine：下键在最后一行不新建空行，永远走 onLastLineDown（DESIGN）
-          autoNewLineLimit={Infinity}
+          // autoNewLineLimit=0：下键在最后一行时 trailingEmpty(0)>=0 恒真 → 走 onLastLineDown
+          // （前进历史/不新建行）。默认值 3 会先新建 3 个空行才回调，违背 DESIGN。
+          autoNewLineLimit={0}
           // 补全菜单显示时禁用 Up/Down，让按键冒泡到 app.tsx useCleanInput 选菜单（全覆盖，不限边界行）
           keybindings={showComp ? { "Ctrl+E": false, "Up": false, "Down": false } : { "Ctrl+E": false }}
           onCursorChange={(pos) => setCursor(pos)}
