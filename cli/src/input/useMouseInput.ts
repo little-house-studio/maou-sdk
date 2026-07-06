@@ -79,6 +79,8 @@ export function useMouseInput(
       return;
     }
     if (e.type === "down") {
+      // 任意点击清掉之前的选区（开始新操作）
+      if (store.selection) store.setSelection(null);
       dragRef.current = { startCol: e.col, startRow: e.row, moved: false };
       return;
     }
