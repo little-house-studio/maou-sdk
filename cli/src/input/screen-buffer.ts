@@ -19,6 +19,7 @@ import stringWidth from "string-width";
 export interface GridCell {
   char: string;     // 一个 grapheme/code point（可能占 2 列）
   textId: number;   // 所属 SelectableText 的 id
+  w: number;        // 该字符视觉宽度；占位列 w=0（主列 w>0）
 }
 
 const grid = new Map<string, GridCell>(); // "row,col" → cell
@@ -63,9 +64,9 @@ export function registerText(text: string, left: number, top: number, availWidth
       col = left;
       lineUsed = 0;
     }
-    // 登记该字符占的每个视觉列
+    // 登记该字符占的每个视觉列：主列 w=字符宽度，占位列 w=0
     for (let k = 0; k < w; k++) {
-      grid.set(`${row},${col + k}`, { char: ch, textId });
+      grid.set(`${row},${col + k}`, { char: ch, textId, w: k === 0 ? w : 0 });
     }
     col += w;
     lineUsed += w;
@@ -93,14 +94,17 @@ export function extractSelection(
     const colStart = r === r1 ? c1 : 1;
     const colEnd = r === r2 ? c2 : 9999;
     const lineChars: string[] = [];
-    let lastChar: string | null = null;
     for (let c = colStart; c <= colEnd; c++) {
       const cell = grid.get(`${r},${c}`);
-      const ch = cell ? cell.char : " "; // 未登记当空格
-      if (lastChar !== null && lastChar !== ch) lineChars.push(lastChar);
-      lastChar = ch;
+      if (!cell) {
+        // 未登记当空格
+        lineChars.push(" ");
+        continue;
+      }
+      // 占位列（w=0）跳过，主列已输出该字符
+      if (cell.w === 0) continue;
+      lineChars.push(cell.char);
     }
-    if (lastChar !== null) lineChars.push(lastChar);
     lines.push(lineChars.join(""));
   }
   return lines.join("\n");
