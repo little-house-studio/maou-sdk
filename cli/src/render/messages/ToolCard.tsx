@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useMemo, useRef } from "react";
-import { Box, Text } from "ink";
+import { Box } from "ink";
 import type { DOMElement } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
 import { useStore } from "../../state/store.js";
@@ -15,6 +15,7 @@ import { SYMBOLS } from "../../theme/tokens.js";
 import { DiffRenderer } from "./DiffRenderer.js";
 import { useClickTarget } from "../../input/click-target.js";
 import { truncate } from "../../layout/decorators.js";
+import { SelectableText } from "../SelectableText.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 
 const READ_TOOLS = new Set(["read", "glob", "grep", "ls", "list", "search", "find", "cat"]);
@@ -60,16 +61,12 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
 
   const isDiff = useMemo(() => isWrite && !!tool.result && /^@@ |^--- |^\+\+\+ /m.test(tool.result), [tool.result, isWrite]);
 
+  const headerText = `${SYMBOLS.index}${String(index).padStart(2, "0")} ${status} ${tool.name} ${preview}${tool.result !== undefined ? ` ${open ? "▼" : "▶"}` : ""}`;
+
   return (
     <Box paddingLeft={1} flexDirection="column">
       <Box ref={headerRef}>
-        <Text color={t.dim}>{SYMBOLS.index}{String(index).padStart(2, "0")}</Text>
-        <Text color={color}> {status} </Text>
-        <Text color={t.tool} bold>{tool.name}</Text>
-        <Text color={t.muted}> {preview}</Text>
-        {tool.result !== undefined && (
-          <Text color={t.accent}> {(userToggle ? open : open) ? "▼" : "▶"}</Text>
-        )}
+        <SelectableText color={color} bold>{headerText}</SelectableText>
       </Box>
       {open && tool.result !== undefined && (
         isDiff ? (
@@ -78,10 +75,10 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
           <Box paddingLeft={3} flexDirection="column">
             {isWrite && nearby ? (
               nearby.split("\n").map((l, i) => (
-                <Text key={i} color={tool.isError ? t.err : t.toolResult}>{l || " "}</Text>
+                <SelectableText key={i} color={tool.isError ? t.err : t.toolResult}>{l || " "}</SelectableText>
               ))
             ) : (
-              <Text color={tool.isError ? t.err : t.toolResult}>{String(tool.result).slice(0, 1500)}</Text>
+              <SelectableText color={tool.isError ? t.err : t.toolResult}>{String(tool.result).slice(0, 1500)}</SelectableText>
             )}
           </Box>
         )

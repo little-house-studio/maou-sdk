@@ -7,7 +7,7 @@
  */
 
 import React from "react";
-import { Box, Text } from "ink";
+import { Box } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
 import type { ChatMessage } from "../../state/types.js";
 import { MarkdownRenderer } from "./MarkdownRenderer.js";
@@ -25,7 +25,7 @@ export function MessageRow({ msg, frame }: { msg: ChatMessage; frame: number }) 
   if (msg.role === "user") {
     return (
       <Box flexDirection="column">
-        <Text color={t.dim}>{ts} {codename("user")}</Text>
+        <SelectableText color={t.dim}>{`${ts} ${codename("user")}`}</SelectableText>
         <Box backgroundColor={t.userBg}>
           <SelectableText color={t.user} wrap="wrap">{`▸ ${msg.content}`}</SelectableText>
         </Box>
@@ -35,11 +35,11 @@ export function MessageRow({ msg, frame }: { msg: ChatMessage; frame: number }) 
   if (msg.role === "assistant") {
     return (
       <Box flexDirection="column">
-        <Text color={t.dim}>{ts} {codename("assistant")}</Text>
+        <SelectableText color={t.dim}>{`${ts} ${codename("assistant")}`}</SelectableText>
         <Box>
-          <Text color={t.assistant}>{msg.streaming ? "◐" : "●"}</Text>
+          <SelectableText color={t.assistant}>{msg.streaming ? "◐" : "●"}</SelectableText>
           {msg.usage && (
-            <Text color={t.dim}> {msg.usage.input}↑{msg.usage.output}↓{msg.usage.maxContext ? `/${Math.round(msg.usage.maxContext / 1000)}k` : ""}</Text>
+            <SelectableText color={t.dim}>{` ${msg.usage.input}↑${msg.usage.output}↓${msg.usage.maxContext ? `/${Math.round(msg.usage.maxContext / 1000)}k` : ""}`}</SelectableText>
           )}
         </Box>
         {msg.content && (
@@ -57,9 +57,9 @@ export function MessageRow({ msg, frame }: { msg: ChatMessage; frame: number }) 
         {msg.toolCalls?.map((tc, i) => (
           <Box key={tc.id} paddingLeft={2}><ToolCard tool={tc} index={i + 1} frame={frame} /></Box>
         ))}
-        <Text color={t.mdHr}>{hr(term.cols)}</Text>
+        <SelectableText color={t.mdHr}>{hr(term.cols)}</SelectableText>
       </Box>
     );
   }
-  return <Text backgroundColor={t.systemBg} color={t.system}>▣ {msg.content}</Text>;
+  return <SelectableText backgroundColor={t.systemBg} color={t.system}>{`▣ ${msg.content}`}</SelectableText>;
 }
