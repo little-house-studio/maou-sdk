@@ -16,6 +16,8 @@ import { openExternalEditor } from "./hooks/useExternalEditor.js";
 import { useStore } from "./state/store.js";
 import { useAgent } from "./events/useAgent.js";
 import { useMouseInput } from "./input/useMouseInput.js";
+import { extractSelection } from "./input/screen-buffer.js";
+import { osc52 } from "./input/osc52.js";
 import type { LayoutRect } from "./input/hit-test.js";
 import type { AgentCliConfig } from "./types.js";
 
@@ -116,6 +118,17 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   useCleanInput((char, key) => {
     if (fullEditorInitial !== null) return;
     if (key.ctrl && char === "c") {
+      // 有选区：Ctrl+C 复制选区 + 清选区（不退出）
+      const sel = useStore.getState().selection;
+      if (sel) {
+        const text = extractSelection(sel.start, sel.end);
+        if (text && text.trim()) {
+          osc52(text);
+          useStore.getState().toastMsg(`已复制 ${text.length} 字`, "ok");
+        }
+        useStore.getState().setSelection(null);
+        return;
+      }
       // streaming 时：第一次 Ctrl+C 中断；非 streaming 或已中断后再按才走双击退出
       if (streaming && !useStore.getState().aborting) {
         abort();
@@ -131,7 +144,9 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
       return;
     }
     if (key.escape) {
-      // 补全菜单开时，Esc 关闭补全（优先级高于 overlay/streaming）
+      // 有选区：Esc 清选区（优先级最高）
+      if (useStore.getState().selection) { useStore.getState().setSelection(null); return; }
+      // 补全菜单开时，Esc 关闭补全
       if (useStore.getState().completion) { useStore.getState().closeCompletion(); return; }
       if (overlay) { useStore.getState().setOverlay(null); return; }
       if (streaming) { abort(); return; }

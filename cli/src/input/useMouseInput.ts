@@ -103,16 +103,8 @@ export function useMouseInput(
       dragRef.current = null;
       if (!d) return;
       if (d.moved) {
-        // 拖拽结束 → 提取选区文本 → OSC52 复制
-        const sel = store.selection;
-        if (sel) {
-          const text = extractSelection(sel.start, sel.end);
-          if (text && text.trim()) {
-            osc52(text);
-            store.toastMsg(`已复制 ${text.length} 字`, "ok");
-          }
-          store.setSelection(null);
-        }
+        // 拖拽结束：保留蓝底选区，不自动复制。Ctrl+C 复制（在 app.tsx 处理）
+        // 选区文本由 store.selection 保留，SelectableText 持续显示蓝底
         return;
       }
       // 短按：点击命中

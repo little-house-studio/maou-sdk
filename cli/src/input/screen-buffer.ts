@@ -75,13 +75,13 @@ export function registerText(text: string, left: number, top: number, availWidth
 /**
  * 提取选区文本。start/end 为 {row, col}（1-based，col 为视觉列）。
  * 规范化到左上→右下。跨行用 \n 连接。
+ * 未登记格子当空格（整个区域可选，包括空格）。
  * 宽字符：选区边界落在宽字符中间时整组包含（grid 里宽字符占多列但 char 相同，去重）。
  */
 export function extractSelection(
   start: { row: number; col: number },
   end: { row: number; col: number },
 ): string {
-  // 规范化：r1,c1 是左上（较小 row，同行较小 col），r2,c2 是右下
   let r1: number, c1: number, r2: number, c2: number;
   if (start.row < end.row || (start.row === end.row && start.col <= end.col)) {
     r1 = start.row; c1 = start.col; r2 = end.row; c2 = end.col;
@@ -96,19 +96,32 @@ export function extractSelection(
     let lastChar: string | null = null;
     for (let c = colStart; c <= colEnd; c++) {
       const cell = grid.get(`${r},${c}`);
-      if (!cell) {
-        if (lastChar !== null) { lineChars.push(lastChar); lastChar = null; }
-        continue;
-      }
-      if (lastChar !== null && lastChar !== cell.char) {
-        lineChars.push(lastChar);
-      }
-      lastChar = cell.char;
+      const ch = cell ? cell.char : " "; // 未登记当空格
+      if (lastChar !== null && lastChar !== ch) lineChars.push(lastChar);
+      lastChar = ch;
     }
     if (lastChar !== null) lineChars.push(lastChar);
     lines.push(lineChars.join(""));
   }
   return lines.join("\n");
+}
+
+/** 判断 (row, col) 是否在选区内 */
+export function inSelection(
+  row: number, col: number,
+  sel: { start: { row: number; col: number }; end: { row: number; col: number } } | null,
+): boolean {
+  if (!sel) return false;
+  let r1: number, c1: number, r2: number, c2: number;
+  if (sel.start.row < sel.end.row || (sel.start.row === sel.end.row && sel.start.col <= sel.end.col)) {
+    r1 = sel.start.row; c1 = sel.start.col; r2 = sel.end.row; c2 = sel.end.col;
+  } else {
+    r1 = sel.end.row; c1 = sel.end.col; r2 = sel.start.row; c2 = sel.start.col;
+  }
+  if (row < r1 || row > r2) return false;
+  if (row === r1 && col < c1) return false;
+  if (row === r2 && col > c2) return false;
+  return true;
 }
 
 /** 诊断：返回 grid 大小 */
