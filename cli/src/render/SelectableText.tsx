@@ -92,10 +92,44 @@ export function SelectableText({ children, color, bold, dimColor, backgroundColo
     );
   }
   const visLines = wrapToVisualLines(text, rect.width);
+  // 单视觉行：row 包 Text 段（可和其他 SelectableText 并排）
+  // 多视觉行：column 包每行 Box
+  if (visLines.length <= 1) {
+    const line = visLines[0] ?? [];
+    const marks: { style: "sel" | null; ch: string }[] = [];
+    for (const [ch, colOffset] of line) {
+      const w = charWidth(ch);
+      let style: "sel" | null = null;
+      for (let k = 0; k < w; k++) {
+        const absCol = rect.left + colOffset + k;
+        if (inSelection(rect.top, absCol, selection)) { style = "sel"; break; }
+      }
+      marks.push({ style, ch });
+    }
+    const segs: { style: "sel" | null; text: string }[] = [];
+    let curStyle: "sel" | null = marks[0]?.style ?? null;
+    let curText = marks[0] ? marks[0].ch : "";
+    for (let i = 1; i < marks.length; i++) {
+      if (marks[i].style === curStyle) curText += marks[i].ch;
+      else { segs.push({ style: curStyle, text: curText }); curStyle = marks[i].style; curText = marks[i].ch; }
+    }
+    if (curText) segs.push({ style: curStyle, text: curText });
+    return (
+      <Box ref={ref}>
+        {segs.length === 0
+          ? <Text color={color} bold={bold} dimColor={dimColor} backgroundColor={backgroundColor} wrap={wrap}>{""}</Text>
+          : segs.map((s, i) =>
+              s.style === "sel"
+                ? <Text key={i} backgroundColor="blue" color="white">{s.text}</Text>
+                : <Text key={i} color={color} bold={bold} dimColor={dimColor} backgroundColor={backgroundColor} wrap={wrap}>{s.text}</Text>
+            )}
+      </Box>
+    );
+  }
+  // 多视觉行（soft-wrap）：column 包每行
   return (
     <Box ref={ref} flexDirection="column">
       {visLines.map((line, li) => {
-        // 算每字符 style
         const marks: { style: "sel" | null; ch: string }[] = [];
         for (const [ch, colOffset] of line) {
           const w = charWidth(ch);
@@ -107,7 +141,6 @@ export function SelectableText({ children, color, bold, dimColor, backgroundColo
           }
           marks.push({ style, ch });
         }
-        // 合并同 style 为段
         const segs: { style: "sel" | null; text: string }[] = [];
         let curStyle: "sel" | null = marks[0]?.style ?? null;
         let curText = marks[0] ? marks[0].ch : "";

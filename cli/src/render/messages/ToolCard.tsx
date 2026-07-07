@@ -10,8 +10,8 @@
  *   - 多次返回的工具：按 toolCallId 累加显示
  */
 
-import React, { useState, useMemo, useRef } from "react";
-import { Box } from "ink";
+import React, { useState, useMemo, useRef, useEffect } from "react";
+import { Box, useBoxMetrics } from "ink";
 import type { DOMElement } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
 import { useStore } from "../../state/store.js";
@@ -58,8 +58,21 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
 
   // 鼠标点击标题行切换折叠（仅工具有结果时可折叠）
   const headerRef = useRef<DOMElement | null>(null);
+  const rootRef = useRef<DOMElement | null>(null);
+  const rootMetrics = useBoxMetrics(rootRef);
+  const prevHeightRef = useRef<number>(0);
   const toggle = () => { if (tool.result !== undefined) setOpen(o => !o); };
   useClickTarget(headerRef, toggle, [tool.result, tool.id]);
+
+  // 展开/折叠导致自身高度变化 Δ：调 expandShift 同步 offset，保持卡片头不动
+  useEffect(() => {
+    const h = rootMetrics.height ?? 0;
+    const delta = h - prevHeightRef.current;
+    if (prevHeightRef.current > 0 && delta !== 0) {
+      useStore.getState().expandShift(delta);
+    }
+    prevHeightRef.current = h;
+  }, [rootMetrics.height]);
 
   const isDiff = useMemo(() => isWrite && !!tool.result && /^@@ |^--- |^\+\+\+ /m.test(tool.result), [tool.result, isWrite]);
 
@@ -68,12 +81,14 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
   const headerText = `${tool.name} ${desc} ${statusChar}${callDur ? ` (${callDur})` : ""}${tool.result !== undefined ? ` ${open ? "▼" : "▶"}` : ""}`;
 
   return (
-    <Box paddingLeft={1} flexDirection="column">
+    <Box ref={rootRef} paddingLeft={1} flexDirection="column">
       <Box ref={headerRef}>
         {/* 工具名黄背景 */}
         <SelectableText backgroundColor={t.warn} color="#000" bold>{` ${tool.name} `}</SelectableText>
-        {/* 描述 + 符号 + 耗时 */}
-        <SelectableText color={statusColor}>{` ${desc} ${statusChar}${callDur ? ` (${callDur})` : ""}${tool.result !== undefined ? ` ${open ? "▼" : "▶"}` : ""}`}</SelectableText>
+        {/* 描述浅灰背景 */}
+        <SelectableText backgroundColor={t.panelBg} color={t.fg}>{` ${desc} `}</SelectableText>
+        {/* 成功符号 + 耗时 + 折叠标记 */}
+        <SelectableText color={statusColor}>{` ${statusChar}${callDur ? ` (${callDur})` : ""}${tool.result !== undefined ? ` ${open ? "▼" : "▶"}` : ""}`}</SelectableText>
       </Box>
       {open && tool.result !== undefined && (
         isDiff ? (
