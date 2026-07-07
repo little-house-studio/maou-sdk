@@ -105,8 +105,9 @@ export function useMouseInput(
       dragRef.current = null;
       if (!d) return;
       if (d.moved) {
-        // 拖拽结束：保留蓝底选区，不自动复制。Ctrl+C 复制（在 app.tsx 处理）
-        // 选区文本由 store.selection 保留，SelectableText 持续显示蓝底
+        // 拖拽结束：保留蓝底选区，提示用 Ctrl+C 复制
+        // macOS Terminal.app 拦截 Cmd+C，程序收不到，只能用 Ctrl+C
+        useStore.getState().toastMsg("选区已保留 · Ctrl+C 复制 · Esc 清除", "info");
         return;
       }
       // 短按：点击命中
