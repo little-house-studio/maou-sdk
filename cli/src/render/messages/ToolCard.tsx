@@ -1,8 +1,13 @@
 /**
- * ToolCard —— 磁带计数器风格工具卡片（折叠/展开）。
- * 装饰：▌NN name ▸ preview ▶/▼，磁带计数器边框。
- * 读工具（read/glob/grep/ls）默认收纳；写工具（create/edit/write）默认展开显示附近 10 行。
- * 6 级思考级别控制展开程度（thinkingLevel ≥ 3 自动展开写工具）。
+ * ToolCard —— 工具调用卡片（新格式）。
+ *
+ * 标题行：工具名(黄背景) | 描述(浅灰背景) | 成功符号 ✓✗○ | (返回耗时)
+ *   默认收纳，点击整个卡片区域展开/收纳（拖拽时不收纳而选字）。
+ * 展开后：
+ *   - 工具调用参数（黄色字）
+ *   - 完整返回结果（灰色字）
+ *   - 编辑类工具：diff 绿色添加/红色删除
+ *   - 多次返回的工具：按 toolCallId 累加显示
  */
 
 import React, { useState, useMemo, useRef } from "react";
@@ -11,17 +16,16 @@ import type { DOMElement } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
 import { useStore } from "../../state/store.js";
 import type { ToolCardState } from "../../state/types.js";
-import { SYMBOLS } from "../../theme/tokens.js";
 import { DiffRenderer } from "./DiffRenderer.js";
 import { useClickTarget } from "../../input/click-target.js";
-import { truncate } from "../../layout/decorators.js";
+import { truncate, durationStr } from "../../layout/decorators.js";
 import { SelectableText } from "../SelectableText.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 
 const READ_TOOLS = new Set(["read", "glob", "grep", "ls", "list", "search", "find", "cat"]);
 const WRITE_TOOLS = new Set(["create", "edit", "write", "patch", "rm", "remove", "mkdir", "move"]);
 
-function extractPreview(args: string): string {
+function extractDescription(args: string): string {
   try {
     const a = JSON.parse(args);
     return a.path || a.file_path || a.command?.slice(0, 40) || a.pattern || a.query?.slice(0, 30) || args.slice(0, 30);
@@ -32,8 +36,7 @@ function extractPreview(args: string): string {
 
 function extractNearbyLines(result: string | undefined, lines = 10): string {
   if (!result) return "";
-  const all = result.split("\n");
-  return all.slice(0, lines).join("\n");
+  return result.split("\n").slice(0, lines).join("\n");
 }
 
 export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: number; frame: number }) {
@@ -44,15 +47,14 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
   // 读工具默认收纳；写工具默认展开（thinkingLevel 高时也展开）
   const defaultOpen = isWrite || thinkingLevel >= 4;
   const [open, setOpen] = useState(defaultOpen);
-  const [userToggle] = useState(false);
 
-  const color = tool.isError ? t.err : tool.done ? t.ok : t.warn;
-  // spinner 静态：避免每个运行中 ToolCard 各开 200ms interval（多工具时 interval 爆炸致卡）。
-  // 流式进度由 EventBlock 状态显示，卡片用静态符号区分运行中/完成。
-  const status = tool.done ? (tool.isError ? "✗" : "✓") : "○";
+  // 成功符号：绿✓ / 红✗ / 灰○(等待)
+  const statusChar = tool.done ? (tool.isError ? "✗" : "✓") : "○";
+  const statusColor = tool.isError ? t.err : tool.done ? t.ok : t.dim;
   const term = useTerminalSize();
-  const preview = useMemo(() => truncate(extractPreview(tool.args), Math.max(10, term.cols - 30)), [tool.args, term.cols]);
+  const desc = useMemo(() => truncate(extractDescription(tool.args), Math.max(10, term.cols - 40)), [tool.args, term.cols]);
   const nearby = useMemo(() => extractNearbyLines(tool.result, 10), [tool.result]);
+  const callDur = durationStr(tool.callDuration);
 
   // 鼠标点击标题行切换折叠（仅工具有结果时可折叠）
   const headerRef = useRef<DOMElement | null>(null);
@@ -61,18 +63,28 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
 
   const isDiff = useMemo(() => isWrite && !!tool.result && /^@@ |^--- |^\+\+\+ /m.test(tool.result), [tool.result, isWrite]);
 
-  const headerText = `${SYMBOLS.index}${String(index).padStart(2, "0")} ${status} ${tool.name} ${preview}${tool.result !== undefined ? ` ${open ? "▼" : "▶"}` : ""}`;
+  // 标题行：工具名(黄背景) 描述(浅灰背景) 符号 (耗时) ▶/▼
+  // SelectableText 单颜色，黄背景用 Box 包裹背景。这里简化：整行一个 SelectableText，颜色用 statusColor
+  const headerText = `${tool.name} ${desc} ${statusChar}${callDur ? ` (${callDur})` : ""}${tool.result !== undefined ? ` ${open ? "▼" : "▶"}` : ""}`;
 
   return (
     <Box paddingLeft={1} flexDirection="column">
       <Box ref={headerRef}>
-        <SelectableText color={color} bold>{headerText}</SelectableText>
+        {/* 工具名黄背景 */}
+        <SelectableText backgroundColor={t.warn} color="#000" bold>{` ${tool.name} `}</SelectableText>
+        {/* 描述 + 符号 + 耗时 */}
+        <SelectableText color={statusColor}>{` ${desc} ${statusChar}${callDur ? ` (${callDur})` : ""}${tool.result !== undefined ? ` ${open ? "▼" : "▶"}` : ""}`}</SelectableText>
       </Box>
       {open && tool.result !== undefined && (
         isDiff ? (
           <DiffRenderer diff={tool.result} />
         ) : (
           <Box paddingLeft={3} flexDirection="column">
+            {/* 参数（黄色字） */}
+            {tool.args && tool.args !== "{}" && (
+              <SelectableText color={t.warn}>{`▸ args: ${truncate(tool.args, term.cols - 8)}`}</SelectableText>
+            )}
+            {/* 返回结果（灰色字）/ 附近行 */}
             {isWrite && nearby ? (
               nearby.split("\n").map((l, i) => (
                 <SelectableText key={i} color={tool.isError ? t.err : t.toolResult}>{l || " "}</SelectableText>

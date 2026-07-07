@@ -1,37 +1,34 @@
 /**
- * ThinkingBlock —— 思考块折叠（6 级显示）。
- * thinkingLevel: 0 全收 / 1-2 只显摘要 / 3-4 显前 500 字 / 5 全展。
+ * ThinkingBlock —— 思考块（新格式：* think (耗时)，灰色，收纳可展开）。
+ * thinkingLevel: 0 全收 / 1-2 摘要 / 3-4 前 500 字 / 5 全展。
  */
 
 import React from "react";
-import { Box, Text } from "ink";
+import { Box } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
 import { useStore } from "../../state/store.js";
 import type { ThinkingBlock as ThinkingBlockState } from "../../state/types.js";
-import { SYMBOLS } from "../../theme/tokens.js";
-
-const SPIN = SYMBOLS.spinner;
+import { SelectableText } from "../SelectableText.js";
+import { durationStr } from "../../layout/decorators.js";
 
 export function ThinkingBlock({ block }: { block: ThinkingBlockState }) {
   const t = useTheme();
   const level = useStore((s) => s.thinkingLevel);
   if (!block.content) return null;
 
-  const streamingMark = block.streaming ? SPIN[0]! : "✓";
-  const label = `${streamingMark} thinking`;
+  const dur = durationStr(block.duration);
+  const label = `* think${dur ? ` (${dur})` : ""}`;
   const charCount = block.content.length;
 
-  // 0 级全收（只显一行摘要）
+  // 0 级全收
   if (level === 0) {
-    return (
-      <Text color={t.muted}>  {label} // {charCount} 字</Text>
-    );
+    return <SelectableText color={t.muted}>{`  ${label} // ${charCount} 字`}</SelectableText>;
   }
-  // 1-2 级：摘要 + 字数
+  // 1-2 级摘要
   if (level <= 2) {
     return (
       <Box flexDirection="column">
-        <Text color={t.muted}>  {label} // {charCount} 字</Text>
+        <SelectableText color={t.muted}>{`  ${label} // ${charCount} 字`}</SelectableText>
       </Box>
     );
   }
@@ -39,8 +36,8 @@ export function ThinkingBlock({ block }: { block: ThinkingBlockState }) {
   const shown = level >= 5 ? block.content : block.content.slice(0, 500);
   return (
     <Box flexDirection="column" paddingLeft={2}>
-      <Text color={t.info}>{label} // {charCount} 字{level < 5 && charCount > 500 ? "（前 500）" : ""}</Text>
-      <Text color={t.muted} wrap="wrap">{shown}</Text>
+      <SelectableText color={t.info}>{`${label} // ${charCount} 字${level < 5 && charCount > 500 ? "（前 500）" : ""}`}</SelectableText>
+      <SelectableText color={t.muted} wrap="wrap">{shown}</SelectableText>
     </Box>
   );
 }

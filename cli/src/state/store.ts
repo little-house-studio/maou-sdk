@@ -90,6 +90,7 @@ interface Store extends UIState {
 
 const initialState: UIState = {
   messages: [],
+  systemEvents: [],
   currentAssistantId: null,
   streaming: false,
   aborting: false,
@@ -144,7 +145,7 @@ export const useStore = create<Store>((set) => ({
     currentRoundUsage: { input: 0, output: 0 },
     eventBlock: { mode: "thinking", upTokens: 0, downTokens: 0, detail: undefined },
   })),
-  clearMessages: () => set({ messages: [], currentAssistantId: null, rounds: [], cacheHistory: [], round: 0, sessionId: null, toast: null }),
+  clearMessages: () => set({ messages: [], systemEvents: [], currentAssistantId: null, rounds: [], cacheHistory: [], round: 0, sessionId: null, toast: null }),
   setStreaming: (streaming) => set({ streaming }),
   setAborting: (aborting) => set({ aborting }),
   toastMsg: (text, kind = "info") => set({ toast: { text: text.slice(0, 80), kind } }),

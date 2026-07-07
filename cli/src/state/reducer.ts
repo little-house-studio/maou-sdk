@@ -10,7 +10,7 @@
  */
 
 import type { StreamEvent } from "@little-house-studio/types";
-import type { UIState, ChatMessage, ToolCardState, RoundUsage } from "./types.js";
+import type { UIState, ChatMessage, ToolCardState, RoundUsage, SystemEvent } from "./types.js";
 
 let idc = 0;
 export const uid = (): string => `m${Date.now()}_${idc++}`;
@@ -69,7 +69,7 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       if (last?.streaming) {
         newBlocks = [...blocks.slice(0, -1), { ...last, content: last.content + delta }];
       } else {
-        newBlocks = [...blocks, { id: uid(), content: delta, streaming: true }];
+        newBlocks = [...blocks, { id: uid(), content: delta, streaming: true, startTs: Date.now() }];
       }
       return patchCurrentAssistant(state, { thinkingBlocks: newBlocks }) ?? {
         eventBlock: { ...state.eventBlock, mode: "thinking" },
@@ -87,7 +87,7 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       let currentAssistantId = id;
       if (shouldCreate) {
         currentAssistantId = uid();
-        messages = [...messages, { id: currentAssistantId, role: "assistant", content: delta, streaming: true, ts: Date.now(), thinkingBlocks: [] }];
+        messages = [...messages, { id: currentAssistantId, role: "assistant", content: delta, streaming: true, ts: Date.now(), thinkingBlocks: [], round: state.round }];
       } else {
         messages = messages.map(m => m.id === currentAssistantId ? { ...m, content: m.content + delta, streaming: true } : m);
       }
@@ -145,6 +145,7 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
         name: tool?.name ?? "?",
         args: JSON.stringify(tool?.parameters ?? {}),
         done: false,
+        callStartTs: Date.now(),
       };
       messages = messages.map(m => m.id === id ? { ...m, toolCalls: [...(m.toolCalls ?? []), tc] } : m);
       return {
@@ -160,11 +161,12 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const name = ev.name as string | undefined;
       const content = typeof ev.content === "string" ? ev.content : JSON.stringify(ev.content ?? "");
       const ok = ev.ok !== false;
+      const now = Date.now();
       const messages = state.messages.map(m => m.toolCalls ? {
         ...m,
         toolCalls: m.toolCalls.map(tc =>
           (tc.id === toolCallId || (!toolCallId && tc.name === name && !tc.done))
-            ? { ...tc, result: content.slice(0, MAX_RESULT), isError: !ok, done: true }
+            ? { ...tc, result: content.slice(0, MAX_RESULT), isError: !ok, done: true, callDuration: tc.callStartTs ? now - tc.callStartTs : undefined }
             : tc
         ),
       } : m);
@@ -219,16 +221,20 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     // ── trace 类（toast 提示或静默） ──────────────────────
     case "model.error": {
       const err = (ev.error as string | undefined) ?? (ev.message as string | undefined) ?? "模型错误";
-      return { toast: { text: err.slice(0, 80), kind: "err" } };
+      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: err.slice(0, 80), ts: Date.now() };
+      return { toast: { text: err.slice(0, 80), kind: "err" }, systemEvents: [...state.systemEvents, sysEvent] };
     }
     case "model.loop_detected": {
-      return { toast: { text: "循环输出，重试中", kind: "warn" } };
+      const sysEvent: SystemEvent = { id: uid(), kind: "retry_fail", content: "循环输出，重试中", ts: Date.now() };
+      return { toast: { text: "循环输出，重试中", kind: "warn" }, systemEvents: [...state.systemEvents, sysEvent] };
     }
     case "model.tool_detected": {
       return {}; // 已有 tool_pending 跟进
     }
     case "round_limit": {
-      return { toast: { text: (ev.message as string | undefined) ?? "轮次上限", kind: "warn" } };
+      const m = (ev.message as string | undefined) ?? "轮次上限";
+      const sysEvent: SystemEvent = { id: uid(), kind: "retry_fail", content: m, ts: Date.now() };
+      return { toast: { text: m.slice(0, 80), kind: "warn" }, systemEvents: [...state.systemEvents, sysEvent] };
     }
     case "verification": {
       return { eventBlock: { ...state.eventBlock, detail: ev.ok ? "验证通过" : "验证失败" } };
@@ -243,14 +249,18 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const roundPatch = state.currentRoundUsage.input || state.currentRoundUsage.output
         ? pushRound(state, state.currentRoundUsage)
         : {};
+      const now = Date.now();
       const messages = state.messages.map(m =>
         m.id === state.currentAssistantId || m.streaming
-          ? { ...m, streaming: false }
+          ? { ...m, streaming: false, doneTs: now, duration: m.duration ?? (now - m.ts) }
           : m
       );
-      // 关闭所有 thinkingBlock 流式
+      // 关闭所有 thinkingBlock 流式，算 duration
       const messagesClosed = messages.map(m => m.thinkingBlocks ? {
-        ...m, thinkingBlocks: m.thinkingBlocks.map(b => ({ ...b, streaming: false })),
+        ...m, thinkingBlocks: m.thinkingBlocks.map(b => ({
+          ...b, streaming: false,
+          duration: b.duration ?? (b.startTs ? now - b.startTs : undefined),
+        })),
       } : m);
       // round：runtime done 事件的 rounds 字段硬编码 0（已知 bug），不可靠。
       // 优先用 agent_round 累加的 state.round；仅当 ev.rounds 更大时采用。
@@ -271,6 +281,7 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       // 陷阱①：error 后 runAgentCli 即 return，必须这里置 streaming:false
       const msg = typeof ev.message === "string" ? ev.message : String(ev.message ?? "错误");
       const messages = state.messages.map(m => m.streaming ? { ...m, streaming: false } : m);
+      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: msg.slice(0, 80), ts: Date.now() };
       return {
         messages,
         streaming: false,
@@ -278,6 +289,7 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
         currentAssistantId: null,
         toast: { text: msg.slice(0, 80), kind: "err" },
         eventBlock: { mode: "error", upTokens: 0, downTokens: 0, detail: msg.slice(0, 40) },
+        systemEvents: [...state.systemEvents, sysEvent],
       };
     }
 

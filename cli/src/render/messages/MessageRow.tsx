@@ -1,9 +1,19 @@
 /**
- * MessageRow —— 单条消息布局（角色色块 + 时码 + 代号）。
+ * MessageRow —— 按新顺序格式渲染单条消息。
  *
- * 流式时 spinner 用静态字符（不动画）——避免每 200ms 重渲 MessageRow
- * 触发 MarkdownRenderer 重新 marked.lexer 解析（卡顿根因）。流式进度由
- * EventBlock 显示。
+ * user 消息：
+ *   ▸ 消息id | user | 时间点 | ↑上传总token  （灰橙色）
+ *   发送内容（橙色）
+ *
+ * assistant 消息：
+ *   ◈ loop次数 | ai | 时间点 | (生成耗时) | ↓生成token  （灰色）
+ *   * think (生成耗时)  （灰色，收纳，可展开）
+ *   content 生成内容（白色）
+ *   [缩进] 工具调用卡片
+ *
+ * system 消息走 SystemEventRow。
+ *
+ * 流式 spinner 静态（◐），避免每 200ms 重渲触发 MarkdownRenderer 重新解析（卡顿）。
  */
 
 import React from "react";
@@ -14,34 +24,32 @@ import { MarkdownRenderer } from "./MarkdownRenderer.js";
 import { ToolCard } from "./ToolCard.js";
 import { ThinkingBlock } from "./ThinkingBlock.js";
 import { SelectableText } from "../SelectableText.js";
-import { timecode, codename, hr } from "../../layout/decorators.js";
-import { useTerminalSize } from "../../hooks/useTerminalSize.js";
+import { timecode, shortId, durationStr, loopMark, compact } from "../../layout/decorators.js";
 
 export function MessageRow({ msg, frame }: { msg: ChatMessage; frame: number }) {
   const t = useTheme();
   const ts = timecode(new Date(msg.ts));
-  const term = useTerminalSize();
 
   if (msg.role === "user") {
+    const upTok = msg.usage ? compact(msg.usage.input) : "";
     return (
       <Box flexDirection="column">
-        <SelectableText color={t.dim}>{`${ts} ${codename("user")}`}</SelectableText>
+        <SelectableText color={t.dim}>{`▸ ${shortId(msg.id)} | user | ${ts}${upTok ? ` | ↑${upTok}` : ""}`}</SelectableText>
         <Box backgroundColor={t.userBg}>
-          <SelectableText color={t.user} wrap="wrap">{`▸ ${msg.content}`}</SelectableText>
+          <SelectableText color={t.user} wrap="wrap">{msg.content}</SelectableText>
         </Box>
       </Box>
     );
   }
   if (msg.role === "assistant") {
+    const dnTok = msg.usage ? compact(msg.usage.output) : "";
+    const dur = durationStr(msg.duration);
+    const round = msg.round ?? 0;
     return (
       <Box flexDirection="column">
-        <SelectableText color={t.dim}>{`${ts} ${codename("assistant")}`}</SelectableText>
-        <Box>
-          <SelectableText color={t.assistant}>{msg.streaming ? "◐" : "●"}</SelectableText>
-          {msg.usage && (
-            <SelectableText color={t.dim}>{` ${msg.usage.input}↑${msg.usage.output}↓${msg.usage.maxContext ? `/${Math.round(msg.usage.maxContext / 1000)}k` : ""}`}</SelectableText>
-          )}
-        </Box>
+        <SelectableText color={t.dim}>
+          {`◈ ${loopMark(round, 0)} | ai | ${ts}${dur ? ` | (${dur})` : ""}${dnTok ? ` | ↓${dnTok}` : ""}`}
+        </SelectableText>
         {msg.content && (
           <Box paddingLeft={2} flexDirection="column">
             <MarkdownRenderer md={msg.content} />
@@ -57,9 +65,9 @@ export function MessageRow({ msg, frame }: { msg: ChatMessage; frame: number }) 
         {msg.toolCalls?.map((tc, i) => (
           <Box key={tc.id} paddingLeft={2}><ToolCard tool={tc} index={i + 1} frame={frame} /></Box>
         ))}
-        <SelectableText color={t.mdHr}>{hr(term.cols)}</SelectableText>
       </Box>
     );
   }
+  // system 角色消息（非 SystemEvent）用 systemBg 块
   return <SelectableText backgroundColor={t.systemBg} color={t.system}>{`▣ ${msg.content}`}</SelectableText>;
 }

@@ -64,3 +64,35 @@ export function hr(cols: number, char = "─", minWidth = 8, maxWidth = 200): st
 export function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, Math.max(1, max - 1)) + "…" : s;
 }
+
+/** 耗时格式化：ms → 1.2s / 350ms / 2.5min */
+export function durationStr(ms: number | undefined): string {
+  if (ms === undefined) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${(ms / 60000).toFixed(1)}min`;
+}
+
+/** 消息 id 短显示（前 6 位） */
+export function shortId(id: string): string {
+  return id.replace(/^m?u?/, "").slice(0, 6);
+}
+
+/** loop 块标记：↺ round 调用次数 */
+export function loopMark(round: number, calls: number): string {
+  return `↺${round}${calls > 0 ? ` ×${calls}` : ""}`;
+}
+
+/** 系统事件符号 */
+export function systemEventSymbol(kind: string): string {
+  const map: Record<string, string> = {
+    compress: "🗜",
+    abort: "✕",
+    retry_fail: "↻",
+    hook: "⚓",
+    permission: "🔓",
+    env_error: "⚠",
+    other: "ℹ",
+  };
+  return map[kind] ?? "ℹ";
+}

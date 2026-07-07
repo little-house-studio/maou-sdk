@@ -16,12 +16,16 @@ export interface ToolCardState {
   result?: string;       // 截断后
   isError?: boolean;
   done: boolean;
+  callStartTs?: number;  // 调用开始时间戳
+  callDuration?: number; // 返回耗时（ms）
 }
 
 export interface ThinkingBlock {
   id: string;
   content: string;
   streaming: boolean;
+  startTs?: number;      // 开始时间戳
+  duration?: number;     // 生成耗时（ms），streaming 结束时填
 }
 
 export interface ChatMessage {
@@ -33,6 +37,20 @@ export interface ChatMessage {
   toolCalls?: ToolCardState[];
   thinkingBlocks?: ThinkingBlock[];
   usage?: { input: number; output: number; maxContext?: number };
+  doneTs?: number;       // 生成完成时间戳
+  duration?: number;     // 生成耗时（ms）
+  round?: number;        // 所属 loop 块编号
+  agentType?: string;    // agent 类型（子 agent 时）
+  agentName?: string;    // 子 agent 名字
+}
+
+/** 系统事件（压缩/中断/失败/权限/环境等，独立行渲染） */
+export interface SystemEvent {
+  id: string;
+  kind: "compress" | "abort" | "retry_fail" | "hook" | "permission" | "env_error" | "other";
+  content: string;
+  ts: number;
+  detail?: string;       // 点击展开看详细
 }
 
 export type EventMode = "idle" | "thinking" | "generating" | "tool_pending" | "error";
@@ -73,6 +91,7 @@ export interface CompletionState {
 
 export interface UIState {
   messages: ChatMessage[];
+  systemEvents: SystemEvent[];   // 系统事件行（压缩/中断/失败等）
   currentAssistantId: string | null;
   streaming: boolean;
   aborting: boolean;

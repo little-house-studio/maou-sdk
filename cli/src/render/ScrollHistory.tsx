@@ -29,6 +29,7 @@ import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { MessageRow } from "./messages/MessageRow.js";
+import { SystemEventRow } from "./messages/SystemEventRow.js";
 
 export function ScrollHistory({ frame }: { frame: number }) {
   const t = useTheme();
@@ -77,12 +78,21 @@ export function ScrollHistory({ frame }: { frame: number }) {
   const hasNewer = offset > 0;       // 用户上滚看更早，底部有未看的更新内容
   const hasOlder = offset < maxChatScroll;  // 上方还有更早内容
 
+  // 合并 messages + systemEvents 按 ts 排序，统一渲染
+  const systemEvents = useStore((s) => s.systemEvents);
+  const items: { type: "msg" | "sys"; ts: number; data: unknown }[] = [
+    ...messages.map(m => ({ type: "msg" as const, ts: m.ts, data: m })),
+    ...systemEvents.map(e => ({ type: "sys" as const, ts: e.ts, data: e })),
+  ].sort((a, b) => a.ts - b.ts);
+
   return (
     <Box flexDirection="column" flexGrow={1}>
       {hasOlder && <Text color={t.dim}>▲ 还有更早内容（滚轮向上看）</Text>}
       <Box ref={viewportRef} height={availableRows} overflow="hidden" flexDirection="column">
         <Box ref={contentRef} flexShrink={0} marginTop={marginTop} flexDirection="column">
-          {messages.map(m => <MessageRow key={m.id} msg={m} frame={frame} />)}
+          {items.map(it => it.type === "msg"
+            ? <MessageRow key={`m${(it.data as { id: string }).id}`} msg={it.data as never} frame={frame} />
+            : <SystemEventRow key={`s${(it.data as { id: string }).id}`} ev={it.data as never} />)}
         </Box>
       </Box>
       {hasNewer && <Text color={t.dim}>▼ 还有更新内容（滚轮向下看）</Text>}
