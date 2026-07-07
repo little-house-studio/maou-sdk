@@ -34,6 +34,7 @@ import { SystemEventRow } from "./messages/SystemEventRow.js";
 export function ScrollHistory({ frame }: { frame: number }) {
   const t = useTheme();
   const messages = useStore((s) => s.messages);
+  const systemEvents = useStore((s) => s.systemEvents);
   const chatScrollOffset = useStore((s) => s.chatScrollOffset);
   const maxChatScroll = useStore((s) => s.maxChatScroll);
   const autoFollow = useStore((s) => s.autoFollow);
@@ -79,7 +80,6 @@ export function ScrollHistory({ frame }: { frame: number }) {
   const hasOlder = offset < maxChatScroll;  // 上方还有更早内容
 
   // 合并 messages + systemEvents 按 ts 排序，统一渲染
-  const systemEvents = useStore((s) => s.systemEvents);
   const items: { type: "msg" | "sys"; ts: number; data: unknown }[] = [
     ...messages.map(m => ({ type: "msg" as const, ts: m.ts, data: m })),
     ...systemEvents.map(e => ({ type: "sys" as const, ts: e.ts, data: e })),
