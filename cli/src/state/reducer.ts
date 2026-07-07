@@ -87,7 +87,7 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       let currentAssistantId = id;
       if (shouldCreate) {
         currentAssistantId = uid();
-        messages = [...messages, { id: currentAssistantId, role: "assistant", content: delta, streaming: true, ts: Date.now(), thinkingBlocks: [], round: state.round }];
+        messages = [...messages, { id: currentAssistantId, role: "assistant", content: delta, streaming: true, ts: Date.now(), thinkingBlocks: [], round: state.round + 1 }];
       } else {
         messages = messages.map(m => m.id === currentAssistantId ? { ...m, content: m.content + delta, streaming: true } : m);
       }
