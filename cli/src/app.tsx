@@ -143,6 +143,19 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
       }
       return;
     }
+    // Cmd+C（macOS）：Terminal.app 拦截不发到程序，但若终端转发（iTerm2 等），meta+c 触发复制
+    if (key.meta && char === "c") {
+      const sel = useStore.getState().selection;
+      if (sel) {
+        const text = extractSelection(sel.start, sel.end);
+        if (text && text.trim()) {
+          osc52(text);
+          useStore.getState().toastMsg(`已复制 ${text.length} 字`, "ok");
+        }
+        useStore.getState().setSelection(null);
+      }
+      return;
+    }
     if (key.escape) {
       // 有选区：Esc 清选区（优先级最高）
       if (useStore.getState().selection) { useStore.getState().setSelection(null); return; }
