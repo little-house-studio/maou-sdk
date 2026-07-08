@@ -79,6 +79,20 @@ export type {
   AgentPreview,
 } from "./factory.js";
 
+// ── 团队模板（多 Agent 协作开箱即用）──────────────────────────────────────
+
+export {
+  createTeamFromTemplate,
+  loadTeamTemplate,
+  listTeamTemplates,
+} from "./team-factory.js";
+export type {
+  TeamTemplate,
+  TeamMainSpec,
+  TeamSubagentSpec,
+  CreateTeamResult,
+} from "./team-factory.js";
+
 // ── defineAgent API（文件即 Agent 约定）──────────────────────────────────
 
 export { defineAgent } from "./define-agent.js";

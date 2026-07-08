@@ -1,0 +1,34 @@
+{
+  "name": "default-team",
+  "description": "默认多 Agent 团队：一个 Coding 主 Agent + 三个专业子 Agent（探索/审查/测试）。开箱即用，主 Agent 可通过 subagent_explore/reviewer/tester 委托任务。",
+  "main": {
+    "name": "main",
+    "display_name": "Coding Agent",
+    "role": "coding",
+    "preset": "coder",
+    "template": "coding"
+  },
+  "subagents": [
+    {
+      "name": "explore",
+      "from_template": "subagents/explore",
+      "display_name": "Explorer",
+      "role": "explore",
+      "description": "探索者：快速了解代码库结构、定位文件、查找实现。只读。"
+    },
+    {
+      "name": "reviewer",
+      "from_template": "subagents/reviewer",
+      "display_name": "Reviewer",
+      "role": "reviewer",
+      "description": "代码审查员：只读 + 辅助判断，给出审查意见。"
+    },
+    {
+      "name": "tester",
+      "from_template": "subagents/tester",
+      "display_name": "Tester",
+      "role": "tester",
+      "description": "测试员：可写文件 + terminal，编写和运行测试。"
+    }
+  ]
+}

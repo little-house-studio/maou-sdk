@@ -10,7 +10,7 @@ import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { ChatPage } from "../render/ChatPage.js";
 import { EventBlock } from "../render/EventBlock.js";
 import { InputBar } from "../render/InputBar.js";
-import { StatusBar } from "../render/StatusBar.js";
+import { NavBar, InfoBar } from "../render/NavBar.js";
 import { CommandPalette } from "../overlay/CommandPalette.js";
 import { ModelDialog } from "../overlay/ModelDialog.js";
 import { SessionDialog } from "../overlay/SessionDialog.js";
@@ -54,8 +54,11 @@ export function Layout({
       {/* 输入框 */}
       <InputBar value={value} onSubmit={onSubmit} onChange={onInputChange} onFullEditor={onFullEditor} />
 
-      {/* 状态栏 */}
-      <StatusBar />
+      {/* 信息栏（倒数第二行） */}
+      <InfoBar />
+
+      {/* 导航栏按键（最底部） */}
+      <NavBar />
 
       {/* Overlay：命令面板 / 模型 / 会话 / 帮助 / 设置 */}
       {overlay === "command" && <CommandPalette onRun={(id) => useStore.getState().runCommand(id)} />}

@@ -9,6 +9,7 @@ import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { TASK_MANAGER, TaskScheduler } from "../../task/task_manage/tool.js";
+import type { ForkOptions } from "@little-house-studio/types";
 
 const STATUS_EMOJI: Record<string, string> = {
   idle: "💤", busy: "🔵", working: "🟢", stopped: "🔴", error: "💥",
@@ -49,6 +50,63 @@ export class SubagentTool extends Tool {
           description:
             "fork_mode='context_and_config' 时必填：子 Agent 使用的 agent 名（必须是 AgentRegistry 中已存在的 agent）",
         },
+        // ── ForkOptions 透出（engine 已支持，工具层补暴露） ──
+        max_recursion_depth: {
+          type: "number",
+          description:
+            "子 Agent 再 fork 子 Agent 的层数上限（默认 2）。0 = 禁止任何 fork。" +
+            "控制嵌套深度防失控；一般无需调高。",
+        },
+        timeout_ms: {
+          type: "number",
+          description:
+            "子 Agent 执行的 wall-clock 超时（毫秒）。超时后触发 wrap-up 提示让子 Agent 收尾，" +
+            "再超 1.5x 强制 abort。建议长任务设 60000-300000。",
+        },
+        soft_budget: {
+          type: "number",
+          description:
+            "软请求预算（LLM 请求次数）。超过后注入 wrap-up 提示，超过 1.5x 强制 abort。" +
+            "防止子 Agent 死循环烧 token。",
+        },
+        output_schema: {
+          type: "object",
+          description:
+            "校验子 Agent yield 提交结果的 JSON Schema（P2-1）。" +
+            "设置后：yield 的 result 会按此 schema 校验，失败则注入反馈让子 Agent 重试（最多若干次）。" +
+            "用于强制子 Agent 返回结构化数据。detached=true 时无效（结果异步到达）。",
+        },
+        detached: {
+          type: "boolean",
+          description:
+            "是否后台 detached 运行（默认 false）。true = 立即返回不阻塞，子 Agent 后台跑，" +
+            "结果通过 lifecycle 事件总线异步上报，可用 agent_manage list 或事件流查进度。" +
+            "适合 fire-and-forget 的长任务。仅对 action=fork 有效。",
+        },
+        isolated: {
+          type: "boolean",
+          description:
+            "是否在 git worktree 隔离环境运行（默认 false）。true = 子 Agent 改动与主工作区完全隔离，" +
+            "结束后按 merge_back/patch_back 回收。仅 fork_mode='context_only' 且 git 仓库有效。",
+        },
+        merge_back: {
+          type: "boolean",
+          description: "isolated=true 结束后是否 merge 回主分支（默认 false）。仅 isolated=true 生效。",
+        },
+        patch_back: {
+          type: "boolean",
+          description: "isolated=true 结束后是否生成 patch 文件（默认 false）。仅 isolated=true 且 merge_back=false 生效。",
+        },
+        inherit_mcp: {
+          type: "boolean",
+          description: "是否继承父 Agent 的 MCP 工具（默认 true）。false = 子 Agent 不继承父 MCP（自建连或无）。",
+        },
+        config_overrides: {
+          type: "object",
+          description:
+            "临时覆盖 agent.json 字段（如 system prompt / tool 白名单 / model）。" +
+            "仅 fork_mode='context_and_config' 生效，会创建临时 agent 文件，子 session 结束清理。",
+        },
       },
       required: ["action"],
       additionalProperties: false,
@@ -68,7 +126,8 @@ export class SubagentTool extends Tool {
     if (forkMode === "context_and_config" && !agentName) {
       return createToolResponse(false, "fork_mode='context_and_config' 时必须传 agent_name（指定子 Agent 使用的 agent 配置）。");
     }
-    const forkOptions = { forkMode, agentName } as { forkMode: "context_only" | "context_and_config"; agentName?: string };
+    // 组装完整 ForkOptions（engine 已支持全部字段，这里把 LLM 参数透传下去）
+    const forkOptions = this.buildForkOptions(params, forkMode, agentName);
 
     // fork：真并行执行子 Agent（依赖 ctx.subagentExecutor 由 runtime 注入）
     if (action === "fork" || action === "create") {
@@ -104,7 +163,7 @@ export class SubagentTool extends Tool {
     task: string,
     _description: string,
     ctx: ToolContext,
-    forkOptions: { forkMode: "context_only" | "context_and_config"; agentName?: string },
+    forkOptions: ForkOptions,
   ): Promise<ToolResponse> {
     if (!task) return createToolResponse(false, "请提供 task（分配给子 Agent 的任务描述）。");
     if (!ctx.subagentExecutor) {
@@ -116,21 +175,25 @@ export class SubagentTool extends Tool {
     }
 
     const taskId = name || `task-${Date.now().toString(36)}`;
+    const detached = forkOptions.detached === true;
     try {
       const result = await ctx.subagentExecutor.fork(taskId, task, forkOptions);
       const status = result.ok ? "✅" : "❌";
       const lines = [
-        `${status} 子 Agent 执行完成（${result.elapsedMs}ms）`,
+        detached
+          ? `${status} 子 Agent 已后台启动（detached，结果异步到达）`
+          : `${status} 子 Agent 执行完成（${result.elapsedMs}ms）`,
         `taskId: ${result.taskId}`,
         `subSessionId: ${result.subSessionId}`,
-        `forkMode: ${forkOptions.forkMode}${forkOptions.agentName ? ` (agent=${forkOptions.agentName})` : ""}`,
+        `forkMode: ${forkOptions.forkMode ?? "context_only"}${forkOptions.agentName ? ` (agent=${forkOptions.agentName})` : ""}`,
+        detached ? `（后台运行中，可用 agent_manage list 或事件流查进度）` : "",
         result.error ? `error: ${result.error}` : "",
         "── 输出 ──",
         result.output || "(无输出)",
       ].filter(Boolean);
       return createToolResponse(result.ok, lines.join("\n"), {
         payload: { result },
-        displayEvents: [{ type: "terminal", stream: "info", text: `[子 Agent] ${taskId} 完成: ok=${result.ok}` }],
+        displayEvents: [{ type: "terminal", stream: "info", text: `[子 Agent] ${taskId}${detached ? " 已后台启动" : " 完成"}: ok=${result.ok}` }],
       });
     } catch (err) {
       return createToolResponse(false, `fork 失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -145,7 +208,7 @@ export class SubagentTool extends Tool {
    */
   private async doForkLayer(
     ctx: ToolContext,
-    forkOptions: { forkMode: "context_only" | "context_and_config"; agentName?: string },
+    forkOptions: ForkOptions,
   ): Promise<ToolResponse> {
     if (!ctx.subagentExecutor) {
       return createToolResponse(
@@ -187,5 +250,43 @@ export class SubagentTool extends Tool {
     } catch (err) {
       return createToolResponse(false, `fork_layer 失败: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /**
+   * 把 LLM 传入的 snake_case 参数组装成完整 ForkOptions（camelCase）。
+   * engine 已支持全部字段，这里只做映射，不重写逻辑（DRY）。
+   * 未传的字段保持 undefined，由 engine 用默认值。
+   */
+  private buildForkOptions(
+    params: Record<string, unknown>,
+    forkMode: "context_only" | "context_and_config",
+    agentName?: string,
+  ): ForkOptions {
+    const opts: ForkOptions = { forkMode, agentName };
+
+    if (params.max_recursion_depth !== undefined && params.max_recursion_depth !== null) {
+      const n = Number(params.max_recursion_depth);
+      if (!Number.isNaN(n)) opts.maxRecursionDepth = n;
+    }
+    if (params.timeout_ms !== undefined && params.timeout_ms !== null) {
+      const n = Number(params.timeout_ms);
+      if (!Number.isNaN(n)) opts.maxRuntimeMs = n;
+    }
+    if (params.soft_budget !== undefined && params.soft_budget !== null) {
+      const n = Number(params.soft_budget);
+      if (!Number.isNaN(n)) opts.softRequestBudget = n;
+    }
+    if (params.output_schema && typeof params.output_schema === "object") {
+      opts.outputSchema = params.output_schema as Record<string, unknown>;
+    }
+    if (params.detached === true) opts.detached = true;
+    if (params.isolated === true) opts.isolated = true;
+    if (params.merge_back === true) opts.mergeBack = true;
+    if (params.patch_back === true) opts.patchBack = true;
+    if (params.inherit_mcp === false) opts.inheritMcp = false;
+    if (params.config_overrides && typeof params.config_overrides === "object") {
+      opts.configOverrides = params.config_overrides as Record<string, unknown>;
+    }
+    return opts;
   }
 }

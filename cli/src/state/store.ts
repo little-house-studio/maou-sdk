@@ -56,6 +56,13 @@ interface Store extends UIState {
   setInputLineCount: (n: number) => void;
   inputCursorShift: { dir: "up" | "down"; nonce: number } | null;  // 滚轮→InputBar 光标移动指令
   shiftInputCursor: (dir: "up" | "down") => void;
+  // InputBar 屏幕矩形 + 文本选区（鼠标点击移光标 / 框选删除用）
+  inputRect: { left: number; top: number; width: number; height: number } | null;
+  setInputRect: (r: { left: number; top: number; width: number; height: number } | null) => void;
+  inputTextSel: { startIdx: number; endIdx: number } | null;  // 字符索引，按 code point
+  setInputTextSel: (s: { startIdx: number; endIdx: number } | null) => void;
+  inputSelectCmd: { col: number; line: number; phase: "start" | "extend"; nonce: number } | null;
+  dispatchInputSelect: (col: number, line: number, phase: "start" | "extend") => void;
   // 生成中消息排队：streaming 时 Enter 不发送而是入队，生成完自动 drain
   pendingMessages: string[];
   enqueueMessage: (text: string) => void;
@@ -108,6 +115,9 @@ const initialState: UIState = {
   toast: null,
   overlay: null,
   mouseCursorCol: null,
+  inputRect: null,
+  inputTextSel: null,
+  inputSelectCmd: null,
   chatScrollOffset: 0,
 };
 
@@ -226,6 +236,12 @@ export const useStore = create<Store>((set) => ({
   setInputLineCount: (n) => set({ inputLineCount: n }),
   inputCursorShift: null,
   shiftInputCursor: (dir) => set((s) => ({ inputCursorShift: { dir, nonce: (s.inputCursorShift?.nonce ?? 0) + 1 } })),
+  inputRect: null,
+  setInputRect: (r) => set({ inputRect: r }),
+  inputTextSel: null,
+  setInputTextSel: (s) => set({ inputTextSel: s }),
+  inputSelectCmd: null,
+  dispatchInputSelect: (col, line, phase) => set((s) => ({ inputSelectCmd: { col, line, phase, nonce: (s.inputSelectCmd?.nonce ?? 0) + 1 } })),
 
   // 生成中消息排队
   pendingMessages: [],

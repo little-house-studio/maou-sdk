@@ -355,12 +355,20 @@ export class AgentRuntime {
         // /goal 指令：创建监督 Agent session + 绑定到主 session
         startSupervisorMode: (mainSessionId: string, agentName: string, chatKey?: string): string => {
           const supervisorSession = this.sessions.create(undefined, agentName);
+          // 取主 session 的 agentName 用于 MessageBus 双向寻址
+          const mainSession = this.sessions.load(mainSessionId);
+          const mainAgentName = mainSession?.agentName ?? "main";
           SUPERVISOR_MANAGER.bind({
             mainSessionId,
             supervisorSessionId: supervisorSession.id,
+            supervisorAgentName: agentName,
+            mainAgentName,
             chatKey,
           });
-          this.log("info", `[SUPERVISOR] bind main=${mainSessionId} → supervisor=${supervisorSession.id}`);
+          // 注册 MessageBus mailbox：让主 Agent 能 send 给 supervisor，supervisor 也能收到
+          MessageBus.global().register(agentName);
+          MessageBus.global().register(mainAgentName);
+          this.log("info", `[SUPERVISOR] bind main=${mainSessionId}(${mainAgentName}) → supervisor=${supervisorSession.id}(${agentName})`);
           return supervisorSession.id;
         },
         // supervisor_task_control end：解除绑定，返回主 session ID
@@ -818,8 +826,27 @@ export class AgentRuntime {
     // #16 可观测：本次 run 的累计重试次数与 token
     let totalRetries = 0;
     let totalTokens = 0;
+    // 最近一轮的 assistant 文本（loop 结束后供监督模式推送用）
+    let lastAssistantContent = "";
 
     while (roundCount < maxRounds) {
+      // ── P1-3 消息总线：每轮 poll 自己的 mailbox，把队友消息作为 user 消息注入 ──
+      // 队友通过 agent_manage message action 走 MessageBus.send 投递（带 from 说话人）。
+      // 这里排空 mailbox，content 标注来源 [来自 {from}]，让主 Agent 知道是谁说的。
+      // 不替代 callMainAgent（supervisor→main 仍走紧耦合路径）。
+      const pendingBus = MessageBus.global().inbox(runAgentName);
+      for (const busMsg of pendingBus) {
+        const tagged = busMsg.replyTo
+          ? `[来自 ${busMsg.from}（回复 ${busMsg.replyTo.slice(0, 8)}）]\n${busMsg.body}`
+          : `[来自 ${busMsg.from}]\n${busMsg.body}`;
+        this.sessions.appendMessage(sessionId!, "user", tagged, {
+          source: "message_bus",
+          from: busMsg.from,
+          busMessageId: busMsg.id,
+        });
+        yield this.logEvent("info", `📬 收到 ${busMsg.from} → ${runAgentName} 的总线消息，已注入 session`);
+      }
+
       // ── P0-5: 每轮取当前 preset（支持运行时 switchPreset 切换 model）──
       // 初始为 options.preset；运行中 switchPreset() 更新 this.currentPreset，
       // 下一轮此处取到新 preset，所有后续 LLM 调用 / contextLimit / 日志都用新值。
@@ -1175,6 +1202,7 @@ export class AgentRuntime {
 
       // 存储 assistant 消息（不再用空格占位，空串即可；适配器会处理 tool_calls 配对）
       const contentToUse = result.content || "";
+      lastAssistantContent = contentToUse;
       this.sessions.appendMessage(sessionId!, "assistant", contentToUse, {
         round: currentRound,
         retry_count: result.retryIndex,
@@ -1285,6 +1313,27 @@ export class AgentRuntime {
       // 无队列消息 → 退出循环
       this.hooks?.agentStop(currentRound);
       break;
+    }
+
+    // ── 步骤1: 监督模式 —— 主 Agent loop 完成，主动推送本轮摘要给 supervisor ──
+    // 仅当当前 session 有「进行中」的监督绑定时推送。supervisor 收到后会自动验收
+    // （对照 plan 验收标准）：不合格 → 派新需求（通过 MessageBus 回灌，主 Agent 下一轮 poll 到）；
+    // 合格 → 向用户发起最终验收。这把控制权从「supervisor 驱动」反转成「主 Agent 持续干活 + supervisor 持续监督」。
+    const supervisorBinding = SUPERVISOR_MANAGER.getByMain(sessionId!);
+    if (supervisorBinding && supervisorBinding.state === "started") {
+      const lastAssistant = String(lastAssistantContent ?? "").slice(0, 2000);
+      const summary =
+        `<loop_report>\n` +
+        `主 Agent 一轮 loop 已完成（round=${roundCount}, tokens=${totalTokens}）。\n` +
+        `本轮最终输出：\n${lastAssistant || "(无文本输出)"}\n` +
+        `</loop_report>`;
+      const supervisorName = supervisorBinding.supervisorAgentName ?? "supervisor";
+      try {
+        MessageBus.global().send(supervisorName, summary, runAgentName);
+        yield this.logEvent("info", `📨 监督模式：本轮 loop 摘要已推送给 supervisor(${supervisorName})`);
+      } catch (err) {
+        this.log("warning", `[SUPERVISOR] 推送 loop 摘要失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
     // ── 4. 完成 ──
@@ -1532,6 +1581,8 @@ export class AgentRuntime {
       isSupervisorSession: SUPERVISOR_MANAGER.isSupervisorSession(sessionId ?? ""),
       // 注入 SUPERVISOR_MANAGER 单例（supervisor 工具通过它查询/更新绑定）
       supervisorManager: SUPERVISOR_MANAGER,
+      // 注入 MessageBus 单例（agent_manage message action 走总线投递，带 from 说话人）
+      messageBus: MessageBus.global(),
       // ── llm_judge 工具注入：辅助模型调用器 + preset 解析 ──
       // llm_judge 工具通过 ctx.auxModelCaller 调用辅助 LLM 做独立判断
       // （安全检查/代码审查/路由判定等）。auxModelCaller / resolveHelperPresetFn

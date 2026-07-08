@@ -9,10 +9,12 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { Box, Text } from "ink";
+import type { DOMElement } from "ink";
 import { TextArea, type TextAreaHandle, type TLabels, type TStyles } from "react-ink-textarea";
 import { useTheme } from "../theme/theme-context.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useCleanInput } from "../hooks/useCleanInput.js";
+import { useInputSelection } from "../hooks/useInputSelection.js";
 import { useStore } from "../state/store.js";
 
 // ── Markdown 语法着色规则（字符级标签） ────────────────────────
@@ -46,10 +48,24 @@ export function FullScreenEditor({ initial, onExit }: Props) {
   const t = useTheme();
   const term = useTerminalSize();
   const taRef = useRef<TextAreaHandle>(null);
+  const boxRef = useRef<DOMElement | null>(null);
   const [value, setValue] = useState(initial);
   const [cursor, setCursor] = useState<[number, number]>([0, 0]);
   const [forcedCursor, setForcedCursor] = useState<[number, number] | null>(null);
   const inputCursorShift = useStore((s) => s.inputCursorShift);
+
+  // 文本选区（框选删除）：全屏编辑器复用同一套，colOffset=1（无 ❯ 前缀，仅 paddingX=1）
+  const { hasTextSel } = useInputSelection({
+    boxRef,
+    value,
+    onChange: setValue,
+    colOffset: 1,
+    setCursor: (pos) => {
+      setForcedCursor(pos);
+      setTimeout(() => setForcedCursor(null), 50);
+    },
+    active: true,
+  });
 
   // Esc 退出，值带回（react-ink-textarea keybindings 不支持 Esc，用 useCleanInput）
   useCleanInput((char, key) => {
@@ -96,7 +112,7 @@ export function FullScreenEditor({ initial, onExit }: Props) {
         <Text color={t.accent} bold>// 全屏编辑器 · Markdown</Text>
         <Text color={t.dim}>Esc 返回 · Enter 换行（不发送）</Text>
       </Box>
-      <Box flexGrow={1} flexDirection="column" borderStyle="single" borderColor={t.borderAccent} paddingX={1}>
+      <Box ref={boxRef} flexGrow={1} flexDirection="column" borderStyle="single" borderColor={t.borderAccent} paddingX={1}>
         <TextArea
           ref={taRef}
           focus
@@ -105,8 +121,8 @@ export function FullScreenEditor({ initial, onExit }: Props) {
           onChange={setValue}
           onCursorChange={(pos) => setCursor(pos)}
           onSubmit={() => { /* 全屏内 Enter 不提交：DESIGN.md 要求回车换行 */ }}
-          // 禁用 Enter 提交，使其变为换行；Esc 退出由外层 useCleanInput 处理
-          keybindings={{ "Enter": false }}
+          // 禁用 Enter 提交（变换行）；有文本选区时禁 Backspace/Delete（由 useInputSelection 接管删选区）
+          keybindings={hasTextSel ? { "Enter": false, "Backspace": false, "Delete": false } : { "Enter": false }}
           initialLineCount={Math.max(1, term.rows - 6)}
           viewportLines={term.rows - 6}
           labels={MD_LABELS}

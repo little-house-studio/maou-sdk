@@ -31,6 +31,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@alcalzone/ansi-tokenize": "^0.3.0",
     "@little-house-studio/agent": "workspace:*",
     "@little-house-studio/coding-agent": "workspace:*",
     "@little-house-studio/context": "workspace:*",

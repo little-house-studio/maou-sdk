@@ -16,7 +16,7 @@ import { openExternalEditor } from "./hooks/useExternalEditor.js";
 import { useStore } from "./state/store.js";
 import { useAgent } from "./events/useAgent.js";
 import { useMouseInput } from "./input/useMouseInput.js";
-import { extractSelection } from "./input/screen-buffer.js";
+import { extractSelection as vramExtract, clearSelection as vramClear, getSelection as vramGet, renderWithSelection } from "./render/vram-layer.js";
 import { osc52 } from "./input/osc52.js";
 import type { LayoutRect } from "./input/hit-test.js";
 import type { AgentCliConfig } from "./types.js";
@@ -92,16 +92,15 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     }
   }, [pendingSubmit, fullEditorResult, send]);
 
-  // 鼠标捕获：store.mouseCapture（运行时可切换）。Terminal.app 下 1000 模式与直接拖拽
-  // 选字互斥，默认开鼠标功能，按 Ctrl+Shift+M 切换关闭以选字。
-  const mouseCapture = useStore((s) => s.mouseCapture);
-  const mouseEnabled = mouseCapture;
+  // vram 方案：总是开 ?1003 鼠标（选区蓝底由 vram-layer 渲染）
+  const mouseEnabled = true;
   // 全屏编辑器开时切换鼠标 rect：输入框不再在底部，全屏文本区占据整屏。
   const fullEditorOpen = fullEditorInitial !== null;
   const inputLineCount = useStore((s) => s.inputLineCount);
+  const inputRect = useStore((s) => s.inputRect);
   const mouseRect: LayoutRect = fullEditorOpen
-    ? { inputRowFromBottom: 0, inputLineCount, chatTop: 2, chatBottom: term.rows - 3 }
-    : { inputRowFromBottom: 2, inputLineCount, chatTop: 2, chatBottom: term.rows - 3 };
+    ? { inputRowFromBottom: 0, inputLineCount, chatTop: 2, chatBottom: term.rows - 3, inputRect, inputTextColOffset: 1 }
+    : { inputRowFromBottom: 2, inputLineCount, chatTop: 2, chatBottom: term.rows - 3, inputRect, inputTextColOffset: 4 };
 
   useMouseInput(mouseEnabled, mouseRect, {
     onInputCursor: (col, line) => {
@@ -113,53 +112,64 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   });
 
   // 全局快捷键（全屏编辑器开时由 FullScreenEditor 自己处理，不干预）
-  // Ctrl+C 双击退出：第一次警告，3 秒内第二次退出（streaming 时第一次中断生成）
+  // Ctrl+C 分层逻辑：有选区→清选区 | streaming→中断/退出 | 空闲→双击退出
   const ctrlCAtRef = useRef(0);
+  const ctrlCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useCleanInput((char, key) => {
     if (fullEditorInitial !== null) return;
     if (key.ctrl && char === "c") {
-      // 有选区：Ctrl+C 复制选区 + 清选区（不退出）
-      const sel = useStore.getState().selection;
-      if (sel) {
-        const text = extractSelection(sel.start, sel.end);
-        if (text && text.trim()) {
-          osc52(text);
-          useStore.getState().toastMsg(`已复制 ${text.length} 字`, "ok");
-        }
-        useStore.getState().setSelection(null);
+      // 1. 有选区：清选区（松手已自动复制，这里只清蓝底，不退出）
+      if (vramGet()) {
+        vramClear();
+        const cols = process.stdout.columns || 80;
+        const rows = process.stdout.rows || 24;
+        renderWithSelection(cols, rows);
         return;
       }
-      // streaming 时：第一次 Ctrl+C 中断；非 streaming 或已中断后再按才走双击退出
+      // 2. streaming：第一次中断，3秒内第二次退出
       if (streaming && !useStore.getState().aborting) {
         abort();
+        ctrlCAtRef.current = Date.now();
+        useStore.getState().toastMsg("已中断 · 再按一次 Ctrl+C 退出", "warn");
         return;
       }
+      // 3. 无选区非 streaming（或已中断）：双击退出
       const now = Date.now();
       if (now - ctrlCAtRef.current < 3000) {
+        if (ctrlCTimerRef.current) clearTimeout(ctrlCTimerRef.current);
         useStore.getState().requestExit();
       } else {
         ctrlCAtRef.current = now;
         useStore.getState().toastMsg("再按一次 Ctrl+C 退出", "warn");
+        // 3秒后提示自动消失
+        if (ctrlCTimerRef.current) clearTimeout(ctrlCTimerRef.current);
+        ctrlCTimerRef.current = setTimeout(() => {
+          if (Date.now() - ctrlCAtRef.current >= 2900) {
+            useStore.getState().toastMsg("", "info");
+            const cols = process.stdout.columns || 80;
+            const rows = process.stdout.rows || 24;
+            renderWithSelection(cols, rows);
+          }
+        }, 3000);
       }
       return;
     }
     // Cmd+C（macOS）：Terminal.app 拦截不发到程序，但若终端转发（iTerm2 等），meta+c 触发复制
     if (key.meta && char === "c") {
-      const sel = useStore.getState().selection;
+      const sel = vramGet();
       if (sel) {
-        const text = extractSelection(sel.start, sel.end);
+        const text = vramExtract();
         if (text && text.trim()) {
           osc52(text);
           useStore.getState().toastMsg(`已复制 ${text.length} 字`, "ok");
         }
-        useStore.getState().setSelection(null);
+        vramClear();
       }
       return;
     }
     if (key.escape) {
-      // 有选区：Esc 清选区（优先级最高）
-      if (useStore.getState().selection) { useStore.getState().setSelection(null); return; }
-      // 补全菜单开时，Esc 关闭补全
+      // 有选区：Esc 清选区
+      if (vramGet()) { vramClear(); return; }
       if (useStore.getState().completion) { useStore.getState().closeCompletion(); return; }
       if (overlay) { useStore.getState().setOverlay(null); return; }
       if (streaming) { abort(); return; }

@@ -39,6 +39,9 @@ importers:
 
   cli:
     dependencies:
+      '@alcalzone/ansi-tokenize':
+        specifier: ^0.3.0
+        version: 0.3.0
       '@little-house-studio/agent':
         specifier: workspace:*
         version: link:../core/agent

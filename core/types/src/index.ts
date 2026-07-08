@@ -158,6 +158,17 @@ export interface ToolContext {
    * 用最小契约接口避免 types → tools 的循环依赖。
    */
   yieldResult?: (result: string, summary?: string) => void
+  /**
+   * Agent 间消息总线（由 AgentRuntime 注入 MessageBus 单例）。
+   *
+   * agent_manage 工具的 message/interrupt/insert action 通过它向队友投递消息
+   * （带 from 说话人），主 Agent 循环通过 inbox 轮询收取。这是 agent 间通信的
+   * 统一通道——替代原 TeamManager.sendMessage 的"入数组无消费端"实现。
+   *
+   * 缺省（undefined）→ agent_manage 退回原 TeamManager 内存队列行为。
+   * 用最小契约接口避免 types → agent 的循环依赖。
+   */
+  messageBus?: MessageBusLike
 }
 
 /**
@@ -213,15 +224,59 @@ export interface SupervisorManagerLike {
   list(): SupervisorBindingLike[]
 }
 
-export type SupervisorState = "planning" | "started" | "confirming" | "ended"
+export type SupervisorState =
+  | "planning"
+  | "confirming_plan"
+  | "started"
+  | "confirming"
+  | "ended"
 
 export interface SupervisorBindingLike {
   mainSessionId: string
   supervisorSessionId: string
+  supervisorAgentName?: string
+  mainAgentName?: string
   state: SupervisorState
   plan?: string
   createdAt: number
   chatKey?: string
+  verifyRounds: number
+  lastFailReason?: string
+  sameReasonStreak: number
+  lastVerifiedReportFingerprint?: string
+  lastVerdict?: "pass" | "fail" | "loop"
+}
+
+/**
+ * Agent 间消息总线的最小契约（types 包不依赖 agent 包）。
+ * 真实实现见 @little-house-studio/agent 的 MessageBus。
+ *
+ * agent_manage 工具通过此接口向队友投递消息（带 from 说话人），
+ * AgentRuntime 通过此接口轮询自己的 mailbox 收取队友消息。
+ */
+export interface MessageBusLike {
+  /** 发送一条消息到目标 agent（非阻塞，带说话人 from）。 */
+  send(to: string, body: string, from: string, opts?: { replyTo?: string }): { to: string; outcome: "delivered" | "buffered" | "failed"; error?: string }
+  /** 排空（或 peek）目标 agent 的 mailbox。opts.peek=true 时只看不取。 */
+  inbox(agentName: string, opts?: { peek?: boolean }): BusMessageLike[]
+  /** 目标 agent 的未读消息数。 */
+  unreadCount(agentName: string): number
+  /** 广播到所有已知 agent。 */
+  broadcast(body: string, from: string, opts?: { replyTo?: string }): { to: string; outcome: "delivered" | "buffered" | "failed"; error?: string }[]
+  /** 注册一个 agent 名（使其可被 send/broadcast 命中）。 */
+  register(agentName: string): void
+  /** 注销一个 agent 名。 */
+  unregister(agentName: string): void
+}
+
+/** 总线消息（说话人结构：from/to/body）。 */
+export interface BusMessageLike {
+  id: string
+  from: string
+  to: string
+  body: string
+  ts: number
+  replyTo?: string
 }
 
 /**
@@ -270,6 +325,16 @@ export interface ForkOptions {
    * 0 = 禁止任何 fork（fork 自身即拒绝）。
    */
   maxRecursionDepth?: number
+  /**
+   * 本次 fork 的软请求预算（覆盖 executor 构造时的 defaultSoftRequestBudget）。
+   * 超过后注入 wrap-up 提示，超过 1.5x 强制 abort。缺省 = 用 executor 默认值（90）。
+   */
+  softRequestBudget?: number
+  /**
+   * 本次 fork 的 wall-clock 超时（毫秒，覆盖 executor 构造时的 defaultMaxRuntimeMs）。
+   * 超时后 abort。缺省 = 用 executor 默认值（0=禁用）。
+   */
+  maxRuntimeMs?: number
   /**
    * 进度回调（P1-6）。fork 执行期间周期性上报子 Agent 进度。
    * 调用方可通过此回调实时观察子 Agent 的工具调用 / token / 输出。

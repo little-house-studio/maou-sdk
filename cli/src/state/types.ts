@@ -109,5 +109,8 @@ export interface UIState {
   toast: Toast | null;
   overlay: OverlayKind;
   mouseCursorCol: number | null;  // 鼠标点击输入框目标列
+  inputRect: { left: number; top: number; width: number; height: number } | null;  // InputBar 屏幕矩形（hitTest 用）
+  inputTextSel: { startIdx: number; endIdx: number } | null;  // 输入框文本选区（字符索引，退格删除用）
+  inputSelectCmd: { col: number; line: number; phase: "start" | "extend"; nonce: number } | null;  // 鼠标→输入框选区指令
   chatScrollOffset: number;       // 对话区滚动偏移
 }

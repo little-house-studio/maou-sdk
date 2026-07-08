@@ -9,18 +9,26 @@
  *    最后一行按下 → 不新建行，前进历史；历史到末尾回空。
  *  - 补全菜单显示时：上下键选菜单（不移光标），Tab/Enter 确认，Esc 关闭。
  *  - 空输入框按左键 → 进 agent 管理面板。
+ *
+ * 修复：
+ *  - cursor 用 ref 存最新值（避免闭包旧值）
+ *  - 浏览历史前保存原始输入，下键到末尾恢复
+ *  - colToIndex 用 [...text] 按 code point 遍历（修 emoji 代理对）
+ *  - 补全确认去重（Tab/Enter 不双重触发）
+ *  - forcedCursor 用 ref 管理 timeout（避免互相覆盖）
+ *  - streaming 时发送走入队，但显示用户消息
  */
 
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import { Box, Text } from "ink";
+import type { DOMElement } from "ink";
 import { TextArea, type TextAreaHandle } from "react-ink-textarea";
 import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useImeCursor } from "../hooks/useImeCursor.js";
-import { useCleanInput } from "../hooks/useCleanInput.js";
+import { useInputSelection } from "../hooks/useInputSelection.js";
 import { colToIndex } from "../input/hit-test.js";
-import { useEffect } from "react";
 
 interface Props {
   value: string;
@@ -41,75 +49,112 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
   const setInputLineCount = useStore((s) => s.setInputLineCount);
   const inputCursorShift = useStore((s) => s.inputCursorShift);
   const completion = useStore((s) => s.completion);
+  const overlay = useStore((s) => s.overlay);
+  const showComp = completion !== null;
   const taRef = useRef<TextAreaHandle>(null);
-  const [cursor, setCursor] = useState<[number, number]>([0, 0]);
+  const boxRef = useRef<DOMElement | null>(null);
   const [forcedCursor, setForcedCursor] = useState<[number, number] | null>(null);
 
-  // 上报当前内容行数到 store（供鼠标滚轮分流判断 >viewportLines）
+  // cursor 用 ref 存最新值（避免 onFirstLineUp 等回调用闭包旧值）
+  const cursorRef = useRef<[number, number]>([0, 0]);
+  // forcedCursor timeout 管理（避免互相覆盖）
+  const forcedCursorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // pending forced：设了 forcedCursor 后等 TextArea onCursorChange 确认到位再清，
+  // 避免 50ms 提前清导致受控→非受控切换时 cursor 回退（光标闪回原位）
+  const pendingForced = useRef<[number, number] | null>(null);
+  // 浏览历史前保存原始输入（下键到末尾恢复）
+  const savedInputRef = useRef<string | null>(null);
+
+  const setForcedWithTimeout = (pos: [number, number]) => {
+    if (forcedCursorTimer.current) clearTimeout(forcedCursorTimer.current);
+    pendingForced.current = pos;
+    setForcedCursor(pos);
+    // 兜底：500ms 内 onCursorChange 没确认就强制清（防止卡死受控）
+    forcedCursorTimer.current = setTimeout(() => {
+      pendingForced.current = null;
+      setForcedCursor(null);
+      forcedCursorTimer.current = null;
+    }, 500);
+  };
+
+  // 上报当前内容行数到 store
   useEffect(() => {
     setInputLineCount(Math.max(1, value.split("\n").length));
   }, [value, setInputLineCount]);
 
-  // 鼠标点击移光标：mouseCursorCol（字符列）+ mouseCursorLine（0-based 行）→ 字符索引 → cursorPosition
+  // 鼠标点击移光标
   useEffect(() => {
     if (mouseCursorCol === null) return;
     const line = mouseCursorLine ?? 0;
     const idx = colToIndex(value, mouseCursorCol, line);
-    setForcedCursor([line, idx]);
+    setForcedWithTimeout([line, idx]);
     setMouseCursorCol(null);
     setMouseCursorLine(null);
-    // 下一帧清掉，让键盘光标移动恢复
-    const id = setTimeout(() => setForcedCursor(null), 50);
-    return () => clearTimeout(id);
   }, [mouseCursorCol, mouseCursorLine, value, setMouseCursorCol, setMouseCursorLine]);
 
-  // 滚轮驱动 InputBar 光标移动（内容 >4 行时，鼠标在输入框行内滚轮）
-  // nonce 变化即触发一次；dir=up 光标上移一行，down 下移一行（让 textarea 内部滚动跟随）
+  // 滚轮驱动 InputBar 光标移动
   useEffect(() => {
     if (inputCursorShift === null) return;
-    const [line, col] = cursor;
+    const [line, col] = cursorRef.current;
     if (inputCursorShift.dir === "up" && line > 0) {
-      setForcedCursor([line - 1, col]);
+      setForcedWithTimeout([line - 1, col]);
     } else if (inputCursorShift.dir === "down") {
-      setForcedCursor([line + 1, col]);
+      setForcedWithTimeout([line + 1, col]);
     }
-    const id = setTimeout(() => setForcedCursor(null), 50);
-    return () => clearTimeout(id);
-  }, [inputCursorShift, cursor]);
+  }, [inputCursorShift]);
 
-  // IME 硬件光标定位（输入框获焦时显示，候选窗跟随）
-  // 传 cursorLine 修正多行场景的硬件光标行位置（避免双光标）
-  // colOffset=4：paddingX(1) + " ❯ "(3) = 4 列（0-based），与 InputBar 渲染结构一致
-  // inputRowFromBottom=2：状态栏(1) + InputBar(2)，与 hit-test.ts LayoutRect 一致
+  // 文本选区（框选删除）：测量 inputRect、消费选区指令、蓝底同步、退格删除
+  const { hasTextSel } = useInputSelection({
+    boxRef,
+    value,
+    onChange,
+    colOffset: 4,
+    setCursor: setForcedWithTimeout,
+    active: !overlay,
+  });
+
   useImeCursor({
     focused: true,
     value,
-    cursor: cursor[1],
+    cursor: cursorRef.current[1],
     rows: term.rows,
     inputRowFromBottom: 2,
     colOffset: 4,
-    cursorLine: cursor[0],
+    cursorLine: cursorRef.current[0],
     viewportLines: 4,
   });
 
   const handleChange = (v: string) => {
+    // 用户打字：清 forcedCursor（退出受控），让 TextArea 内部 cursor 接管（已被键盘更新到新位）
+    if (pendingForced.current) {
+      pendingForced.current = null;
+      if (forcedCursorTimer.current) { clearTimeout(forcedCursorTimer.current); forcedCursorTimer.current = null; }
+      setForcedCursor(null);
+    }
     onChange(v);
-    // 补全状态提升到 store：输入变化时重算候选
     useStore.getState().updateCompletion(v);
+    // 输入变化时重置历史浏览
+    if (useStore.getState().historyIndex >= 0) {
+      useStore.getState().resetHistoryIndex();
+      savedInputRef.current = null;
+    }
   };
 
-  // 补全确认：返回补全后的完整文本（含已有前缀）
+  // 补全确认（防重复：用 ref 标记）
+  const acceptingRef = useRef(false);
   const acceptCompletion = () => {
+    if (acceptingRef.current) return; // 防重复
     const filled = useStore.getState().acceptCompletion();
-    if (filled !== null) onChange(filled);
+    if (filled !== null) {
+      acceptingRef.current = true;
+      onChange(filled);
+      setTimeout(() => { acceptingRef.current = false; }, 50);
+    }
   };
-
-  // 补全菜单显示时，上下键选菜单而非移光标/历史
-  const showComp = completion !== null;
 
   return (
     <Box flexShrink={0} flexDirection="column">
-      {/* 补全菜单（光标上方） */}
+      {/* 补全菜单 */}
       {showComp && completion!.items.length > 0 && (
         <Box flexDirection="column" paddingLeft={2}>
           {completion!.items.slice(0, 5).map((it, i) => (
@@ -121,11 +166,11 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
         </Box>
       )}
 
-      <Box paddingX={1}>
+      <Box ref={boxRef} paddingX={1}>
         <Text color={t.accent} bold> ❯ </Text>
         <TextArea
           ref={taRef}
-          focus
+          focus={!overlay}
           value={value}
           cursorPosition={forcedCursor ?? undefined}
           onChange={handleChange}
@@ -134,7 +179,7 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
             if (useStore.getState().completion) { acceptCompletion(); return; }
             const trimmed = v.trim();
             if (!trimmed) return;
-            // 斜杠命令拦截：匹配 /command 格式，不发送给 AI
+            // 斜杠命令拦截
             const slashMatch = trimmed.match(/^\/(\w+)/);
             if (slashMatch) {
               const cmdId = slashMatch[1];
@@ -144,9 +189,10 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
               onChange("");
               return;
             }
-            // 普通消息
+            // 普通消息：push 历史 + 发送
             useStore.getState().pushInputHistory(trimmed);
             useStore.getState().resetHistoryIndex();
+            savedInputRef.current = null;
             onSubmit(trimmed);
             onChange("");
           }}
@@ -160,37 +206,46 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
           }
           initialLineCount={1}
           viewportLines={4}
-          highlightActiveLine
-          activeLineColor={t.selectedBg}
+          highlightActiveLine={false}
           disableCursorBlink={false}
-          // 禁用 Ctrl+E 默认（行尾），交由外层 useCleanInput 触发全屏编辑器
-          // autoNewLineLimit=0：下键在最后一行时 trailingEmpty(0)>=0 恒真 → 走 onLastLineDown
-          // （前进历史/不新建行）。默认值 3 会先新建 3 个空行才回调，违背 DESIGN。
           autoNewLineLimit={0}
-          // 补全菜单显示时禁用 Up/Down，让按键冒泡到 app.tsx useCleanInput 选菜单（全覆盖，不限边界行）
-          keybindings={showComp ? { "Ctrl+E": false, "Up": false, "Down": false } : { "Ctrl+E": false }}
-          onCursorChange={(pos) => setCursor(pos)}
+          keybindings={
+            showComp
+              ? { "Ctrl+E": false, "Up": false, "Down": false }
+              : hasTextSel
+                ? { "Ctrl+E": false, "Backspace": false, "Delete": false }
+                : { "Ctrl+E": false }
+          }
+          onCursorChange={(pos) => { cursorRef.current = pos; }}
           onFirstLineUp={() => {
-            // 补全菜单开时 Up 被 keybindings 禁用，由 app.tsx useCleanInput 选菜单，不会进这里。
-            // DESIGN：光标不在 [0,0] → 先到最左上角；已在 [0,0] → 回溯输入历史
-            const [line, col] = cursor;
+            const [line, col] = cursorRef.current;
             if (line > 0 || col > 0) {
-              setForcedCursor([0, 0]);
-              setTimeout(() => setForcedCursor(null), 50);
+              setForcedWithTimeout([0, 0]);
             } else {
+              // 回溯历史前保存当前输入
+              if (useStore.getState().historyIndex < 0) {
+                savedInputRef.current = value;
+              }
               const prev = useStore.getState().navigateHistory("up");
               if (prev !== null) onChange(prev);
             }
           }}
           onLastLineDown={() => {
-            // 同上：补全菜单开时 Down 被禁用。这里只处理历史前进。
-            // DESIGN：下键不新建行。若在浏览历史 → 前进；否则无操作
             const next = useStore.getState().navigateHistory("down");
-            if (next !== null) onChange(next);
+            if (next !== null) {
+              if (next === "") {
+                // 到末尾，恢复原始输入
+                onChange(savedInputRef.current ?? "");
+                savedInputRef.current = null;
+              } else {
+                onChange(next);
+              }
+            }
           }}
           onFirstCharacterLeft={() => {
-            // 空输入框按左键 → 进 agent 管理面板
-            if (value === "") useStore.getState().setOverlay("agents");
+            if (value === "" && !useStore.getState().overlay) {
+              useStore.getState().setOverlay("agents");
+            }
           }}
           styles={{ text: { color: t.fg }, placeholder: { color: t.dim, italic: true } }}
         />

@@ -297,9 +297,9 @@ export class SubagentExecutor implements SubagentExecutorLike {
       };
     }
 
-    // ── P1-2 预算 + 超时配置 ──
-    const softBudget = this._defaultSoftRequestBudget;
-    const maxRuntimeMs = this._defaultMaxRuntimeMs;
+    // ── P1-2 预算 + 超时配置（支持 per-call 覆盖 executor 默认值）──
+    const softBudget = options?.softRequestBudget ?? this._defaultSoftRequestBudget;
+    const maxRuntimeMs = options?.maxRuntimeMs ?? this._defaultMaxRuntimeMs;
     // agentName：context_and_config 用 options.agentName；context_only 继承父 agent（用 subSessionId 派生名）。
     const subAgentName = options?.agentName ?? `sub:${taskId}`;
 

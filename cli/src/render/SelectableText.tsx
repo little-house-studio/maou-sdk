@@ -76,12 +76,16 @@ export function SelectableText({ children, color, bold, dimColor, backgroundColo
     if (!ref.current) return;
     const rect = getAbsRect(ref.current);
     if (!rect || rect.width <= 0) return;
-    registerText(children, rect.left, rect.top, rect.width, textId);
+    // width 太小时用大值，避免登记时 soft-wrap 拆错行
+    const w = rect.width >= 3 ? rect.width : 9999;
+    registerText(children, rect.left, rect.top, w, textId);
   });
 
   // 按视觉行拆段渲染：选区内字符蓝底白字
   const text = String(children);
   const rect = ref.current ? getAbsRect(ref.current) : null;
+  // width 太小（<=0 或 <3）不拆段，按单行 row 渲染，避免竖排
+  const safeWidth = rect && rect.width >= 3 ? rect.width : 9999;
   if (!rect) {
     return (
       <Box ref={ref}>
@@ -91,7 +95,7 @@ export function SelectableText({ children, color, bold, dimColor, backgroundColo
       </Box>
     );
   }
-  const visLines = wrapToVisualLines(text, rect.width);
+  const visLines = wrapToVisualLines(text, safeWidth);
   // 单视觉行：row 包 Text 段（可和其他 SelectableText 并排）
   // 多视觉行：column 包每行 Box
   if (visLines.length <= 1) {

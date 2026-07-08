@@ -67,20 +67,34 @@ import { createFilteredStdout } from "./input/filtered-stdout.js";
 const filteredStdout = process.env.MAOU_NO_FILTER === "1" ? process.stdout : createFilteredStdout(process.stdout);
 
 loadConfig(target).then(async (config) => {
-  // 进备用屏 + 隐藏光标
-  filteredStdout.write("\x1b[?1049h\x1b[H\x1b[?25l");
+  // vram-layer：patch Output.get + fakeStdout
+  const { initVramLayer, createFakeStdout, renderWithSelection } = await import("./render/vram-layer.js");
+  await initVramLayer();
+  const fakeStdout = createFakeStdout();
+  // 进备用屏 + 开 ?1003 全追踪 + 隐藏光标
+  process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?1003h\x1b[?1006h\x1b[?25l");
   const { waitUntilExit } = render(<App config={config} themePath={themePath} />, {
     exitOnCtrlC: false,
     stdin: filteredStdin as NodeJS.ReadStream,
-    stdout: filteredStdout,
-    patchConsole: false,  // 不拦截 console（已重定向到 stderr），避免 SDK log 撕裂画面
+    stdout: fakeStdout as any,
+    patchConsole: false,
+    // Ink 每次渲染后触发 vram-layer 重绘（流式 delta、StatusBar tick 等）
+    onRender: () => {
+      const cols = process.stdout.columns || 80;
+      const rows = process.stdout.rows || 24;
+      renderWithSelection(cols, rows);
+    },
+  });
+  setTimeout(() => renderWithSelection(process.stdout.columns || 80, process.stdout.rows || 24), 200);
+  process.stdout.on("resize", () => {
+    fakeStdout.columns = process.stdout.columns || 80;
+    fakeStdout.rows = process.stdout.rows || 24;
+    fakeStdout.emit("resize");
+    process.stdout.write("\x1b[2J\x1b[H");
+    setTimeout(() => renderWithSelection(process.stdout.columns || 80, process.stdout.rows || 24), 150);
   });
   waitUntilExit().then(() => {
-    // 正常退出序列（exitGuard 也兜底）
-    filteredStdout.write("\x1b[?25h\x1b[?1049l\x1b[?1006l\x1b[?1000l");
-    // 强制退出：StatusBar 每秒 setInterval、SoundManager idleTimer、fs.watch 等
-    // ref handle 会阻止 Node 自然退出，导致"图形界面退了但进程挂起"。
-    // exitGuard 的 exit 事件会兜底 restore 终端，此处直接退。
+    process.stdout.write("\x1b[?25h\x1b[?1006l\x1b[?1003l\x1b[?1049l");
     process.exit(0);
   });
 }).catch(err => {
