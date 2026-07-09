@@ -77,14 +77,15 @@ export function NavBar() {
 
 function NavButton({ item }: { item: NavItem }) {
   const ref = useRef<DOMElement | null>(null);
-  useClickTarget(ref, item.action, [item.id]);
+  const id = useClickTarget(ref, item.action, [item.id]);
+  const hoverId = useStore((s) => s.hoverId);
+  const isHover = hoverId === id;
+  const bg = isHover ? item.bgHover : item.bg;
   const badgeStr = item.badge && item.badge > 0 ? `[${item.badge}]` : "";
   const fullText = badgeStr ? `${item.label} ${badgeStr}` : item.label;
-  // 不做 hover 反色：vram-layer 已移除全局 hover 伪光标（点击位置残留反色块的问题）。
-  // hover 高亮若需要，应由各组件用 React 状态自管（后续）。
   return (
-    <Box ref={ref} flexGrow={1} flexShrink={1} backgroundColor={item.bg} justifyContent="center">
-      <Text backgroundColor={item.bg} color={item.fg} bold wrap="truncate">{fullText}</Text>
+    <Box ref={ref} flexGrow={1} flexShrink={1} backgroundColor={bg} justifyContent="center">
+      <Text backgroundColor={bg} color={item.fg} bold wrap="truncate">{fullText}</Text>
     </Box>
   );
 }

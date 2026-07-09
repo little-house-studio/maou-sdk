@@ -88,8 +88,24 @@ export class AgentFactory {
    */
   createAgent(config: AgentFactoryConfig): AgentCreateResult {
     try {
-      const resolved = this.mergePresets(config);
-      const agentDir = join(this.maouRoot, "agents", config.name);
+      // 字段归一化：容忍 HTTP 层传入的非字符串（number/undefined 等），统一转 string
+      const str = (v: unknown): string | undefined =>
+        v === undefined || v === null ? undefined : String(v);
+      const normalized: AgentFactoryConfig = {
+        name: str(config.name) ?? "",
+        role: str(config.role) ?? "",
+        preset: str(config.preset),
+        race: str(config.race),
+        personality: str(config.personality),
+        permission: str(config.permission),
+        team: str(config.team),
+        description: str(config.description),
+        notes: str(config.notes),
+        scope: str(config.scope),
+        customSoul: str(config.customSoul),
+      };
+      const resolved = this.mergePresets(normalized);
+      const agentDir = join(this.maouRoot, "agents", normalized.name);
       mkdirSync(agentDir, { recursive: true });
       const filesCreated: string[] = [];
 
@@ -151,29 +167,29 @@ export class AgentFactory {
       filesCreated.push("OUTPUT.jsonc");
 
       // README.md
-      const readmeContent = this.buildReadmeMd(config.name);
+      const readmeContent = this.buildReadmeMd(normalized.name);
       writeFileSync(join(agentDir, "README.md"), readmeContent, "utf-8");
       filesCreated.push("README.md");
 
       // 注册到 AgentRegistry
       const reg = new AgentRegistry(this.maouRoot);
       const agentOptions = {
-        displayName: config.name,
-        role: config.role,
-        team: config.team ?? "",
-        personality: config.personality ?? "",
-        scope: config.scope ?? "project",
-        description: config.description ?? "",
-        notes: config.notes ?? "",
+        displayName: normalized.name,
+        role: normalized.role,
+        team: normalized.team ?? "",
+        personality: normalized.personality ?? "",
+        scope: normalized.scope ?? "project",
+        description: normalized.description ?? "",
+        notes: normalized.notes ?? "",
       };
 
       let message: string;
-      if (reg.exists(config.name)) {
-        reg.update(config.name, agentOptions);
-        message = `Agent '${config.name}' 已更新`;
+      if (reg.exists(normalized.name)) {
+        reg.update(normalized.name, agentOptions);
+        message = `Agent '${normalized.name}' 已更新`;
       } else {
-        reg.create(config.name, agentOptions);
-        message = `Agent '${config.name}' 已创建`;
+        reg.create(normalized.name, agentOptions);
+        message = `Agent '${normalized.name}' 已创建`;
       }
 
       return {
@@ -205,18 +221,34 @@ export class AgentFactory {
    * 预览 agent 配置（不实际创建）
    */
   previewAgent(config: AgentFactoryConfig): AgentPreview {
-    const resolved = this.mergePresets(config);
+    // 字段归一化（与 createAgent 一致，容忍非字符串输入）
+    const str = (v: unknown): string | undefined =>
+      v === undefined || v === null ? undefined : String(v);
+    const normalized: AgentFactoryConfig = {
+      name: str(config.name) ?? "",
+      role: str(config.role) ?? "",
+      preset: str(config.preset),
+      race: str(config.race),
+      personality: str(config.personality),
+      permission: str(config.permission),
+      team: str(config.team),
+      description: str(config.description),
+      notes: str(config.notes),
+      scope: str(config.scope),
+      customSoul: str(config.customSoul),
+    };
+    const resolved = this.mergePresets(normalized);
     return {
-      name: config.name,
-      role: config.role,
-      preset: config.preset ?? "default",
-      race: config.race ?? "human",
-      personality: config.personality ?? "",
-      permission: config.permission ?? "full",
-      team: config.team ?? "",
-      description: config.description ?? "",
-      scope: config.scope ?? "project",
-      agentDir: join(this.maouRoot, "agents", config.name),
+      name: normalized.name,
+      role: normalized.role,
+      preset: normalized.preset ?? "default",
+      race: normalized.race ?? "human",
+      personality: normalized.personality ?? "",
+      permission: normalized.permission ?? "full",
+      team: normalized.team ?? "",
+      description: normalized.description ?? "",
+      scope: normalized.scope ?? "project",
+      agentDir: join(this.maouRoot, "agents", normalized.name),
       filesToCreate: [
         "prompt/system/system.md",
         "prompt/before_user/before_user.md",

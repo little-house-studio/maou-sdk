@@ -13,7 +13,8 @@ import { Layout } from "./layout/Layout.js";
 import { useCleanInput } from "./hooks/useCleanInput.js";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
 import { openExternalEditor } from "./hooks/useExternalEditor.js";
-import { useStore } from "./state/store.js";
+import { useStore, loadLastSession } from "./state/store.js";
+import { loadSessionMessages } from "./state/session-loader.js";
 import { useAgent } from "./events/useAgent.js";
 import { useMouseInput } from "./input/useMouseInput.js";
 import { extractSelection as vramExtract, clearSelection as vramClear, getSelection as vramGet, renderWithSelection } from "./render/vram-layer.js";
@@ -53,6 +54,21 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     }
   }, [config, setAgentMeta]);
 
+  // 启动自动加载上次会话（last-session.json 记录的 agent + sessionId）
+  const didRestore = useRef(false);
+  useEffect(() => {
+    if (didRestore.current) return;
+    didRestore.current = true;
+    const last = loadLastSession();
+    if (!last || last.agentName !== config.name) return;
+    const loaded = loadSessionMessages(last.sessionId);
+    if (loaded && loaded.messages.length > 0) {
+      useStore.getState().setMessages(loaded.messages);
+      useStore.getState().setSessionId(last.sessionId);
+      useStore.getState().setAutoFollow(true);
+    }
+  }, [config.name]);
+
   // spinner 动画已局部化到 MessageRow/ToolCard（各自 interval），
   // 不再全 App 每 200ms 重渲（闪烁根因之一）。frame 仅作 fallback 静态值。
   void setFrame;
@@ -70,9 +86,10 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     prevStreaming.current = streaming;
   }, [streaming, send]);
 
-  // 退出请求 → 调 Ink exit
+  // 退出请求 → 调 Ink exit（兜底强退在 Ctrl+C 第二次按下时设，不挂 effect 避免被 unmount cleanup 清）
   useEffect(() => {
-    if (exitRequested) exit();
+    if (!exitRequested) return;
+    exit();
   }, [exitRequested, exit]);
 
   // 主题热重载：~/.maou/themes/*.json 变更即时换色
@@ -117,7 +134,8 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   const ctrlCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useCleanInput((char, key) => {
     if (fullEditorInitial !== null) return;
-    if (key.ctrl && char === "c") {
+    // useInput 对 Ctrl+C 解析：char 可能是 "c" 或 "\x03"（取决于终端/Ink 版本），两种都认
+    if (key.ctrl && (char === "c" || char === "\x03")) {
       // 1. 有选区：清选区（松手已自动复制，这里只清蓝底，不退出）
       if (vramGet()) {
         vramClear();
@@ -138,6 +156,8 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
       if (now - ctrlCAtRef.current < 3000) {
         if (ctrlCTimerRef.current) clearTimeout(ctrlCTimerRef.current);
         useStore.getState().requestExit();
+        // 兜底强退：Ink exit() 触发 unmount 会清 effect 里的 timer，这里直接设不被清
+        setTimeout(() => process.exit(0), 1000);
       } else {
         ctrlCAtRef.current = now;
         useStore.getState().toastMsg("再按一次 Ctrl+C 退出", "warn");

@@ -28,8 +28,9 @@ export function installExitGuard(): () => void {
   const onExit = () => restore();
   const onSignal = (sig: NodeJS.Signals) => {
     restore();
-    // 给 Ink signal-exit 一个机会，再强制退出避免卡备用屏
-    process.exitCode = sig === "SIGINT" ? 130 : 143;
+    // 直接强退，不等 Ink 的 waitUntilExit resolve——LLM fetch / 定时器可能让它永不 resolve（假退出）。
+    // restore 已写终端恢复序列，安全。
+    process.exit(sig === "SIGINT" ? 130 : 143);
   };
 
   process.on("exit", onExit);

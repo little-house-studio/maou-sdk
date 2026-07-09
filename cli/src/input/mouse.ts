@@ -1,7 +1,7 @@
 /** 鼠标 SGR —— 修复版：不抢拖选 + 消费转义序列（防乱码） */
 
 export interface MouseEvent {
-  type: "down" | "up" | "drag" | "wheelUp" | "wheelDown";
+  type: "down" | "up" | "drag" | "motion" | "wheelUp" | "wheelDown";
   col: number; // 1-based
   row: number; // 1-based
   button: number;
@@ -43,7 +43,10 @@ export function parseMouse(data: string): MouseEvent[] {
     let type: MouseEvent["type"] = release ? "up" : "down";
     let button = btn & 3;
     if (btn & 64) type = (btn & 1) ? "wheelDown" : "wheelUp";
-    else if (btn & 32) type = "drag";
+    else if (btn & 32) {
+      // motion：button===3 表示无按键移动（hover），否则是按住拖动
+      type = button === 3 ? "motion" : "drag";
+    }
     events.push({ type, col, row, button });
   }
   return events;

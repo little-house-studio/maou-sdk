@@ -23,7 +23,7 @@ export function useAgent(config: AgentCliConfig) {
   if (!soundRef.current) soundRef.current = new SoundManager();
   const sound = soundRef.current;
 
-  // agent 切换：监听 agentSwitchNonce，重置 handle（下次 send 重建）+ 清消息 + 更新状态栏
+  // agent 切换：监听 agentSwitchNonce，缓存当前会话 + 恢复目标会话（或新建）
   const switchNonce = useStore((s) => s.agentSwitchNonce);
   useEffect(() => {
     const name = useStore.getState().pendingAgentName;
@@ -31,11 +31,24 @@ export function useAgent(config: AgentCliConfig) {
     // 中断当前生成
     abortRef.current?.abort();
     agentRef.current = null;
-    useStore.getState().clearMessages();
+    // 缓存当前 agent 的会话（切走前）
+    const curName = useStore.getState().agentName;
+    if (curName && curName !== name) {
+      useStore.getState().saveCurrentSession(curName);
+    }
+    // 恢复目标 agent 的会话（有缓存）或清空（无缓存=新会话）
+    const restored = useStore.getState().restoreSession(name);
+    if (!restored) {
+      useStore.getState().clearMessages();
+    }
     useStore.getState().clearPendingMessages();
     useStore.getState().setAgentMeta(name, "", "", 0);
-    useStore.getState().setSessionId(null);
-    useStore.getState().toastMsg(`切换到 ${name}（新会话）`, "ok");
+    if (restored) {
+      useStore.getState().setSessionId(useStore.getState().sessionId);
+    } else {
+      useStore.getState().setSessionId(null);
+      useStore.getState().toastMsg(`切换到 ${name}（新会话）`, "ok");
+    }
     useStore.getState().clearPendingAgentSwitch();
     useStore.getState().setOverlay(null);
   }, [switchNonce]);

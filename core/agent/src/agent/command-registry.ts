@@ -262,9 +262,10 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
         undefined, // chatKey 由前端注入（飞书层在监听 session 切换事件时回填）
       );
       // 首条消息：如果有 args，作为任务描述传给监督 Agent；否则让监督 Agent 主动询问
+      // 明确引导 supervisor 用 submit_plan 工具提交计划（而非直接输出文本），避免 LLM 跳过工具调用
       const initialMessage = args
-        ? `用户启动了监督模式，任务描述：\n\n${args}\n\n请根据这个描述，向用户提问关键问题，整理出完整的任务计划 MD 大纲（含任务要求、细节、验收标准），让用户确认。`
-        : `用户启动了监督模式。请向用户询问任务目标、细节、验收标准等关键问题，整理出完整的任务计划 MD 大纲，让用户确认。`;
+        ? `用户启动了监督模式，任务描述：\n\n${args}\n\n请整理出完整的任务计划 MD（含任务要求、细节、验收标准），然后调用 supervisor_task_control 工具（action=submit_plan，plan=计划MD）提交给用户确认。不要直接把计划输出为文本，必须通过 submit_plan 工具提交。`
+        : `用户启动了监督模式。请向用户询问任务目标、细节、验收标准等关键问题，整理出完整的任务计划 MD，然后调用 supervisor_task_control 工具（action=submit_plan，plan=计划MD）提交给用户确认。必须通过 submit_plan 工具提交，不要直接输出文本。`;
       return {
         content: `🎯 监督模式已启动。\n\n聊天对象已切换为监督 Agent。请跟监督 Agent 对话确认任务计划。\n\n${args ? `任务描述：${args}` : "请描述你要完成的任务。"}`,
         meta: {

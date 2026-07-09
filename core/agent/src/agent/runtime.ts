@@ -828,6 +828,10 @@ export class AgentRuntime {
     let totalTokens = 0;
     // 最近一轮的 assistant 文本（loop 结束后供监督模式推送用）
     let lastAssistantContent = "";
+    // 空响应重试：LLM 偶尔返回 content="" + 无 tool_calls（如 deepseek 长上下文下 completion_tokens=1）。
+    // 注入 <continue> 提示让模型重新生成，最多 MAX_EMPTY_RETRIES 次，仍空才真正退出。
+    let emptyResponseRetries = 0;
+    const MAX_EMPTY_RETRIES = 3;
 
     while (roundCount < maxRounds) {
       // ── P1-3 消息总线：每轮 poll 自己的 mailbox，把队友消息作为 user 消息注入 ──
@@ -1222,6 +1226,29 @@ export class AgentRuntime {
         break; // 退出 agent 循环
       }
 
+      // ── 空响应容错：content 为空 + 无 tool_calls（LLM 偶发空响应，如 completion_tokens=1）──
+      // 不直接退出——注入 <continue> 提示让模型重新生成，避免主 agent 写代码写到一半中断。
+      // 复用 verification-failed 的重试模式（注入 note + continue）。最多 MAX_EMPTY_RETRIES 次。
+      if (!contentToUse && result.nativeToolCalls.length === 0) {
+        emptyResponseRetries += 1;
+        if (emptyResponseRetries < MAX_EMPTY_RETRIES) {
+          yield this.logEvent("warning", `[RUN] session=${sessionId} 检测到空响应（第${emptyResponseRetries}/${MAX_EMPTY_RETRIES}次），注入 <continue> 提示重试`);
+          this.sessions.appendMessage(sessionId!, "user",
+            `<continue>你上一轮没有输出内容，也没有调用任何工具。请继续执行任务——直接调用工具（write_file/edit_file/use_terminal 等）开始具体操作，不要只思考或只输出文字。</continue>`,
+            { source: "empty_retry", round: currentRound },
+          );
+          this.hooks?.agentStop(currentRound);
+          roundCount++;
+          continue;
+        }
+        // 重试次数耗尽，真正退出（但仍会走到 loop 结束推送 loop_report，让 supervisor 知道主 agent 卡住）
+        yield this.logEvent("warning", `[RUN] session=${sessionId} 空响应重试 ${MAX_EMPTY_RETRIES} 次仍无输出，退出循环`);
+        this.hooks?.agentStop(currentRound);
+        break;
+      }
+      // 有内容或工具调用 → 重置空响应计数
+      emptyResponseRetries = 0;
+
       yield this.event("assistant", {
         content: contentToUse,
         round: currentRound,
@@ -1245,6 +1272,7 @@ export class AgentRuntime {
           prof,
           compressionLevel,
           effectiveWorkingDir,
+          preset, // 当前轮 preset（供 ToolContext.mainPreset，避免实例字段被嵌套 run 污染）
         );
 
         // task_complete phase：本轮若有工具完成（尤其 task_finish），且全部 task 已完成，
@@ -1540,6 +1568,7 @@ export class AgentRuntime {
     prof?: Profiler,
     compressionLevel: "off" | "normal" | "aggressive" = "normal",
     workingDir?: string,
+    currentPreset?: APIPreset,
   ): AsyncGenerator<StreamEvent, boolean> {
     // 工具调用前自动快照
     if (this.checkpointStore.shouldAutoCheckpoint("tool_call")) {
@@ -1588,7 +1617,7 @@ export class AgentRuntime {
       // （安全检查/代码审查/路由判定等）。auxModelCaller / resolveHelperPresetFn
       // 由 RuntimeOptions 注入（runtime-facade 创建）。未注入时 llm_judge 返回未启用提示。
       auxModelCaller: this.auxModelCaller as never | undefined,
-      mainPreset: this.currentPreset as unknown,
+      mainPreset: (currentPreset ?? this.currentPreset) as unknown,
       resolveHelperPreset: this.resolveHelperPresetFn
         ? (this.resolveHelperPresetFn as (agentName: string, mainPreset: unknown) => unknown)
         : undefined,

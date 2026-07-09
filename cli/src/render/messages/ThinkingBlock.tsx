@@ -19,7 +19,8 @@ export function ThinkingBlock({ block }: { block: ThinkingBlockState }) {
   const level = useStore((s) => s.thinkingLevel);
   const [open, setOpen] = useState(level >= 3);
   const ref = useRef<DOMElement | null>(null);
-  useClickTarget(ref, () => setOpen(o => !o), [block.id, open]);
+  const cid = useClickTarget(ref, () => setOpen(o => !o), [block.id, open]);
+  const isHover = useStore((s) => s.hoverId) === cid;
 
   if (!block.content) return null;
 
@@ -29,7 +30,7 @@ export function ThinkingBlock({ block }: { block: ThinkingBlockState }) {
 
   return (
     <Box ref={ref} flexDirection="column">
-      <Text color={t.muted}>{`${label} // ${charCount} 字 ${open ? "▼" : "▶"}`}</Text>
+      <Text color={isHover ? t.accent : t.muted}>{`${label} // ${charCount} 字 ${open ? "▼" : "▶"}`}</Text>
       {open && (
         <Text color={t.muted} wrap="wrap">{block.content}</Text>
       )}

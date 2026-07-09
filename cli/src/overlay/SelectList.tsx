@@ -1,12 +1,15 @@
 /**
  * SelectList —— 自建交互式选择列表（@inkjs/ui 已移除，借鉴 ink-ui visibleFromIndex 窗口切片）。
  * ↑↓ 导航（外层 useCleanInput 捕获），Enter 选择，Esc 关闭。
+ * 鼠标点击选项（useClickTarget）+ hover 高亮（项 7）。
  */
 
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Box, Text } from "ink";
+import type { DOMElement } from "ink";
 import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
+import { useClickTarget } from "../input/click-target.js";
 
 export interface SelectItem {
   value: string;
@@ -45,13 +48,28 @@ export function SelectList({ items, onSelect, visibleCount = 8, innerWidth = 42 
       {visible.map((it, i) => {
         const realIdx = from + i;
         const isSel = realIdx === selected;
-        return (
-          <Text key={it.value} color={isSel ? t.accent : t.fg} bold={isSel} backgroundColor={t.panelBg}>
-            {isSel ? "▸ " : "  "}{it.label}
-            {it.description && <Text color={t.muted} bold={false}> {it.description}</Text>}
-          </Text>
-        );
+        return <SelectRow key={it.value} item={it} isSel={isSel} onHover={() => setSelected(realIdx)} onClick={() => onSelect(it.value)} />;
       })}
+    </Box>
+  );
+}
+
+function SelectRow({ item, isSel, onHover, onClick }: {
+  item: SelectItem; isSel: boolean; onHover: () => void; onClick: () => void;
+}) {
+  const t = useTheme();
+  const ref = useRef<DOMElement | null>(null);
+  const cid = useClickTarget(ref, onClick, [item.value]);
+  const isHover = useStore((s) => s.hoverId) === cid;
+  // hover 只变色，不改 selected（避免鼠标移动导致菜单自动滚动）。
+  // 菜单滚动由滚轮/键盘↑↓驱动。点击仍触发 onSelect。
+  const highlight = isSel || isHover;
+  return (
+    <Box ref={ref}>
+      <Text color={highlight ? t.accent : t.fg} bold={highlight} backgroundColor={t.panelBg}>
+        {isSel ? "▸ " : "  "}{item.label}
+        {item.description && <Text color={t.muted} bold={false}> {item.description}</Text>}
+      </Text>
     </Box>
   );
 }

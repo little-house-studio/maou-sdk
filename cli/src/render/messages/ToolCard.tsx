@@ -59,7 +59,8 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
   const rootMetrics = useBoxMetrics(rootRef);
   const prevHeightRef = useRef<number>(0);
   const toggle = () => { if (tool.result !== undefined) setOpen(o => !o); };
-  useClickTarget(rootRef, toggle, [tool.result, tool.id, open]);
+  const cid = useClickTarget(rootRef, toggle, [tool.result, tool.id, open]);
+  const isHover = useStore((s) => s.hoverId) === cid;
 
   // 展开/折叠锚定
   useEffect(() => {
@@ -77,8 +78,8 @@ export function ToolCard({ tool, index, frame }: { tool: ToolCardState; index: n
     <Box ref={rootRef} flexDirection="column">
       {/* 标题行：工具名(黄背景) 描述(浅灰背景) 符号(绿/红/灰) (耗时) ▶/▼ */}
       <Box>
-        <Text backgroundColor={t.warn} color="#000" bold>{` ${tool.name} `}</Text>
-        <Text backgroundColor={t.panelBg} color={t.fg}>{` ${desc} `}</Text>
+        <Text backgroundColor={isHover ? t.accent2 : t.warn} color="#000" bold>{` ${tool.name} `}</Text>
+        <Text backgroundColor={isHover ? t.muted : t.panelBg} color={t.fg}>{` ${desc} `}</Text>
         <Text color={statusColor}>{` ${statusChar}${callDur ? ` (${callDur})` : ""}${tool.result !== undefined ? ` ${open ? "▼" : "▶"}` : ""}`}</Text>
       </Box>
       {/* 展开后：参数(黄色) + 结果(灰色) + diff(绿红) */}

@@ -25,9 +25,11 @@
 
 import React, { useRef, useEffect } from "react";
 import { Box, Text, useBoxMetrics } from "ink";
+import type { DOMElement } from "ink";
 import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
+import { useClickTarget } from "../input/click-target.js";
 import { MessageRow } from "./messages/MessageRow.js";
 import { SystemEventRow } from "./messages/SystemEventRow.js";
 
@@ -44,6 +46,8 @@ export function ScrollHistory({ frame }: { frame: number }) {
   const viewportRef = useRef(null);
   const contentRef = useRef(null);
   const contentMetrics = useBoxMetrics(contentRef);
+  const bottomBtnRef = useRef<DOMElement | null>(null);
+  useClickTarget(bottomBtnRef, () => useStore.getState().scrollToBottom(), []);
 
   // 可用高度：终端高 - 顶栏(1) - 对话区上下边框(2) - 事件块(1) - 输入框(1) - 状态栏(1) = rows - 6
   const availableRows = Math.max(4, term.rows - 6);
@@ -85,9 +89,61 @@ export function ScrollHistory({ frame }: { frame: number }) {
     ...systemEvents.map(e => ({ type: "sys" as const, ts: e.ts, data: e })),
   ].sort((a, b) => a.ts - b.ts);
 
+  // 找视口上方最近的 user 消息：items 里在当前可见区之前、role=user 的最后一条。
+  // 可见区顶部对应的 content y = offset；遍历 items 累计高度，找到 y <= offset 的最后一条 user 消息。
+  const olderUserPreview = (() => {
+    if (!hasOlder) return null;
+    // contentRef 的子节点是各 item；用 yogaNode 累计高度找 offset 对应的 item 索引
+    const contentEl = contentRef.current as DOMElement | null;
+    if (!contentEl?.yogaNode) {
+      // 首帧未测量：退而取倒数第二条 user 消息（最近一条 user 多在底部）
+      const users = items.filter(it => it.type === "msg" && (it.data as { role: string }).role === "user");
+      return users.length >= 2 ? users[users.length - 2] : null;
+    }
+    let y = 0;
+    let topItemIdx = 0;
+    for (let i = 0; i < items.length; i++) {
+      const child = contentEl.childNodes[i] as DOMElement | undefined;
+      const h = child?.yogaNode?.getComputedLayout?.()?.height ?? 0;
+      if (y + h > offset) { topItemIdx = i; break; }
+      y += h;
+      topItemIdx = i + 1;
+    }
+    // 视口上方 = items[0..topItemIdx)，找最后一条 user
+    for (let i = topItemIdx - 1; i >= 0; i--) {
+      if (items[i].type === "msg" && (items[i].data as { role: string }).role === "user") {
+        return items[i];
+      }
+    }
+    return null;
+  })();
+
+  // 点击预览 → 跳到那条消息：算它在 content 里的 y，设 offset=y（让它滚到视口顶）
+  const jumpToOlderUser = () => {
+    if (!olderUserPreview) return;
+    const contentEl = contentRef.current as DOMElement | null;
+    if (!contentEl?.yogaNode) { useStore.getState().scrollToBottom(); return; }
+    const targetTs = olderUserPreview.ts;
+    let y = 0;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].ts === targetTs) break;
+      const child = contentEl.childNodes[i] as DOMElement | undefined;
+      y += child?.yogaNode?.getComputedLayout?.()?.height ?? 0;
+    }
+    useStore.getState().setAutoFollow(false);
+    useStore.getState().setChatScrollOffset(y);
+  };
+  const olderBtnRef = useRef<DOMElement | null>(null);
+  useClickTarget(olderBtnRef, jumpToOlderUser, [olderUserPreview?.ts, offset, maxChatScroll]);
+
   return (
     <Box flexDirection="column" flexGrow={1}>
-      {hasOlder && <Text color={t.dim}>▲ 还有更早内容（滚轮向上看）</Text>}
+      {hasOlder && olderUserPreview && (
+        <Box ref={olderBtnRef} flexShrink={0}>
+          <Text color={t.dim}>↑ </Text>
+          <Text color={t.accent}>{((olderUserPreview.data as { content: string }).content ?? "").slice(0, term.cols - 6).replace(/\n/g, " ")}</Text>
+        </Box>
+      )}
       <Box ref={viewportRef} height={availableRows} overflow="hidden" flexDirection="column">
         <Box ref={contentRef} flexShrink={0} marginTop={marginTop} flexDirection="column">
           {items.map(it => it.type === "msg"
@@ -95,7 +151,11 @@ export function ScrollHistory({ frame }: { frame: number }) {
             : <SystemEventRow key={`s${(it.data as { id: string }).id}`} ev={it.data as never} />)}
         </Box>
       </Box>
-      {hasNewer && <Text color={t.dim}>▼ 还有更新内容（滚轮向下看）</Text>}
+      {hasNewer && (
+        <Box ref={bottomBtnRef} justifyContent="center" flexShrink={0}>
+          <Text backgroundColor="#fff" color="#000" bold>  ↓ 点击回到最底部  </Text>
+        </Box>
+      )}
     </Box>
   );
 }

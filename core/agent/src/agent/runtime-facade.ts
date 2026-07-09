@@ -27,6 +27,7 @@ import type { ConfigStore } from "@little-house-studio/types";
 import { AgentRuntime } from "./runtime.js";
 import { AgentRegistry } from "./registry.js";
 import { AgentFactory } from "./factory.js";
+import { createTeamFromTemplate, listTeamTemplates } from "./team-factory.js";
 import { SubagentExecutor } from "./subagent-executor.js";
 import type { SubagentRunFn } from "./subagent-executor.js";
 import { GitWatcher } from "../agent_factory/git-watcher.js";
@@ -544,6 +545,25 @@ export class Runtime {
       return { ok: result.success, ...data, message: result.message };
     } catch (err) {
       return { ok: false, error: String(err) };
+    }
+  }
+
+  /** 列出可用团队模板（多 Agent 协作开箱即用）。 */
+  listTeamTemplates(): string[] {
+    try {
+      return listTeamTemplates();
+    } catch {
+      return [];
+    }
+  }
+
+  /** 从团队模板一键物化多 Agent 团队（主 Agent + 子 Agent，复用 createTeamFromTemplate）。 */
+  createTeam(teamName: string): Record<string, unknown> {
+    try {
+      const result = createTeamFromTemplate(teamName, this.maouRoot);
+      return { ok: true, ...result };
+    } catch (err) {
+      return { ok: false, teamName, error: err instanceof Error ? err.message : String(err) };
     }
   }
 }

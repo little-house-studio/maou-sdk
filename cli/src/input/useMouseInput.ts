@@ -57,6 +57,7 @@ export function useMouseInput(
   const lastClickRef = useRef<{ time: number; col: number; row: number; count: number }>({
     time: 0, col: 0, row: 0, count: 0,
   });
+  const lastHoverRef = useRef(0);
 
   useEffect(() => {
     if (!enabled || !stdout) return;
@@ -92,7 +93,21 @@ export function useMouseInput(
       const dir = e.type === "wheelUp" ? "up" : "down";
       const store = useStore.getState();
       if (store.fullEditorInitial !== null) cbRef.current.onInputScroll?.(dir);
+      else if (store.overlay) cbRef.current.onOverlayScroll?.(dir);  // overlay 开时滚轮滚动菜单
       else cbRef.current.onChatScroll?.(dir);
+      return;
+    }
+
+    // hover motion（无按键移动）：命中可点击元素→设 hoverId，未命中→清。节流 30ms 避免高频重渲
+    if (e.type === "motion") {
+      process.stderr.write(`[dbg-motion] col=${e.col} row=${e.row}\n`);
+      const now = Date.now();
+      if (now - lastHoverRef.current < 30) return;
+      lastHoverRef.current = now;
+      const hit = hitTestClick(e.col, e.row);
+      const store = useStore.getState();
+      const newId = hit?.id ?? null;
+      if (store.hoverId !== newId) store.setHoverId(newId);
       return;
     }
 

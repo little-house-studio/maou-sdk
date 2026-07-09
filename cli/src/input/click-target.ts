@@ -83,16 +83,17 @@ export function hitTestClick(col: number, row: number): ClickEntry | null {
   return hit;
 }
 
-/** React hook：给 ref 注册点击回调。 */
+/** React hook：给 ref 注册点击回调。返回 id（供组件订阅 hoverId 匹配）。 */
 export function useClickTarget(
   ref: React.RefObject<DOMElement | null>,
   onClick: () => void,
   deps: unknown[] = [],
-): void {
+): string {
   const id = React.useId();
   useEffect(() => {
     const unregister = registerClickTarget(id, () => ref.current, onClick);
     return unregister;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, ...deps]);
+  return id;
 }

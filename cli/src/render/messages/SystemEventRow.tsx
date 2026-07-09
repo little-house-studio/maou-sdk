@@ -10,6 +10,7 @@ import { Box, Text } from "ink";
 import type { DOMElement } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
 import type { SystemEvent } from "../../state/types.js";
+import { useStore } from "../../state/store.js";
 import { timecode, systemEventSymbol } from "../../layout/decorators.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { useClickTarget } from "../../input/click-target.js";
@@ -29,10 +30,11 @@ export function SystemEventRow({ ev }: { ev: SystemEvent }) {
   const term = useTerminalSize();
   const [open, setOpen] = useState(false);
   const ref = useRef<DOMElement | null>(null);
-  useClickTarget(ref, () => setOpen(o => !o), [ev.id, open]);
+  const cid = useClickTarget(ref, () => setOpen(o => !o), [ev.id, open]);
+  const isHover = useStore((s) => s.hoverId) === cid;
 
   const sym = systemEventSymbol(ev.kind);
-  const color = KIND_COLOR[ev.kind] ?? t.dim;
+  const color = isHover ? t.accent : (KIND_COLOR[ev.kind] ?? t.dim);
   const ts = timecode(new Date(ev.ts));
   const inner = `[${sym} ${ev.content} | ${ts}]`;
   // 全宽填充 >>>>...<<<<<

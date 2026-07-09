@@ -4,7 +4,7 @@
 
 import { create } from "zustand";
 import type { StreamEvent } from "@little-house-studio/types";
-import type { UIState, ChatMessage, Toast, CompletionState } from "./types.js";
+import type { UIState, ChatMessage, SystemEvent, Toast, CompletionState } from "./types.js";
 import type { CompletionItem } from "../overlay/Completer.js";
 import { complete } from "../overlay/Completer.js";
 import { reduce } from "./reducer.js";
@@ -93,6 +93,10 @@ interface Store extends UIState {
   agentSwitchNonce: number;
   requestAgentSwitch: (name: string) => void;
   clearPendingAgentSwitch: () => void;
+  // 会话按 agent 记忆：切 agent 前缓存当前，切回恢复
+  saveCurrentSession: (agentName: string) => void;
+  restoreSession: (agentName: string) => boolean;  // 返回是否有缓存
+  setMessages: (messages: ChatMessage[], systemEvents?: SystemEvent[]) => void;
 }
 
 const initialState: UIState = {
@@ -118,6 +122,7 @@ const initialState: UIState = {
   inputRect: null,
   inputTextSel: null,
   inputSelectCmd: null,
+  agentSessionMap: {},
   chatScrollOffset: 0,
 };
 
@@ -140,14 +145,34 @@ function saveInputHistory(items: string[]): void {
   } catch { /* 静默 */ }
 }
 
-export const useStore = create<Store>((set) => ({
+// 上次会话持久化（~/.maou/last-session.json）—— 启动自动加载用
+const LAST_SESSION_PATH = join(homedir(), ".maou", "last-session.json");
+export function loadLastSession(): { agentName: string; sessionId: string } | null {
+  try {
+    return JSON.parse(readFileSync(LAST_SESSION_PATH, "utf-8"));
+  } catch { return null; }
+}
+function saveLastSession(agentName: string, sessionId: string): void {
+  try {
+    mkdirSync(dirname(LAST_SESSION_PATH), { recursive: true });
+    writeFileSync(LAST_SESSION_PATH, JSON.stringify({ agentName, sessionId }, null, 2));
+  } catch { /* 静默 */ }
+}
+
+export const useStore = create<Store>((set, get) => ({
   ...initialState,
 
   setAgentMeta: (agentName, provider, model, maxContext) =>
     set({ agentName, provider, model, maxContext }),
   setThinking: (level) => set({ thinkingLevel: Math.max(0, Math.min(5, level)) }),
   setOverlay: (overlay) => set({ overlay }),
-  setSessionId: (sessionId) => set({ sessionId }),
+  setSessionId: (sessionId) => {
+    set({ sessionId });
+    if (sessionId) {
+      const an = get().agentName;
+      if (an) saveLastSession(an, sessionId);
+    }
+  },
   setProviderModel: (provider, model) => set({ provider, model }),
   pushUserMessage: (text) => set((s) => ({
     messages: [...s.messages, { id: `u${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, role: "user", content: text, ts: Date.now() }],
@@ -342,6 +367,32 @@ export const useStore = create<Store>((set) => ({
     agentSwitchNonce: s.agentSwitchNonce + 1,
   })),
   clearPendingAgentSwitch: () => set({ pendingAgentName: null }),
+
+  // 会话按 agent 记忆：缓存当前 agent 的会话（切走前调）
+  saveCurrentSession: (agentName) => set((s) => ({
+    agentSessionMap: {
+      ...s.agentSessionMap,
+      [agentName]: { sessionId: s.sessionId, messages: s.messages, systemEvents: s.systemEvents },
+    },
+  })),
+  // 恢复 agent 的会话（切回时调）。有缓存→恢复，无→返回 false（由调用方清空新建）
+  restoreSession: (agentName) => {
+    const cached = get().agentSessionMap[agentName];
+    if (cached) {
+      set({
+        sessionId: cached.sessionId,
+        messages: cached.messages,
+        systemEvents: cached.systemEvents,
+        currentAssistantId: null,
+        round: cached.messages.length,
+      });
+      return true;
+    }
+    return false;
+  },
+  setMessages: (messages, systemEvents = []) => set({
+    messages, systemEvents, currentAssistantId: null, round: messages.length,
+  }),
 
   onStream: (ev) => set((s) => reduce(s, ev)),
 }));
