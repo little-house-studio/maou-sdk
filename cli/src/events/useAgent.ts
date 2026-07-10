@@ -9,6 +9,7 @@
 import { useRef, useEffect } from "react";
 import { runAgentCli } from "@little-house-studio/agent";
 import type { AgentHandle } from "@little-house-studio/agent";
+import { setSupervisorAbortSignal } from "@little-house-studio/coding-agent";
 import { useStore } from "../state/store.js";
 import type { AgentCliConfig } from "../types.js";
 import { join } from "node:path";
@@ -78,17 +79,31 @@ export function useAgent(config: AgentCliConfig) {
     store.pushUserMessage(text);
     sound.startIdleTimer();
     abortRef.current = new AbortController();
+    // 更新 callMainAgent 闭包的 abortSignal 引用，使 Ctrl+C 能中断嵌套的主 Agent run
+    setSupervisorAbortSignal(abortRef.current.signal);
     try {
       const preset = config.getPreset(store.provider, store.model);
       const sessionId = store.sessionId ?? handle.startSession();
       if (!store.sessionId) store.setSessionId(sessionId);
+      // /goal 监督模式：done event 带 supervisorMode=true 时，主 run 结束后自动启 supervisor run
+      // （复用 harness server.ts 的逻辑：用 initialMessage + initAgentName='supervisor' 跑第二个 run）
+      let supervisorPending: { sessionId: string; initialMessage: string } | null = null;
+      const captureSupervisor = (ev: { type: string; [k: string]: unknown }) => {
+        if (ev.type === "done" && ev.supervisorMode === true && typeof ev.sessionId === "string" && typeof ev.initialMessage === "string") {
+          supervisorPending = { sessionId: ev.sessionId, initialMessage: ev.initialMessage };
+        }
+      };
       await runAgentCli(text, {
         runtime: handle.runtime,
         sessionId,
         preset,
         onEvent: (ev) => {
           // 音效触发（副作用，不在 reducer）
-          if (ev.type === "done") { sound.play("done"); sound.clearIdleTimer(); }
+          if (ev.type === "done") {
+            sound.play("done"); sound.clearIdleTimer();
+            const de = ev as { type: string; [k: string]: unknown };
+            captureSupervisor(de);
+          }
           else if (ev.type === "error") { sound.play("error"); sound.clearIdleTimer(); }
           else if (ev.type === "log" && (ev.level === "error" || ev.level === "warning" || ev.level === "warn")) sound.play("warning");
           else if (ev.type === "model.error" || ev.type === "model.loop_detected" || ev.type === "round_limit") sound.play("warning");
@@ -97,6 +112,19 @@ export function useAgent(config: AgentCliConfig) {
         signal: abortRef.current.signal,
         source: "cli",
       });
+      // 主 run done 后，若有 supervisorPending，自动启动 supervisor run（事件继续喂 reducer）
+      const sp = supervisorPending as { sessionId: string; initialMessage: string } | null;
+      if (sp) {
+        await runAgentCli(sp.initialMessage, {
+          runtime: handle.runtime,
+          sessionId: sp.sessionId,
+          preset,
+          initAgentName: "supervisor",
+          onEvent: (ev) => useStore.getState().onStream(ev),
+          signal: abortRef.current.signal,
+          source: "supervisor",
+        });
+      }
       // runAgentCli 遇 done/error 即 return，state 已由 reducer 更新
     } catch (e) {
       useStore.getState().toastMsg(String(e).slice(0, 60), "err");

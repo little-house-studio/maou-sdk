@@ -68,24 +68,43 @@ const filteredStdout = process.env.MAOU_NO_FILTER === "1" ? process.stdout : cre
 
 loadConfig(target).then(async (config) => {
   // vram-layer：patch Output.get + fakeStdout
-  const { initVramLayer, createFakeStdout, renderWithSelection } = await import("./render/vram-layer.js");
+  const { initVramLayer, createFakeStdout, renderWithSelection, setThemeBg } = await import("./render/vram-layer.js");
   await initVramLayer();
+  // 首屏兜底：onRender 可能在 App 的 setThemeBg effect 之前 fire，先按初始主题 bg 填好背景，
+  // 避免首帧空白区显示终端默认底（透明闪烁）。
+  const { TAU_CETI } = await import("./theme/tau-ceti.js");
+  const { loadThemeFile } = await import("./theme/hot-reload.js");
+  const initTheme = themePath ? (loadThemeFile(themePath) ?? TAU_CETI) : TAU_CETI;
+  setThemeBg(initTheme.bg);
   const fakeStdout = createFakeStdout();
   // 进备用屏 + 开 ?1003 全追踪 + 隐藏光标
   process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?1003h\x1b[?1006h\x1b[?25l");
+  // vram-layer 重绘节流：流式 delta 每秒可达 50+ 次，buildGrid 是 O(rows×cols)，不节流会卡
+  let lastRender = 0;
+  let renderPending = false;
+  const doRender = () => {
+    lastRender = Date.now();
+    const cols = process.stdout.columns || 80;
+    const rows = process.stdout.rows || 24;
+    renderWithSelection(cols, rows);
+  };
+  const scheduleRender = () => {
+    const now = Date.now();
+    if (now - lastRender >= 30) {
+      doRender();
+    } else if (!renderPending) {
+      renderPending = true;
+      setTimeout(() => { renderPending = false; doRender(); }, 30);
+    }
+  };
   const { waitUntilExit } = render(<App config={config} themePath={themePath} />, {
     exitOnCtrlC: false,
     stdin: filteredStdin as NodeJS.ReadStream,
     stdout: fakeStdout as any,
     patchConsole: false,
-    // Ink 每次渲染后触发 vram-layer 重绘（流式 delta、StatusBar tick 等）
-    onRender: () => {
-      const cols = process.stdout.columns || 80;
-      const rows = process.stdout.rows || 24;
-      renderWithSelection(cols, rows);
-    },
+    onRender: scheduleRender,
   });
-  setTimeout(() => renderWithSelection(process.stdout.columns || 80, process.stdout.rows || 24), 200);
+  setTimeout(doRender, 200);
   process.stdout.on("resize", () => {
     fakeStdout.columns = process.stdout.columns || 80;
     fakeStdout.rows = process.stdout.rows || 24;

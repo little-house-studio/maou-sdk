@@ -3,6 +3,8 @@ import { useInput, type Key } from "ink";
 
 /** 匹配 SGR 鼠标序列（1000/1002/1003/1006 模式） */
 const MOUSE_RE = /\x1b\[<\d+;\d+;\d+[Mm]/;
+/** ESC 被剥离后的残片：`[<35;83;30M`（曾直接进输入框） */
+const MOUSE_ORPHAN_RE = /\[<\d+;\d+;\d+[Mm]/;
 /**
  * 匹配其它 ANSI 转义序列（避免控制序列被当文本插入）。
  * 末尾类含 ~ 以兜底 F5-F12（\x1b[15~）、PgUp/Ins（\x1b[5~）、
@@ -13,13 +15,22 @@ const ANSI_RE = /\x1b\[[0-9;?]*[a-zA-Z<~]/;
 /** SS3 序列（F1-F4 \x1bOP、SS3 方向键 \x1bOA），parseKeypress 通常能消化但兜底 */
 const SS3_RE = /\x1bO[A-Z]/;
 
+function isControlGarbage(input: string): boolean {
+  if (!input) return false;
+  if (MOUSE_RE.test(input) || MOUSE_ORPHAN_RE.test(input)) return true;
+  if (ANSI_RE.test(input) || SS3_RE.test(input)) return true;
+  // 纯残片：整段就是 `[<…M` 或含不可见 CSI 开头
+  if (/^\[<\d/.test(input)) return true;
+  return false;
+}
+
 export function useCleanInput(
   handler: (input: string, key: Key) => void,
   options?: Parameters<typeof useInput>[1],
 ): void {
   useInput((input, key) => {
-    // 吞掉鼠标/ANSI/SS3 转义序列
-    if (input && (MOUSE_RE.test(input) || ANSI_RE.test(input) || SS3_RE.test(input))) return;
+    // 吞掉鼠标/ANSI/SS3 转义序列（含无 ESC 残片）
+    if (input && isControlGarbage(input)) return;
     // 吞掉空输入
     if (!input && !key.return && !key.backspace && !key.delete && !key.leftArrow && !key.rightArrow && !key.upArrow && !key.downArrow && !key.escape && !key.tab) return;
     handler(input, key);

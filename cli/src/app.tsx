@@ -12,12 +12,12 @@ import { watchThemes, loadThemeFile } from "./theme/hot-reload.js";
 import { Layout } from "./layout/Layout.js";
 import { useCleanInput } from "./hooks/useCleanInput.js";
 import { useTerminalSize } from "./hooks/useTerminalSize.js";
-import { openExternalEditor } from "./hooks/useExternalEditor.js";
 import { useStore, loadLastSession } from "./state/store.js";
 import { loadSessionMessages } from "./state/session-loader.js";
 import { useAgent } from "./events/useAgent.js";
+import { useSupervisorState } from "./hooks/useSupervisorState.js";
 import { useMouseInput } from "./input/useMouseInput.js";
-import { extractSelection as vramExtract, clearSelection as vramClear, getSelection as vramGet, renderWithSelection } from "./render/vram-layer.js";
+import { extractSelection as vramExtract, clearSelection as vramClear, getSelection as vramGet, renderWithSelection, setThemeBg } from "./render/vram-layer.js";
 import { osc52 } from "./input/osc52.js";
 import type { LayoutRect } from "./input/hit-test.js";
 import type { AgentCliConfig } from "./types.js";
@@ -25,6 +25,7 @@ import type { AgentCliConfig } from "./types.js";
 export function App({ config, themePath }: { config: AgentCliConfig; themePath?: string }) {
   const { exit } = useApp();
   const { send, abort, sound } = useAgent(config);
+  useSupervisorState();
   const [frame, setFrame] = useState(0);
   const [inputValue, setInputValue] = useState("");
   const [theme, setTheme] = useState<ThemeTokens>(() => themePath ? (loadThemeFile(themePath) ?? TAU_CETI) : TAU_CETI);
@@ -33,6 +34,7 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   const fullEditorInitial = useStore((s) => s.fullEditorInitial);
   const pendingSubmit = useStore((s) => s.pendingSubmit);
   const fullEditorResult = useStore((s) => s.fullEditorResult);
+  const pendingSend = useStore((s) => s.pendingSend);
   const exitRequested = useStore((s) => s.exitRequested);
   const setAgentMeta = useStore((s) => s.setAgentMeta);
   const term = useTerminalSize();
@@ -97,6 +99,12 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     return watchThemes((t) => setTheme(t));
   }, []);
 
+  // 同步当前主题 bg 到渲染层：渲染层是 React 外的同步函数，靠此 effect 接收主题。
+  // 覆盖初始主题（默认 TAU_CETI / --theme 指定）、热重载、--theme 切换三种来源。
+  useEffect(() => {
+    setThemeBg(theme.bg);
+  }, [theme]);
+
   // 全屏编辑器退出后：值带回 InputBar（pendingSubmit 则发送）
   useEffect(() => {
     if (pendingSubmit !== null) {
@@ -108,6 +116,14 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
       useStore.getState().clearPendingSubmit();
     }
   }, [pendingSubmit, fullEditorResult, send]);
+
+  // 通用发送桥接：组件（GoalPanel 确认按钮等）设 pendingSend，这里发出去
+  useEffect(() => {
+    if (pendingSend !== null) {
+      send(pendingSend);
+      useStore.getState().clearPendingSend();
+    }
+  }, [pendingSend, send]);
 
   // vram 方案：总是开 ?1003 鼠标（选区蓝底由 vram-layer 渲染）
   const mouseEnabled = true;
@@ -126,6 +142,7 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     },
     onChatScroll: (dir) => { useStore.getState().scrollChat(dir); },
     onInputScroll: (dir) => { useStore.getState().shiftInputCursor(dir); },
+    onOverlayScroll: (dir) => { useStore.getState().scrollOverlay(dir); },
   });
 
   // 全局快捷键（全屏编辑器开时由 FullScreenEditor 自己处理，不干预）
@@ -136,7 +153,23 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     if (fullEditorInitial !== null) return;
     // useInput 对 Ctrl+C 解析：char 可能是 "c" 或 "\x03"（取决于终端/Ink 版本），两种都认
     if (key.ctrl && (char === "c" || char === "\x03")) {
-      // 1. 有选区：清选区（松手已自动复制，这里只清蓝底，不退出）
+      // 1. supervisor 残留：Ctrl+C 第一次中断+提示，第二次强制清（不退 CLI）
+      //    放最前，优先于选区/streaming，因为 supervisor run 期间状态可能已 ended 但 UI 残留
+      if (useStore.getState().supervisor) {
+        const now = Date.now();
+        if (now - ctrlCAtRef.current < 3000) {
+          if (ctrlCTimerRef.current) clearTimeout(ctrlCTimerRef.current);
+          abort();
+          useStore.getState().exitSupervisor();
+          useStore.getState().toastMsg("已退出监督模式", "ok");
+        } else {
+          abort();
+          ctrlCAtRef.current = now;
+          useStore.getState().toastMsg("已中断 · 再按一次 Ctrl+C 退出监督", "warn");
+        }
+        return;
+      }
+      // 2. 有选区：清选区（松手已自动复制，这里只清蓝底，不退出）
       if (vramGet()) {
         vramClear();
         const cols = process.stdout.columns || 80;
@@ -144,7 +177,7 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
         renderWithSelection(cols, rows);
         return;
       }
-      // 2. streaming：第一次中断，3秒内第二次退出
+      // 3. streaming（非监督）：第一次中断，3秒内第二次退出
       if (streaming && !useStore.getState().aborting) {
         abort();
         ctrlCAtRef.current = Date.now();
@@ -213,12 +246,8 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     if (key.ctrl && char === "m") { useStore.getState().setOverlay("model"); return; }
     if (key.ctrl && char === ",") { useStore.getState().setOverlay("settings"); return; }
     if (key.ctrl && char === "n") { useStore.getState().clearMessages(); useStore.getState().toastMsg("新会话", "ok"); return; }
-    if (key.ctrl && char === "g") {
-      const edited = openExternalEditor(inputValue);
-      if (edited !== null) { setInputValue(edited); useStore.getState().toastMsg("已从编辑器读取", "ok"); }
-      return;
-    }
     // Ctrl+E 触发全屏编辑器（react-ink-textarea 已禁用其默认行尾行为）
+    // 外部 $EDITOR（原 Ctrl+G）已移除，旧实现见 legacy/pre-lib-migration/hooks/useExternalEditor.ts
     if (key.ctrl && char === "e") { useStore.getState().openFullEditor(inputValue); return; }
     // Ctrl+S 切换音效开/关
     if (key.ctrl && char === "s") {

@@ -27,8 +27,16 @@ import type { SessionStore } from "@little-house-studio/context";
 import type { ToolRegistry } from "@little-house-studio/tools";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { ConfigStore } from "@little-house-studio/types";
+import type { StreamEvent } from "@little-house-studio/types";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+
+// /goal 监督模式：callMainAgent 闭包用此引用拿当前 send 的 AbortController。
+// useAgent 每次 send 前调 setSupervisorAbortSignal 更新，使 Ctrl+C 能中断嵌套的主 Agent run。
+let _currentAbortSignal: AbortSignal | undefined;
+export function setSupervisorAbortSignal(sig: AbortSignal | undefined): void {
+  _currentAbortSignal = sig;
+}
 
 /**
  * 解析包内 coding 模板目录的绝对路径。
@@ -139,6 +147,9 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
   //   - HarnessSessionStore + TaskSessionStore
   //   - TASK_MANAGER 持久化回调（含 relatedBlockIds 合并）
   //   - startSession 自动恢复 task_plan
+  // /goal 监督模式：callMainAgent 注入（复用 harness 逻辑：preset + yolo sandbox + initAgentName main）。
+  // runtimeContainer 延迟引用：new Runtime 后赋值，让闭包能拿到 runtime 实例调 rt.run。
+  const runtimeContainer: { ref: Runtime | null } = { ref: null };
   const runtime = new Runtime({
     configStore: opts.configStore,
     sessionStore: opts.sessionStore,
@@ -151,7 +162,43 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     summarizer: opts.summarizer,
     log: opts.log ?? ((level, msg) => console[level === "error" ? "error" : "log"](`[Runtime] ${msg}`)),
     enablePostLogger: opts.enablePostLogger ?? true,
+    callMainAgent: (mainSessionId, message, abortSignal) => {
+      const gen = (async function* () {
+        const rt = runtimeContainer.ref;
+        if (!rt) return "❌ Runtime 未初始化。";
+        // 从 configStore 拿主 Agent preset（复用 harness/runtime.ts 逻辑）
+        const config = opts.configStore.get();
+        const presets = (config as { api?: { presets?: unknown[]; defaultPreset?: number } }).api?.presets ?? [];
+        const idx = (config as { api?: { defaultPreset?: number } }).api?.defaultPreset ?? 0;
+        const preset = (presets[idx] ?? presets[0]) as Record<string, unknown> | undefined;
+        if (!preset) return "❌ 无可用 preset。";
+        // 监督模式下主 agent 必须能自由跑 build/test/install，强制 yolo（否则命令全被"需确认"拦住）
+        let finalOutput = "";
+        try {
+          for await (const event of rt.run({
+            sessionId: mainSessionId,
+            userMessage: message,
+            preset,
+            stream: true,
+            // 合并外部 abortSignal（supervisor_chat_main 传的）+ 当前 send 的 abortSignal（Ctrl+C）
+            abortSignal: abortSignal ?? _currentAbortSignal,
+            sandboxMode: "yolo",
+            initAgentName: "main",
+          })) {
+            yield event as StreamEvent;
+            if (event.type === "assistant" && typeof (event as { content?: unknown }).content === "string") {
+              finalOutput = (event as { content: string }).content;
+            }
+          }
+        } catch (err) {
+          return `❌ 主 Agent 执行失败: ${err instanceof Error ? err.message : String(err)}`;
+        }
+        return finalOutput || "(主 Agent 无输出)";
+      })();
+      return gen;
+    },
   });
+  runtimeContainer.ref = runtime;
 
   return {
     runtime,

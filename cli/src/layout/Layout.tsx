@@ -11,6 +11,7 @@ import { ChatPage } from "../render/ChatPage.js";
 import { EventBlock } from "../render/EventBlock.js";
 import { InputBar } from "../render/InputBar.js";
 import { NavBar, InfoBar } from "../render/NavBar.js";
+import { GoalPanel } from "../render/GoalPanel.js";
 import { CommandPalette } from "../overlay/CommandPalette.js";
 import { ModelDialog } from "../overlay/ModelDialog.js";
 import { SessionDialog } from "../overlay/SessionDialog.js";
@@ -51,6 +52,9 @@ export function Layout({
       {/* 事件块（输入框上方） */}
       <EventBlock />
 
+      {/* goal 监督面板（supervisor active 时显示） */}
+      <GoalPanel />
+
       {/* 输入框 */}
       <InputBar value={value} onSubmit={onSubmit} onChange={onInputChange} onFullEditor={onFullEditor} />
 
@@ -61,7 +65,11 @@ export function Layout({
       <NavBar />
 
       {/* Overlay：命令面板 / 模型 / 会话 / 帮助 / 设置 */}
-      {overlay === "command" && <CommandPalette onRun={(id) => useStore.getState().runCommand(id)} />}
+      {overlay === "command" && <CommandPalette onRun={(id) => {
+        // 本地 UI 命令走 runCommand；其余（new/clear/stop/agent/goal）当斜杠命令透传 runtime
+        if (useStore.getState().isLocalCommand(id)) useStore.getState().runCommand(id);
+        else { useStore.getState().setOverlay(null); onSubmit(`/${id}`); }
+      }} />}
       {overlay === "model" && <ModelDialog config={config} />}
       {overlay === "sessions" && <SessionDialog />}
       {overlay === "help" && <HelpDialog />}

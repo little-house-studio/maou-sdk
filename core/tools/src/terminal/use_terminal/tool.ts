@@ -160,13 +160,20 @@ export class TerminalTool extends Tool {
     const agent = ctx.agentName || "main";
     const decision = decideCommand(command, agent);
 
-    if (decision.action === "allow") return null;
-
+    // 黑名单命令无论什么模式都拒绝（安全兜底，不可绕过）
     if (decision.action === "deny") {
       return createToolResponse(false,
-        `⛔ 命令被终端策略拒绝：\`${command}\`\n原因：${decision.reason}\n如果这是误报，原样再次执行完全相同的命令即可放行（将自动加入白名单）。`,
+        `⛔ [系统拦截] 命令被终端安全策略拒绝（黑名单），不是你的命令写错，是系统安全策略禁止此类命令：\`${command}\`\n原因：${decision.reason}\n这是环境限制，无法绕过。请换用其他工具达成目的（如用 write_file 代替 echo 重定向、用 glob/grep 代替 find）。如果确实需要，可让用户手动执行。`,
         { payload: { policy: "deny", command, reason: decision.reason } });
     }
+
+    // yolo 模式：除黑名单外全部放行（之前 _approve 漏了检查 sandboxMode，
+    // 导致 HTTP/监督场景 yolo 模式下命令仍被 ask 拦截，主 agent 困在"命令需确认"循环）
+    if (ctx.sandboxMode === "yolo") {
+      return null;
+    }
+
+    if (decision.action === "allow") return null;
 
     if (decision.action === "ask") {
       // 交互式审批：TUI 注入 approver 时弹菜单让用户选 Yes/No
@@ -181,18 +188,20 @@ export class TerminalTool extends Tool {
           }
           if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
           return createToolResponse(false,
-            `⛔ 用户拒绝执行：\`${command}\``,
+            `⛔ [系统拦截] 用户在审批菜单手动拒绝了此命令（不是命令本身有误）：\`${command}\`\n请换一种方式或询问用户原因。`,
             { payload: { policy: "ask-denied", command } });
         } catch (err) {
           // 用户取消/超时 → 保持原 ask 文字行为兜底
           return createToolResponse(false,
-            `🔐 命令审批被取消：\`${command}\`（${errToString(err)}）`,
+            `🔐 [系统拦截] 命令审批被取消/超时（非命令错误）：\`${command}\`（${errToString(err)}）\n这是交互审批被打断，不是你的命令有问题。可换工具或稍后重试。`,
             { payload: { policy: "ask-cancelled", command } });
         }
       }
-      // 未注入 approver（非 TUI 场景）→ 旧文字兜底
+      // 未注入 approver（非 TUI 场景，如 HTTP/监督模式）→ 命令无法被审批，卡住
       return createToolResponse(false,
-        `🔐 命令需确认（normal 模式，不在白名单）：\`${command}\`\n如确认安全，原样再次执行相同命令即放行（自动加入白名单）；或切换 auto/yolo 模式。`,
+        `🔐 [系统拦截·环境限制] 命令需要用户确认才能执行，但当前是无人审批的环境（HTTP/监督模式，没有交互式审批菜单），命令无法放行：\`${command}\`\n` +
+        `这是环境限制，不是你的命令有误。当前 sandboxMode=normal（审核模式），非白名单命令都会被拦。\n` +
+        `**重要**：如果你是在被监督的任务里，不要反复试同类命令——会卡死验收。请换用文件工具（write_file/edit_file/glob/grep）达成目的，或让 supervisor 切换到 yolo 模式。`,
         { payload: { policy: "ask", command } });
     }
 
@@ -200,7 +209,7 @@ export class TerminalTool extends Tool {
     const reviewer = getTerminalReviewer();
     if (!reviewer) {
       return createToolResponse(false,
-        `🔐 命令需审核但未配置审核器（auto 模式）：\`${command}\`\n原样再次执行相同命令即放行。`,
+        `🔐 [系统拦截·配置缺失] 当前是 auto 审核模式，但系统未配置审核器，命令无法审核放行：\`${command}\`\n这是环境配置问题，不是命令错误。请换用文件工具，或让用户配置审核器/切换 yolo 模式。`,
         { payload: { policy: "review-no-reviewer", command } });
     }
     try {

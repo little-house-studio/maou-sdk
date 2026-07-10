@@ -35,14 +35,17 @@ interface DragState {
   startTarget?: { kind: "input"; col: number; line: number } | { kind: "other" };
 }
 
-const DRAG_THRESHOLD = 2;
+const DRAG_THRESHOLD = 1; // 网页感：轻微移动即进入拖选
 const DOUBLE_CLICK_MS = 400;
 const DOUBLE_CLICK_DIST = 3;
+/** 拖选时靠近上下文窗口上下边缘自动滚一行 */
+const EDGE_SCROLL_PX = 1;
 
 export interface MouseCallbacks {
   onInputCursor?: (charIndex: number, line: number) => void;
   onChatScroll?: (dir: "up" | "down") => void;
   onInputScroll?: (dir: "up" | "down") => void;
+  onOverlayScroll?: (dir: "up" | "down") => void;  // overlay 开时滚轮滚动菜单项
 }
 
 export function useMouseInput(
@@ -53,6 +56,9 @@ export function useMouseInput(
   const { stdout } = useStdout();
   const cbRef = useRef(cb);
   cbRef.current = cb;
+  // rect 用 ref：effect 不因布局变化重绑 stdin，但 hitTest 始终用最新矩形
+  const rectRef = useRef(rect);
+  rectRef.current = rect;
   const dragRef = useRef<DragState | null>(null);
   const lastClickRef = useRef<{ time: number; col: number; row: number; count: number }>({
     time: 0, col: 0, row: 0, count: 0,
@@ -71,7 +77,9 @@ export function useMouseInput(
         handleEvent(e);
       }
       const now = Date.now();
-      if (now - lastRender > 30) {
+      // 流式时放宽 vram 重绘间隔，把事件循环让给键盘/滚轮
+      const minGap = useStore.getState().streaming ? 80 : 30;
+      if (now - lastRender > minGap) {
         const cols = process.stdout.columns || 80;
         const rows = process.stdout.rows || 24;
         renderWithSelection(cols, rows);
@@ -87,20 +95,35 @@ export function useMouseInput(
 
   const handleEvent = (e: MouseEvent) => {
     const rows = stdout?.rows ?? 30;
+    const rect = rectRef.current;
     const target = hitTest(e.col, e.row, rows, rect);
 
     if (e.type === "wheelUp" || e.type === "wheelDown") {
       const dir = e.type === "wheelUp" ? "up" : "down";
       const store = useStore.getState();
-      if (store.fullEditorInitial !== null) cbRef.current.onInputScroll?.(dir);
-      else if (store.overlay) cbRef.current.onOverlayScroll?.(dir);  // overlay 开时滚轮滚动菜单
-      else cbRef.current.onChatScroll?.(dir);
+      // 拖选中滚轮：滚动上下文窗口，不中断选区（网页感）
+      const dragging = dragRef.current?.moved && dragRef.current.dragMode === "vram";
+      if (store.fullEditorInitial !== null && !dragging) cbRef.current.onInputScroll?.(dir);
+      else if (store.overlay && !dragging) cbRef.current.onOverlayScroll?.(dir);
+      else if (store.eventBlockExpanded && !dragging) {
+        const hit = hitTestClick(e.col, e.row);
+        if (hit) store.scrollSupervisor(dir);
+        else cbRef.current.onChatScroll?.(dir);
+      } else {
+        cbRef.current.onChatScroll?.(dir);
+      }
+      // 拖选中滚轮后立刻重绘蓝底
+      if (dragging) {
+        const cols = process.stdout.columns || 80;
+        const r = process.stdout.rows || 24;
+        renderWithSelection(cols, r);
+      }
       return;
     }
 
-    // hover motion（无按键移动）：命中可点击元素→设 hoverId，未命中→清。节流 30ms 避免高频重渲
+    // hover motion：流式时跳过（?1003 狂刷 motion 会饿死键盘与滚轮）
     if (e.type === "motion") {
-      process.stderr.write(`[dbg-motion] col=${e.col} row=${e.row}\n`);
+      if (useStore.getState().streaming) return;
       const now = Date.now();
       if (now - lastHoverRef.current < 30) return;
       lastHoverRef.current = now;
@@ -199,34 +222,41 @@ export function useMouseInput(
         return;
       }
 
-      // vram 模式：现有蓝底选区逻辑
+      // vram 模式：上下文窗口拖选（网页感蓝底）
       if (d.clickCount === 2 && d.wordMode) {
-        // 双击后拖拽：按词扩展选区
         if (hasMoved || !d.moved) {
           d.moved = true;
-          // 找当前拖拽位置的词边界
           const word = findWordAt(e.row, e.col);
           const curWordStart = { row: e.row, col: word.startCol };
           const curWordEnd = { row: e.row, col: word.endCol };
-          // 选区从原始词起点到当前词终点（向右拖）或当前词起点到原始词终点（向左拖）
           if (e.col >= d.startCol) {
-            // 向右拖：anchor=原始词起点, focus=当前词终点
             setSelection(d.wordStart!, curWordEnd);
           } else {
-            // 向左拖：anchor=当前词起点, focus=原始词终点
             setSelection(curWordStart, d.wordEnd!);
           }
         }
-      } else if (d.clickCount === 1) {
-        // 普通拖拽：按字符选区
+      } else if (d.clickCount === 1 || d.clickCount >= 3) {
+        // 单击/三击后拖：按字符扩展选区
         if (!d.moved && hasMoved) {
           d.moved = true;
           setSelection({ row: d.startRow, col: d.startCol }, { row: e.row, col: e.col });
         } else if (d.moved) {
           setSelection({ row: d.startRow, col: d.startCol }, { row: e.row, col: e.col });
         }
-        // 单击未拖动时不设 hover：hover 反色块会在点击位置残留成"伪光标"，
-        // 违背"只有输入框聚焦才有光标"的规则。hover 高亮改由各组件自管（后续）。
+      }
+
+      // 边缘自动滚动：拖到上下文窗口顶/底附近时滚动 1 行（网页 select + scroll）
+      if (d.moved && d.dragMode === "vram") {
+        const chatTop = rect.chatTop ?? 2;
+        const chatBottom = rect.chatBottom ?? (rows - 4);
+        if (e.row <= chatTop + EDGE_SCROLL_PX) {
+          useStore.getState().scrollChat("up");
+        } else if (e.row >= chatBottom - EDGE_SCROLL_PX) {
+          useStore.getState().scrollChat("down");
+        }
+        // 拖选时即时刷新蓝底（不节流）
+        const cols = process.stdout.columns || 80;
+        renderWithSelection(cols, rows);
       }
       return;
     }

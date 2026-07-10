@@ -239,6 +239,15 @@ export { getEnvApiKey, findEnvKeys, hasEnvKey, PROVIDER_ENV_KEYS } from './env.j
 // ─── 上下文溢出检测（对标 pi-ai overflow detection，覆盖 20+ 厂商）───────────
 export { detectContextOverflow, extractTokenCount } from './overflow.js'
 
+// ─── 跨平台 stop_reason 统一映射 ────────────────────────────────────────────
+export {
+  normalizeStopReason,
+  shouldContinueLoop,
+  needsContinuation,
+  isSafetyBlock,
+  isToolUse,
+} from './stop-reason.js'
+
 export { estimateTokens, estimateContextTokens, checkContextFit } from './token-count.js'
 export { ConcurrencyLimiter, RateLimiter, withLimiters } from './rate-limit.js'
 // ─── 账户能力：余额查询 + 跨协议模型扫描（best-effort）────────────────────────

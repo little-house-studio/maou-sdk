@@ -19,7 +19,11 @@ import { useClickTarget } from "../input/click-target.js";
 export function InfoBar() {
   const t = useTheme();
   const term = useTerminalSize();
-  const { provider, model, maxContext, rounds, currentRoundUsage } = useStore();
+  const provider = useStore((s) => s.provider);
+  const model = useStore((s) => s.model);
+  const maxContext = useStore((s) => s.maxContext);
+  const rounds = useStore((s) => s.rounds);
+  const currentRoundUsage = useStore((s) => s.currentRoundUsage);
 
   const currentTokens = currentRoundUsage.input + currentRoundUsage.output;
   const lastRound = rounds[rounds.length - 1];
@@ -56,7 +60,7 @@ interface NavItem {
 /** 导航栏：按键行，最底部。均分铺满整行 */
 export function NavBar() {
   const t = useTheme();
-  const { agentName } = useStore();
+  const agentName = useStore((s) => s.agentName);
 
   const items: NavItem[] = [
     { id: "agent", label: agentName || "agent", short: agentName?.[0] || "A", bg: t.accent, bgHover: t.accent2, fg: "#000", action: () => useStore.getState().setOverlay("agents") },

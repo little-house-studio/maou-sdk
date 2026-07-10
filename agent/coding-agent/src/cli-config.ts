@@ -10,7 +10,12 @@
 
 import { ConfigStore } from "@little-house-studio/types";
 import { SessionStore } from "@little-house-studio/context";
-import { ToolRegistry, registerBuiltins } from "@little-house-studio/tools";
+import {
+  ToolRegistry,
+  registerBuiltins,
+  setTerminalReviewer,
+  setTerminalPolicyRoot,
+} from "@little-house-studio/tools";
 import { LLMClient } from "@little-house-studio/llm";
 import type { APIPreset } from "@little-house-studio/llm";
 import { createCodingAgent } from "./index.js";
@@ -19,6 +24,44 @@ import type { AgentCliConfig } from "@little-house-studio/agent";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
+
+/**
+ * 安装终端 auto 模式小模型审核器（对齐 harness/server installTerminalReviewer）。
+ * CLI 过去没注入 → ~/.maou/.../terminal-policy.json 为 auto 时全部 use_terminal 被拦。
+ */
+function installTerminalReviewer(llmClient: LLMClient, configStore: ConfigStore): void {
+  setTerminalReviewer(async (command) => {
+    try {
+      const config = configStore.get();
+      const presets = (config.api?.presets ?? []) as unknown as Array<{ name?: string; model?: string }>;
+      const idx = config.api?.defaultPreset ?? 0;
+      const preset = presets[idx] ?? presets[0];
+      if (!preset || !preset.name) {
+        // 无 preset 时放行：CLI 交互场景不应卡死全部终端命令
+        return { approve: true, reason: "未配置 preset，CLI 默认放行" };
+      }
+      const messages = [
+        {
+          role: "system",
+          content:
+            '你是严格的终端命令安全审核员。判断给定 shell 命令在一个开发项目里执行是否安全。删除大范围文件、写系统目录、下载执行远程脚本、泄露密钥、关机重启等视为不安全。只输出一行 JSON：{"approve": true/false, "reason": "简短中文理由"}，不要任何额外文字。',
+        },
+        { role: "user", content: `命令：\n${command}` },
+      ];
+      const resp = await llmClient.chat({
+        preset: preset as never,
+        messages: messages as never,
+      });
+      const text = String((resp as { content?: string }).content ?? "").trim();
+      const m = text.match(/\{[\s\S]*\}/);
+      if (!m) return { approve: false, reason: `审核响应无法解析：${text.slice(0, 60)}` };
+      const parsed = JSON.parse(m[0]) as { approve?: boolean; reason?: string };
+      return { approve: parsed.approve === true, reason: String(parsed.reason ?? "（无理由）") };
+    } catch (err) {
+      return { approve: false, reason: `审核异常：${String(err).slice(0, 60)}` };
+    }
+  });
+}
 
 /** 从 ~/.maou/config.json 读 api.presets（和 maou-agent 一致） */
 function loadPresets(): APIPreset[] {
@@ -49,6 +92,10 @@ const codingCliConfig: AgentCliConfig = {
     registerBuiltins(toolRegistry);
     const sessionStore = new SessionStore(join(projectRoot, ".maou", "sessions"));
     const llmClient = new LLMClient();
+
+    // 终端策略根目录 + auto 审核器（与 harness 对齐，否则 auto 模式无审核器全拦）
+    setTerminalPolicyRoot(maouRoot);
+    installTerminalReviewer(llmClient, configStore);
 
     const agent = createCodingAgent({
       projectRoot,

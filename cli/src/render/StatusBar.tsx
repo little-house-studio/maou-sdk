@@ -14,7 +14,17 @@ import { Sparkline } from "./sparkline.js";
 
 export function StatusBar() {
   const t = useTheme();
-  const { streaming, agentName, provider, model, maxContext, round, thinkingLevel, rounds, cacheHistory, currentRoundUsage } = useStore();
+  // 细粒度 selector，避免每个 stream delta 重渲整栏
+  const streaming = useStore((s) => s.streaming);
+  const agentName = useStore((s) => s.agentName);
+  const provider = useStore((s) => s.provider);
+  const model = useStore((s) => s.model);
+  const maxContext = useStore((s) => s.maxContext);
+  const round = useStore((s) => s.round);
+  const thinkingLevel = useStore((s) => s.thinkingLevel);
+  const rounds = useStore((s) => s.rounds);
+  const cacheHistory = useStore((s) => s.cacheHistory);
+  const currentRoundUsage = useStore((s) => s.currentRoundUsage);
   const term = useTerminalSize();
   const [now, setNow] = useState(() => new Date());
 

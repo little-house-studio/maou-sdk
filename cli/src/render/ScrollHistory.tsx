@@ -48,6 +48,10 @@ export function ScrollHistory({ frame }: { frame: number }) {
   const contentMetrics = useBoxMetrics(contentRef);
   const bottomBtnRef = useRef<DOMElement | null>(null);
   useClickTarget(bottomBtnRef, () => useStore.getState().scrollToBottom(), []);
+  // olderBtnRef 必须在 early return 前声明（hooks 规则）；handler 用 ref 读最新 olderUserPreview
+  const olderBtnRef = useRef<DOMElement | null>(null);
+  const olderJumpRef = useRef<() => void>(() => {});
+  useClickTarget(olderBtnRef, () => olderJumpRef.current(), []);
 
   // 可用高度：终端高 - 顶栏(1) - 对话区上下边框(2) - 事件块(1) - 输入框(1) - 状态栏(1) = rows - 6
   const availableRows = Math.max(4, term.rows - 6);
@@ -69,7 +73,7 @@ export function ScrollHistory({ frame }: { frame: number }) {
       <Box flexGrow={1} justifyContent="center" alignItems="center" flexDirection="column">
         <Text color={t.accent} bold>▌ MAOU // 待命</Text>
         <Text color={t.dim}>输入消息开始对话</Text>
-        <Text color={t.dim}>Ctrl+K 命令 · Ctrl+E 全屏 · Ctrl+G 编辑器 · Ctrl+C 退出</Text>
+        <Text color={t.dim}>Ctrl+K 命令 · Ctrl+E 全屏 · Ctrl+C 退出</Text>
       </Box>
     );
   }
@@ -133,8 +137,8 @@ export function ScrollHistory({ frame }: { frame: number }) {
     useStore.getState().setAutoFollow(false);
     useStore.getState().setChatScrollOffset(y);
   };
-  const olderBtnRef = useRef<DOMElement | null>(null);
-  useClickTarget(olderBtnRef, jumpToOlderUser, [olderUserPreview?.ts, offset, maxChatScroll]);
+  // 更新 jump 回调（olderBtnRef 的 useClickTarget 已在顶部声明）
+  olderJumpRef.current = jumpToOlderUser;
 
   return (
     <Box flexDirection="column" flexGrow={1}>

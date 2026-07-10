@@ -1,8 +1,10 @@
 /**
  * InputBar —— 多行输入框（react-ink-textarea）。
  * 默认 1 行，自适应高度到 viewportLines，超过开启内部滚动。
- * Enter 发送 / Alt+Enter 换行 / Ctrl+E 全屏编辑器 / Ctrl+G 外部编辑器。
+ * Enter 发送 / Alt+Enter 换行 / Ctrl+E 全屏编辑器。
  * `/` 触发斜杠命令补全（光标上方 overlay）。
+ * 基座：react-ink-textarea；鼠标点选/框选/历史/补全为本层胶水。
+ * 旧整文件：legacy/pre-lib-migration/render/InputBar.tsx
  *
  * 按键设计（DESIGN.md）：
  *  - 上下键：光标在中间 → 移光标；到第一行按上 → 先到 [0,0]；再按上 → 回溯输入历史。
@@ -131,6 +133,15 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
       if (forcedCursorTimer.current) { clearTimeout(forcedCursorTimer.current); forcedCursorTimer.current = null; }
       setForcedCursor(null);
     }
+    // 兜底：剥掉漏网的鼠标 SGR 残片（含无 ESC 的 `[<btn;col;rowM`）
+    const cleaned = v
+      .replace(/\x1b\[<\d+;\d+;\d+[Mm]/g, "")
+      .replace(/\[<\d+;\d+;\d+[Mm]/g, "");
+    if (cleaned !== v) {
+      onChange(cleaned);
+      useStore.getState().updateCompletion(cleaned);
+      return;
+    }
     onChange(v);
     useStore.getState().updateCompletion(v);
     // 输入变化时重置历史浏览
@@ -140,15 +151,20 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     }
   };
 
-  // 补全确认（防重复：用 ref 标记）
+  // 补全确认（防重复：Tab/Enter 可能同 tick 双触发）
   const acceptingRef = useRef(false);
   const acceptCompletion = () => {
-    if (acceptingRef.current) return; // 防重复
-    const filled = useStore.getState().acceptCompletion();
+    if (acceptingRef.current) return;
+    const filled = useStore.getState().acceptCompletion(value);
     if (filled !== null) {
       acceptingRef.current = true;
       onChange(filled);
-      setTimeout(() => { acceptingRef.current = false; }, 50);
+      // 光标移到补全结果末尾（多行时落到最后一行）
+      const lines = filled.split("\n");
+      const lastLine = lines.length - 1;
+      const lastCol = [...(lines[lastLine] ?? "")].length;
+      setForcedWithTimeout([lastLine, lastCol]);
+      setTimeout(() => { acceptingRef.current = false; }, 80);
     }
   };
 
@@ -179,19 +195,18 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
             if (useStore.getState().completion) { acceptCompletion(); return; }
             const trimmed = v.trim();
             if (!trimmed) return;
-            // 斜杠命令拦截
+            // 斜杠命令：纯 UI 命令（开 overlay/退出）走本地 runCommand；
+            // 其余（/goal /new /clear /stop /agent 等）当普通消息透传 runtime，由 SDK commandRegistry 识别。
+            // 这样 SDK 新增命令 CLI 自动支持，不硬编码。
             const slashMatch = trimmed.match(/^\/(\w+)/);
-            if (slashMatch) {
-              const cmdId = slashMatch[1];
-              useStore.getState().pushInputHistory(trimmed);
-              useStore.getState().resetHistoryIndex();
-              useStore.getState().runCommand(cmdId);
+            useStore.getState().pushInputHistory(trimmed);
+            useStore.getState().resetHistoryIndex();
+            if (slashMatch && useStore.getState().isLocalCommand(slashMatch[1])) {
+              useStore.getState().runCommand(slashMatch[1]);
               onChange("");
               return;
             }
-            // 普通消息：push 历史 + 发送
-            useStore.getState().pushInputHistory(trimmed);
-            useStore.getState().resetHistoryIndex();
+            // 普通消息或透传命令：发送给 runtime
             savedInputRef.current = null;
             onSubmit(trimmed);
             onChange("");
@@ -202,12 +217,12 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
               ? pendingCount > 0
                 ? `生成中… 已排队 ${pendingCount} 条（Enter 继续排队 · Esc 中断）`
                 : "生成中…（Enter 排队下一条 · Esc 中断）"
-              : "输入文字…（/ 命令 · Ctrl+E 全屏 · Ctrl+G 编辑器）"
+              : "输入文字…（/ 命令 · Ctrl+E 全屏）"
           }
           initialLineCount={1}
           viewportLines={4}
           highlightActiveLine={false}
-          disableCursorBlink={false}
+          disableCursorBlink={true}  // 禁用闪烁：常驻软光标，避免重绘/反色泄漏 bug
           autoNewLineLimit={0}
           keybindings={
             showComp

@@ -89,6 +89,17 @@ export interface CompletionState {
   prefix: string;     // 触发补全的前缀（/ 或 @path）
 }
 
+/** goal 监督状态（从 SDK SUPERVISOR_MANAGER 查询，done event meta 触发） */
+export interface SupervisorState {
+  active: boolean;
+  mainSessionId: string | null;
+  supervisorSessionId: string | null;
+  state: "planning" | "confirming_plan" | "started" | "confirming" | "ended";
+  plan?: string;
+  verifyRounds?: number;
+  lastVerdict?: "pass" | "fail" | "loop";
+}
+
 export interface UIState {
   messages: ChatMessage[];
   systemEvents: SystemEvent[];   // 系统事件行（压缩/中断/失败等）
@@ -112,6 +123,18 @@ export interface UIState {
   inputRect: { left: number; top: number; width: number; height: number } | null;  // InputBar 屏幕矩形（hitTest 用）
   inputTextSel: { startIdx: number; endIdx: number } | null;  // 输入框文本选区（字符索引，退格删除用）
   inputSelectCmd: { col: number; line: number; phase: "start" | "extend"; nonce: number } | null;  // 鼠标→输入框选区指令
+  overlayScrollCmd: { dir: "up" | "down"; nonce: number } | null;  // 滚轮→overlay 菜单滚动指令
+  // goal 监督状态（done event supervisorMode 触发，SUPERVISOR_MANAGER 查询更新）
+  supervisor: SupervisorState | null;
+  // supervisor 的输出（计划/评语/验收）独立数组，不进主对话区 messages，避免混乱
+  supervisorMessages: ChatMessage[];
+  // EventBlock 展开模式（supervisor 输出可滚动查看）
+  eventBlockExpanded: boolean;
+  supervisorScrollCmd: { dir: "up" | "down"; nonce: number } | null;  // 滚轮→EventBlock 展开滚动指令
+  lastStreamNonce: number;  // 每次 onStream 递增，驱动事件驱动型 hook 重查
+  supervisorCheckNonce: number;  // 只在 tool_result/done 递增，驱动 useSupervisorState（避免 delta 高频）
+  // 通用发送桥接：组件（GoalPanel 等）设文本，app.tsx 监听后 send 给 runtime
+  pendingSend: string | null;
   // 会话按 agent 记忆：切 agent 时缓存当前会话，切回时恢复
   agentSessionMap: Record<string, { sessionId: string | null; messages: ChatMessage[]; systemEvents: SystemEvent[] }>;
   chatScrollOffset: number;       // 对话区滚动偏移

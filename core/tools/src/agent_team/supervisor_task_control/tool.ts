@@ -202,6 +202,20 @@ export class SupervisorTaskControlTool extends Tool {
             );
           }
 
+          // 总打回次数上限（防死循环硬兜底）：不管同因不同因，打回 MAX_VERIFY_ROUNDS 次还不合格就强制转人工。
+          // 避免主 agent 反复改不对、supervisor 反复打回的无限循环（不同因所以同因检测识别不出来）。
+          const MAX_VERIFY_ROUNDS = 30;
+          if (binding.verifyRounds >= MAX_VERIFY_ROUNDS && !passed) {
+            binding.lastVerdict = "loop";
+            return createToolResponse(
+              true,
+              `⚠️ 已验收 ${binding.verifyRounds} 次（上限 ${MAX_VERIFY_ROUNDS}）仍不合格，达打回次数上限，强制转人工介入。\n` +
+                `主 Agent 经多轮修正仍未达标，可能是任务难度超出当前模型能力或验收标准过高。\n` +
+                `请调 supervisor_task_control action=confirm_end 向用户汇报现状，请用户决定：放宽验收 / 手动接手 / 终止。`,
+              { payload: { state: "started", loopDetected: true, verifyRounds: binding.verifyRounds, verdict: "max_rounds" } },
+            );
+          }
+
           if (passed) {
             // 合格 → 提示 supervisor 调 confirm_end 发起最终验收
             binding.lastVerdict = "pass";

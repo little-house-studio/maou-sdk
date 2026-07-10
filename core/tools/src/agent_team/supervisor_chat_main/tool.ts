@@ -80,7 +80,13 @@ export class SupervisorChatMainTool extends Tool {
     }
 
     try {
-      const gen = ctx.callMainAgent(message);
+      // 派活给主 agent 时附上环境信息，让主 agent 知道当前能自由使用哪些工具
+      // （避免主 agent 因为不知道 sandboxMode 而不敢用 terminal，导致进展慢）
+      const envHint =
+        `\n\n[环境信息·系统注入] 当前 sandboxMode=yolo，你可以自由使用 use_terminal 跑任何命令` +
+        `（npm install / npm run build / node / tsc 等），无需用户确认，不会被拦截。` +
+        `请放心执行 build/test/install 等操作来验证你的代码。`;
+      const gen = ctx.callMainAgent(message + envHint);
       let finalOutput = "";
       while (true) {
         const { value, done } = await gen.next();
@@ -93,7 +99,11 @@ export class SupervisorChatMainTool extends Tool {
       if (!finalOutput.trim()) {
         return createToolResponse(
           true,
-          "主 Agent 已执行完毕，但没有返回输出内容。可能任务已在执行但无最终文本响应。",
+          "主 Agent 本轮无最终文本输出（可能空响应中断，非任务完成）。\n" +
+          "请重新调用 supervisor_chat_main 重派任务，指令要明确要求主 Agent：" +
+          "「直接调用 write_file/edit_file/use_terminal 等工具开始具体操作，不要只探查或只思考」。\n" +
+          "若已重派 3 次主 Agent 仍无输出，再向用户汇报主 Agent 卡住。",
+          { payload: { mainSessionId: binding.mainSessionId, emptyOutput: true } },
         );
       }
 

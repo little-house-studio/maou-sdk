@@ -47,6 +47,30 @@ function pushRound(state: UIState, usage: RoundUsage): Patch {
 }
 
 export function reduce(state: UIState, ev: StreamEvent): Patch {
+  // /goal 监督模式：supervisor session 的事件进 supervisorMessages（不进主对话区，避免混乱）
+  // 用 ev.sessionId 判断来源——supervisor run 的 event sessionId 是 supervisorSessionId
+  const evSessionId = (ev.session as { id?: string } | undefined)?.id ?? (ev.sessionId as string | undefined) ?? null;
+  const isSupervisorEv = !!state.supervisor?.supervisorSessionId && evSessionId === state.supervisor.supervisorSessionId;
+
+  // supervisor 事件：简化追加到 supervisorMessages（不参与主 messages 的流式占位/工具卡片逻辑）
+  if (isSupervisorEv && (ev.type === "assistant" || ev.type === "assistant_delta" || ev.type === "tool_call" || ev.type === "tool_result")) {
+    const content = (ev.type === "assistant_delta" ? (ev.delta ?? "") : (ev.content ?? "")) as string;
+    if (content) {
+      const last = state.supervisorMessages[state.supervisorMessages.length - 1];
+      // delta 追加到上一条 streaming 的；否则新建
+      if (ev.type === "assistant_delta" && last?.streaming) {
+        return { supervisorMessages: [...state.supervisorMessages.slice(0, -1), { ...last, content: last.content + content }] };
+      }
+      return { supervisorMessages: [...state.supervisorMessages, { id: `s${Date.now()}_${Math.random().toString(36).slice(2,6)}`, role: "assistant", content, ts: Date.now(), streaming: ev.type === "assistant_delta" }] };
+    }
+    if (ev.type === "tool_call" || ev.type === "tool_result") {
+      const name = (ev as { name?: string }).name ?? "tool";
+      const tc = ev.type === "tool_result" ? `  ↳ ${(ev as { content?: string }).content?.slice(0, 100) ?? ""}` : `▸ ${name}`;
+      return { supervisorMessages: [...state.supervisorMessages, { id: `s${Date.now()}_${Math.random().toString(36).slice(2,6)}`, role: "assistant", content: tc, ts: Date.now() }] };
+    }
+    return {};
+  }
+
   switch (ev.type) {
     // ── 会话 ──────────────────────────────────────────────
     case "session": {
@@ -266,6 +290,17 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       // 优先用 agent_round 累加的 state.round；仅当 ev.rounds 更大时采用。
       const evRounds = ev.rounds as number | undefined;
       const round = typeof evRounds === "number" && evRounds > state.round ? evRounds : state.round;
+      // 通用：done event 展开了命令的 meta。supervisorMode=true → /goal 命令触发监督模式，
+      // 存 supervisor session 信息（实际 state 由 useSupervisorState hook 查 SDK 补全）。
+      const supervisorMode = ev.supervisorMode === true;
+      const supervisorPatch = supervisorMode ? {
+        supervisor: {
+          active: true,
+          mainSessionId: (ev.mainSessionId as string | undefined) ?? null,
+          supervisorSessionId: (ev.sessionId as string | undefined) ?? null,
+          state: "planning" as const,
+        },
+      } : {};
       return {
         ...roundPatch,
         messages: messagesClosed,
@@ -275,6 +310,7 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
         round,
         currentRoundUsage: { input: 0, output: 0 },
         eventBlock: { mode: "idle", upTokens: 0, downTokens: 0, detail: undefined },
+        ...supervisorPatch,
       };
     }
     case "error": {

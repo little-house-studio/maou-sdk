@@ -17,21 +17,23 @@ import {
   completeApiUrl,
 } from "./adapters/types.js";
 import { ProtocolGateway } from "./adapters/router.js";
-import { resolveAzureDeployment, resolveAzureApiVersion } from "./adapters/azure-openai.js";
 import { resolveCloudflareUrl } from "./adapters/cloudflare.js";
 import { takeFauxResponse } from "./faux.js";
 import { detectContextOverflow } from "./overflow.js";
 import { normalizePostLogRecord, type NormalizePostLogOptions } from "./post-logger.js";
-// 注意：@smithy/core/event-streams 仅 Bedrock 二进制流需要，改为动态 import（见 _readBedrockEventStream），
-// 避免把它带进浏览器静态依赖图。
+// 拆分后的职责模块（模块内部，不进 index.ts 导出）
+import { extractUsageFromEvent } from "./usage-extractor.js";
+import { applyAuthOverrides, sanitizeHeaders, isSensitiveHeader } from "./auth-overrides.js";
+import { buildBedrockUrl, buildAzureUrl, buildVertexUrl } from "./url-builder.js";
+import { readBedrockEventStream } from "./bedrock-stream.js";
+import { waitForNetwork, NETWORK_PROBE_TIMEOUT_VALUE } from "./network-probe.js";
+import { parseSSEStream } from "./sse-reader.js";
+// 注意：@smithy/core/event-streams 已随 bedrock-stream.ts 拆出（动态 import 在那里），
+// 不把它带进浏览器静态依赖图。
 export { ProtocolGateway };
 const MAX_RETRIES = 10;
 /** 基础重试延迟 (ms) —— 设计要求 10s 一周期（指数退避以此起步，封顶 30s） */
 const BASE_RETRY_DELAY = 10_000;
-/** 网络探测间隔：网络故障时先 ping 网络（而非盲目重试 LLM），每 3s 探测一次 */
-const NETWORK_PROBE_INTERVAL_MS = 3_000;
-/** 网络探测总上限（ms），超过则放弃、抛出网络错误 */
-const NETWORK_PROBE_TIMEOUT_MS = 120_000;
 
 /** Bedrock 二进制事件流的 content-type */
 const BEDROCK_EVENTSTREAM_CONTENT_TYPE = "application/vnd.amazon.eventstream";
@@ -76,59 +78,8 @@ export type LLMLogger = (entry: LLMCallLogEntry) => void;
 /** LLM POST 标准化日志记录器回调 */
 export type LLMPostLogger = (record: import("./post-logger.js").LLMPostLogRecord) => void;
 
-/** 从事件数据中提取 usage */
-function extractUsageFromEvent(
-  data: Record<string, unknown>,
-  protocol: string,
-): LLMUsage | null {
-  if (data.usage && typeof data.usage === "object") {
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(data.usage as Record<string, unknown>)) {
-      if (typeof v === "number") {
-        result[k] = Math.floor(v);
-      } else if (typeof v === "object" && v !== null) {
-        result[k] = v;
-      }
-    }
-    // OpenAI: 从 prompt_tokens_details.cached_tokens 提取缓存命中数到顶层
-    const promptDetails = (data.usage as Record<string, unknown>).prompt_tokens_details;
-    if (promptDetails && typeof promptDetails === "object") {
-      const cached = (promptDetails as Record<string, unknown>).cached_tokens;
-      if (typeof cached === "number") {
-        result.cached_tokens = Math.floor(cached);
-      }
-    }
-    return Object.keys(result).length > 0 ? result as LLMUsage : null;
-  }
+// extractUsageFromEvent 已拆到 usage-extractor.ts（顶部 import）
 
-  if (protocol === "anthropic") {
-    if (
-      data.type === "message_start" &&
-      typeof data.message === "object" &&
-      data.message !== null
-    ) {
-      const usage = (data.message as Record<string, unknown>).usage;
-      if (usage && typeof usage === "object") {
-        const result: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(usage as Record<string, unknown>)) {
-          if (typeof v === "number") result[k] = Math.floor(v);
-          else if (typeof v === "object" && v !== null) result[k] = v;
-        }
-        return Object.keys(result).length > 0 ? result as LLMUsage : null;
-      }
-    }
-    if (data.type === "message_delta" && typeof data.usage === "object" && data.usage !== null) {
-      const result: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(data.usage as Record<string, unknown>)) {
-        if (typeof v === "number") result[k] = Math.floor(v);
-        else if (typeof v === "object" && v !== null) result[k] = v;
-      }
-      return Object.keys(result).length > 0 ? result as LLMUsage : null;
-    }
-  }
-
-  return null;
-}
 
 export interface LLMClientOptions {
   /** 兼容旧回调：自动记录每次 LLM 调用的原始请求/响应 */
@@ -249,29 +200,7 @@ export class LLMClient {
     this._connectTimeoutMs = options?.connectTimeoutMs ?? 60_000;
   }
 
-  /**
-   * 读取一个流式分片，带 stall 超时保护。
-   * 服务器中途停滞（超过 _streamStallMs 无新数据）时不会无限挂起，
-   * 而是 cancel reader 并抛错，交由上层 catch/重试。
-   */
-  private async _readChunk(
-    reader: ReadableStreamDefaultReader<Uint8Array>,
-  ) {
-    const stallMs = this._streamStallMs;
-    if (!stallMs || stallMs <= 0) return reader.read();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const stall = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        reader.cancel(new Error("stream stall timeout")).catch(() => {});
-        reject(new Error(`流式响应停滞超过 ${stallMs}ms 无新数据，已中止`));
-      }, stallMs);
-    });
-    try {
-      return await Promise.race([reader.read(), stall]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
+  // _readChunk 已随 sse-reader.ts 拆出（parseSSEStream 内部的 readChunk，带 stall 超时）。
 
   /** 运行时注入日志记录器（用于延迟初始化） */
   setLogger(logger: LLMLogger): void {
@@ -320,11 +249,11 @@ export class LLMClient {
     //   其余        → completeApiUrl 按协议补全
     let url: string;
     if (protocol === "bedrock") {
-      url = this._buildBedrockUrl(preset, stream);
+      url = buildBedrockUrl(preset, stream);
     } else if (protocol === "azure") {
-      url = this._buildAzureUrl(preset);
+      url = buildAzureUrl(preset);
     } else if (protocol === "google-vertex") {
-      url = this._buildVertexUrl(preset, stream);
+      url = buildVertexUrl(preset, stream);
     } else if (protocol === "cloudflare") {
       url = completeApiUrl(resolveCloudflareUrl(preset.url ?? "", preset), protocol);
     } else {
@@ -381,106 +310,9 @@ export class LLMClient {
     return { url, headers, body, rawPayload };
   }
 
-  /**
-   * 构建 Bedrock 请求 URL
-   * Bedrock 端点格式：
-   *   非流式：{base}/model/{modelId}/converse
-   *   流式：  {base}/model/{modelId}/converse-stream
-   */
-  private _buildBedrockUrl(preset: APIPreset, stream: boolean): string {
-    const baseUrl = String(preset.url ?? "").trim().replace(/\/+$/, "");
-    if (!baseUrl) return "";
+  // _buildBedrockUrl / _buildAzureUrl / _buildVertexUrl 已拆到 url-builder.ts
+  // （buildBedrockUrl / buildAzureUrl / buildVertexUrl），_buildRequest 里按 protocol 分发调用。
 
-    const modelId = String(preset.model ?? "").trim();
-    const endpoint = stream ? "converse-stream" : "converse";
-
-    // 检查 URL 是否已包含完整路径
-    try {
-      const parsed = new URL(baseUrl);
-      const path = parsed.pathname;
-      // 如果 URL 已包含 /converse 或 /converse-stream，替换端点
-      if (path.includes("/converse-stream")) {
-        return stream ? baseUrl : baseUrl.replace("/converse-stream", "/converse");
-      }
-      if (path.includes("/converse")) {
-        return stream ? baseUrl.replace("/converse", "/converse-stream") : baseUrl;
-      }
-      // 如果 URL 已包含 /model/{modelId}，只追加端点
-      if (path.includes("/model/")) {
-        return baseUrl + "/" + endpoint;
-      }
-    } catch {
-      // URL 解析失败，按字符串拼接
-    }
-
-    // 默认拼接：{base}/model/{modelId}/{endpoint}
-    if (modelId) {
-      return `${baseUrl}/model/${encodeURIComponent(modelId)}/${endpoint}`;
-    }
-    return `${baseUrl}/${endpoint}`;
-  }
-
-  /**
-   * 构建 Azure OpenAI 请求 URL
-   * Azure 端点格式：
-   *   {endpoint}/openai/deployments/{deployment}/chat/completions?api-version={apiVersion}
-   * deployment 取 preset.deployment（默认回退 preset.model），api-version 取 preset.api_version。
-   */
-  private _buildAzureUrl(preset: APIPreset): string {
-    const raw = String(preset.url ?? "").trim().replace(/\/+$/, "");
-    if (!raw) return "";
-
-    // 已是完整 URL（含 /deployments/ 且带 chat/completions）则原样返回（补全 api-version）
-    const apiVersion = resolveAzureApiVersion(preset);
-    if (raw.includes("/deployments/") && raw.includes("/chat/completions")) {
-      return raw.includes("api-version=")
-        ? raw
-        : `${raw}${raw.includes("?") ? "&" : "?"}api-version=${apiVersion}`;
-    }
-
-    // 从 base endpoint 拼接完整路径
-    let base = raw;
-    try {
-      const parsed = new URL(raw);
-      base = `${parsed.protocol}//${parsed.host}`;
-    } catch {
-      // 解析失败按字符串处理
-    }
-    const deployment = encodeURIComponent(resolveAzureDeployment(preset));
-    return `${base}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
-  }
-
-  /**
-   * 构建 Google Vertex AI 请求 URL
-   * Vertex 端点格式：
-   *   https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}
-   *     /publishers/google/models/{model}:{generateContent|streamGenerateContent}
-   * project 取 preset.project，location 取 preset.location（默认 us-central1）。
-   * 若 preset.url 已是完整端点（含 publishers/google/models 或 :generateContent），则按 stream 切换方法后返回。
-   */
-  private _buildVertexUrl(preset: APIPreset, stream: boolean): string {
-    const method = stream ? "streamGenerateContent" : "generateContent";
-    const raw = String(preset.url ?? "").trim().replace(/\/+$/, "");
-
-    // 已是完整端点：切换 generate/stream 方法（保留可能的 ?alt=sse）
-    if (raw && (raw.includes(":generateContent") || raw.includes(":streamGenerateContent"))) {
-      return raw.replace(/:(?:stream)?generateContent/i, `:${method}`);
-    }
-    if (raw && raw.includes("/publishers/google/models/")) {
-      return `${raw}:${method}`;
-    }
-
-    const project = String(preset.project ?? preset.gcp_project ?? "").trim();
-    const location = String(preset.location ?? preset.region ?? "us-central1").trim();
-    const model = String(preset.model ?? "").trim();
-    if (!project || !model) {
-      // 信息不足，回退到原始 url（让厂商报清晰错误）
-      return raw;
-    }
-    const host = `https://${location}-aiplatform.googleapis.com`;
-    const path = `/v1/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(location)}/publishers/google/models/${encodeURIComponent(model)}:${method}`;
-    return `${host}${path}`;
-  }
 
   /**
    * 把 faux（mock）响应组装成标准 ModelResponse，并触发日志。
@@ -657,107 +489,46 @@ export class LLMClient {
     let accumulatedUsage: LLMUsage | null = null;
 
     if (contentType.includes("text/event-stream") && response.body) {
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
       try {
-        while (true) {
-          const { done, value } = await this._readChunk(reader);
-          if (done) {
-            // 流结束：flush decoder 残留字节 + 处理 buffer 最后一行
-            const tail = decoder.decode();
-            if (tail) buffer += tail;
-            if (buffer.trim()) {
-              // 处理最后一行（可能没有结尾 \n）
-              const decoded = buffer.trim();
-              if (decoded) rawEvents.push(decoded);
-              if (decoded.startsWith("data: ")) {
-                const eventJson = decoded.slice(6);
-                if (eventJson !== "[DONE]") {
-                  try {
-                    const tailData = JSON.parse(eventJson);
-                    const tailEvent = adapter.parseStreamEvent(tailData, toolChunks, preset);
-                    if (tailEvent.delta) responseBody += tailEvent.delta;
-                    if (tailEvent.thinking) reasoningContent += tailEvent.thinking;
-                    if (tailEvent.finishReason) finishReason = tailEvent.finishReason;
-                    if (tailEvent.usedReasoning) reasoningFallbackUsed = true;
-                    if (tailEvent.delta || tailEvent.thinking || tailEvent.finishReason) {
-                      yield {
-                        delta: tailEvent.delta,
-                        thinking: tailEvent.thinking,
-                        rawEvent: decoded,
-                        finishReason: tailEvent.finishReason,
-                      };
-                    }
-                    const tailUsage = extractUsageFromEvent(tailData, protocol);
-                    if (tailUsage) {
-                      if (!accumulatedUsage) accumulatedUsage = {};
-                      Object.assign(accumulatedUsage, tailUsage);
-                    }
-                  } catch {
-                    console.warn(`[LLMClient] SSE tail JSON.parse failed: ${eventJson.slice(0, 200)}`);
-                  }
-                }
-              }
-            }
-            buffer = "";
-            break;
+        // SSE 解析已拆到 sse-reader.ts（parseSSEStream）。
+        // parseSSEStream 只解析+yield 事件+释放 reader；累积状态由本方法维护，
+        // 这样 abort 异常时本 catch 能拿到已累积的部分结果（组装 partial ModelResponse）。
+        const sseGen = parseSSEStream({
+          reader: response.body.getReader(),
+          adapter,
+          preset,
+          protocol,
+          stallMs: this._streamStallMs,
+          toolChunks,
+        });
+        for await (const ev of sseGen) {
+          rawEvents.push(ev.rawEvent);
+          if (ev.done) {
+            if (!finishReason) finishReason = "stop";
+            continue;
           }
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            const decoded = line.trim();
-            if (decoded) rawEvents.push(decoded);
-            if (!decoded.startsWith("data: ")) continue;
-
-            const eventJson = decoded.slice(6);
-            if (eventJson === "[DONE]") {
-              if (!finishReason) finishReason = "stop";
-              continue;
-            }
-
-            let data: Record<string, unknown>;
-            try {
-              data = JSON.parse(eventJson);
-            } catch {
-              // JSON 解析失败可能是 chunk 边界切割或厂商返回非 JSON 错误。记日志方便排查。
-              console.warn(`[LLMClient] SSE data JSON.parse failed: ${eventJson.slice(0, 200)}`);
-              continue;
-            }
-
-            // 应用 transformResponse 钩子（用于 truly weird 的厂商格式）
-            if (preset.transformResponse && typeof preset.transformResponse === "function") {
-              try { data = preset.transformResponse(data); } catch { /* 转换失败不影响主流程 */ }
-            }
-
-            const event = adapter.parseStreamEvent(data, toolChunks, preset);
-            if ((event.delta || event.thinking) && firstOutputMs === null) {
-              firstOutputMs = Date.now() - startedAt;
-              firstOutputSeconds = Math.round(firstOutputMs / 1000);
-            }
-            responseBody += event.delta;
-            if (event.thinking) reasoningContent += event.thinking;
-            if (event.finishReason) finishReason = event.finishReason;
-            if (event.usedReasoning) reasoningFallbackUsed = true;
-
-            if (event.delta || event.thinking || event.finishReason) {
-              yield {
-                delta: event.delta,
-                thinking: event.thinking,
-                rawEvent: decoded,
-                finishReason: event.finishReason,
-              };
-            }
-
-            const usage = extractUsageFromEvent(data, protocol);
-            if (usage) {
-              if (!accumulatedUsage) accumulatedUsage = {};
-              Object.assign(accumulatedUsage, usage);
-            }
+          if (ev.delta) responseBody += ev.delta;
+          if (ev.thinking) reasoningContent += ev.thinking;
+          if (ev.finishReason) finishReason = ev.finishReason;
+          // usedReasoning 由 adapter.parseStreamEvent 内部决定，parseSSEStream 未透传；
+          // 通过 finishReason/thinking 间接判断不够准确——但原实现 usedReasoning 仅用于日志字段，
+          // 这里若 adapter 标了 usedReasoning，event 会有 thinking，故用 thinking 非空近似。
+          if (ev.thinking) reasoningFallbackUsed = true;
+          if ((ev.delta || ev.thinking) && firstOutputMs === null) {
+            firstOutputMs = Date.now() - startedAt;
+            firstOutputSeconds = Math.round(firstOutputMs / 1000);
+          }
+          if (ev.delta || ev.thinking || ev.finishReason) {
+            yield {
+              delta: ev.delta,
+              thinking: ev.thinking,
+              rawEvent: ev.rawEvent,
+              finishReason: ev.finishReason,
+            };
+          }
+          if (ev.usage) {
+            if (!accumulatedUsage) accumulatedUsage = {};
+            Object.assign(accumulatedUsage, ev.usage);
           }
         }
       } catch (streamErr) {
@@ -803,16 +574,12 @@ export class LLMClient {
           };
         }
         throw streamErr;
-      } finally {
-        // 安全释放 reader：先 cancel 关闭底层流，再 releaseLock。
-        // try/catch 防止 abort/异常态下 releaseLock 抛二次错误覆盖原始异常。
-        try { await reader.cancel(); } catch { /* 已关闭或 abort 态 */ }
-        try { reader.releaseLock(); } catch { /* 锁已释放 */ }
       }
+      // reader 释放由 parseSSEStream 内部 finally 负责，这里不再需要 finally
     } else if (contentType.includes(BEDROCK_EVENTSTREAM_CONTENT_TYPE) && response.body) {
       // Bedrock 二进制事件流解析
       try {
-        for await (const { data: bedrockData, rawText } of this._readBedrockEventStream(response.body)) {
+        for await (const { data: bedrockData, rawText } of readBedrockEventStream(response.body)) {
           rawEvents.push(rawText);
           const event = adapter.parseStreamEvent(bedrockData, toolChunks);
           if ((event.delta || event.thinking) && firstOutputMs === null) {
@@ -1004,91 +771,35 @@ export class LLMClient {
     let accumulatedUsage: LLMUsage | null = null;
 
     if (contentType.includes("text/event-stream") && response.body) {
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
       const toolChunks = new Map<number, { id: string; name: string; arguments: string }>();
-
-      try {
-        while (true) {
-          const { done, value } = await this._readChunk(reader);
-          if (done) {
-            // 流结束：flush decoder 残留字节 + 处理 buffer 最后一行
-            const tail = decoder.decode();
-            if (tail) buffer += tail;
-            if (buffer.trim()) {
-              const decoded = buffer.trim();
-              if (decoded) rawEvents.push(decoded);
-              if (decoded.startsWith("data: ")) {
-                const eventJson = decoded.slice(6);
-                if (eventJson !== "[DONE]") {
-                  try {
-                    const tailData = JSON.parse(eventJson);
-                    const tailEvent = adapter.parseStreamEvent(tailData, toolChunks, preset);
-                    if (tailEvent.delta) responseBody += tailEvent.delta;
-                    if (tailEvent.thinking) reasoningContent += tailEvent.thinking;
-                    if (tailEvent.finishReason) finishReason = tailEvent.finishReason;
-                    if (tailEvent.usedReasoning) reasoningFallbackUsed = true;
-                    const tailUsage = extractUsageFromEvent(tailData, protocol);
-                    if (tailUsage) {
-                      if (!accumulatedUsage) accumulatedUsage = {};
-                      Object.assign(accumulatedUsage, tailUsage);
-                    }
-                  } catch {
-                    console.warn(`[LLMClient] SSE tail JSON.parse failed: ${eventJson.slice(0, 200)}`);
-                  }
-                }
-              }
-            }
-            buffer = "";
-            break;
-          }
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
-
-          for (const line of lines) {
-            const decoded = line.trim();
-            if (decoded) rawEvents.push(decoded);
-            if (!decoded.startsWith("data: ")) continue;
-
-            const eventJson = decoded.slice(6);
-            if (eventJson === "[DONE]") {
-              if (!finishReason) finishReason = "stop";
-              continue;
-            }
-
-            let data: Record<string, unknown>;
-            try {
-              data = JSON.parse(eventJson);
-            } catch {
-              // JSON 解析失败可能是 chunk 边界切割或厂商返回非 JSON 错误。记日志方便排查。
-              console.warn(`[LLMClient] SSE data JSON.parse failed: ${eventJson.slice(0, 200)}`);
-              continue;
-            }
-
-            const event = adapter.parseStreamEvent(data, toolChunks, preset);
-            if ((event.delta || event.thinking) && firstOutputMs === null) {
-              firstOutputMs = Date.now() - startedAt;
-              firstOutputSeconds = Math.round(firstOutputMs / 1000);
-            }
-            responseBody += event.delta;
-            if (event.thinking) reasoningContent += event.thinking;
-            if (event.finishReason) finishReason = event.finishReason;
-            if (event.usedReasoning) reasoningFallbackUsed = true;
-
-            const usage = extractUsageFromEvent(data, protocol);
-            if (usage) {
-              if (!accumulatedUsage) accumulatedUsage = {};
-              Object.assign(accumulatedUsage, usage);
-            }
-          }
+      // SSE 解析已拆到 sse-reader.ts（parseSSEStream）。chat 不 yield，只累积。
+      // parseSSEStream 内部 finally 释放 reader，故无需本方法的 finally。
+      const sseGen = parseSSEStream({
+        reader: response.body.getReader(),
+        adapter,
+        preset,
+        protocol,
+        stallMs: this._streamStallMs,
+        toolChunks,
+      });
+      for await (const ev of sseGen) {
+        rawEvents.push(ev.rawEvent);
+        if (ev.done) {
+          if (!finishReason) finishReason = "stop";
+          continue;
         }
-      } finally {
-        // 安全释放 reader：先 cancel 关闭底层流，再 releaseLock。
-        // try/catch 防止 abort/异常态下 releaseLock 抛二次错误覆盖原始异常。
-        try { await reader.cancel(); } catch { /* 已关闭或 abort 态 */ }
-        try { reader.releaseLock(); } catch { /* 锁已释放 */ }
+        if (ev.delta) responseBody += ev.delta;
+        if (ev.thinking) reasoningContent += ev.thinking;
+        if (ev.finishReason) finishReason = ev.finishReason;
+        if (ev.thinking) reasoningFallbackUsed = true;
+        if ((ev.delta || ev.thinking) && firstOutputMs === null) {
+          firstOutputMs = Date.now() - startedAt;
+          firstOutputSeconds = Math.round(firstOutputMs / 1000);
+        }
+        if (ev.usage) {
+          if (!accumulatedUsage) accumulatedUsage = {};
+          Object.assign(accumulatedUsage, ev.usage);
+        }
       }
 
       if (toolCalls.length === 0 && toolChunks.size > 0) {
@@ -1098,7 +809,7 @@ export class LLMClient {
       // Bedrock 二进制事件流解析（非流式调用 chat() 也可能收到事件流响应）
       const toolChunks = new Map<number, { id: string; name: string; arguments: string }>();
       try {
-        for await (const { data: bedrockData, rawText } of this._readBedrockEventStream(response.body)) {
+        for await (const { data: bedrockData, rawText } of readBedrockEventStream(response.body)) {
           rawEvents.push(rawText);
           const event = adapter.parseStreamEvent(bedrockData, toolChunks);
           if ((event.delta || event.thinking) && firstOutputMs === null) {
@@ -1236,69 +947,8 @@ export class LLMClient {
     }
   }
 
-  /**
-   * 读取 Bedrock 二进制事件流并解码为 JSON 事件
-   *
-   * Bedrock Converse Stream API 返回 application/vnd.amazon.eventstream 格式的二进制流，
-   * 每个消息包含 headers（含 :event-type）和 body（JSON payload）。
-   * 使用 @smithy/core 的 EventStreamCodec 解码二进制消息。
-   *
-   * @yields 解码后的 { data: Record<string, unknown>, rawText: string } 事件
-   */
-  private async *_readBedrockEventStream(
-    body: ReadableStream<Uint8Array>,
-  ): AsyncGenerator<{ data: Record<string, unknown>; rawText: string }> {
-    // 动态加载 smithy 解码器（仅 Bedrock 需要；保持核心对浏览器友好）
-    const { EventStreamCodec } = await import("@smithy/core/event-streams");
-    const codec = new EventStreamCodec(
-      (input: Uint8Array) => new TextDecoder("utf-8").decode(input),
-      (input: string) => new TextEncoder().encode(input),
-    );
-
-    const reader = body.getReader();
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          codec.endOfStream();
-          break;
-        }
-        if (value && value.byteLength > 0) {
-          codec.feed(value);
-          // 取出所有已解码的消息
-          let messages = codec.getAvailableMessages();
-          let decodedMessages = messages.getMessages();
-          while (decodedMessages.length > 0) {
-            for (const message of decodedMessages) {
-              const bodyText = new TextDecoder("utf-8").decode(message.body);
-              if (!bodyText.trim()) continue;
-              try {
-                const data = JSON.parse(bodyText) as Record<string, unknown>;
-                // 将 event-type 注入到数据中，方便 adapter.parseStreamEvent 使用
-                const eventType = message.headers[":event-type"];
-                if (eventType && typeof eventType.value === "string") {
-                  data._eventType = eventType.value;
-                }
-                const messageType = message.headers[":message-type"];
-                if (messageType && typeof messageType.value === "string") {
-                  data._messageType = messageType.value;
-                }
-                yield { data, rawText: bodyText };
-              } catch {
-                // JSON 解析失败，跳过
-                console.warn(`[LLMClient] Bedrock eventstream JSON.parse failed: ${bodyText.slice(0, 200)}`);
-              }
-            }
-            messages = codec.getAvailableMessages();
-            decodedMessages = messages.getMessages();
-          }
-        }
-      }
-    } finally {
-      try { await reader.cancel(); } catch { /* 已关闭 */ }
-      try { reader.releaseLock(); } catch { /* 锁已释放 */ }
-    }
-  }
+  // _readBedrockEventStream 已拆到 bedrock-stream.ts（readBedrockEventStream）。
+  // chatStream/chat 的 Bedrock 分支直接调模块函数。
 
   /**
    * 计算第 attempt 次重试的等待 ms（指数退避 + 上限 + 抖动）。
@@ -1311,26 +961,8 @@ export class LLMClient {
     return Math.max(0, Math.round(capped + j));
   }
 
-  /**
-   * 网络故障探测：设计要求"网络问题一直 ping 网络，而不是一直重试 llm 发送"。
-   * 用轻量 HEAD 请求探测连通性，每 NETWORK_PROBE_INTERVAL_MS 探测一次，
-   * 直到通或超过 NETWORK_PROBE_TIMEOUT_MS。返回 true=网络已恢复，false=超时。
-   * 不抛错——网络探测本身的失败只是"还没通"。
-   */
-  private async _waitForNetwork(): Promise<boolean> {
-    const deadline = Date.now() + NETWORK_PROBE_TIMEOUT_MS;
-    const probeUrl = "https://www.google.com/generate_204";
-    while (Date.now() < deadline) {
-      try {
-        await this._fetch(probeUrl, { method: "HEAD", signal: AbortSignal.timeout(5000) } as RequestInit);
-        return true; // 任何 HTTP 响应都算"网络通"（即使非 204）
-      } catch {
-        // 探测失败：等下一轮
-        await sleep(NETWORK_PROBE_INTERVAL_MS);
-      }
-    }
-    return false;
-  }
+  // _waitForNetwork 已拆到 network-probe.ts（waitForNetwork，接 fetchImpl 参数）。
+
 
   /** 判断某状态码/错误是否可重试（先按策略，再让 onError 覆盖） */
   private _decideRetry(ctx: ErrorHookContext): "retry" | "fail" | { delayMs: number } {
@@ -1473,10 +1105,10 @@ export class LLMClient {
           // 前 2 次可能是瞬时抖动，快速退避重试；持续失败（attempt>=2）才进入网络探测模式，
           // 避免网络实际畅通时浪费 3-5s 探测。
           if (attempt >= 2) {
-            const recovered = await this._waitForNetwork();
+            const recovered = await waitForNetwork(this._fetch);
             if (!recovered) {
               // 网络探测超时（>120s 仍不通）：放弃，抛出网络错误
-              throw new Error(`网络持续不可达 ${NETWORK_PROBE_TIMEOUT_MS}ms，放弃重试: ${lastError.message}`);
+              throw new Error(`网络持续不可达 ${NETWORK_PROBE_TIMEOUT_VALUE}ms，放弃重试: ${lastError.message}`);
             }
           }
           const waitMs = this._computeBackoff(attempt);
@@ -1501,72 +1133,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * 敏感 header 脱敏白名单（小写匹配）。
- * 覆盖各厂商传 key 的 header：
- * - Authorization：OpenAI 系 / 通用 Bearer
- * - x-api-key：Anthropic
- * - api-key：Azure OpenAI
- * - x-goog-api-key：Gemini
- * - proxy-authorization：代理层
- */
-const SENSITIVE_HEADERS = new Set([
-  "authorization",
-  "x-api-key",
-  "api-key",
-  "x-goog-api-key",
-  "proxy-authorization",
-]);
+// SENSITIVE_HEADERS / isSensitiveHeader / sanitizeHeaders / applyAuthOverrides
+// 已拆到 auth-overrides.ts，顶部 import 引入。
 
-/** 判断 header 名是否敏感（需要脱敏） */
-function isSensitiveHeader(name: string): boolean {
-  return SENSITIVE_HEADERS.has(name.toLowerCase());
-}
-
-/** 返回脱敏后的 headers 副本（原对象不变） */
-function sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
-  const safe: Record<string, string> = {};
-  for (const [k, v] of Object.entries(headers)) {
-    safe[k] = isSensitiveHeader(k) ? "***" : v;
-  }
-  return safe;
-}
-
-/**
- * 应用 OAuth / 自定义请求头覆盖。
- *
- * - preset.oauth=true 时按厂商调整认证方式：
- *   - anthropic：去掉 x-api-key，改用 Authorization: Bearer + anthropic-beta: oauth-2025-04-20
- *     （OpenAI 系 / Codex / Copilot 本就用 Bearer，无需特殊处理）
- * - preset.extraHeaders：在最后合并（可覆盖任意头）
- */
-function applyAuthOverrides(
-  headers: Record<string, string>,
-  preset: APIPreset,
-  protocol: APIProtocol,
-): Record<string, string> {
-  const out: Record<string, string> = { ...headers };
-
-  if (preset.oauth) {
-    if (protocol === "anthropic") {
-      delete out["x-api-key"];
-      out["Authorization"] = `Bearer ${preset.key ?? ""}`;
-      const OAUTH_BETA = "oauth-2025-04-20";
-      const existing = out["anthropic-beta"];
-      out["anthropic-beta"] = existing
-        ? existing.includes(OAUTH_BETA)
-          ? existing
-          : `${existing},${OAUTH_BETA}`
-        : OAUTH_BETA;
-    }
-  }
-
-  const extra = preset.extraHeaders;
-  if (extra && typeof extra === "object") {
-    for (const [k, v] of Object.entries(extra)) {
-      if (typeof v === "string") out[k] = v;
-    }
-  }
-
-  return out;
-}

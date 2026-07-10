@@ -25,6 +25,8 @@ export interface AgentCliOptions {
   signal?: AbortSignal;
   /** 来源标识，默认 "cli"。 */
   source?: string;
+  /** 初始化 agent 名（如 supervisor 模式用 "supervisor"）。 */
+  initAgentName?: string;
 }
 
 /**
@@ -41,6 +43,7 @@ export async function runAgentCli(
     stream: true,
     abortSignal: opts.signal,
     source: opts.source ?? "cli",
+    ...(opts.initAgentName ? { initAgentName: opts.initAgentName } : {}),
   })) {
     opts.onEvent(ev);
     if (ev.type === "done" || ev.type === "error") return;

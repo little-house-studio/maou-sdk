@@ -63,6 +63,12 @@ export interface AppRuntimeOptions {
   taskStore?: TaskSessionStore;
   /** 可插拔 LLM 摘要器（缺省回退确定性 truncate）。 */
   summarizer?: Summarizer;
+  /**
+   * /goal 监督模式：supervisor 调 supervisor_chat_main 工具时，由此函数派活给主 Agent。
+   * CLI 注入（复用 harness 逻辑：preset + yolo sandbox + initAgentName main + abortSignal）。
+   * 缺省 undefined → supervisor_chat_main 报"未注入 callMainAgent"。
+   */
+  callMainAgent?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
 }
 
 /**
@@ -79,6 +85,7 @@ export class Runtime {
   private harnessStore?: HarnessSessionStore;
   private taskStore?: TaskSessionStore;
   private summarizer?: Summarizer;
+  private callMainAgentFn?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
   private agentRuntime: AgentRuntime | null = null;
   private appLogger = createAppLogger();
   private customLog?: (level: string, message: string) => void;
@@ -98,6 +105,7 @@ export class Runtime {
     this.llmClient = options.llmClient;
     this.customLog = options.log;
     this.postLoggerEnabled = options.enablePostLogger ?? true;
+    this.callMainAgentFn = options.callMainAgent;
     this.maouRoot = options.maouRoot ?? join(process.env.HOME ?? '', '.maou');
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.summarizer = options.summarizer;
@@ -328,6 +336,7 @@ export class Runtime {
         summarizer: this.summarizer,
         auxModelCaller: auxCaller,
         resolveHelperPreset: resolveHelperPresetFn,
+        callMainAgent: this.callMainAgentFn,
       });
 
       // ── 装配默认 SubagentExecutor（让 subagent_delegate / agent_message 工具能 fork 子 Agent）──

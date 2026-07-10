@@ -24,6 +24,7 @@ import type { APIPreset, LLMToolCall, LLMUsage } from "./adapters/types.js";
 import type { ToolSchema } from "./tools/index.js";
 import { reasoningParamsFor, type ReasoningLevel } from "./reasoning.js";
 import { computeCost, type Pricing } from "./compute-cost.js";
+import { normalizeStopReason } from "./stop-reason.js";
 
 // ─── Context / Message 类型（pi-ai 核心数据结构，我们更规整）──────────────────
 
@@ -111,8 +112,32 @@ export interface Usage {
   };
 }
 
-/** 停止原因（abort 编码进流，不抛错） */
-export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
+/**
+ * 统一停止原因（跨平台）。
+ *
+ * 各平台原始值的映射见 stop-reason.ts 的 `normalizeStopReason()`。
+ * - stop          → OpenAI:stop / Anthropic:end_turn / Gemini:STOP
+ * - toolUse       → OpenAI:tool_calls / Anthropic:tool_use
+ * - length        → OpenAI:length / Anthropic:max_tokens / Gemini:MAX_TOKENS
+ * - stopSequence  → Anthropic:stop_sequence / OpenAI:stop (带 stop 序列时)
+ * - pauseTurn     → Anthropic:pause_turn（扩展思考暂停，需恢复继续）
+ * - refusal       → Anthropic:refusal / OpenAI:content_filter（模型拒绝/安全拦截）
+ * - safety        → Gemini:SAFETY（安全策略拦截）
+ * - recitation    → Gemini:RECITATION（著作权保护拦截）
+ * - error         → 请求出错
+ * - aborted       → 用户/调用方中断（abort 编码进流，不抛错）
+ */
+export type StopReason =
+  | "stop"
+  | "toolUse"
+  | "length"
+  | "stopSequence"
+  | "pauseTurn"
+  | "refusal"
+  | "safety"
+  | "recitation"
+  | "error"
+  | "aborted";
 
 // ─── Model 类型（stream 的第一参）────────────────────────────────────────────
 
@@ -358,11 +383,13 @@ export function stream(model: StreamModel, context: Context, options: StreamOpti
       blocks.push({ type: "toolCall", id: c.id, name: c.name, parameters: c.parameters });
     }
     const usage = computeUsage(result?.usage ?? null, preset);
+    // 统一 stop_reason：优先用适配器的原始 finishReason 做平台映射，
+    // 然后用 aborted / toolCalls / error 做修正覆盖
     const stopReason: StopReason = aborted
       ? "aborted"
       : toolCalls.length > 0
-        ? "toolUse"
-        : "stop";
+        ? normalizeStopReason(result?.finishReason, "toolUse")
+        : normalizeStopReason(result?.finishReason, "stop");
 
     const message: AssistantMessage = {
       role: "assistant",

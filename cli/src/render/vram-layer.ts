@@ -30,6 +30,20 @@ export function getSelection(): Selection {
 }
 export function clearSelection() { selAnchor = null; selFocus = null; }
 
+// 主题背景色（渲染层统一填充用）。渲染层是 React 外的同步函数，靠 setThemeBg 接收当前主题。
+// App 在主题变化时调用；index.tsx 首次渲染前用 TAU_CETI.bg 兜底。
+let themeBgSgr = ""; // e.g. "\x1b[48;2;12;10;8m"
+
+/** 注册当前主题背景色，使未显式设 backgroundColor 的空白格显示主题 bg 而非终端默认底。 */
+export function setThemeBg(bg: string | null): void {
+  if (!bg) { themeBgSgr = ""; return; }
+  const m = /^#?([0-9a-f]{6})$/i.exec(bg.trim());
+  if (!m) { themeBgSgr = ""; return; }
+  const n = parseInt(m[1]!, 16);
+  const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+  themeBgSgr = `\x1b[48;2;${r};${g};${b}m`;
+}
+
 function inSel(r: number, c: number): boolean {
   if (!selAnchor || !selFocus) return false;
   const r0 = r - 1, c0 = c - 1;
@@ -50,6 +64,8 @@ let lastGrid: any[][] | null = null;
 let origGet: any = null;
 // styledCharsToString 在 initVramLayer 里一次性 import 缓存，避免每次 get() 都动态 import
 let styledCharsToString: ((chars: any[]) => string) | null = null;
+// sliceAnsi：clip 水平截断用（保留 ANSI 样式）。从 ink 的 output.js 所在目录解析（ink 直接依赖）。
+let sliceAnsi: ((input: string, begin: number, end: number) => string) | null = null;
 
 export async function initVramLayer() {
   if (origGet) return; // 已初始化
@@ -61,9 +77,15 @@ export async function initVramLayer() {
   const mod = await import(pathToFileURL(outputJsPath).href);
   OutputProto = mod.default.prototype;
   origGet = OutputProto.get;
+  // 从 ink 的 output.js 目录解析 slice-ansi（它是 ink 的直接依赖，cli 自身未声明）。
+  // slice-ansi@9 是纯 ESM 包（type:module），不能用 createRequire(require) 加载，
+  // 需 resolve 路径后 pathToFileURL 再 ESM import（与 styledCharsToString 同类处理）。
+  const reqFromInk = createRequire(pathToFileURL(outputJsPath).href);
+  const sliceAnsiPath = reqFromInk.resolve("slice-ansi");
+  const sliceAnsiMod = await import(pathToFileURL(sliceAnsiPath).href);
+  sliceAnsi = sliceAnsiMod.default ?? sliceAnsiMod;
   // 一次性 import 缓存（get 是同步函数，不能在里面 await import）
   // ansi-tokenize 是纯 ESM 包（type:module，仅 import 条件），用 ESM import 命中 exports map。
-  // 之前用 createRequire().resolve() 拿根路径再 pathToFileURL 会因无 CJS main 失败。
   styledCharsToString = (await import("@alcalzone/ansi-tokenize")).styledCharsToString;
   // 重写 get：复制内部逻辑，在转字符串前把二维数组存到 lastGrid
   OutputProto.get = function () {
@@ -85,7 +107,44 @@ export async function initVramLayer() {
         let { x, y } = operation;
         let lines = text.split("\n");
         const clip = clips.at(-1);
-        // 简化：不处理 clip（Ink 的 Box overflow:hidden 会 clip，但选区提取不需要精确 clip）
+        // clip 处理：Ink 的 Box overflow:hidden 会设 clip 矩形，超出区域的内容必须截断，
+        // 否则 ScrollHistory 用 marginTop 负值滚动时溢出内容会写入下方行（InputBar 等）的网格，
+        // 表现为"滚动内容穿透"。原版 output.js get() 用 sliceAnsi 水平截断 + lines.slice 垂直截断。
+        if (clip) {
+          const clipHorizontally = typeof clip?.x1 === "number" && typeof clip?.x2 === "number";
+          const clipVertically = typeof clip?.y1 === "number" && typeof clip?.y2 === "number";
+          // 文本整体在裁剪区外则跳过该 write
+          if (clipHorizontally) {
+            const width = this.caches.getWidestLine(text);
+            if (x + width < clip.x1 || x > clip.x2) continue;
+          }
+          if (clipVertically) {
+            const height = lines.length;
+            if (y + height < clip.y1 || y > clip.y2) continue;
+          }
+          // 水平截断：每行按 [x1, x2] 切，保留 ANSI 样式
+          if (clipHorizontally) {
+            lines = lines.map((line: string) => {
+              const from = x < clip.x1 ? clip.x1 - x : 0;
+              const width = this.caches.getStringWidth(line);
+              const to = x + width > clip.x2 ? clip.x2 - x : width;
+              return sliceAnsi!(line, from, to);
+            });
+            if (x < clip.x1) {
+              x = clip.x1;
+            }
+          }
+          // 垂直截断：丢掉超出 [y1, y2] 的行
+          if (clipVertically) {
+            const from = y < clip.y1 ? clip.y1 - y : 0;
+            const height = lines.length;
+            const to = y + height > clip.y2 ? clip.y2 - y : height;
+            lines = lines.slice(from, to);
+            if (y < clip.y1) {
+              y = clip.y1;
+            }
+          }
+        }
         let offsetY = 0;
         for (const [index, line] of lines.entries()) {
           const currentLine = output[y + offsetY];
@@ -203,7 +262,10 @@ export function renderWithSelection(cols: number, rows: number): void {
   let out = "\x1b[H\x1b[?25l";
   for (let r = 0; r < rows; r++) {
     let line = "";
-    let lastSgr = "\x1b[0m";
+    // lastSgr 初始为 themeBgSgr：行擦除 \x1b[K 前已发出 themeBgSgr（用主题 bg 清行），
+    // 此时终端背景属性已是主题 bg，首个无背景 cell 的 targetSgr=themeBgSgr+cellSgr 开头也是 themeBgSgr，
+    // 与 lastSgr 比较时前缀相同可省去冗余输出（实际 targetSgr 含前景码仍会不同，但背景部分不重复设）。
+    let lastSgr = themeBgSgr || "\x1b[0m";
     let visW = 0;
     for (let c = 0; c < cols && visW < cols; c++) {
       const cell = grid[r][c];
@@ -217,13 +279,22 @@ export function renderWithSelection(cols: number, rows: number): void {
         // 空格也带 SGR（textarea 光标反显空格需要）。
         // 不再额外加 hover 反色：hover 反色块会在点击位置残留成"伪光标"，
         // 违背"只有输入框聚焦才有光标"的规则。
-        const targetSgr = cell.sgr || "\x1b[0m";
-        if (targetSgr !== lastSgr) { line += targetSgr; lastSgr = targetSgr; }
+        // 渲染层注入主题 bg：未显式设 backgroundColor 的 cell（cell.sgr 不含背景码 48;）
+        // 补 themeBgSgr，使空白区域显示主题 bg 而非终端默认底。已有背景的 cell 保留原 SGR。
+        const cellSgr = cell.sgr || "";
+        const hasBg = cellSgr.includes("48;");
+        const targetSgr = (!hasBg && themeBgSgr) ? themeBgSgr + cellSgr : (cellSgr || "\x1b[0m");
+        if (targetSgr !== lastSgr) {
+          // SGR 变化时先 \x1b[0m reset 再设新 SGR——避免上一格的反显(\x1b[7m)等属性泄漏到本格
+          line += `\x1b[0m${targetSgr}`;
+          lastSgr = targetSgr;
+        }
         line += cell.ch;
         visW += cell.w;
       }
     }
-    out += `\x1b[${r + 1};1H\x1b[K${line}`;
+    // 行擦除：先 themeBgSgr 再 \x1b[K，使 \x1b[K 用主题 bg 清行而非终端默认底（透明感根因）。
+    out += `\x1b[${r + 1};1H${themeBgSgr}\x1b[K${line}`;
   }
   out += "\x1b[0m\x1b[?25l";
   process.stdout.write(out);
@@ -259,28 +330,29 @@ export function extractSelection(): string {
   const lines: string[] = [];
   for (let r = r1; r <= r2; r++) {
     if (r < 0 || r >= rows) continue;
-    const cs = r === r1 ? c1 : 0;
-    let ce: number;
-    if (r === r2) {
-      // 尾行：用 c2（已对齐宽字符 + 空白回退）
-      ce = c2;
-    } else {
-      // 非尾行（首行/中间行）：从 cs 起向右找"内容结束"位置。
-      // 内容结束 = 遇到连续 ≥2 个空格（内容内单词间单空格不断，但内容到边框/padding 必是长空格串）。
-      // 这样不会越过内容抓到边框/装饰字符。
-      ce = cs;
-      let run = 0;
-      for (let c = cs; c < cols; c++) {
-        const cell = grid[r][c];
-        if (cell.ch === " " && cell.w === 1) {
-          run++;
-          if (run >= 2) { ce = c - run; break; }
-        } else {
-          run = 0;
-          ce = c;
-        }
+    // 每行内容边界：第一个/最后一个"有内容的列"（w>0 且非空格）。
+    // 保留行内所有空格（缩进、对齐、多空格），只 trim 首尾 padding/边框空白。
+    // 不再用"连续≥2空格=内容结束"启发式——那会截断代码缩进、列表前导空格、行内多空格。
+    let firstContent = -1;
+    let lastContent = -1;
+    for (let c = 0; c < cols; c++) {
+      const cell = grid[r][c];
+      if (cell.w > 0 && cell.ch !== " ") {
+        if (firstContent < 0) firstContent = c;
+        lastContent = c;
       }
     }
+    // 该行无内容（纯空白行）：保留为空行（跨行选区中间的空行不该丢）
+    if (firstContent < 0) {
+      lines.push("");
+      continue;
+    }
+    // 首行从选区起点 c1 起（已对齐到内容），但不越过行首内容；
+    // 中间行从 col 0 起取完整行（保留代码缩进/列表前导/对齐空格——蓝底也是整行覆盖），
+    //   只 trimEnd 去掉行尾到边框的 padding；
+    // 尾行从行首内容起，到选区终点 c2 止（已对齐）。
+    const cs = r === r1 ? Math.max(c1, firstContent) : r === r2 ? firstContent : 0;
+    const ce = r === r2 ? Math.min(c2, lastContent) : lastContent;
     const chars: string[] = [];
     for (let c = cs; c <= ce; c++) {
       if (c < 0 || c >= cols) continue;

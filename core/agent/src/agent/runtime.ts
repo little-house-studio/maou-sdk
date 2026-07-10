@@ -47,6 +47,7 @@ import { AgentLifecycleManager } from "./agent-lifecycle.js";
 import { MessageBus } from "./message-bus.js";
 import type { ToolRegistry, ToolExecutor } from "@little-house-studio/tools";
 import type { ToolContext } from "@little-house-studio/tools";
+import { collectDiff, formatDiffForReport } from "@little-house-studio/tools";
 import { cleanupAgentTerminals, listTerminals, getTerminalLogs, setTerminalMode, SkillContextManager, TASK_MANAGER, createSubagentDelegateTool } from "@little-house-studio/tools";
 import type { SubagentExecutorLike } from "@little-house-studio/types";
 import type { StreamEvent } from "@little-house-studio/types";
@@ -831,7 +832,11 @@ export class AgentRuntime {
     // 空响应重试：LLM 偶尔返回 content="" + 无 tool_calls（如 deepseek 长上下文下 completion_tokens=1）。
     // 注入 <continue> 提示让模型重新生成，最多 MAX_EMPTY_RETRIES 次，仍空才真正退出。
     let emptyResponseRetries = 0;
-    const MAX_EMPTY_RETRIES = 3;
+    const MAX_EMPTY_RETRIES = 5;
+    // 本轮工具调用摘要（loop_report 用：累计整个 run 的工具调用，不只最后一轮）
+    let lastRoundToolSummary = "";
+    // 累计本次 run 所有轮的工具调用次数（loop_report 用：即使最后一轮空转，也能反映之前干了啥）
+    const runToolCounts: Record<string, number> = {};
 
     while (roundCount < maxRounds) {
       // ── P1-3 消息总线：每轮 poll 自己的 mailbox，把队友消息作为 user 消息注入 ──
@@ -1207,6 +1212,14 @@ export class AgentRuntime {
       // 存储 assistant 消息（不再用空格占位，空串即可；适配器会处理 tool_calls 配对）
       const contentToUse = result.content || "";
       lastAssistantContent = contentToUse;
+      // 累计本次 run 所有轮的工具调用（loop_report 用：即使最后一轮空转，也能反映之前干了啥）
+      if (result.nativeToolCalls.length > 0) {
+        for (const tc of result.nativeToolCalls) {
+          const n = (tc as { name?: string }).name ?? "?";
+          runToolCounts[n] = (runToolCounts[n] ?? 0) + 1;
+        }
+      }
+      lastRoundToolSummary = Object.entries(runToolCounts).map(([n, c]) => `${n}×${c}`).join("、");
       this.sessions.appendMessage(sessionId!, "assistant", contentToUse, {
         round: currentRound,
         retry_count: result.retryIndex,
@@ -1226,15 +1239,30 @@ export class AgentRuntime {
         break; // 退出 agent 循环
       }
 
-      // ── 空响应容错：content 为空 + 无 tool_calls（LLM 偶发空响应，如 completion_tokens=1）──
-      // 不直接退出——注入 <continue> 提示让模型重新生成，避免主 agent 写代码写到一半中断。
-      // 复用 verification-failed 的重试模式（注入 note + continue）。最多 MAX_EMPTY_RETRIES 次。
-      if (!contentToUse && result.nativeToolCalls.length === 0) {
+      // ── 空响应/空转容错：监督模式下，主 agent 该干活却没调工具 ──
+      // 两种情况都重试：① content 为空 + 无 tool_calls（LLM 偶发空响应）
+      //                  ② 监督模式下有文本但无 tool_calls（只说不做，如"我来修复"却不调工具）
+      // 仅对监督模式生效（普通对话不强制调工具）。
+      // ① 主 agent（getByMain）：该干活却没调工具 → 重试
+      // ② supervisor（getBySupervisor）：started 状态该 chat_main/verify/confirm_end 却只输出文本 → 重试
+      const supervisorBindingForRetry = SUPERVISOR_MANAGER.getByMain(sessionId!);
+      const supervisorSelfBinding = SUPERVISOR_MANAGER.getBySupervisor(sessionId!);
+      const isSupervisedMain = !!(supervisorBindingForRetry && supervisorBindingForRetry.state === "started");
+      const isSupervisorActive = !!(supervisorSelfBinding && supervisorSelfBinding.state === "started");
+      const noTools = result.nativeToolCalls.length === 0;
+      // 监督模式下（主 agent 或 supervisor）该干活却没调工具 → 重试
+      const shouldRetryOnEmpty = (isSupervisedMain || isSupervisorActive) && noTools;
+      if (shouldRetryOnEmpty) {
         emptyResponseRetries += 1;
         if (emptyResponseRetries < MAX_EMPTY_RETRIES) {
-          yield this.logEvent("warning", `[RUN] session=${sessionId} 检测到空响应（第${emptyResponseRetries}/${MAX_EMPTY_RETRIES}次），注入 <continue> 提示重试`);
+          const reason = !contentToUse ? "空响应" : "有文本但未调用工具";
+          // 角色区分提示：supervisor 该调 chat_main/verify；主 agent 该调 write_file 等
+          const hint = isSupervisorActive
+            ? "你是监督 Agent，**禁止只输出文字**，必须立刻调用工具。若要派活给主 Agent，现在就调 supervisor_chat_main(message=\"派活内容\")；若主 Agent 已汇报，调 supervisor_task_control(action=verify, round_report=\"汇报内容\")；若验收合格，调 supervisor_task_control(action=confirm_end)。"
+            : "请继续执行任务——直接调用工具（write_file/edit_file/use_terminal 等）开始具体操作，不要只思考或只输出文字。当前是 yolo 模式，use_terminal 可自由跑 npm install/build/test 等命令，不会被拦截。如果任务已完成，调用 task_finish。";
+          yield this.logEvent("warning", `[RUN] session=${sessionId} 检测到${reason}（${emptyResponseRetries}/${MAX_EMPTY_RETRIES}），注入 <continue> 重试`);
           this.sessions.appendMessage(sessionId!, "user",
-            `<continue>你上一轮没有输出内容，也没有调用任何工具。请继续执行任务——直接调用工具（write_file/edit_file/use_terminal 等）开始具体操作，不要只思考或只输出文字。</continue>`,
+            `<continue>你上一轮${reason}。${hint}</continue>`,
             { source: "empty_retry", round: currentRound },
           );
           this.hooks?.agentStop(currentRound);
@@ -1242,12 +1270,12 @@ export class AgentRuntime {
           continue;
         }
         // 重试次数耗尽，真正退出（但仍会走到 loop 结束推送 loop_report，让 supervisor 知道主 agent 卡住）
-        yield this.logEvent("warning", `[RUN] session=${sessionId} 空响应重试 ${MAX_EMPTY_RETRIES} 次仍无输出，退出循环`);
+        yield this.logEvent("warning", `[RUN] session=${sessionId} 空转重试 ${MAX_EMPTY_RETRIES} 次仍无工具调用，退出循环`);
         this.hooks?.agentStop(currentRound);
         break;
       }
-      // 有内容或工具调用 → 重置空响应计数
-      emptyResponseRetries = 0;
+      // 有工具调用 → 重置空转计数
+      if (!noTools) emptyResponseRetries = 0;
 
       yield this.event("assistant", {
         content: contentToUse,
@@ -1350,9 +1378,22 @@ export class AgentRuntime {
     const supervisorBinding = SUPERVISOR_MANAGER.getByMain(sessionId!);
     if (supervisorBinding && supervisorBinding.state === "started") {
       const lastAssistant = String(lastAssistantContent ?? "").slice(0, 2000);
+      const toolLine = lastRoundToolSummary
+        ? `本轮工具调用：${lastRoundToolSummary}\n`
+        : "本轮无工具调用。\n";
+      // 收集本轮文件变更 diff（git diff + 过滤），让 supervisor 验收有真实依据
+      let diffLine = "";
+      try {
+        const diff = collectDiff(effectiveWorkingDir || this.projectRoot);
+        diffLine = formatDiffForReport(diff) + "\n";
+      } catch (err) {
+        this.log("warning", `[SUPERVISOR] 收集 diff 失败: ${err instanceof Error ? err.message : String(err)}`);
+      }
       const summary =
         `<loop_report>\n` +
         `主 Agent 一轮 loop 已完成（round=${roundCount}, tokens=${totalTokens}）。\n` +
+        toolLine +
+        diffLine +
         `本轮最终输出：\n${lastAssistant || "(无文本输出)"}\n` +
         `</loop_report>`;
       const supervisorName = supervisorBinding.supervisorAgentName ?? "supervisor";

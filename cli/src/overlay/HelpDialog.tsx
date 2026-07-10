@@ -15,7 +15,6 @@ const KEYS: [string, string][] = [
   ["Ctrl+M", "选择模型"],
   ["Ctrl+N", "新对话"],
   ["Ctrl+E", "全屏编辑器（Enter 换行不发送）"],
-  ["Ctrl+G", "外部 $EDITOR"],
   ["Esc", "中断 / 关闭弹窗"],
   ["Ctrl+C", "退出"],
 ];

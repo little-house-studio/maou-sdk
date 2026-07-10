@@ -28,6 +28,8 @@ export interface ModelCallResult {
   usage: LLMUsage | null;
   rawRequest: Record<string, unknown> | null;
   rawSSEEvents: string[];
+  /** 适配器返回的原始停止原因（如 "end_turn", "tool_calls", "STOP" 等，未归一化） */
+  finishReason?: string | null;
   /** 计时数据（毫秒） */
   timing?: {
     firstByteMs: number;
@@ -345,12 +347,13 @@ export class ModelCaller {
         });
 
         // 可重试错误（原样重试，不降级、不注入错误到上下文）：
-        // - 400 类
+        // - HTTP 错误（"API Error 4xx/5xx"——LLMClient 重试耗尽后抛出，含 429/500/502/503/504 等；
+        //   5xx 尤其要重试，否则会被 runtime 误判为空响应触发 <continue> 死循环）
         // - 流式停滞（一个字没动超过 stall 阈值即中止）→ 这是用户要求的"流式停滞才重试"
         // - 连接/网络/超时类瞬时故障
         const errStr = String(error);
         const retryable =
-          errStr.includes("400") ||
+          errStr.includes("API Error") ||
           errStr.includes("停滞") || errStr.includes("stall") ||
           errStr.includes("timeout") || errStr.includes("timed out") ||
           errStr.includes("ECONNRESET") || errStr.includes("ECONNREFUSED") ||
@@ -359,8 +362,9 @@ export class ModelCaller {
         if (retry < this.maxRetries && retryable) {
           const attempt = retry + 1;
           const delaySec = Math.min(2 ** retry, 16); // 指数退避：1,2,4,8,16s
+          const errCategory = errStr.includes("API Error") ? "HTTP 错误" : "瞬时故障";
           yield this.emitEvent("status", { text: `API error · Retrying in ${delaySec}s · attempt ${attempt}/${this.maxRetries}` });
-          yield this.emitLog("warn", `请求失败可重试（${errStr.slice(0, 80)}），第 ${attempt}/${this.maxRetries} 次重试，${delaySec}s 后重试`);
+          yield this.emitLog("warn", `请求失败可重试[${errCategory}]（${errStr.slice(0, 80)}），第 ${attempt}/${this.maxRetries} 次重试，${delaySec}s 后重试`);
           await new Promise(r => setTimeout(r, delaySec * 1000));
           continue;
         }
@@ -428,6 +432,7 @@ export class ModelCaller {
           usage: lastUsage,
           rawRequest: lastModelResponse.rawPayload,
           rawSSEEvents: stream ? lastModelResponse.rawEvents : [],
+          finishReason: lastModelResponse.finishReason,
           timing: lastModelResponse.timing,
         };
       }
@@ -459,6 +464,7 @@ export class ModelCaller {
           usage: lastUsage,
           rawRequest: lastModelResponse?.rawPayload ?? null,
           rawSSEEvents: stream ? lastModelResponse?.rawEvents ?? [] : [],
+          finishReason: lastModelResponse?.finishReason,
           timing: lastModelResponse?.timing,
         };
       }
@@ -539,6 +545,7 @@ export class ModelCaller {
         usage: lastUsage,
         rawRequest: lastModelResponse?.rawPayload ?? null,
         rawSSEEvents: stream ? lastModelResponse?.rawEvents ?? [] : [],
+        finishReason: lastModelResponse?.finishReason,
         timing: lastModelResponse?.timing,
       };
     }
@@ -555,6 +562,7 @@ export class ModelCaller {
       usage: lastUsage,
       rawRequest: lastModelResponse?.rawPayload ?? null,
       rawSSEEvents: [],
+      finishReason: lastModelResponse?.finishReason,
       timing: lastModelResponse?.timing,
     };
   }

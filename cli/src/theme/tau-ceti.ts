@@ -76,7 +76,8 @@ export const TAU_CETI: ThemeTokens = {
 
   // 背景块
   selectedBg: "#1C1814",
-  userBg: "#1C1814",
+  // 用户消息灰底：整块长方形，明显高于主背景 #0C0A08
+  userBg: "#3A3530",
   systemBg: "#14110D",
   toolPendingBg: "#1C1814",
   toolSuccessBg: "#0C0A08",

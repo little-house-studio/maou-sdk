@@ -1,13 +1,26 @@
 /**
- * Maou CLI 状态（zustand）—— 持 UIState，onStream 调 reducer 纯函数。
+ * Maou CLI 状态（zustand）—— 持 UIState，onStream 调 pure reduce。
+ *
+ * 技术选型：zustand + reducer.ts 纯函数（不换 Redux/自研 store）。
+ * 分区（方法命名空间，便于检索）：
+ *   stream     — onStream / setStreaming / setAborting
+ *   overlay    — setOverlay / runCommand / scrollOverlay
+ *   mouse      — mouseCursor* / inputRect / selection / hoverId / chatScroll*
+ *   completion — updateCompletion / cycleCompletion / acceptCompletion
+ *   editor     — openFullEditor / exitFullEditor（无外部 $EDITOR）
+ *   history    — pushInputHistory / navigateHistory
+ *
+ * 旧文件：legacy/pre-lib-migration/state/store.ts
  */
 
 import { create } from "zustand";
 import type { StreamEvent } from "@little-house-studio/types";
-import type { UIState, ChatMessage, SystemEvent, Toast, CompletionState } from "./types.js";
+import type { UIState, ChatMessage, SystemEvent, Toast, CompletionState, SupervisorState } from "./types.js";
 import type { CompletionItem } from "../overlay/Completer.js";
 import { complete } from "../overlay/Completer.js";
 import { reduce } from "./reducer.js";
+import { dispatchDisplayEvent } from "../events/display-events.js";
+import { SUPERVISOR_MANAGER } from "@little-house-studio/agent";
 
 interface Store extends UIState {
   setAgentMeta: (agentName: string, provider: string, model: string, maxContext: number) => void;
@@ -36,6 +49,8 @@ interface Store extends UIState {
   // 鼠标驱动
   mouseCursorCol: number | null;     // 鼠标点击输入框的目标列（InputBar 监听移光标）
   setMouseCursorCol: (col: number | null) => void;
+  /** 判断是否纯 UI 命令（开 overlay/退出），命中走本地 runCommand；未命中透传 runtime */
+  isLocalCommand: (id: string) => boolean;
   mouseCursorLine: number | null;    // 鼠标点击输入框的目标行（0-based，多行场景）
   setMouseCursorLine: (line: number | null) => void;
   // 鼠标捕获开关：true=启用 SGR 鼠标（点击/滚轮），false=关闭（恢复终端原生选字）。
@@ -63,6 +78,19 @@ interface Store extends UIState {
   setInputTextSel: (s: { startIdx: number; endIdx: number } | null) => void;
   inputSelectCmd: { col: number; line: number; phase: "start" | "extend"; nonce: number } | null;
   dispatchInputSelect: (col: number, line: number, phase: "start" | "extend") => void;
+  overlayScrollCmd: { dir: "up" | "down"; nonce: number } | null;
+  scrollOverlay: (dir: "up" | "down") => void;
+  // goal 监督状态
+  supervisor: SupervisorState | null;
+  setSupervisor: (s: SupervisorState | null) => void;
+  clearSupervisor: () => void;
+  exitSupervisor: () => void;  // 退出监督：unbind SDK binding + 清状态 + 切回主 session
+  toggleEventBlockExpanded: () => void;  // 切换 EventBlock 粗略/展开模式
+  scrollSupervisor: (dir: "up" | "down") => void;  // 滚轮→EventBlock 展开滚动
+  // 通用发送桥接（GoalPanel 确认按钮等）
+  pendingSend: string | null;
+  requestSend: (text: string) => void;
+  clearPendingSend: () => void;
   // 生成中消息排队：streaming 时 Enter 不发送而是入队，生成完自动 drain
   pendingMessages: string[];
   enqueueMessage: (text: string) => void;
@@ -78,7 +106,7 @@ interface Store extends UIState {
   completion: CompletionState | null;
   updateCompletion: (input: string) => void;   // 输入变化时重算候选
   cycleCompletion: (dir: "up" | "down") => void;
-  acceptCompletion: () => string | null;       // 返回补全后的文本（不含已有前缀外的部分）
+  acceptCompletion: (currentInput?: string) => string | null;  // 返回补全后的完整输入文本
   closeCompletion: () => void;
   // ToolCard 展开/折叠时调整滚动偏移（保持卡片头不动）
   expandShift: (delta: number) => void;
@@ -122,6 +150,14 @@ const initialState: UIState = {
   inputRect: null,
   inputTextSel: null,
   inputSelectCmd: null,
+  overlayScrollCmd: null,
+  supervisor: null,
+  supervisorMessages: [],
+  eventBlockExpanded: false,
+  supervisorScrollCmd: null,
+  lastStreamNonce: 0,
+  supervisorCheckNonce: 0,
+  pendingSend: null,
   agentSessionMap: {},
   chatScrollOffset: 0,
 };
@@ -158,6 +194,10 @@ function saveLastSession(agentName: string, sessionId: string): void {
     writeFileSync(LAST_SESSION_PATH, JSON.stringify({ agentName, sessionId }, null, 2));
   } catch { /* 静默 */ }
 }
+
+// 纯 UI 命令白名单（开 overlay / 退出 / 调思考级别）。
+// 其余 /xxx 透传 runtime 由 SDK commandRegistry 识别。
+const LOCAL_COMMANDS = new Set(["model", "sessions", "help", "settings", "agents", "quit", "thinking"]);
 
 export const useStore = create<Store>((set, get) => ({
   ...initialState,
@@ -196,23 +236,26 @@ export const useStore = create<Store>((set, get) => ({
   }),
   clearPendingSubmit: () => set({ pendingSubmit: null, fullEditorResult: null }),
 
+  // 纯 UI 命令白名单：只开 overlay / 退出 / 调思考级别。其余 /xxx（goal/new/clear/stop/agent 等）
+  // 透传 runtime，由 SDK commandRegistry 识别——SDK 加新命令 CLI 自动支持。
+  isLocalCommand: (id) => LOCAL_COMMANDS.has(id),
+
   runCommand: (id) => {
     const s = useStore.getState();
     switch (id) {
-      case "new": s.clearMessages(); s.toastMsg("新会话", "ok"); break;
       case "model": s.setOverlay("model"); break;
       case "sessions": s.setOverlay("sessions"); break;
       case "help": s.setOverlay("help"); break;
       case "settings": s.setOverlay("settings"); break;
       case "agents": s.setOverlay("agents"); break;
       case "quit": s.requestExit(); break;
-      case "clear": s.clearMessages(); s.toastMsg("消息已清空", "ok"); break;
       case "thinking": {
         const cur = s.thinkingLevel;
         s.setThinking((cur + 1) % 6);
         s.toastMsg(`思考级别: ${s.thinkingLevel}`, "info");
         break;
       }
+      default: return;  // 未知命令不关 overlay（透传路径已在 InputBar 处理）
     }
     set({ overlay: null });
   },
@@ -233,10 +276,13 @@ export const useStore = create<Store>((set, get) => ({
   maxChatScroll: 0,
   autoFollow: true,
   scrollChat: (dir) => set((s) => {
-    const step = 2;
+    // 一格一行：每次滚轮/边缘滚动只移动 1 行（网页感）
+    const step = 1;
     const max = s.maxChatScroll;
+    // 若仍在 autoFollow 钉底，用 offset=0 作起点再往上滚，才能立刻脱离跟随
+    const base = s.autoFollow ? 0 : s.chatScrollOffset;
     // wheelUp（向上看更早）→ offset 增大；wheelDown（向下看更新）→ offset 减小
-    const next = Math.max(0, Math.min(max, s.chatScrollOffset + (dir === "up" ? step : -step)));
+    const next = Math.max(0, Math.min(max, base + (dir === "up" ? step : -step)));
     // 用户主动滚到底（offset=0）→ 重启 autoFollow；否则关闭
     const atBottom = next <= 0;
     return { chatScrollOffset: next, autoFollow: atBottom };
@@ -267,6 +313,26 @@ export const useStore = create<Store>((set, get) => ({
   setInputTextSel: (s) => set({ inputTextSel: s }),
   inputSelectCmd: null,
   dispatchInputSelect: (col, line, phase) => set((s) => ({ inputSelectCmd: { col, line, phase, nonce: (s.inputSelectCmd?.nonce ?? 0) + 1 } })),
+  overlayScrollCmd: null,
+  scrollOverlay: (dir) => set((s) => ({ overlayScrollCmd: { dir, nonce: (s.overlayScrollCmd?.nonce ?? 0) + 1 } })),
+  supervisor: null,
+  setSupervisor: (supervisor) => set({ supervisor }),
+  clearSupervisor: () => set({ supervisor: null }),
+  toggleEventBlockExpanded: () => set((s) => ({ eventBlockExpanded: !s.eventBlockExpanded })),
+  supervisorScrollCmd: null,
+  scrollSupervisor: (dir) => set((s) => ({ supervisorScrollCmd: { dir, nonce: (s.supervisorScrollCmd?.nonce ?? 0) + 1 } })),
+  exitSupervisor: () => {
+    // 退出监督：SDK unbind binding（让 SUPERVISOR_MANAGER 释放）+ 清状态 + 切回主 session
+    const sup = get().supervisor;
+    if (sup?.mainSessionId) {
+      try { SUPERVISOR_MANAGER.unbind(sup.mainSessionId); } catch { /* 静默 */ }
+    }
+    if (sup?.mainSessionId) set({ sessionId: sup.mainSessionId });
+    set({ supervisor: null, supervisorMessages: [], eventBlockExpanded: false });
+  },
+  pendingSend: null,
+  requestSend: (text) => set({ pendingSend: text }),
+  clearPendingSend: () => set({ pendingSend: null }),
 
   // 生成中消息排队
   pendingMessages: [],
@@ -325,13 +391,21 @@ export const useStore = create<Store>((set, get) => ({
     const next = dir === "up" ? (s.completion.sel - 1 + n) % n : (s.completion.sel + 1) % n;
     return { completion: { ...s.completion, sel: next } };
   }),
-  acceptCompletion: (): string | null => {
+  /** 接受当前补全项。传入完整输入以正确替换 @ 路径 token（不吞掉 @ 前文本）。 */
+  acceptCompletion: (currentInput = ""): string | null => {
     let result: string | null = null;
     set((s) => {
       if (!s.completion) return s;
       const sel = s.completion.items[s.completion.sel];
       if (!sel) return s;
-      result = sel.value + " ";
+      if (currentInput.startsWith("/")) {
+        result = sel.value + " ";
+      } else {
+        const atIdx = currentInput.lastIndexOf("@");
+        result = atIdx >= 0
+          ? currentInput.slice(0, atIdx) + sel.value + " "
+          : sel.value + " ";
+      }
       return { completion: null };
     });
     return result;
@@ -394,5 +468,74 @@ export const useStore = create<Store>((set, get) => ({
     messages, systemEvents, currentAssistantId: null, round: messages.length,
   }),
 
-  onStream: (ev) => set((s) => reduce(s, ev)),
+  onStream: (ev) => {
+    // 高频 delta 节流：合并 ~64ms 内的 assistant_delta / thinking_delta，避免每个 token
+    // 触发全树 React/Ink 重渲，导致流式中无法打字/滚轮（事件循环被渲染占满）。
+    // 非 delta 事件先 flush 再处理，保证 tool_call 等顺序不错乱。
+    applyStreamEvent(ev);
+  },
 }));
+
+// ── 流式事件节流（模块级，单 store 实例）────────────────────────────────
+const STREAM_THROTTLE_MS = 64;
+const THROTTLE_TYPES = new Set(["assistant_delta", "thinking_delta"]);
+let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingDeltas: StreamEvent[] = [];
+
+function flushStreamDeltas(): void {
+  if (streamFlushTimer) {
+    clearTimeout(streamFlushTimer);
+    streamFlushTimer = null;
+  }
+  const batch = pendingDeltas;
+  pendingDeltas = [];
+  if (batch.length === 0) return;
+  useStore.setState((s) => {
+    let cur: UIState = s;
+    for (const ev of batch) {
+      const patch = reduce(cur, ev);
+      cur = { ...cur, ...patch };
+    }
+    return {
+      ...cur,
+      lastStreamNonce: (s.lastStreamNonce ?? 0) + 1,
+    };
+  });
+}
+
+function applyStreamEvent(ev: StreamEvent): void {
+  if (THROTTLE_TYPES.has(ev.type)) {
+    pendingDeltas.push(ev);
+    if (!streamFlushTimer) {
+      streamFlushTimer = setTimeout(() => flushStreamDeltas(), STREAM_THROTTLE_MS);
+    }
+    return;
+  }
+
+  // 关键事件先冲掉 pending delta，再同步 apply
+  flushStreamDeltas();
+
+  const checkSup = ev.type === "tool_result" || ev.type === "done";
+  useStore.setState((s) => {
+    const patch = reduce(s, ev);
+    return {
+      ...patch,
+      lastStreamNonce: (s.lastStreamNonce ?? 0) + 1,
+      ...(checkSup
+        ? { supervisorCheckNonce: (s.supervisorCheckNonce ?? 0) + 1 }
+        : {}),
+    };
+  });
+
+  // displayEvents 通用分发（副作用，reducer 外）
+  if (ev.type === "tool_result") {
+    const de = (ev as { displayEvents?: unknown }).displayEvents;
+    if (Array.isArray(de)) {
+      for (const e of de) {
+        if (e && typeof e === "object" && typeof (e as { type?: unknown }).type === "string") {
+          dispatchDisplayEvent(e as Parameters<typeof dispatchDisplayEvent>[0]);
+        }
+      }
+    }
+  }
+}

@@ -1,8 +1,6 @@
 /**
- * ThinkingBlock —— 思考块（设计文档格式）。
- * * think (生成耗时)（灰色，正常收纳，没有就不显示，可以点开展开）
- *
- * 点击展开/收纳内容。thinkingLevel 控制默认展开程度。
+ * ThinkingBlock —— 思考块（嵌在 MsgBody 内，再缩进一层 logo 感）。
+ * 行首 * 与 think 元信息对齐工具卡片风格，不侵占外层 logo 列。
  */
 
 import React, { useState, useRef } from "react";
@@ -19,20 +17,30 @@ export function ThinkingBlock({ block }: { block: ThinkingBlockState }) {
   const level = useStore((s) => s.thinkingLevel);
   const [open, setOpen] = useState(level >= 3);
   const ref = useRef<DOMElement | null>(null);
-  const cid = useClickTarget(ref, () => setOpen(o => !o), [block.id, open]);
+  const cid = useClickTarget(ref, () => setOpen((o) => !o), [block.id, open]);
   const isHover = useStore((s) => s.hoverId) === cid;
 
   if (!block.content) return null;
 
   const dur = durationStr(block.duration);
-  const label = `* think${dur ? ` (${dur})` : ""}`;
   const charCount = block.content.length;
 
   return (
     <Box ref={ref} flexDirection="column">
-      <Text color={isHover ? t.accent : t.muted}>{`${label} // ${charCount} 字 ${open ? "▼" : "▶"}`}</Text>
+      {/* 二级标记：正文列内再留 2 列给 *，避免和主 logo 列抢位 */}
+      <Box flexDirection="row">
+        <Box width={2} flexShrink={0}>
+          <Text color={isHover ? t.accent : t.muted}>{"* "}</Text>
+        </Box>
+        <Text color={isHover ? t.accent : t.muted}>
+          {`think${dur ? ` (${dur})` : ""} // ${charCount} 字 ${open ? "▼" : "▶"}`}
+        </Text>
+      </Box>
       {open && (
-        <Text color={t.muted} wrap="wrap">{block.content}</Text>
+        <Box flexDirection="row">
+          <Box width={2} flexShrink={0}><Text>{"  "}</Text></Box>
+          <Text color={t.muted} wrap="wrap">{block.content}</Text>
+        </Box>
       )}
     </Box>
   );

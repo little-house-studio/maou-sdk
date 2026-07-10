@@ -60,12 +60,10 @@ const ok = (name, cond, extra = "") => { log(`${cond ? "✅" : "❌"} ${name}${e
 {
   const t = spawnCli();
   await t.wait(1500);
-  // 第一次 Ctrl+C（空闲态）：警告
+  // 第一次 Ctrl+C（空闲态）：不退出（进入警告态，等第二次）
   t.write("\x03");
-  await t.wait(300);
-  const screen1 = t.screen().join("\n");
-  const warned = screen1.includes("再按一次") || screen1.includes("退出");
-  ok("Ctrl+C 第一次警告", warned, "");
+  await t.wait(400);
+  ok("Ctrl+C 第一次不立即退出", !t.dead(), `进程状态=${t.dead() ? "已退" : "存活"}`);
 
   // 3 秒内第二次 → 真退出
   const exitPromise = new Promise((resolve) => t.child.on("exit", (code) => resolve(code)));

@@ -91,3 +91,5 @@ export type { FileEditRecord } from './file/file-edit-history.js'
 // 通过 createSubagentDelegateTool() 按发现的子 Agent 动态创建并注册为 subagent_<name>。
 // SubagentDelegateTool 类仅用于类型导出/文档化契约。
 export { SubagentDelegateTool, createSubagentDelegateTool } from './agent_team/subagent_delegate/tool.js'
+export { collectDiff, formatDiffForReport } from './agent_team/diff-collector.js'
+export type { DiffSummary, DiffEntry } from './agent_team/diff-collector.js'
