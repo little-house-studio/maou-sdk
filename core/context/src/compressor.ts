@@ -449,8 +449,26 @@ function archiveCompressHarness(input: SummaryCompressResult): { messages: MaouM
 
 export function assignTaskIds(messages: MaouMessage[]): MaouMessage[] {
   let currentTaskId = "";
+  // 非真人 user 不应开新 task（empty_retry / todo_notice / bus 等）
+  const NON_HUMAN_SOURCES = new Set([
+    "hook",
+    "injected",
+    "empty_retry",
+    "verification",
+    "todo_notice",
+    "message_bus",
+    "terminal-notification",
+    "runtime_control",
+    "system_notice",
+    "agent_message",
+  ]);
   return messages.map(m => {
-    if (m.category === "user" && m.source !== "hook" && m.source !== "injected") {
+    const src = String(m.source ?? "");
+    const isHumanUser =
+      m.category === "user" &&
+      !NON_HUMAN_SOURCES.has(src) &&
+      src !== "compact";
+    if (isHumanUser) {
       currentTaskId = `t${m.seqId}`;
     }
     if (!currentTaskId) return m;

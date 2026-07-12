@@ -12,10 +12,12 @@ import { listThemes } from "../theme/hot-reload.js";
 
 export function SettingsList() {
   const t = useTheme();
-  const { thinkingLevel, setThinking } = useStore();
+  const thinkingLevel = useStore((s) => s.thinkingLevel);
+  const approvalMode = useStore((s) => s.approvalMode);
 
   const settings: [string, string][] = [
-    ["思考级别", `${thinkingLevel} (Shift+Tab 循环)`],
+    ["审核模式", `${approvalMode} (Shift+Tab 循环)`],
+    ["思考级别", `${thinkingLevel}`],
     ["主题", `Tau Ceti（${listThemes().length} 个可用）`],
     ["鼠标", "关闭（终端原生拖选）"],
   ];

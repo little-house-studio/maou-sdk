@@ -7,5 +7,5 @@
   "round_limit": 15,
   "max_retries": 5,
   "terminal_mode": "normal",
-  "tools": ["reader", "glob", "grep", "find_code", "llm_judge", "task_finish"]
+  "tools": ["reader", "glob", "grep", "find_code", "llm_judge", "todo_finish"]
 }

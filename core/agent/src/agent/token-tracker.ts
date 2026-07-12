@@ -60,6 +60,39 @@ export interface DailyData {
   daily_summary: DailySummary;
 }
 
+// ─── 用量解析（CLI 事件栏 / 计费共用） ─────────────────────────────────────
+
+/**
+ * 本轮「未缓存的新输入」token 数。
+ * = prompt/input − cache_read（缓存破坏后 cache_read=0，即全量 input）。
+ * 与 computeCost.effective_input_tokens 一致。
+ */
+export function uncachedInputTokens(usage: {
+  prompt_tokens?: number;
+  input_tokens?: number;
+  inputTokens?: number;
+  cache_hit_tokens?: number;
+  cache_read_input_tokens?: number;
+  cached_tokens?: number;
+  [key: string]: unknown;
+} | null | undefined): number {
+  if (!usage) return 0;
+  const input = Math.trunc(
+    Number(usage.input_tokens ?? usage.inputTokens ?? usage.prompt_tokens ?? 0) || 0,
+  );
+  const details = usage.prompt_tokens_details as { cached_tokens?: number } | undefined;
+  const cache = Math.trunc(
+    Number(
+      usage.cache_hit_tokens
+      ?? usage.cache_read_input_tokens
+      ?? usage.cached_tokens
+      ?? details?.cached_tokens
+      ?? 0,
+    ) || 0,
+  );
+  return Math.max(0, input - cache);
+}
+
 // ─── 工具函数 ──────────────────────────────────────────────────────────────
 
 function nowMinute(): string {

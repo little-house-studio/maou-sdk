@@ -1,16 +1,24 @@
 /**
- * 语言服务器注册表 — 扩展名 → ServerSpec。
- * 内置 TS/JS/Python/Rust，用户配置可覆盖/扩展（加新语言 = 加一条 spec）。
+ * 语言服务器注册表 — 扩展名 / 特殊文件名 → ServerSpec。
+ * 内置覆盖常见语言；用户可用 registerServers 覆盖/扩展。
+ *
+ * 注意：有配置 ≠ 本机已安装。缺失 binary 时会抛 ServerNotInstalledError 并带 installHint。
  */
 
-import { existsSync } from "node:fs";
-import { join, dirname, extname } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join, dirname, extname, basename } from "node:path";
 
 export interface ServerSpec {
   languageId: string;
   command: string;
   args: string[];
+  /** 小写扩展名（含点），如 .ts */
   extensions: string[];
+  /**
+   * 无扩展名或固定文件名（如 Dockerfile / Makefile）。
+   * 匹配时大小写不敏感。
+   */
+  fileNames?: string[];
   initializationOptions?: unknown;
   /** 哪些 $/progress 标题门控诊断（如 rust-analyzer 的 cargo check） */
   progressTokens?: { indexing?: RegExp; check?: RegExp };
@@ -21,6 +29,7 @@ export interface ServerSpec {
 }
 
 const BUILTIN: ServerSpec[] = [
+  // ── Web / TS ──
   {
     languageId: "typescript",
     command: "typescript-language-server",
@@ -38,6 +47,32 @@ const BUILTIN: ServerSpec[] = [
     installHint: "请运行: npm i -g typescript-language-server typescript",
   },
   {
+    languageId: "vue",
+    command: "vue-language-server",
+    args: ["--stdio"],
+    extensions: [".vue"],
+    rootMarkers: ["package.json", "vite.config.ts", "vite.config.js", "nuxt.config.ts", "nuxt.config.js"],
+    installHint: "请运行: npm i -g @vue/language-server（命令 vue-language-server）",
+  },
+  {
+    languageId: "svelte",
+    command: "svelteserver",
+    args: ["--stdio"],
+    extensions: [".svelte"],
+    rootMarkers: ["package.json", "svelte.config.js", "svelte.config.ts"],
+    installHint: "请运行: npm i -g svelte-language-server",
+  },
+  {
+    languageId: "astro",
+    command: "astro-ls",
+    args: ["--stdio"],
+    extensions: [".astro"],
+    rootMarkers: ["package.json", "astro.config.mjs", "astro.config.ts"],
+    installHint: "请运行: npm i -g @astrojs/language-server",
+  },
+
+  // ── 主流系统语言 ──
+  {
     languageId: "python",
     command: "pyright-langserver",
     args: ["--stdio"],
@@ -51,7 +86,10 @@ const BUILTIN: ServerSpec[] = [
     args: [],
     extensions: [".rs"],
     rootMarkers: ["Cargo.toml"],
-    progressTokens: { indexing: /indexing|cachePriming|roots scanned/i, check: /cargo check|flycheck|building|checking/i },
+    progressTokens: {
+      indexing: /indexing|cachePriming|roots scanned/i,
+      check: /cargo check|flycheck|building|checking/i,
+    },
     installHint: "请运行: rustup component add rust-analyzer",
   },
   {
@@ -76,9 +114,17 @@ const BUILTIN: ServerSpec[] = [
     languageId: "cpp",
     command: "clangd",
     args: ["--background-index"],
-    extensions: [".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hxx", ".hh", ".ipp", ".m", ".mm"],
+    extensions: [".cpp", ".cc", ".cxx", ".c++", ".hpp", ".hxx", ".hh", ".ipp"],
     rootMarkers: ["compile_commands.json", ".clangd", "CMakeLists.txt", "Makefile"],
     installHint: "请安装 clangd（macOS: brew install llvm / Debian: apt install clangd）",
+  },
+  {
+    languageId: "objective-c",
+    command: "clangd",
+    args: ["--background-index"],
+    extensions: [".m", ".mm"],
+    rootMarkers: ["compile_commands.json", ".clangd", "CMakeLists.txt", "Podfile", ".xcodeproj"],
+    installHint: "请安装 clangd（macOS: brew install llvm；ObjC++ 项目建议 compile_commands.json）",
   },
   {
     languageId: "zig",
@@ -87,6 +133,15 @@ const BUILTIN: ServerSpec[] = [
     extensions: [".zig"],
     rootMarkers: ["build.zig"],
     installHint: "请安装 zls（https://github.com/zigtools/zls）",
+  },
+  {
+    languageId: "cmake",
+    command: "cmake-language-server",
+    args: [],
+    extensions: [".cmake"],
+    fileNames: ["CMakeLists.txt"],
+    rootMarkers: ["CMakeLists.txt", ".git"],
+    installHint: "请运行: pip install cmake-language-server",
   },
 
   // ── JVM ──
@@ -114,6 +169,22 @@ const BUILTIN: ServerSpec[] = [
     rootMarkers: ["build.sbt", "build.sc", ".bloop", ".metals"],
     installHint: "请运行: coursier install metals",
   },
+  {
+    languageId: "groovy",
+    command: "groovy-language-server",
+    args: [],
+    extensions: [".groovy", ".gradle"],
+    rootMarkers: ["build.gradle", "settings.gradle", "pom.xml", ".git"],
+    installHint: "请安装 groovy-language-server（https://github.com/GroovyLanguageServer/groovy-language-server）",
+  },
+  {
+    languageId: "clojure",
+    command: "clojure-lsp",
+    args: [],
+    extensions: [".clj", ".cljs", ".cljc", ".edn"],
+    rootMarkers: ["deps.edn", "project.clj", "shadow-cljs.edn", ".git"],
+    installHint: "请安装 clojure-lsp（brew install clojure-lsp/brew/clojure-lsp）",
+  },
 
   // ── .NET ──
   {
@@ -123,6 +194,14 @@ const BUILTIN: ServerSpec[] = [
     extensions: [".cs"],
     rootMarkers: ["*.sln", "*.csproj", ".git"],
     installHint: "请运行: dotnet tool install --global csharp-ls",
+  },
+  {
+    languageId: "fsharp",
+    command: "fsautocomplete",
+    args: ["--adaptive-lsp-server-enabled"],
+    extensions: [".fs", ".fsi", ".fsx"],
+    rootMarkers: ["*.sln", "*.fsproj", ".git"],
+    installHint: "请运行: dotnet tool install --global fsautocomplete",
   },
 
   // ── 动态 / 脚本 ──
@@ -157,6 +236,44 @@ const BUILTIN: ServerSpec[] = [
     extensions: [".sh", ".bash", ".zsh", ".ksh"],
     rootMarkers: [".git"],
     installHint: "请运行: npm i -g bash-language-server",
+  },
+  {
+    languageId: "powershell",
+    command: "powershell-editor-services",
+    args: [],
+    extensions: [".ps1", ".psm1", ".psd1"],
+    rootMarkers: [".git"],
+    installHint:
+      "请安装 PowerShellEditorServices，并将 powershell-editor-services 启动脚本加入 PATH（https://github.com/PowerShell/PowerShellEditorServices）",
+  },
+  {
+    languageId: "perl",
+    command: "perlnavigator",
+    args: ["--stdio"],
+    extensions: [".pl", ".pm", ".t"],
+    rootMarkers: ["cpanfile", "Makefile.PL", ".git"],
+    installHint: "请安装 PerlNavigator（https://github.com/bscan/PerlNavigator）并将 perlnavigator 加入 PATH",
+  },
+  {
+    languageId: "r",
+    command: "R",
+    args: ["--slave", "-e", "languageserver::run()"],
+    extensions: [".r", ".R", ".rmd", ".Rmd"],
+    rootMarkers: ["DESCRIPTION", "renv.lock", ".Rproj", ".git"],
+    installHint: "请在 R 中安装: install.packages(\"languageserver\")，并确保 R 在 PATH",
+  },
+  {
+    languageId: "julia",
+    command: "julia",
+    args: [
+      "--startup-file=no",
+      "--history-file=no",
+      "-e",
+      "using LanguageServer; runserver()",
+    ],
+    extensions: [".jl"],
+    rootMarkers: ["Project.toml", "Manifest.toml", ".git"],
+    installHint: "请运行: julia -e 'using Pkg; Pkg.add(\"LanguageServer\")'",
   },
   {
     languageId: "dart",
@@ -195,12 +312,44 @@ const BUILTIN: ServerSpec[] = [
     installHint: "请安装 elixir-ls（https://github.com/elixir-lsp/elixir-ls）",
   },
   {
+    languageId: "erlang",
+    command: "erlang_ls",
+    args: [],
+    extensions: [".erl", ".hrl"],
+    rootMarkers: ["rebar.config", "erlang.mk", ".git"],
+    installHint: "请安装 erlang_ls（https://github.com/erlang-ls/erlang_ls）",
+  },
+  {
     languageId: "ocaml",
     command: "ocamllsp",
     args: [],
     extensions: [".ml", ".mli"],
     rootMarkers: ["dune-project", ".git"],
     installHint: "请运行: opam install ocaml-lsp-server",
+  },
+  {
+    languageId: "elm",
+    command: "elm-language-server",
+    args: [],
+    extensions: [".elm"],
+    rootMarkers: ["elm.json", ".git"],
+    installHint: "请运行: npm i -g @elm-tooling/elm-language-server",
+  },
+  {
+    languageId: "rescript",
+    command: "rescript-language-server",
+    args: ["--stdio"],
+    extensions: [".res", ".resi"],
+    rootMarkers: ["bsconfig.json", "rescript.json", "package.json"],
+    installHint: "请运行: npm i -g @rescript/language-server",
+  },
+  {
+    languageId: "nix",
+    command: "nil",
+    args: [],
+    extensions: [".nix"],
+    rootMarkers: ["flake.nix", "shell.nix", "default.nix", ".git"],
+    installHint: "请安装 nil（https://github.com/oxalica/nil）或 nixd",
   },
 
   // ── 标记 / 配置 / 数据 ──
@@ -245,12 +394,12 @@ const BUILTIN: ServerSpec[] = [
     installHint: "请运行: cargo install taplo-cli --features lsp",
   },
   {
-    languageId: "terraform",
-    command: "terraform-ls",
-    args: ["serve"],
-    extensions: [".tf", ".tfvars"],
-    rootMarkers: [".terraform", ".git"],
-    installHint: "请安装 terraform-ls（brew install hashicorp/tap/terraform-ls）",
+    languageId: "xml",
+    command: "lemminx",
+    args: [],
+    extensions: [".xml", ".xsd", ".xsl", ".xslt"],
+    rootMarkers: [".git"],
+    installHint: "请安装 lemminx（https://github.com/eclipse/lemminx）",
   },
   {
     languageId: "markdown",
@@ -260,20 +409,119 @@ const BUILTIN: ServerSpec[] = [
     rootMarkers: [".marksman.toml", ".git"],
     installHint: "请安装 marksman（https://github.com/artempyanykh/marksman）",
   },
+  {
+    languageId: "latex",
+    command: "texlab",
+    args: [],
+    extensions: [".tex", ".sty", ".cls", ".bib"],
+    rootMarkers: [".latexmkrc", "Tectonic.toml", ".git"],
+    installHint: "请安装 texlab（cargo install texlab / brew install texlab）",
+  },
+
+  // ── 基础设施 / 数据 / 合约 ──
+  {
+    languageId: "dockerfile",
+    command: "docker-langserver",
+    args: ["--stdio"],
+    extensions: [".dockerfile"],
+    fileNames: ["Dockerfile", "Dockerfile.dev", "Dockerfile.prod", "Containerfile"],
+    rootMarkers: ["Dockerfile", "docker-compose.yml", "compose.yml", ".git"],
+    installHint: "请运行: npm i -g dockerfile-language-server-nodejs",
+  },
+  {
+    languageId: "terraform",
+    command: "terraform-ls",
+    args: ["serve"],
+    extensions: [".tf", ".tfvars"],
+    rootMarkers: [".terraform", ".git"],
+    installHint: "请安装 terraform-ls（brew install hashicorp/tap/terraform-ls）",
+  },
+  {
+    languageId: "sql",
+    command: "sqls",
+    args: [],
+    extensions: [".sql"],
+    rootMarkers: [".git"],
+    installHint: "请运行: go install github.com/sqls-server/sqls@latest",
+  },
+  {
+    languageId: "graphql",
+    command: "graphql-lsp",
+    args: ["server", "--method", "stream"],
+    extensions: [".graphql", ".gql"],
+    rootMarkers: [".graphqlrc", ".graphqlrc.yml", ".graphqlrc.yaml", "package.json", ".git"],
+    installHint: "请运行: npm i -g graphql-language-service-cli",
+  },
+  {
+    languageId: "prisma",
+    command: "prisma-language-server",
+    args: ["--stdio"],
+    extensions: [".prisma"],
+    rootMarkers: ["schema.prisma", "package.json", ".git"],
+    installHint: "请运行: npm i -g @prisma/language-server",
+  },
+  {
+    languageId: "protobuf",
+    command: "bufls",
+    args: ["serve"],
+    extensions: [".proto"],
+    rootMarkers: ["buf.yaml", "buf.gen.yaml", ".git"],
+    installHint: "请安装 bufls（go install github.com/bufbuild/buf-language-server/cmd/bufls@latest）",
+  },
+  {
+    languageId: "solidity",
+    command: "nomicfoundation-solidity-language-server",
+    args: ["--stdio"],
+    extensions: [".sol"],
+    rootMarkers: ["hardhat.config.js", "hardhat.config.ts", "foundry.toml", "truffle-config.js", ".git"],
+    installHint:
+      "请运行: npm i -g @nomicfoundation/solidity-language-server（命令 nomicfoundation-solidity-language-server）",
+  },
+  {
+    languageId: "vim",
+    command: "vim-language-server",
+    args: ["--stdio"],
+    extensions: [".vim"],
+    rootMarkers: [".git"],
+    installHint: "请运行: npm i -g vim-language-server",
+  },
 ];
 
 let userSpecs: ServerSpec[] = [];
 
-/** 注册/覆盖用户自定义 spec（按扩展名优先于内置） */
+/** 注册/覆盖用户自定义 spec（按扩展名/文件名优先于内置） */
 export function registerServers(specs: ServerSpec[]): void {
   userSpecs = specs;
 }
 
-/** 按文件扩展名解析 ServerSpec（用户配置优先） */
+/** 列出内置语言（调试 / 文档用） */
+export function listBuiltinLanguages(): Array<{
+  languageId: string;
+  command: string;
+  extensions: string[];
+  fileNames?: string[];
+}> {
+  return BUILTIN.map((s) => ({
+    languageId: s.languageId,
+    command: s.command,
+    extensions: [...s.extensions],
+    fileNames: s.fileNames ? [...s.fileNames] : undefined,
+  }));
+}
+
+function matchesFileName(spec: ServerSpec, file: string): boolean {
+  if (!spec.fileNames?.length) return false;
+  const base = basename(file);
+  const baseLower = base.toLowerCase();
+  return spec.fileNames.some((n) => n === base || n.toLowerCase() === baseLower);
+}
+
+/** 按文件扩展名或特殊文件名解析 ServerSpec（用户配置优先） */
 export function resolveSpec(file: string): ServerSpec | null {
   const ext = extname(file).toLowerCase();
   for (const spec of [...userSpecs, ...BUILTIN]) {
-    if (spec.extensions.includes(ext)) return spec;
+    if (matchesFileName(spec, file)) return spec;
+    if (ext && spec.extensions.includes(ext)) return spec;
   }
   return null;
 }
@@ -285,7 +533,18 @@ export function findWorkspaceRoot(file: string, spec: ServerSpec): string {
   let prev = "";
   while (dir !== prev) {
     for (const m of markers) {
-      if (existsSync(join(dir, m))) return dir;
+      // 支持简单通配：*.sln / *.csproj（仅当前目录）
+      if (m.includes("*")) {
+        try {
+          const files = readdirSync(dir);
+          const re = new RegExp("^" + m.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$", "i");
+          if (files.some((f) => re.test(f))) return dir;
+        } catch {
+          /* ignore */
+        }
+      } else if (existsSync(join(dir, m))) {
+        return dir;
+      }
     }
     prev = dir;
     dir = dirname(dir);

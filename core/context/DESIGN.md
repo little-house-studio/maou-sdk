@@ -1,4 +1,9 @@
 # context需求
+
+## 相关专题
+
+- **[会话事件模型 Session Event](./docs/SESSION_EVENT.md)** — `kind`（语义）与 wire `role`（API）分离；`appendSessionEvent`
+
 ## 上下文层结构
     - system prompt（下列内容都在role:system中）
         - 可注入system前区

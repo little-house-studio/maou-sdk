@@ -4,6 +4,7 @@
  */
 
 import type { SessionMessage } from "../session-store.js";
+import { resolveSessionEventKind, isHumanTurnKind } from "../session-event.js";
 
 /**
  * 内容块
@@ -340,18 +341,31 @@ export function sessionToMaouMessage(smsg: SessionMessage, seqId: number): MaouM
   if (meta?.category) {
     category = meta.category;
   } else {
-    const role = smsg.role;
-    if (role === 'tool') {
-      category = 'tool_result';
-    } else if (role === 'assistant') {
+    // 优先用 kind 语义，避免伪 user 被当成真人任务起点
+    const kind = resolveSessionEventKind({
+      role: smsg.role,
+      source: smsg.source,
+      kind: typeof smsg.kind === "string" ? smsg.kind : undefined,
+      toolCallId: smsg.toolCallId,
+      tool_call_id: smsg.tool_call_id as string | undefined,
+      content: smsg.content,
+      queued: Boolean(smsg.queued),
+    });
+    if (kind === "tool_result" || kind === "tool_async_notify") {
+      category = "tool_result";
+    } else if (kind === "assistant_turn" || kind === "tool_call") {
       const hasToolCalls = smsg.toolCalls && smsg.toolCalls.length > 0;
-      category = hasToolCalls ? 'tool_call' : 'assistant';
-    } else if (role === 'system') {
-      category = 'system';
-    } else if (smsg.source === 'hook' || smsg.source === 'injected') {
-      category = 'injected';
+      category = hasToolCalls ? "tool_call" : "assistant";
+    } else if (kind === "system_notice" || kind === "runtime_control" || kind === "agent_message") {
+      category = "injected";
+    } else if (kind === "compact") {
+      category = "compact";
+    } else if (smsg.role === "system") {
+      category = "system";
+    } else if (smsg.source === "hook" || smsg.source === "injected") {
+      category = "injected";
     } else {
-      category = 'user';
+      category = isHumanTurnKind(kind) ? "user" : "injected";
     }
   }
 

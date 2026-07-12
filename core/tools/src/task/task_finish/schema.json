@@ -1,27 +1,32 @@
 {
-  "name": "task_finish",
-  "description": "汇报任务完成。仅在你之前使用 task_manage 创建了任务、且该任务确实已完成时调用。不要用来汇报问候、闲聊等非任务场景。",
+  "name": "todo_finish",
+  "description": "汇报当前负责的一个 todo 节点完成或失败。一次只代表 task_id 这一个节点。completed 解锁下游；failed 不解锁、不自动失败其它节点。",
   "parameters": {
     "type": "object",
     "properties": {
       "task_id": {
         "type": "string",
-        "description": "已完成的任务 ID"
+        "description": "当前节点 ID"
       },
-      "reason": {
+      "status": {
         "type": "string",
-        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+        "enum": ["completed", "failed"],
+        "description": "completed=成功 | failed=失败类完成"
       },
       "summary": {
         "type": "string",
-        "description": "完成汇报（200字内），说明做了什么、结果如何"
+        "description": "短说明（做了什么或失败原因摘要）"
+      },
+      "report": {
+        "type": "string",
+        "description": "完整交接汇报（链终点或需下游阅读时）"
+      },
+      "reason": {
+        "type": "string",
+        "description": "failed 时原因；也可写在 summary"
       }
     },
-    "required": [
-      "task_id",
-      "summary",
-      "reason"
-    ],
+    "required": ["task_id", "summary"],
     "additionalProperties": false
   }
 }

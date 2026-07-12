@@ -11,14 +11,14 @@ import type { ThemeTokens } from "./theme/tokens.js";
 import { watchThemes, loadThemeFile } from "./theme/hot-reload.js";
 import { Layout } from "./layout/Layout.js";
 import { useCleanInput } from "./hooks/useCleanInput.js";
-import { useTerminalSize } from "./hooks/useTerminalSize.js";
+import { useTerminalSize, TerminalSizeProvider } from "./hooks/useTerminalSize.js";
 import { useStore, loadLastSession } from "./state/store.js";
 import { loadSessionMessages } from "./state/session-loader.js";
 import { useAgent } from "./events/useAgent.js";
 import { useSupervisorState } from "./hooks/useSupervisorState.js";
 import { useMouseInput } from "./input/useMouseInput.js";
-import { extractSelection as vramExtract, clearSelection as vramClear, getSelection as vramGet, renderWithSelection, setThemeBg } from "./render/vram-layer.js";
-import { osc52 } from "./input/osc52.js";
+import { extractSelection as vramExtract, clearSelection as vramClear, getSelection as vramGet, scheduleFullPaint, setThemeBg } from "./render/vram-layer.js";
+import { copyToClipboard } from "./input/osc52.js";
 import type { LayoutRect } from "./input/hit-test.js";
 import type { AgentCliConfig } from "./types.js";
 
@@ -151,10 +151,20 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   const ctrlCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useCleanInput((char, key) => {
     if (fullEditorInitial !== null) return;
-    // useInput 对 Ctrl+C 解析：char 可能是 "c" 或 "\x03"（取决于终端/Ink 版本），两种都认
-    if (key.ctrl && (char === "c" || char === "\x03")) {
+    // Ctrl+C 识别：key.ctrl+c / ETX(\x03) / 部分 Ink 只给 \x03 不置 ctrl
+    const isCtrlC =
+      char === "\x03" ||
+      (key.ctrl && (char === "c" || char === "C" || char === "" || char == null));
+    if (isCtrlC) {
+      // 0. overlay 打开时：第一次 Ctrl+C 关 overlay（与 Esc 一致），不直接退
+      const ov = useStore.getState().overlay;
+      if (ov) {
+        useStore.getState().setOverlay(null);
+        useStore.getState().toastMsg("已关闭面板 · 再按 Ctrl+C 退出", "info");
+        ctrlCAtRef.current = Date.now();
+        return;
+      }
       // 1. supervisor 残留：Ctrl+C 第一次中断+提示，第二次强制清（不退 CLI）
-      //    放最前，优先于选区/streaming，因为 supervisor run 期间状态可能已 ended 但 UI 残留
       if (useStore.getState().supervisor) {
         const now = Date.now();
         if (now - ctrlCAtRef.current < 3000) {
@@ -172,74 +182,114 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
       // 2. 有选区：清选区（松手已自动复制，这里只清蓝底，不退出）
       if (vramGet()) {
         vramClear();
-        const cols = process.stdout.columns || 80;
-        const rows = process.stdout.rows || 24;
-        renderWithSelection(cols, rows);
+        useStore.getState().toastMsg("已取消选区 · 再按 Ctrl+C 退出", "info");
+        ctrlCAtRef.current = Date.now();
         return;
       }
       // 3. streaming（非监督）：第一次中断，3秒内第二次退出
-      if (streaming && !useStore.getState().aborting) {
+      if (useStore.getState().streaming && !useStore.getState().aborting) {
         abort();
         ctrlCAtRef.current = Date.now();
         useStore.getState().toastMsg("已中断 · 再按一次 Ctrl+C 退出", "warn");
         return;
       }
-      // 3. 无选区非 streaming（或已中断）：双击退出
+      // 4. 空闲 / 已中断：双击确认退出（3 秒内）
       const now = Date.now();
       if (now - ctrlCAtRef.current < 3000) {
         if (ctrlCTimerRef.current) clearTimeout(ctrlCTimerRef.current);
-        useStore.getState().requestExit();
-        // 兜底强退：Ink exit() 触发 unmount 会清 effect 里的 timer，这里直接设不被清
-        setTimeout(() => process.exit(0), 1000);
+        useStore.getState().toastMsg("正在退出…", "ok");
+        useStore.getState().requestExit(); // → useApp().exit()，走 waitUntilExit 恢复备用屏
+        // 兜底强退：给 Ink 极短时间 unmount；绝不能等 1s（用户体感「退出很慢」）
+        // 终端恢复序列由 installExitGuard 的 process.on('exit') 保证
+        setTimeout(() => process.exit(0), 50);
       } else {
         ctrlCAtRef.current = now;
         useStore.getState().toastMsg("再按一次 Ctrl+C 退出", "warn");
-        // 3秒后提示自动消失
         if (ctrlCTimerRef.current) clearTimeout(ctrlCTimerRef.current);
         ctrlCTimerRef.current = setTimeout(() => {
           if (Date.now() - ctrlCAtRef.current >= 2900) {
             useStore.getState().toastMsg("", "info");
-            const cols = process.stdout.columns || 80;
-            const rows = process.stdout.rows || 24;
-            renderWithSelection(cols, rows);
+            scheduleFullPaint();
           }
         }, 3000);
       }
       return;
     }
-    // Cmd+C（macOS）：Terminal.app 拦截不发到程序，但若终端转发（iTerm2 等），meta+c 触发复制
+    // Cmd+C / meta+c：复制选区（Terminal.app 常拦截；iTerm/Kitty 等可到）
     if (key.meta && char === "c") {
       const sel = vramGet();
       if (sel) {
         const text = vramExtract();
         if (text && text.trim()) {
-          osc52(text);
+          copyToClipboard(text);
           useStore.getState().toastMsg(`已复制 ${text.length} 字`, "ok");
         }
         vramClear();
       }
       return;
     }
-    if (key.escape) {
-      // 有选区：Esc 清选区
-      if (vramGet()) { vramClear(); return; }
-      if (useStore.getState().completion) { useStore.getState().closeCompletion(); return; }
-      if (overlay) { useStore.getState().setOverlay(null); return; }
-      if (streaming) { abort(); return; }
+    // Ctrl+Shift+C 常见终端复制绑定（部分终端会转发）
+    if (key.ctrl && key.shift && (char === "c" || char === "C")) {
+      const sel = vramGet();
+      if (sel) {
+        const text = vramExtract();
+        if (text && text.trim()) {
+          copyToClipboard(text);
+          useStore.getState().toastMsg(`已复制 ${text.length} 字`, "ok");
+        }
+        return;
+      }
+    }
+    // Esc / 裸 \x1b：优先关 overlay（用 getState 避免闭包陈旧）
+    if (key.escape || char === "\x1b") {
+      // 有选区先清蓝底，但若有 overlay 同一次 Esc 一并关闭（避免 /prompt 卡住）
+      if (vramGet()) vramClear();
+      if (useStore.getState().completion) {
+        useStore.getState().closeCompletion();
+        return;
+      }
+      const ov = useStore.getState().overlay;
+      if (ov) {
+        useStore.getState().setOverlay(null);
+        return;
+      }
+      if (useStore.getState().streaming) {
+        abort();
+        return;
+      }
       return;
     }
-    // 补全菜单开时，上下键选菜单（InputBar 已禁用 Up/Down，按键冒泡到这里）
-    if (useStore.getState().completion) {
-      if (key.upArrow) { useStore.getState().cycleCompletion("up"); return; }
-      if (key.downArrow) { useStore.getState().cycleCompletion("down"); return; }
+    // 补全菜单开时：上下键只在这里 cycle 一次（InputBar 已 disable Up/Down，避免双跳）
+    if (useStore.getState().completion?.items?.length) {
+      if (key.upArrow) {
+        useStore.getState().cycleCompletion("up");
+        return;
+      }
+      if (key.downArrow) {
+        useStore.getState().cycleCompletion("down");
+        return;
+      }
+      // Tab 在 TextArea onTab；这里兜底
+      if (key.tab && !key.shift) {
+        // 交给 InputBar 的 onTab；若未触发则不处理
+        return;
+      }
     }
     // agents overlay 开时，→ 键返回聊天界面
-    if (overlay === "agents" && key.rightArrow) { useStore.getState().setOverlay(null); return; }
-    if (overlay) return;
-    // Shift+Tab 循环思考级别（react-ink-textarea 的 Tab 用于补全，Shift+Tab 这里捕获）
+    if (useStore.getState().overlay === "agents" && key.rightArrow) {
+      useStore.getState().setOverlay(null);
+      return;
+    }
+    if (useStore.getState().overlay) return;
+    // Shift+Tab 循环审核模式 normal → auto → yolo（Tab 仍给补全）
     if (key.tab && key.shift) {
-      const cur = useStore.getState().thinkingLevel;
-      useStore.getState().setThinking((cur + 1) % 6);
+      const next = useStore.getState().cycleApprovalMode();
+      const labels: Record<string, string> = {
+        normal: "询问（每次确认）",
+        auto: "自动（小模型审核）",
+        yolo: "全放（不问）",
+      };
+      useStore.getState().toastMsg(`审核 · ${labels[next] ?? next}`, "info");
       return;
     }
     if (key.ctrl && char === "k") { useStore.getState().setOverlay("command"); return; }
@@ -269,7 +319,17 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
 
   return (
     <ThemeProvider initial={theme}>
-      <Layout frame={frame} value={inputValue} config={config} onSubmit={handleSubmit} onInputChange={setInputValue} onFullEditor={handleFullEditor} />
+      {/* 登记 fakeStdout + 单例 resize/SIGWINCH → 全树自适应 */}
+      <TerminalSizeProvider>
+        <Layout
+          frame={frame}
+          value={inputValue}
+          config={config}
+          onSubmit={handleSubmit}
+          onInputChange={setInputValue}
+          onFullEditor={handleFullEditor}
+        />
+      </TerminalSizeProvider>
     </ThemeProvider>
   );
 }

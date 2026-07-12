@@ -29,10 +29,42 @@ export function useCleanInput(
   options?: Parameters<typeof useInput>[1],
 ): void {
   useInput((input, key) => {
+    // Esc / 方向 / 翻页 / 编辑键：始终放行
+    if (
+      key.escape ||
+      key.upArrow ||
+      key.downArrow ||
+      key.leftArrow ||
+      key.rightArrow ||
+      key.pageUp ||
+      key.pageDown ||
+      key.return ||
+      key.tab ||
+      key.backspace ||
+      key.delete
+    ) {
+      handler(input, key);
+      return;
+    }
+    // Ctrl / Meta 组合键（Ctrl+C 等）：input 可能是 "\x03"/"c"/空，绝不能当空输入丢掉
+    if (key.ctrl || key.meta) {
+      handler(input, key);
+      return;
+    }
+    // 裸 ESC 字符（部分终端 key.escape 未置位）
+    if (input === "\x1b") {
+      handler(input, { ...key, escape: true });
+      return;
+    }
+    // ETX（ASCII 3）= Ctrl+C，部分环境不置 key.ctrl
+    if (input === "\x03") {
+      handler(input, { ...key, ctrl: true });
+      return;
+    }
     // 吞掉鼠标/ANSI/SS3 转义序列（含无 ESC 残片）
     if (input && isControlGarbage(input)) return;
-    // 吞掉空输入
-    if (!input && !key.return && !key.backspace && !key.delete && !key.leftArrow && !key.rightArrow && !key.upArrow && !key.downArrow && !key.escape && !key.tab) return;
+    // 吞掉空输入（无任何键标志）
+    if (!input) return;
     handler(input, key);
   }, options);
 }

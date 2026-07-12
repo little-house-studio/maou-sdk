@@ -20,8 +20,8 @@ export interface ThemeTokens {
   borderAccent: string;
 
   // ── 强调（2）─────────────────────────────────────────
-  accent: string;      // 主强调（火焰橙）
-  accent2: string;     // 次强调（数据青）
+  accent: string;      // 主强调（荧光黄绿）
+  accent2: string;     // 次强调（荧光青）
 
   // ── 状态（4）─────────────────────────────────────────
   ok: string;
@@ -73,13 +73,17 @@ export interface ThemeTokens {
   toolDiffRemoved: string;
   toolDiffContext: string;
 
-  // ── 背景块（6）───────────────────────────────────────
+  // ── 背景块（8）───────────────────────────────────────
   selectedBg: string;
   userBg: string;
   systemBg: string;
   toolPendingBg: string;
   toolSuccessBg: string;
   toolErrorBg: string;
+  /** 底部 chrome（InputBar+InfoBar+NavBar）底：白灰 #C5C5C5 */
+  footerBg: string;
+  /** 可写输入区底：中灰 #808080 */
+  inputFieldBg: string;
 
   // ── 模式（1）─────────────────────────────────────────
   bashMode: string;

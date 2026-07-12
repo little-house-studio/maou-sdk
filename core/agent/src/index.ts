@@ -48,6 +48,21 @@ export * from "./agent_factory/types.js";
 // 动态上下文编译（团队 Agent 状态 + 终端状态面板）
 export { compileDynamicContext, formatAgentStatus } from "./dynamic-context.js";
 
+// Todo 编排（实现在 tools；agent 再导出便于应用层）
+export {
+  TODO_ORCHESTRATOR,
+  TodoOrchestrator,
+  TASK_MANAGER,
+  TODO_MANAGER,
+} from "@little-house-studio/tools";
+export type {
+  TodoEvent,
+  TodoLane,
+  TodoNotice,
+  TodoPlanMeta,
+  TodoFinishInput,
+} from "@little-house-studio/tools";
+
 // 子 Agent 真并行执行器（#4 fork + 并发 + 合并）
 export { SubagentExecutor } from "./agent/subagent-executor.js";
 export type { SubagentRunFn, SubagentExecutorOptions } from "./agent/subagent-executor.js";
@@ -76,3 +91,39 @@ export type { AgentHandle } from "./agent/handle.js";
 export { runAgentCli } from "./cli/run-agent-cli.js";
 export type { AgentCliOptions } from "./cli/run-agent-cli.js";
 export type { AgentCliConfig } from "./cli/agent-cli-config.js";
+
+// ── 通用装配 / 监督 / preset / 终端审核（原散落在 coding-agent 的能力）────────
+export {
+  setSupervisorAbortSignal,
+  getSupervisorAbortSignal,
+  createCallMainAgent,
+  loadPresetsFromMaouConfig,
+  getDefaultPresetFromMaouConfig,
+  getDefaultPresetFromConfigStore,
+  resolveMaouConfigPath,
+  installTerminalReviewer,
+  createStandardAgentDeps,
+  listAgentsForCli,
+  resolvePresetForCli,
+  listProvidersForCli,
+  listModelsForCli,
+  createAgentSkillManager,
+  applyAgentSkillOptions,
+  toSkillScanOptions,
+  getDefaultSkillScanOptions,
+  getSystemNpmSkillDirs,
+  setDefaultSkillScanOptions,
+  resolveSkillScanOptions,
+  previewAgentSystemPrompt,
+} from "./bootstrap/index.js";
+export type {
+  CreateCallMainAgentOptions,
+  MainAgentRunner,
+  InstallTerminalReviewerOptions,
+  StandardAgentDeps,
+  CreateStandardAgentDepsOptions,
+  AgentSkillOptions,
+  SkillScanOptions,
+  PreviewSystemPromptOptions,
+  PreviewSystemPromptResult,
+} from "./bootstrap/index.js";

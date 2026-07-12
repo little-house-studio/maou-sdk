@@ -10,10 +10,11 @@ const COMMANDS: SelectItem[] = [
   { value: "new", label: "新对话", description: "清空消息" },
   { value: "model", label: "选择模型", description: "Ctrl+M" },
   { value: "sessions", label: "切换会话", description: "历史会话" },
+  { value: "prompt", label: "System Prompt", description: "/prompt 预览（不进上下文）" },
   { value: "settings", label: "设置", description: "Ctrl+," },
   { value: "agents", label: "Agent 管理", description: "空输入框 ←" },
   { value: "help", label: "帮助", description: "快捷键" },
-  { value: "thinking", label: "切换思考级别", description: "Shift+Tab" },
+  { value: "thinking", label: "切换思考级别", description: "设置里改" },
   { value: "quit", label: "退出", description: "Ctrl+C" },
 ];
 

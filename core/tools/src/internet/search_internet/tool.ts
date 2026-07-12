@@ -1,811 +1,398 @@
 /**
- * Internet Search 工具 — DuckDuckGo 搜索（无需 API Key）
+ * Internet Search — 可靠优先的实时搜索（全免费）
  *
- * 降级策略：
- * 1. 分类专属 API（免费、无需 Key、不依赖搜索引擎）
- * 2. ddgr CLI（如果已安装且网络可达）
- * 3. DuckDuckGo Lite HTML 抓取
- * 4. DuckDuckGo Instant Answer API
- * 5. Bing HTML 抓取（国内 fallback，应对 DDG 被墙 / 代理关闭）
+ * 管线（对齐「合格搜索工具」标准）：
+ *   1. 分类垂直 API（可选）
+ *   2. 多源 SERP：中文 baidu+cn.bing 合并；英文短路链；仅 empty 降级
+ *   3. 粗排 → 抓取 topK 正文 enrich（释义句 / L 行摘录）
+ *   4. 释义向重排 → 输出 title/url/Content/L1.. 结构
+ *
+ * 可选：GITHUB_TOKEN — 提高 GitHub 限流；ddgr CLI 增强（非 npm）
  */
 
-import { execFile } from "node:child_process";
-import { Tool, toolDir } from "../../base.js";
+import { Tool, toolDir, createToolResponse } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
-import { createToolResponse } from "../../base.js";
+import {
+  expandExplainQueries,
+  formatEngineNotices,
+  searchCategoryApis,
+  searchFreeEngines,
+} from "./backends.js";
+import { enrichTop } from "./enrich.js";
+import { resultKey } from "./normalize.js";
+import {
+  extractQueryCore,
+  filterHeadTokenFalseHits,
+  softRecoverEntityHits,
+} from "./query_core.js";
+import {
+  detectTechIntent,
+  rankAndFilter,
+  reliabilityLabel,
+  rescoreEnriched,
+} from "./rank.js";
+import type { SearchCategory, SearchResult, TimeFilter } from "./types.js";
 
-interface SearchResult {
-  title: string;
-  url: string;
-  snippet: string;
-}
+const CATEGORY_SITES: Record<string, string[]> = {
+  coding: [
+    "github.com",
+    "stackoverflow.com",
+    "developer.mozilla.org",
+    "npmjs.com",
+    "crates.io",
+    "pkg.go.dev",
+    "pypi.org",
+  ],
+  academic: ["arxiv.org", "wikipedia.org", "scholar.google.com"],
+  knowledge: [
+    "news.ycombinator.com",
+    "stackoverflow.com",
+    "reddit.com",
+    "zhihu.com",
+  ],
+  news: ["news.ycombinator.com", "news.google.com", "techcrunch.com", "reuters.com"],
+  tools: ["github.com", "hub.docker.com", "dev.to", "producthunt.com"],
+  social: ["reddit.com", "x.com"],
+  video: ["youtube.com", "bilibili.com"],
+};
 
 export class InternetSearchTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
 
-  /**
-   * 搜索分类 → 站点映射
-   * 
-   * 仅包含实测可通过 curl/API 获取搜索结果的站点。
-   * 标记 [API] 的有原生搜索 API，优先使用；其余走通用搜索引擎 site: 限定。
-   * 
-   * 实测结果（2026-06）：
-   * ✅ 可用 API：HN Algolia, Arxiv, Wikipedia, V2EX HTML, YouTube ytInitialData,
-   *            StackExchange, npm, MDN, crates.io, pkg.go.dev, Docker Hub, Dev.to, Google News RSS
-   * ❌ 不可用（JS渲染/反爬/Cloudflare）：知乎, Reddit, Quora, 36kr, PH, AT, B站
-   */
-  private static readonly CATEGORY_SITES: Record<string, string[]> = {
-    coding: [
-      "github.com",                // [API] GitHub Search API — 直接调用（仓库+Issues）
-      "stackoverflow.com",         // [API] StackExchange API — 直接调用
-      "developer.mozilla.org",     // [API] MDN Search API — 直接调用
-      "npmjs.com",                 // [API] npm Search API — 直接调用
-      "crates.io",                 // [API] crates.io API — 直接调用（Rust）
-      "pkg.go.dev",                // [API] pkg.go.dev API — 直接调用（Go）
-      "pypi.org",                  // 通用搜索 site: 限定
-    ],
-    academic: [
-      "arxiv.org",                 // [API] Arxiv API — 直接调用
-      "wikipedia.org",             // [API] Wikipedia API — 直接调用
-      "scholar.google.com",        // 通用搜索 site: 限定
-    ],
-    knowledge: [
-      "news.ycombinator.com",      // [API] HN Algolia API — 直接调用
-      "stackoverflow.com",         // [API] StackExchange API — 直接调用
-      "zhihu.com",                 // 通用搜索 site: 限定
-      "reddit.com",                // 通用搜索 site: 限定
-    ],
-    news: [
-      "news.ycombinator.com",      // [API] HN Algolia API — 直接调用
-      "news.google.com",           // [API] Google News RSS — 直接调用
-      "techcrunch.com",            // 通用搜索 site: 限定
-      "reuters.com",               // 通用搜索 site: 限定
-    ],
-    tools: [
-      "github.com",                // [API] GitHub Search API — 直接调用
-      "hub.docker.com",            // [API] Docker Hub API — 直接调用
-      "dev.to",                    // [API] Dev.to API — 直接调用
-      "producthunt.com",           // 通用搜索 site: 限定
-    ],
-    social: [
-      "reddit.com",                // 通用搜索 site: 限定
-      "x.com",                     // 通用搜索 site: 限定
-    ],
-    video: [
-      "youtube.com",               // [API] ytInitialData 解析 — 直接调用
-      "bilibili.com",              // 通用搜索 site: 限定
-    ],
-  };
-
   readonly definition: ToolDefinition = {
     name: "search_internet",
     aliases: ["search"],
-    description: "搜索互联网，返回实时结果。支持同时传入多个子查询并发搜索。",
+    description:
+      "搜索互联网，返回按可靠性与时效排序的实时结果。支持多子查询并发、时间过滤、分类垂直源。关键事实请再用 reader/浏览器打开链接核实。",
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "主搜索词。" },
-        reason: { type: "string", description: "为什么必须调用此工具而不是直接回复用户？" },
+        query: {
+          type: "string",
+          description: "主搜索词。宜短、具体；技术问题加版本/项目名。",
+        },
+        reason: {
+          type: "string",
+          description: "为何需要联网（可选，便于审计）。",
+        },
         sub_queries: {
           type: "array",
           items: { type: "string" },
-          description: "附加子查询列表。复杂问题拆成多个具体子查询并发搜索，效果更好。",
+          description:
+            "附加子查询（最多 4 个）。复杂问题拆成多角度并发搜索，效果更好。",
         },
         time: {
           type: "string",
           enum: ["d", "w", "m", "y"],
-          description: "时间范围。d=近24小时, w=近一周, m=近一月, y=近一年。",
+          description:
+            "时效窗口：d=24h, w=一周, m=一月, y=一年。要最新动态务必设置 d 或 w。",
         },
         category: {
           type: "string",
-          enum: ["coding", "academic", "knowledge", "news", "tools", "social", "video", "general"],
-          description: "搜索内容分类，自动限定搜索到该分类下的核心站点。不填则不限。",
+          enum: [
+            "coding",
+            "academic",
+            "knowledge",
+            "news",
+            "tools",
+            "social",
+            "video",
+            "general",
+          ],
+          description:
+            "垂直分类：coding/tools 会合并 GitHub·npm·SO 等 API；news 偏资讯；不填=general。",
+        },
+        max_results: {
+          type: "number",
+          description: "返回条数上限，默认 10，最大 15。",
         },
       },
       required: ["query"],
       additionalProperties: false,
     },
     allowedModes: ["plan", "execute"],
-    timeoutMs: 30_000, // 搜索不宜太久，30秒超时
+    timeoutMs: 75_000,
   };
 
   async execute(params: Record<string, unknown>, _ctx: ToolContext): Promise<ToolResponse> {
     const query = String(params.query ?? "").trim();
     if (!query) return createToolResponse(false, "No query provided");
 
-    const timeFilter = String(params.time ?? "").trim();
-    const category = String(params.category ?? "").trim();
+    const timeFilter = (String(params.time ?? "").trim() || "") as TimeFilter;
+    const categoryRaw = String(params.category ?? "general").trim() || "general";
+    const category = (
+      [
+        "coding",
+        "academic",
+        "knowledge",
+        "news",
+        "tools",
+        "social",
+        "video",
+        "general",
+      ].includes(categoryRaw)
+        ? categoryRaw
+        : "general"
+    ) as SearchCategory;
+
     const subQueries = Array.isArray(params.sub_queries)
-      ? (params.sub_queries as unknown[]).map((q) => String(q).trim()).filter(Boolean).slice(0, 4)
+      ? (params.sub_queries as unknown[])
+          .map((q) => String(q).trim())
+          .filter(Boolean)
+          .slice(0, 4)
       : [];
 
-    const perQueryLimit = 5;
-    const allResults: SearchResult[] = [];
+    const maxResults = Math.min(
+      15,
+      Math.max(3, Number(params.max_results) > 0 ? Number(params.max_results) : 10),
+    );
+    const perQueryLimit = Math.min(8, maxResults);
+
+    const sourcesUsed = new Set<string>();
+    const bucket: SearchResult[] = [];
     const seen = new Set<string>();
 
-    // ─── 第一优先级：分类专属 API（免费、无需 Key、不依赖搜索引擎）───
-    if (category && category !== "general") {
-      const apiResults = await this.tryCategoryApi(query, perQueryLimit, category);
-      if (apiResults && apiResults.length > 0) {
-        for (const r of apiResults) {
-          if (seen.has(r.url)) continue;
-          seen.add(r.url);
-          allResults.push(r);
-        }
+    const pushAll = (items: SearchResult[], sourceLabel?: string) => {
+      for (const item of items) {
+        const key = resultKey(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        bucket.push(item);
+        if (sourceLabel) sourcesUsed.add(sourceLabel);
+        else if (item.source) sourcesUsed.add(String(item.source));
       }
-    }
-
-    // ─── 第二优先级：通用搜索引擎（ddgr/DDG/Bing）───
-    // 如果有 category，为每个查询加上 site: 限定
-    const sites = category && category !== "general"
-      ? InternetSearchTool.CATEGORY_SITES[category] ?? []
-      : [];
-    const applySites = (q: string): string[] => {
-      if (sites.length === 0) return [q];
-      // 取前 4 个站点，每个站点一个子查询，并发搜索
-      return sites.slice(0, 4).map((site) => `site:${site} ${q}`);
     };
 
-    // 如果有 category，扩展查询；否则用原始 query + sub_queries
-    const expandedQueries = sites.length > 0
-      ? applySites(query)
-      : [query];
-
-    const tasks = expandedQueries
-      .concat(sites.length > 0 ? [] : subQueries) // category 模式下不用 sub_queries
-      .map((q) =>
-        this.searchOne(q, perQueryLimit, timeFilter),
+    // ── 1) 分类原生 API 并行合并（免费公开接口）──────────────
+    // general 时若 query 像技术文档问题，自动叠加 coding 垂直源（不写死答案，只多一路免费召回）
+    const autoCoding =
+      category === "general" &&
+      /\b(useEffect|useState|useMemo|react|typescript|javascript|npm|pnpm|yarn|zod|node\.?js|webpack|vite|eslint|cleanup|hook|api|sdk|opencode)\b/i.test(
+        query,
       );
-    const settled = await Promise.all(tasks);
+    const autoNews =
+      category === "general" &&
+      /\b(news|release date|launched|announces|今日|新闻|发布)\b/i.test(query);
+    const cats = new Set<string>();
+    if (category !== "general") cats.add(category);
+    if (autoCoding) cats.add("coding");
+    if (autoNews) cats.add("news");
+    for (const c of cats) {
+      const catResults = await searchCategoryApis(query, perQueryLimit, c);
+      pushAll(catResults);
+    }
 
-    let primarySource = "";
-    for (const r of settled) {
+    // ── 2) 通用引擎：主 query + 用户 sub + 自动释义扩展 + site: ─
+    const engineQueries: string[] = [query];
+    for (const sq of subQueries) {
+      if (sq !== query) engineQueries.push(sq);
+    }
+    for (const eq of expandExplainQueries(query)) {
+      if (!engineQueries.includes(eq)) engineQueries.push(eq);
+    }
+
+    const sites = category !== "general" ? CATEGORY_SITES[category] ?? [] : [];
+    if (sites.length > 0) {
+      for (const site of sites.slice(0, 2)) {
+        engineQueries.push(`site:${site} ${query}`);
+      }
+    }
+
+    const uniqueQueries = [...new Set(engineQueries.map((q) => q.trim()).filter(Boolean))].slice(
+      0,
+      5,
+    );
+
+    const engineSettled = await Promise.all(
+      uniqueQueries.map((q) => searchFreeEngines(q, perQueryLimit, timeFilter)),
+    );
+
+    const engineTrails: Array<
+      Array<{ source: string; status: string; reason?: string }> | undefined
+    > = [];
+    let droppedHead = 0;
+    for (const r of engineSettled) {
+      if (r?.trail) engineTrails.push(r.trail);
       if (!r) continue;
-      if (!primarySource) primarySource = r.source;
-      for (const item of r.results) {
-        if (seen.has(item.url)) continue;
-        seen.add(item.url);
-        allResults.push(item);
+      // 硬过滤头词假命中（绝不用词典单字页冒充「巧乐兹火车头」）
+      const { kept, dropped } = filterHeadTokenFalseHits(r.results, query);
+      droppedHead += dropped;
+      if (kept.length > 0) pushAll(kept, r.source);
+    }
+    // 严格过滤后仍为空：软回收（仍禁止 partial-head 与词典单字页，绝不回灌污染）
+    if (bucket.length === 0) {
+      for (const r of engineSettled) {
+        if (!r?.results?.length) continue;
+        const recovered = softRecoverEntityHits(r.results, query);
+        if (recovered.length > 0) pushAll(recovered, r.source);
       }
     }
+    if (droppedHead > 0) {
+      engineTrails.push([
+        {
+          source: "head-token-filter",
+          status: "empty",
+          reason: `丢弃 ${droppedHead} 条仅命中头词/单字词典的假结果`,
+        },
+      ]);
+    }
 
-    if (allResults.length === 0) {
-      // 无结果视为查询成功（与 grep/glob 一致）：让 LLM 知道搜索完成但无命中，
-      // 可以正常决策（换关键词、换信息源），而不是当成工具失败去 retry。
-      return createToolResponse(true, "搜索无结果，建议更换搜索词或扩大时间范围后重试", {
-        payload: { query, sub_queries: subQueries, count: 0 },
+    const engineNotices = formatEngineNotices(
+      engineTrails as Parameters<typeof formatEngineNotices>[0],
+    );
+
+    if (bucket.length === 0) {
+      return createToolResponse(
+        true,
+        [
+          "搜索无结果。",
+          ...engineNotices,
+          "建议：更换关键词、放宽 time、改 category=general，或按上方提示安装/修复搜索引擎后重试。",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        {
+          payload: {
+            query,
+            sub_queries: subQueries,
+            time: timeFilter || null,
+            category,
+            count: 0,
+            sources: [],
+            engine_trails: engineTrails,
+            engine_notices: engineNotices,
+          },
+        },
+      );
+    }
+
+    // ── 3) 粗排 → 正文 enrich → 释义重排 ─────────────────────
+    const techIntent = detectTechIntent(
+      [query, ...subQueries].join(" "),
+      category,
+    );
+    const rankCtx = {
+      query: [query, ...subQueries].join(" "),
+      category,
+      timeFilter,
+      techIntent,
+    };
+
+    // 粗排多取一些，留给 enrich；若过滤过严导致空，回退到未过滤 bucket 前 N
+    let coarse = rankAndFilter(bucket, rankCtx, Math.min(16, maxResults * 2));
+    if (coarse.length === 0 && bucket.length > 0) {
+      coarse = bucket.slice(0, Math.min(12, bucket.length));
+    }
+    const enriched = await enrichTop(coarse, query, Math.min(8, Math.max(coarse.length, 1)));
+    let ranked = rescoreEnriched(enriched, rankCtx, maxResults);
+    if (ranked.length === 0 && enriched.length > 0) {
+      ranked = enriched.slice(0, maxResults);
+    }
+    if (ranked.length === 0 && bucket.length > 0) {
+      ranked = bucket.slice(0, maxResults).map((r) => ({ ...r, enriched: false, excerpts: r.snippet ? [r.snippet] : [] }));
+    }
+
+    if (ranked.length === 0) {
+      return createToolResponse(
+        true,
+        [
+          "搜索无可用结果（引擎返回空或全部被过滤）。",
+          ...engineNotices,
+          "建议：更换关键词、放宽 time，或检查网络/curl。",
+        ].join("\n"),
+        {
+          payload: {
+            query,
+            sub_queries: subQueries,
+            time: timeFilter || null,
+            category,
+            count: 0,
+            sources: [...sourcesUsed],
+            raw_count: bucket.length,
+            engine_trails: engineTrails,
+            engine_notices: engineNotices,
+          },
+        },
+      );
+    }
+
+    const sourceList = [...sourcesUsed].sort();
+    const defHits = ranked.filter((r) => r.definition).length;
+    const header = [
+      `搜索结果 ${ranked.length} 条`,
+      `源=[${sourceList.join(",") || "mixed"}]`,
+      timeFilter ? `时效=${timeFilter}` : "时效=不限",
+      techIntent ? "意图=tech" : "意图=general",
+      `正文增强=${defHits}/${ranked.length}`,
+    ].join(" · ");
+
+    // 输出对齐合格工具：标题 / URL / Content / L 行摘录
+    const lines: string[] = [header, ""];
+    for (let i = 0; i < ranked.length; i++) {
+      const item = ranked[i];
+      const rel = reliabilityLabel(item);
+      lines.push(`[${i + 1}] [${rel}] ${item.title}`);
+      lines.push(`${item.url}`);
+      const content = item.definition || item.snippet || "";
+      if (content) lines.push(`Content: ${content.slice(0, 280)}`);
+      const excerpts = item.excerpts?.length
+        ? item.excerpts
+        : item.snippet
+          ? [item.snippet]
+          : [];
+      excerpts.slice(0, 4).forEach((ex, j) => {
+        lines.push(`L${j + 1}: ${ex.slice(0, 220)}`);
       });
+      lines.push(
+        `meta: domain=${item.domain || "?"} source=${item.source} score=${item.score?.toFixed(2) ?? "?"} enriched=${item.enriched ? "yes" : "no"}${item.publishedAt ? ` date=${item.publishedAt}` : ""}`,
+      );
+      lines.push("");
     }
 
-    const lines: string[] = [];
-    for (let i = 0; i < allResults.length; i++) {
-      const item = allResults[i];
-      let domain = "";
-      try {
-        domain = new URL(item.url).hostname;
-      } catch {
-        domain = item.url;
-      }
-      lines.push(`${i + 1}. ${item.title}`);
-      lines.push(`   ${domain} | ${item.url}`);
-      if (item.snippet) {
-        lines.push(`   → ${item.snippet.slice(0, 200)}`);
-      }
+    if (engineNotices.length > 0) {
+      lines.push("── 引擎状态（请转告用户或自行安装后重试）──");
+      lines.push(...engineNotices);
+      lines.push("");
     }
 
-    return createToolResponse(true, `搜索结果 (${primarySource}):\n${lines.join("\n")}`, {
-      payload: { results: allResults, source: primarySource },
+    lines.push(
+      "提示：优先采信带 Content/L 行且含「谐音/意思是/指的是」等释义句的结果；短视频话题页仅作旁证。",
+    );
+
+    return createToolResponse(true, lines.join("\n"), {
+      payload: {
+        query,
+        sub_queries: subQueries,
+        time: timeFilter || null,
+        category,
+        count: ranked.length,
+        sources: sourceList,
+        tech_intent: techIntent,
+        engine_trails: engineTrails,
+        engine_notices: engineNotices,
+        results: ranked.map((r) => ({
+          title: r.title,
+          url: r.url,
+          domain: r.domain,
+          snippet: r.snippet,
+          definition: r.definition ?? null,
+          excerpts: r.excerpts ?? [],
+          enriched: !!r.enriched,
+          source: r.source,
+          published_at: r.publishedAt ?? null,
+          reliability: r.reliability,
+          freshness: r.freshness,
+          score: r.score,
+          reliability_label: reliabilityLabel(r),
+        })),
+      },
       displayEvents: [
-        { type: "terminal", stream: "info", text: `[搜索:${primarySource}] ${query}` },
+        {
+          type: "terminal",
+          stream: "info",
+          text: `[搜索:${sourceList.slice(0, 3).join("+")}${sourceList.length > 3 ? "+…" : ""}] ${query}${timeFilter ? ` (${timeFilter})` : ""}`,
+        },
       ],
     });
   }
-
-  /**
-   * 单查询搜索：ddgr → DDG Lite → DDG Instant → Bing
-   */
-  private searchOne(
-    query: string,
-    num: number,
-    timeFilter: string,
-  ): Promise<{ results: SearchResult[]; source: string } | null> {
-    return (async () => {
-      const ddgr = await this.tryDdgr(query, num, timeFilter);
-      if (ddgr) return { results: ddgr, source: "ddgr" };
-      const lite = await this.tryDdgLite(query, num, timeFilter);
-      if (lite) return { results: lite, source: "ddg-lite" };
-      const instant = await this.tryDdgInstant(query, num);
-      if (instant) return { results: instant, source: "ddg-instant" };
-      const bing = await this.tryBing(query, num, timeFilter);
-      if (bing) return { results: bing, source: "bing" };
-      return null;
-    })();
-  }
-
-  /**
-   * 通用 curl GET（execFile 绕过 shell 解析，避免 UA 括号报错）
-   */
-  private curlGet(url: string, lang = "en-US,en;q=0.9", extraHeaders?: Record<string, string>): Promise<string | null> {
-    return new Promise((resolve) => {
-      const args = [
-        "-sL", "--max-time", "12",
-        "-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-        "-H", "Accept: text/html,application/xhtml+xml,application/json",
-        "-H", `Accept-Language: ${lang}`,
-      ];
-      if (extraHeaders) {
-        for (const [k, v] of Object.entries(extraHeaders)) {
-          args.push("-H", `${k}: ${v}`);
-        }
-      }
-      args.push(url);
-      execFile(
-        "curl", args,
-        { timeout: 18_000, encoding: "utf-8", maxBuffer: 8 * 1024 * 1024 },
-        (error, stdout) => {
-          if (error || !stdout) return resolve(null);
-          resolve(stdout);
-        },
-      );
-    });
-  }
-
-  /** ddgr CLI */
-  private tryDdgr(query: string, num: number, timeFilter: string): Promise<SearchResult[] | null> {
-    return new Promise((resolve) => {
-      const args = ["-n", String(num), "--json", "--np"];
-      if (timeFilter) args.push("-t", timeFilter);
-      args.push(query);
-      execFile(
-        "ddgr", args,
-        { timeout: 15_000, encoding: "utf-8" },
-        (error, stdout) => {
-          if (error || !stdout?.trim()) return resolve(null);
-          try {
-            const data = JSON.parse(stdout);
-            if (!Array.isArray(data) || data.length === 0) return resolve(null);
-            resolve(
-              data.slice(0, num).map((item: Record<string, string>) => ({
-                title: item.title || "",
-                url: item.url || "",
-                snippet: item.abstract || "",
-              })),
-            );
-          } catch {
-            resolve(null);
-          }
-        },
-      );
-    });
-  }
-
-  /** DuckDuckGo Lite HTML */
-  private async tryDdgLite(query: string, num: number, timeFilter: string): Promise<SearchResult[] | null> {
-    const encoded = encodeURIComponent(query);
-    let url = `https://lite.duckduckgo.com/lite/?q=${encoded}`;
-    if (timeFilter) url += `&df=${timeFilter}`;
-
-    const stdout = await this.curlGet(url);
-    if (!stdout) return null;
-    if (stdout.includes("detected unusual traffic") || stdout.includes("captcha")) return null;
-
-    const results: SearchResult[] = [];
-    const linkRegex = /<a[^>]+rel="nofollow"[^>]+href="([^"]+)"[^>]*>([^<]*)<\/a>/gi;
-    const snippetRegex = /<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi;
-
-    let m: RegExpExecArray | null;
-    const links: { url: string; title: string }[] = [];
-    while ((m = linkRegex.exec(stdout)) !== null) {
-      const href = m[1];
-      const title = m[2].trim();
-      if (href && !href.includes("duckduckgo.com") && title) {
-        links.push({ url: href, title });
-      }
-    }
-
-    const snippets: string[] = [];
-    while ((m = snippetRegex.exec(stdout)) !== null) {
-      snippets.push(m[1].replace(/<[^>]+>/g, "").trim());
-    }
-
-    for (let i = 0; i < Math.min(links.length, num); i++) {
-      results.push({
-        title: links[i].title,
-        url: links[i].url,
-        snippet: snippets[i] || "",
-      });
-    }
-
-    return results.length > 0 ? results : null;
-  }
-
-  /** DuckDuckGo Instant Answer API */
-  private async tryDdgInstant(query: string, num: number): Promise<SearchResult[] | null> {
-    const encoded = encodeURIComponent(query);
-    const url = `https://api.duckduckgo.com/?q=${encoded}&format=json&no_html=1&skip_disambig=1`;
-    const stdout = await this.curlGet(url);
-    if (!stdout) return null;
-
-    try {
-      const data = JSON.parse(stdout);
-      const results: SearchResult[] = [];
-
-      if (data.AbstractText && data.AbstractURL) {
-        results.push({
-          title: data.Heading || query,
-          url: data.AbstractURL,
-          snippet: data.AbstractText,
-        });
-      }
-
-      const topics = data.RelatedTopics || [];
-      for (const topic of topics) {
-        if (results.length >= num) break;
-        if (topic.FirstURL && topic.Text) {
-          results.push({
-            title: topic.Text.slice(0, 80),
-            url: topic.FirstURL,
-            snippet: topic.Text,
-          });
-        }
-      }
-
-      return results.length > 0 ? results : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /** Bing HTML 抓取（国内 fallback） */
-  private async tryBing(query: string, num: number, timeFilter: string): Promise<SearchResult[] | null> {
-    const encoded = encodeURIComponent(query);
-    let url = `https://www.bing.com/search?q=${encoded}&count=${num}`;
-    if (timeFilter) {
-      const filterMap: Record<string, string> = { d: "ez5_d-1", w: "ez5_w-1", m: "ez5_m-1", y: "ez5_y-1" };
-      const f = filterMap[timeFilter];
-      if (f) url += `&filters=${f}`;
-    }
-
-    const stdout = await this.curlGet(url, "zh-CN,zh;q=0.9,en;q=0.8");
-    if (!stdout || stdout.length < 1000) return null;
-
-    const results: SearchResult[] = [];
-    const algoRegex = /<li class="b_algo"[^>]*>/g;
-    const positions: number[] = [];
-    let m: RegExpExecArray | null;
-    while ((m = algoRegex.exec(stdout)) !== null) {
-      positions.push(m.index);
-    }
-
-    for (let i = 0; i < Math.min(positions.length, num); i++) {
-      const start = positions[i];
-      const end = i + 1 < positions.length ? positions[i + 1] : stdout.indexOf("</li>", start) + 5;
-      const chunk = stdout.slice(start, end > start ? end : start + 3000);
-
-      const h2Match = chunk.match(/<h2[^>]*>[\s\S]*?<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/);
-      if (!h2Match) continue;
-
-      const u = h2Match[1];
-      const title = h2Match[2].replace(/<[^>]+>/g, "").replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ").trim();
-      if (!title || title.length < 2) continue;
-
-      const citeMatch = chunk.match(/<cite[^>]*>([\s\S]*?)<\/cite>/);
-      const citeText = citeMatch
-        ? citeMatch[1].replace(/<[^>]+>/g, "").replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ").trim()
-        : "";
-
-      const pMatch = chunk.match(/<p[^>]*>([\s\S]*?)<\/p>/) || chunk.match(/<div class="b_caption"[^>]*>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/);
-      const snippet = pMatch
-        ? pMatch[1].replace(/<[^>]+>/g, "").replace(/&[a-z]+;/gi, " ").replace(/\s+/g, " ").trim()
-        : "";
-
-      results.push({ title, url: citeText || u, snippet });
-    }
-
-    return results.length > 0 ? results : null;
-  }
-
-  /**
-   * 分类专属 API 搜索：根据 category 直接调用有原生 API 的站点
-   * 不依赖任何通用搜索引擎，不消耗 API 额度
-   */
-  private async tryCategoryApi(
-    query: string,
-    num: number,
-    category: string,
-  ): Promise<SearchResult[] | null> {
-    switch (category) {
-      case "coding":
-        return (await this.tryGitHubApi(query, num, "repositories"))
-            ?? (await this.tryGitHubApi(query, num, "issues"))
-            ?? (await this.tryStackExchangeApi(query, num))
-            ?? (await this.tryNpmSearchApi(query, num))
-            ?? (await this.tryMdnSearchApi(query, num))
-            ?? (await this.tryCratesIoApi(query, num))
-            ?? (await this.tryPkgGoDevApi(query, num));
-      case "tools":
-        return (await this.tryGitHubApi(query, num, "repositories"))
-            ?? (await this.tryDockerHubApi(query, num))
-            ?? (await this.tryDevToApi(query, num));
-      case "academic":
-        return (await this.tryArxivApi(query, num)) ?? (await this.tryWikipediaApi(query, num));
-      case "knowledge":
-        return (await this.tryHnAlgoliaApi(query, num))
-            ?? (await this.tryStackExchangeApi(query, num));
-      case "news":
-        return (await this.tryHnAlgoliaApi(query, num))
-            ?? (await this.tryGoogleNewsRssApi(query, num));
-      case "video":
-        return await this.tryYoutubeSearch(query, num);
-      default:
-        return null;
-    }
-  }
-
-  /** GitHub Search API — 免费，无需 Key，10次/分钟限流，返回 JSON */
-  private async tryGitHubApi(
-    query: string,
-    num: number,
-    type: "repositories" | "issues",
-  ): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      let url: string;
-      if (type === "repositories") {
-        url = `https://api.github.com/search/repositories?q=${encoded}&sort=stars&per_page=${Math.min(num, 10)}`;
-      } else {
-        url = `https://api.github.com/search/issues?q=${encodeURIComponent(query + " is:issue is:open")}&sort=comments&per_page=${Math.min(num, 10)}`;
-      }
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9", {
-        Accept: "application/vnd.github.v3+json",
-      });
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      const items = data.items ?? [];
-      if (items.length === 0) return null;
-
-      return items.map((item: Record<string, unknown>) => {
-        if (type === "repositories") {
-          return {
-            title: String(item.full_name || ""),
-            url: String(item.html_url || ""),
-            snippet: `⭐${item.stargazers_count || 0} | ${String(item.description || "").slice(0, 150)}`,
-          };
-        } else {
-          return {
-            title: String(item.title || ""),
-            url: String(item.html_url || ""),
-            snippet: `💬${item.comments || 0} | ${String(item.body || "").slice(0, 150).replace(/\r?\n/g, " ")}`,
-          };
-        }
-      });
-    } catch {
-      return null;
-    }
-  }
-
-  /** Arxiv API — 免费，无需 Key，返回 XML/Atom */
-  private async tryArxivApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `http://export.arxiv.org/api/query?search_query=all:${encoded}&max_results=${Math.min(num, 10)}&sortBy=relevance&sortOrder=descending`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout || !stdout.includes("<entry>")) return null;
-
-      const results: SearchResult[] = [];
-      const entryRegex = /<entry>([\s\S]*?)<\/entry>/g;
-      let m: RegExpExecArray | null;
-      while ((m = entryRegex.exec(stdout)) !== null && results.length < num) {
-        const chunk = m[1];
-        const titleMatch = chunk.match(/<title>([\s\S]*?)<\/title>/);
-        const idMatch = chunk.match(/<id>([\s\S]*?)<\/id>/);
-        const summaryMatch = chunk.match(/<summary>([\s\S]*?)<\/summary>/);
-        if (titleMatch && idMatch) {
-          results.push({
-            title: titleMatch[1].replace(/\n/g, " ").trim(),
-            url: idMatch[1].trim().replace("http://", "https://"),
-            snippet: summaryMatch ? summaryMatch[1].replace(/\n/g, " ").trim().slice(0, 200) : "",
-          });
-        }
-      }
-      return results.length > 0 ? results : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /** Wikipedia API — 免费，无需 Key，返回 JSON */
-  private async tryWikipediaApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encoded}&format=json&srlimit=${Math.min(num, 10)}`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      const items = data.query?.search ?? [];
-      if (items.length === 0) return null;
-
-      return items.map((item: Record<string, unknown>) => ({
-        title: String(item.title || ""),
-        url: `https://en.wikipedia.org/wiki/${encodeURIComponent(String(item.title || "")).replace(/%20/g, "_")}`,
-        snippet: String(item.snippet || "").replace(/<[^>]+>/g, "").slice(0, 200),
-      }));
-    } catch {
-      return null;
-    }
-  }
-
-  /** HN Algolia API — 免费，无需 Key，返回 JSON */
-  private async tryHnAlgoliaApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://hn.algolia.com/api/v1/search?query=${encoded}&tags=story&hitsPerPage=${Math.min(num, 20)}`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      const items = data.hits ?? [];
-      if (items.length === 0) return null;
-
-      return items.map((item: Record<string, unknown>) => ({
-        title: String(item.title || ""),
-        url: String(item.url || `https://news.ycombinator.com/item?id=${item.objectID || ""}`),
-        snippet: `points: ${item.points || 0} | comments: ${item.num_comments || 0}`,
-      }));
-    } catch {
-      return null;
-    }
-  }
-
-  /** YouTube 搜索 — 解析 ytInitialData JSON */
-  private async tryYoutubeSearch(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://www.youtube.com/results?search_query=${encoded}`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout) return null;
-
-      // 提取 ytInitialData JSON —— 用平衡括号匹配而非贪婪正则
-      const marker = "var ytInitialData = ";
-      const startIdx = stdout.indexOf(marker);
-      if (startIdx < 0) return null;
-      const jsonStart = startIdx + marker.length;
-      // 从 jsonStart 开始平衡括号匹配
-      let depth = 0;
-      let jsonEnd = -1;
-      let inString = false;
-      let escape = false;
-      for (let i = jsonStart; i < stdout.length; i++) {
-        const ch = stdout[i];
-        if (escape) { escape = false; continue; }
-        if (ch === "\\") { escape = true; continue; }
-        if (ch === '"') { inString = !inString; continue; }
-        if (inString) continue;
-        if (ch === "{") depth++;
-        else if (ch === "}") {
-          depth--;
-          if (depth === 0) { jsonEnd = i + 1; break; }
-        }
-      }
-      if (jsonEnd < 0) return null;
-
-      const data = JSON.parse(stdout.slice(jsonStart, jsonEnd));
-      // 导航到搜索结果
-      const contents = data?.contents?.twoColumnSearchResultsRenderer
-        ?.primaryContents?.sectionListRenderer?.contents?.[0]
-        ?.itemSectionRenderer?.contents ?? [];
-
-      const results: SearchResult[] = [];
-      for (const item of contents) {
-        if (results.length >= num) break;
-        const video = item.videoRenderer;
-        if (!video) continue;
-        results.push({
-          title: video.title?.runs?.[0]?.text || "",
-          url: `https://www.youtube.com/watch?v=${video.videoId}`,
-          snippet: `${video.ownerText?.runs?.[0]?.text || ""} | ${video.lengthText?.simpleText || ""} | ${video.viewCountText?.simpleText || ""}`,
-        });
-      }
-      return results.length > 0 ? results : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /** StackExchange API — 免费，无需 Key，300次/天（无key），10次/分，返回 JSON */
-  private async tryStackExchangeApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encoded}&site=stackoverflow&pagesize=${Math.min(num, 10)}&filter=withbody`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      const items = data.items ?? [];
-      if (items.length === 0) return null;
-
-      return items.map((item: Record<string, unknown>) => ({
-        title: String(item.title || ""),
-        url: String(item.link || ""),
-        snippet: `score: ${item.score || 0} | tags: ${(item.tags as string[] || []).join(", ")} | ${String(item.body || "").replace(/<[^>]+>/g, "").slice(0, 150).replace(/\r?\n/g, " ")}`,
-      }));
-    } catch {
-      return null;
-    }
-  }
-
-  /** npm Search API — 免费，无需 Key，无限流，返回 JSON */
-  private async tryNpmSearchApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://registry.npmjs.org/-/v1/search?text=${encoded}&size=${Math.min(num, 10)}`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      const items = data.objects ?? [];
-      if (items.length === 0) return null;
-
-      return items.map((obj: Record<string, unknown>) => {
-        const pkg = obj.package as Record<string, unknown> ?? {};
-        const links = pkg.links as Record<string, unknown> ?? {};
-        return {
-          title: String(pkg.name || ""),
-          url: String(links.npm || `https://www.npmjs.com/package/${pkg.name}`),
-          snippet: `v${pkg.version || "?"} | ${String(pkg.description || "").slice(0, 150)}${pkg.keywords ? ` | ${(pkg.keywords as string[]).slice(0, 5).join(", ")}` : ""}`,
-        };
-      });
-    } catch {
-      return null;
-    }
-  }
-
-  /** MDN Search API — 免费，无需 Key，无限流，返回 JSON */
-  private async tryMdnSearchApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://developer.mozilla.org/api/v1/search?q=${encoded}&locale=en-US`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      const items = data.documents ?? [];
-      if (items.length === 0) return null;
-
-      return items.slice(0, num).map((item: Record<string, unknown>) => ({
-        title: String(item.title || ""),
-        url: `https://developer.mozilla.org/en-US/docs/${String(item.slug || "")}`,
-        snippet: String(item.summary || "").slice(0, 200),
-      }));
-    } catch {
-      return null;
-    }
-  }
-
-  /** crates.io API — 免费，需 User-Agent header，1次/秒限流，返回 JSON */
-  private async tryCratesIoApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://crates.io/api/v1/crates?q=${encoded}&per_page=${Math.min(num, 10)}`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9", {
-        "User-Agent": "maou-agent/1.0 (https://github.com/maou-agent)",
-      });
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      const items = data.crates ?? [];
-      if (items.length === 0) return null;
-
-      return items.map((item: Record<string, unknown>) => ({
-        title: String(item.name || ""),
-        url: `https://crates.io/crates/${item.name}`,
-        snippet: `v${item.max_version || "?"} | downloads: ${item.downloads || 0} | ${String(item.description || "").slice(0, 120)}`,
-      }));
-    } catch {
-      return null;
-    }
-  }
-
-  /** pkg.go.dev API — 免费，无需 Key，无限流，返回 JSON */
-  private async tryPkgGoDevApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://pkg.go.dev/v1beta/search?q=${encoded}`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      const items = data.results ?? [];
-      if (items.length === 0) return null;
-
-      return items.slice(0, num).map((item: Record<string, unknown>) => {
-        const pkgs = item.packages as Record<string, unknown>[] | undefined;
-        const pkg = pkgs?.[0] ?? item;
-        return {
-          title: String(pkg.path || item.name || ""),
-          url: `https://pkg.go.dev/${pkg.path || item.name || ""}`,
-          snippet: String(pkg.synopsis || pkg.module || item.name || "").slice(0, 200),
-        };
-      });
-    } catch {
-      return null;
-    }
-  }
-
-  /** Docker Hub API — 免费，无需 Key，无限流，返回 JSON */
-  private async tryDockerHubApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://hub.docker.com/v2/search/repositories/?query=${encoded}&page_size=${Math.min(num, 10)}`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      const items = data.results ?? [];
-      if (items.length === 0) return null;
-
-      return items.map((item: Record<string, unknown>) => ({
-        title: String(item.repo_name || ""),
-        url: `https://hub.docker.com/r/${item.repo_name || ""}`,
-        snippet: `⭐${item.star_count || 0} | ${String(item.short_description || "").slice(0, 150)}`,
-      }));
-    } catch {
-      return null;
-    }
-  }
-
-  /** Dev.to API — 免费，无需 Key，无限流，返回 JSON（按标签搜索） */
-  private async tryDevToApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      // Dev.to 不支持关键词搜索，用标签搜索
-      const tag = query.split(/\s+/)[0].toLowerCase();
-      const url = `https://dev.to/api/articles?tag=${encodeURIComponent(tag)}&per_page=${Math.min(num, 10)}`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout) return null;
-
-      const data = JSON.parse(stdout);
-      if (!Array.isArray(data) || data.length === 0) return null;
-
-      return data.map((item: Record<string, unknown>) => ({
-        title: String(item.title || ""),
-        url: String(item.url || ""),
-        snippet: `❤️${item.positive_reactions_count || 0} | 💬${item.comments_count || 0} | ${String(item.description || "").slice(0, 120)}`,
-      }));
-    } catch {
-      return null;
-    }
-  }
-
-  /** Google News RSS — 免费，无需 Key，无限流，返回 XML/RSS */
-  private async tryGoogleNewsRssApi(query: string, num: number): Promise<SearchResult[] | null> {
-    try {
-      const encoded = encodeURIComponent(query);
-      const url = `https://news.google.com/rss/search?q=${encoded}&hl=en-US&gl=US&ceid=US:en`;
-      const stdout = await this.curlGet(url, "en-US,en;q=0.9");
-      if (!stdout || !stdout.includes("<item>")) return null;
-
-      const results: SearchResult[] = [];
-      const itemRegex = /<item>([\s\S]*?)<\/item>/g;
-      let m: RegExpExecArray | null;
-      while ((m = itemRegex.exec(stdout)) !== null && results.length < num) {
-        const chunk = m[1];
-        const titleMatch = chunk.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || chunk.match(/<title>([\s\S]*?)<\/title>/);
-        const linkMatch = chunk.match(/<link>([\s\S]*?)<\/link>/);
-        const descMatch = chunk.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/) || chunk.match(/<description>([\s\S]*?)<\/description>/);
-        if (titleMatch && linkMatch) {
-          results.push({
-            title: titleMatch[1].trim(),
-            url: linkMatch[1].trim(),
-            snippet: descMatch ? descMatch[1].replace(/<[^>]+>/g, "").trim().slice(0, 200) : "",
-          });
-        }
-      }
-      return results.length > 0 ? results : null;
-    } catch {
-      return null;
-    }
-  }
-
 }

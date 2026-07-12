@@ -1,4 +1,10 @@
 # agent层设计
+
+## 相关专题设计
+
+- **[Todo 编排系统（Todo Orchestrator）](./docs/TODO_ORCHESTRATOR.md)** — 会话级 todo 计划、依赖锁、全自动 fork 分身、催促、`/todo`、调试页
+- **[会话事件模型（Session Event）](../context/docs/SESSION_EVENT.md)** — kind 与 wire role 分离；伪 user 分流
+
 > 勾选状态对照当前实现（2026-06-30 核查）：`[x]` 已实现 / `[ ]` 未实现或有差异（差异见行内 `⚠️` 注释）
 
 ## 依赖框架

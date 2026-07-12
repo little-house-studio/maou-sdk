@@ -41,7 +41,7 @@ import type {
   WorkspaceDiagsResult,
 } from "./types.js";
 
-export { registerServers } from "./registry.js";
+export { registerServers, listBuiltinLanguages } from "./registry.js";
 export type { ServerSpec } from "./registry.js";
 export { shutdownAll, cleanupWorkspace } from "./pool.js";
 export type {

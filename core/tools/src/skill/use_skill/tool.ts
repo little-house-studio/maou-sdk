@@ -1,33 +1,59 @@
 /**
  * Load Skill 工具 — 加载专业知识
- * 对应 Python: core/tools/impls/skill_tool.py
  *
- * 从 skills/ 目录加载 SKILL.md 文件（含 YAML frontmatter）。
- * 支持三级扫描：全局 ~/.maou/skills + 项目 skills/ + agent .maou/skills
+ * 从多层级 skill 目录加载 SKILL.md（与 Runtime bake 列表同口径）：
+ * - 系统/NPM：~/.agents/skills、~/.claude/skills（可由 skillOptions 关闭）
+ * - 全局 maou：~/.maou/skills
+ * - 项目：skills/、.agents/skills/、.maou/skills、.maou/skill
+ * - Agent：.maou/agents/<agent>/{skill,skills}
  */
 
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
-import { SkillContextManager } from "../../skill-context.js";
+import {
+  SkillContextManager,
+  getDefaultSkillScanOptions,
+  resolveSkillScanOptions,
+} from "../../skill-context.js";
+import type { SkillScanOptions } from "../../skill-context.js";
 
-// ─── 全局 SkillContextManager 实例 ─────────────────────────────────────────
+// ─── 按 agent+project+maou+scan 缓存，避免跨 agent 串台 ───────────────────
 
 let skillManager: SkillContextManager | null = null;
 let skillManagerKey = "";
 
+function resolveMaouRoot(ctx: ToolContext): string {
+  if (ctx.maouRoot && ctx.maouRoot.trim()) return ctx.maouRoot.trim();
+  // promptRoot 通常就是 maouRoot（compiler.promptRoot）
+  if (ctx.promptRoot && ctx.promptRoot.includes(".maou")) return ctx.promptRoot;
+  return join(homedir(), ".maou");
+}
+
+function resolveScanOptions(ctx: ToolContext): SkillScanOptions {
+  const fromCtx = ctx.skillOptions;
+  if (fromCtx) {
+    return resolveSkillScanOptions({
+      includeSystemNpmSkills: fromCtx.includeSystemNpmSkills,
+      extraDirs: fromCtx.extraDirs,
+    });
+  }
+  return resolveSkillScanOptions(getDefaultSkillScanOptions());
+}
+
 function getSkillManager(ctx: ToolContext): SkillContextManager {
-  // 修复：原来是全局单例，第一个 agent/项目用过后对其它 agent 失效。
-  // 改为按 agentName+projectRoot 作 key，ctx 变化即重建。
-  const key = `${ctx.agentName || "default"}::${ctx.projectRoot}`;
+  const agentName = ctx.agentName || "default";
+  const maouRoot = resolveMaouRoot(ctx);
+  const scan = resolveScanOptions(ctx);
+  const key = `${agentName}::${ctx.projectRoot}::${maouRoot}::${scan.includeSystemNpmSkills}::${(scan.extraDirs ?? []).join("|")}`;
+
   if (!skillManager || skillManagerKey !== key) {
-    // 第三参是 maouRoot，不能传 sandboxRoot（否则扫不到全局 ~/.maou/skills）。
-    // 传 undefined → SkillContextManager 默认 ~/.maou。
-    skillManager = new SkillContextManager(
-      ctx.agentName || "default",
-      ctx.projectRoot,
-      undefined
-    );
+    skillManager = new SkillContextManager(agentName, ctx.projectRoot, maouRoot, scan);
+    if (ctx.skillOptions?.enabledSkills?.length) {
+      skillManager.setEnabledSkills(ctx.skillOptions.enabledSkills);
+    }
     skillManagerKey = key;
   }
   return skillManager;
@@ -43,7 +69,7 @@ export class LoadSkillTool extends Tool {
     description:
       "Load specialized knowledge by skill name. " +
       "Use this before tackling unfamiliar topics. " +
-      "Skills are loaded from ~/.maou/skills, project/skills, or global skills directory.",
+      "Skills are loaded from project skills/, .maou/skills, ~/.maou/skills, and system ~/.agents/skills (npx skills -g).",
     parameters: {
       type: "object",
       properties: {
@@ -61,29 +87,43 @@ export class LoadSkillTool extends Tool {
 
     if (!name) {
       const available = manager.listAvailableSkills();
-      const names = available.map(s => s.name).sort();
-      return createToolResponse(false, `未提供 skill 名称。可用: ${names.length > 0 ? names.join(", ") : "(none)"}`);
+      const names = available.map((s) => s.name).sort();
+      return createToolResponse(
+        false,
+        `未提供 skill 名称。可用: ${names.length > 0 ? names.join(", ") : "(none)"}`,
+      );
     }
 
-    const content = manager.getSkillContent(name);
-    if (!content) {
+    const entry = manager.getSkillEntry(name);
+    if (!entry) {
       const available = manager.listAvailableSkills();
-      const names = available.map(s => s.name).sort();
-      return createToolResponse(false, `未找到 skill '${name}'。可用: ${names.length > 0 ? names.join(", ") : "(none)"}`);
+      const names = available.map((s) => s.name).sort();
+      return createToolResponse(
+        false,
+        `未找到 skill '${name}'。可用: ${names.length > 0 ? names.join(", ") : "(none)"}`,
+      );
     }
 
-    return createToolResponse(true, `<skill name="${name}">\n${content}\n</skill>`, {
-      payload: { skill_name: name, content_length: content.length },
-      displayEvents: [{ type: "terminal", stream: "info", text: `[加载 skill] ${name}` }],
+    return createToolResponse(true, `<skill name="${name}" source="${entry.source}">\n${entry.content}\n</skill>`, {
+      payload: {
+        skill_name: name,
+        content_length: entry.content.length,
+        source: entry.source,
+        source_path: entry.sourcePath,
+      },
+      displayEvents: [
+        {
+          type: "terminal",
+          stream: "info",
+          text: `[加载 skill] ${name} [${entry.source}]`,
+        },
+      ],
     });
   }
 }
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────────
 
-/**
- * 获取所有可用 skill 描述（供其他模块调用）
- */
 export function getSkillDescriptions(ctx: ToolContext): string {
   const manager = getSkillManager(ctx);
   const skills = manager.listAvailableSkills();
@@ -92,17 +132,12 @@ export function getSkillDescriptions(ctx: ToolContext): string {
 
   const lines: string[] = [];
   for (const skill of skills) {
-    let line = `  - ${skill.name}: ${skill.description || "无描述"}`;
-    line += ` [${skill.source}]`;
-    lines.push(line);
+    lines.push(`  - ${skill.name}: ${skill.description || "无描述"} [${skill.source}]`);
   }
   return lines.join("\n");
 }
 
-/**
- * 列出所有 skill 名称
- */
 export function listSkillNames(ctx: ToolContext): string[] {
   const manager = getSkillManager(ctx);
-  return manager.listAvailableSkills().map(s => s.name).sort();
+  return manager.listAvailableSkills().map((s) => s.name).sort();
 }

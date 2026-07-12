@@ -23,7 +23,7 @@ export class SubagentTool extends Tool {
     description:
       "fork 子 Agent 真并行执行独立任务。子 Agent 是主 Agent 的轻量克隆，继承 ROLE 模板。" +
       "适用场景：并行任务拆分、独立搜索/分析/写报告等。" +
-      "与 task_manage fork_layer 配合：先 task_manage fork_layer 拿 ready task 列表，再 agent_message fork_layer 并发执行。" +
+      "与会话 todo 清单配合：先 todo_manage create 建可并行项，再 agent_message fork_layer 并发执行 ready 层。" +
       "依赖 runtime.setSubagentExecutor() 注入执行器（harness 提供 runFn）。",
     parameters: {
       type: "object",
@@ -32,7 +32,7 @@ export class SubagentTool extends Tool {
           type: "string",
           enum: ["fork", "create", "fork_layer"],
           description:
-            'fork/create: fork 单个子 Agent 执行 task | fork_layer: 并发 fork 当前 ready 的 task 层（与 task_manage fork_layer 配合）',
+            'fork/create: fork 单个子 Agent | fork_layer: 并发 fork 当前 todo 清单中 ready 的一层（依赖 todo_manage 已建清单）',
         },
         name: { type: "string", description: "子 Agent 唯一名称（fork 时作为 taskId，可省略自动生成）" },
         task: { type: "string", description: "分配给子 Agent 的任务描述（fork 必填）" },
@@ -170,7 +170,7 @@ export class SubagentTool extends Tool {
       return createToolResponse(
         false,
         "子 Agent 执行器未注入。harness 需通过 runtime.setSubagentExecutor() 注入。" +
-          "如未配置，请改用 task_manage + task_finish 串行执行。",
+          "如未配置，请改用 todo_manage + todo_finish 串行执行。",
       );
     }
 
@@ -202,8 +202,8 @@ export class SubagentTool extends Tool {
 
   /**
    * fork_layer：并发 fork 当前 ready 的 task 层（真并行）。
-   * 与 task_manage fork_layer action 配合：
-   *   1. LLM 调 task_manage fork_layer → 拿到 ready task 列表
+   * 与 todo_manage 清单配合（无独立 fork_layer action）：
+   *   1. LLM 先 todo_manage create 建清单（无依赖项可并行）
    *   2. LLM 调 agent_message fork_layer → 真正并发 fork 这一层的所有 task
    */
   private async doForkLayer(

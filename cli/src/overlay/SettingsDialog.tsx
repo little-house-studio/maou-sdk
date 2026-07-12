@@ -22,12 +22,14 @@ export function SettingsDialog({ config }: { config: AgentCliConfig }) {
   const provider = useStore((s) => s.provider);
   const model = useStore((s) => s.model);
   const thinkingLevel = useStore((s) => s.thinkingLevel);
+  const approvalMode = useStore((s) => s.approvalMode);
+  const setApprovalMode = useStore((s) => s.setApprovalMode);
 
   const mainItems: SelectItem[] = useMemo(() => [
     { value: "model", label: "API 配置", description: `${provider}/${model || "未选"}` },
-    { value: "approval", label: "审批模式", description: "normal" },
+    { value: "approval", label: "审核模式", description: `${approvalMode} · Shift+Tab` },
     { value: "thinking", label: "思考级别", description: `${thinkingLevel} (${["off", "minimal", "low", "medium", "high", "xhigh"][thinkingLevel]})` },
-  ], [provider, model, thinkingLevel]);
+  ], [provider, model, thinkingLevel, approvalMode]);
 
   const modelItems: SelectItem[] = useMemo(() => {
     const providers = config.getProviders?.() ?? [];
@@ -72,7 +74,10 @@ export function SettingsDialog({ config }: { config: AgentCliConfig }) {
   };
 
   const handleApproval = (value: string) => {
-    toastMsg(`审批模式 → ${value}（需重启生效）`, "info");
+    if (value === "normal" || value === "auto" || value === "yolo") {
+      setApprovalMode(value);
+      toastMsg(`审核模式 → ${value}`, "ok");
+    }
     setView("main");
   };
 

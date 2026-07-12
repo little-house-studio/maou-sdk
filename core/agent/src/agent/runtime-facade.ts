@@ -20,7 +20,14 @@ import type { APIPreset } from "@little-house-studio/llm";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { LLMPostLogger } from "@little-house-studio/llm";
 import type { LLMPostLogRecord } from "@little-house-studio/llm";
-import { ToolExecutor, TASK_MANAGER, initTerminalEngine } from "@little-house-studio/tools";
+import {
+  ToolExecutor,
+  TASK_MANAGER,
+  TODO_ORCHESTRATOR,
+  formatTodoNoticeMessage,
+  initTerminalEngine,
+} from "@little-house-studio/tools";
+import { appendSessionEvent, authorSystem } from "@little-house-studio/context";
 import type { ToolRegistry, Task } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { ConfigStore } from "@little-house-studio/types";
@@ -69,6 +76,10 @@ export interface AppRuntimeOptions {
    * 缺省 undefined → supervisor_chat_main 报"未注入 callMainAgent"。
    */
   callMainAgent?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
+  /**
+   * Skill 扫描选项。includeSystemNpmSkills 默认 true（~/.agents/skills）。
+   */
+  skillOptions?: import("../bootstrap/skills.js").AgentSkillOptions;
 }
 
 /**
@@ -86,6 +97,7 @@ export class Runtime {
   private taskStore?: TaskSessionStore;
   private summarizer?: Summarizer;
   private callMainAgentFn?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
+  private skillOptions?: import("../bootstrap/skills.js").AgentSkillOptions;
   private agentRuntime: AgentRuntime | null = null;
   private appLogger = createAppLogger();
   private customLog?: (level: string, message: string) => void;
@@ -106,6 +118,7 @@ export class Runtime {
     this.customLog = options.log;
     this.postLoggerEnabled = options.enablePostLogger ?? true;
     this.callMainAgentFn = options.callMainAgent;
+    this.skillOptions = options.skillOptions;
     this.maouRoot = options.maouRoot ?? join(process.env.HOME ?? '', '.maou');
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.summarizer = options.summarizer;
@@ -132,7 +145,7 @@ export class Runtime {
       this.taskStore = new TaskSessionStore(this.maouRoot, agentName);
     }
 
-    // 装配 TaskManager 持久化回调：每次 task_manage/task_finish CRUD 时同步写 task_plan.json
+    // 装配 TaskManager 持久化回调：每次 todo_manage/todo_finish CRUD 时同步写 task_plan.json
     // 解耦设计：TaskManager（tools 包）不直接依赖 TaskSessionStore（context 包）
     if (this.taskStore) {
       this.installTaskPersistCallback(this.taskStore);
@@ -337,6 +350,7 @@ export class Runtime {
         auxModelCaller: auxCaller,
         resolveHelperPreset: resolveHelperPresetFn,
         callMainAgent: this.callMainAgentFn,
+        skillOptions: this.skillOptions,
       });
 
       // ── 装配默认 SubagentExecutor（让 subagent_delegate / agent_message 工具能 fork 子 Agent）──
@@ -422,8 +436,73 @@ export class Runtime {
         // P2-1：注入 runtime 的 yield 回调注册函数，让 fork 能为子 Agent 注册 yieldResult 回调
         // runtime.processToolCalls 会从该 map 读取并注入到子 Agent 的 ToolContext.yieldResult
         setYieldHandlerFn: (sessionId, handler) => runtimeRef.setYieldHandler(sessionId, handler),
+        // Todo 分身：若 taskId 对应当前 plan 的 fork lane，使用预分配的 sessionId
+        subSessionIdFactory: (parentSessionId, taskId) => {
+          try {
+            const root = TODO_ORCHESTRATOR.resolveRootSession(parentSessionId);
+            const lanes = TODO_ORCHESTRATOR.getLanes(root);
+            const lane = lanes.find(
+              (l) =>
+                l.kind === "fork" &&
+                l.status !== "recycled" &&
+                (l.currentNodeId === taskId || l.assignedNodeIds.includes(taskId)),
+            );
+            if (lane?.sessionId && lane.sessionId !== root) {
+              return lane.sessionId;
+            }
+          } catch { /* fallthrough */ }
+          const safe = taskId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+          return `${parentSessionId}::fork::${safe}::${Date.now().toString(36)}`;
+        },
       });
       this.agentRuntime.setSubagentExecutor(executor);
+
+      // ── Todo 真 fork：并行层创建分身后异步拉起子 Agent ──
+      TODO_ORCHESTRATOR.setRealForkEnabled(true);
+      TODO_ORCHESTRATOR.setForkRunner(async ({ rootSessionId, lane, node, notices }) => {
+        const log = this.customLog ?? ((l: string, m: string) => console.log(`[TodoFork] ${m}`));
+        const subSessionId = lane.sessionId;
+        TODO_ORCHESTRATOR.bindForkSession(subSessionId, rootSessionId);
+        executor.parentSessionId = rootSessionId;
+
+        const existing = sessionStore.load(subSessionId);
+        if (!existing) {
+          sessionStore.create({
+            sessionId: subSessionId,
+            agentName: "main",
+            title: `todo-fork: ${node.id}`,
+          });
+        }
+        for (const notice of notices) {
+          try {
+            appendSessionEvent(sessionStore, subSessionId, {
+              kind: "system_notice",
+              content: formatTodoNoticeMessage({ ...notice, targetSessionId: subSessionId }),
+              source: "todo_notice",
+              author: authorSystem("todo", "todo"),
+              meta: { notice_kind: notice.kind },
+            });
+          } catch { /* ignore */ }
+        }
+        const taskDesc = [
+          `你是 todo 分身，负责节点 ${node.id}：${node.desc}`,
+          `完成后必须调用 todo_finish(task_id="${node.id}", status="completed"|"failed", summary=..., report?=完整汇报)。`,
+          `一次 finish 只代表这一个节点。不要做其它节点。`,
+          notices.map((n) => n.body).join("\n"),
+        ].join("\n\n");
+        log("info", `启动 todo fork lane=${lane.laneId} node=${node.id} session=${subSessionId}`);
+        try {
+          await executor.fork(node.id, taskDesc, {
+            detached: false,
+            forkMode: "context_only",
+          });
+        } catch (err) {
+          log(
+            "error",
+            `todo fork 失败 node=${node.id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      });
     }
     return this.agentRuntime;
   }

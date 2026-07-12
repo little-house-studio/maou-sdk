@@ -6,10 +6,10 @@
  *   - fork 检测到 yield 后结束子 Agent 循环（子 Agent 不再继续跑）
  *   - 若父 Agent 设了 outputSchema，fork 会校验 result；校验失败让子 Agent 重试
  *
- * 与 task_finish 的区别：
- *   - task_finish 标记 task_manage 里的任务节点完成（任务规划系统）
+ * 与 todo_finish 的区别：
+ *   - todo_finish 标记 todo_manage 里的清单节点完成（会话级 todo 规划）
  *   - yield 是子 Agent 把最终产出交回父 Agent（fork/subagent 委托系统）
- *   - 子 Agent 通常只调其一：被 fork 出来的子 Agent 调 yield；task 节点完成调 task_finish
+ *   - 子 Agent 通常只调其一：被 fork 出来的子 Agent 调 yield；todo 节点完成调 todo_finish
  *
  * 依赖：ToolContext.yieldResult（由 SubagentExecutor.fork 注入到子 Agent 的 ctx）。
  * 未注入时返回错误（说明当前不是子 Agent 上下文，是主 Agent）。

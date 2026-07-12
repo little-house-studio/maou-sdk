@@ -15,7 +15,7 @@
  *   - 防止 tool_call 无 tool_result（已在 context 层 repairOrphanedToolCalls 兜底）。
  */
 
-import type { SessionStore } from "@little-house-studio/context";
+import { appendSessionEvent, authorHuman, type SessionStore } from "@little-house-studio/context";
 
 /** 5 种排队模式 */
 export type MessageQueueMode =
@@ -358,15 +358,20 @@ export class MessageQueue {
       }
     }
 
-    // 追加 user 消息
-    sessions.appendMessage(sessionId, "user", msg.message, {
-      source: msg.source,
-      queued: true,
-      queue_id: msg.id,
-      queue_mode: msg.mode,
-      enqueued_at: msg.enqueuedAt,
-      delivered_at: Date.now(),
-      ...msg.metadata,
+    // 追加排队用户消息（kind=queued_user）
+    appendSessionEvent(sessions, sessionId, {
+      kind: "queued_user",
+      content: msg.message,
+      source: msg.source || "queue",
+      author: authorHuman("user", "user"),
+      meta: {
+        queued: true,
+        queue_id: msg.id,
+        queue_mode: msg.mode,
+        enqueued_at: msg.enqueuedAt,
+        delivered_at: Date.now(),
+        ...msg.metadata,
+      },
     });
 
     return { delivered: true, patchedToolResults: patched };

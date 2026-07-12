@@ -17,7 +17,8 @@ export const uid = (): string => `m${Date.now()}_${idc++}`;
 
 type Patch = Partial<UIState>;
 
-const MAX_RESULT = 2000;
+/** 工具结果完整保留，UI 层 Collapsible 负责折叠（过短截断会导致展开仍看不全） */
+const MAX_RESULT = 500_000;
 const HISTORY = 20;
 
 /** 从 usage 对象取 input/output token（兼容各家字段名） */
@@ -76,6 +77,32 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     case "session": {
       const sid = (ev.session as { id?: string } | undefined)?.id ?? (ev.sessionId as string | undefined) ?? null;
       return { sessionId: sid };
+    }
+
+    // ── 会话注入（非真人消息：bus / continue / verify / notice）──
+    // 不进用户气泡，进 systemEvents 行
+    case "session_inject": {
+      const kindRaw = String(ev.kind ?? "session_inject");
+      const sysKind: SystemEvent["kind"] =
+        kindRaw === "agent_message" || kindRaw === "runtime_control" || kindRaw === "system_notice"
+          ? kindRaw
+          : "session_inject";
+      const author = ev.author as { type?: string; id?: string; displayName?: string } | undefined;
+      const who =
+        author?.type === "agent" ? `agent:${author.displayName || author.id || "?"}` :
+        author?.type === "system" ? `system:${author.displayName || author.id || "?"}` :
+        author?.type === "tool" ? `tool:${author.displayName || author.id || "?"}` :
+        sysKind;
+      const raw = String(ev.content ?? ev.message ?? kindRaw).slice(0, 160);
+      const content = `${who} · ${raw}`;
+      const sysEvent: SystemEvent = {
+        id: uid(),
+        kind: sysKind,
+        content,
+        ts: Date.now(),
+        detail: typeof ev.detail === "string" ? ev.detail : undefined,
+      };
+      return { systemEvents: [...state.systemEvents, sysEvent] };
     }
 
     // ── 状态文本 ──────────────────────────────────────────

@@ -1,88 +1,106 @@
 /**
- * Tau Ceti 调色板 —— Marathon 磁带复古未来主义。
+ * Tau Ceti 调色板 —— Braun / TE / 计算机艺术 / ASCII / 酸性机能 / 极简信息美学。
  *
- * 暗棕底（殖民地炭棕）+ 火焰橙（accent）+ 数据青（accent2）。
- * 低饱和暗底 + 少量高饱和强调，无水晶炫彩。每个装饰元素配色都有信息功能。
+ * 主色阶：黑 → 深灰 → 中灰 → 浅灰 → 白
+ * 辅色：荧光黄绿（主强调）· 危险橙红 · 警告黄 · 浅罗兰 · 计算机深蓝 · 荧光青
  */
 
 import type { ThemeTokens } from "./tokens.js";
 
+/** 设计系统原色（带 alpha 的 #RRGGBBAA 在此落为 #RRGGBB） */
+const C = {
+  black: "#101010",     // 最黑主背景
+  gray20: "#242424",    // 次黑 / 深灰（面板、用户气泡、边框）
+  gray80: "#808080",
+  grayC5: "#C5C5C5",
+  white: "#FFFFFF",
+  acid: "#C7FF20",      // 荧光黄绿（主）
+  danger: "#FF741D",    // 危险橙红（次）
+  warn: "#FFD900",      // 警告黄
+  violet: "#8363FF",    // 浅罗兰紫
+  deepBlue: "#2121FF",  // 计算机深蓝
+  cyan: "#3BFFA7",      // 荧光青
+} as const;
+
 export const TAU_CETI: ThemeTokens = {
   // 通用
-  bg: "#0C0A08",       // 殖民地炭棕
-  panelBg: "#14110D",  // 舱壁底（overlay 背景，不透明，规避 Ink #929 CJK 重叠）
-  fg: "#D7CFC4",       // 仪器文字
-  muted: "#6B6358",    // 暗铁
-  dim: "#443F38",      // 更暗
+  bg: C.black,
+  panelBg: C.gray20,
+  fg: C.grayC5,
+  muted: C.gray80,
+  dim: C.gray80,
 
   // 边框
-  border: "#2A2520",
-  borderMuted: "#1C1814",
-  borderAccent: "#FF8A3D",
+  border: C.gray20,
+  borderMuted: C.gray20,
+  borderAccent: C.acid,
 
   // 强调
-  accent: "#FF8A3D",   // 火焰橙
-  accent2: "#26C6DA",  // 数据青
+  accent: C.acid,       // 主：荧光黄绿
+  accent2: C.cyan,      // 次：荧光青
 
   // 状态
-  ok: "#66D6A0",       // 就绪青绿
-  warn: "#FFC44D",     // 警告金
-  err: "#FF5252",      // 危险红
-  info: "#4DD0E1",     // 读数青
+  ok: C.cyan,           // 成功 / 就绪
+  warn: C.warn,         // 等待 / 警告
+  err: C.danger,        // 失败 / 危险
+  info: C.deepBlue,
 
   // 角色
-  user: "#FFAB78",     // 通话橙
-  assistant: "#D7CFC4",
-  system: "#B39DDB",   // AI 紫
-  tool: "#FFD18A",     // 工具暖橙
-  toolResult: "#66D6A0",
+  user: C.white,        // 用户正文：显眼白
+  assistant: C.grayC5,
+  system: C.violet,
+  tool: C.acid,
+  toolResult: C.cyan,
 
-  // 思考级别（从暗到亮，编辑器边框色）
-  thinkingOff: "#443F38",
-  thinkingMinimal: "#6B6358",
-  thinkingLow: "#8D8579",
-  thinkingMedium: "#FFC44D",
-  thinkingHigh: "#FF8A3D",
-  thinkingXhigh: "#FF5252",
+  // 思考级别（灰 → 酸 → 警告 → 危险）
+  thinkingOff: C.gray20,
+  thinkingMinimal: C.gray80,
+  thinkingLow: C.grayC5,
+  thinkingMedium: C.warn,
+  thinkingHigh: C.acid,
+  thinkingXhigh: C.danger,
 
-  // 语法高亮（暗底上的可读色）
-  syntaxComment: "#6B6358",
-  syntaxKeyword: "#FF8A3D",
-  syntaxString: "#66D6A0",
-  syntaxNumber: "#FFC44D",
-  syntaxFunction: "#26C6DA",
-  syntaxType: "#B39DDB",
-  syntaxOperator: "#D7CFC4",
-  syntaxVariable: "#D7CFC4",
-  syntaxPunctuation: "#6B6358",
+  // 语法高亮
+  syntaxComment: C.gray80,
+  syntaxKeyword: C.acid,
+  syntaxString: C.cyan,
+  syntaxNumber: C.warn,
+  syntaxFunction: C.deepBlue,
+  syntaxType: C.violet,
+  syntaxOperator: C.grayC5,
+  syntaxVariable: C.white,
+  syntaxPunctuation: C.gray80,
 
   // Markdown
-  mdHeading: "#FF8A3D",
-  mdHeading2: "#FFAB78",
-  mdHeading3: "#FFC44D",
-  mdCode: "#26C6DA",
-  mdCodeBlock: "#D7CFC4",
-  mdCodeBlockBorder: "#2A2520",
-  mdQuote: "#6B6358",
-  mdQuoteBorder: "#FF8A3D",
-  mdHr: "#2A2520",
-  mdLink: "#26C6DA",
-  mdListBullet: "#FF8A3D",
+  mdHeading: C.acid,
+  mdHeading2: C.cyan,
+  mdHeading3: C.warn,
+  mdCode: C.cyan,
+  mdCodeBlock: C.grayC5,
+  mdCodeBlockBorder: C.gray20,
+  mdQuote: C.gray80,
+  mdQuoteBorder: C.acid,
+  mdHr: C.gray20,
+  mdLink: C.deepBlue,
+  mdListBullet: C.acid,
 
   // Diff
-  toolDiffAdded: "#66D6A0",
-  toolDiffRemoved: "#FF5252",
-  toolDiffContext: "#6B6358",
+  toolDiffAdded: C.cyan,
+  toolDiffRemoved: C.danger,
+  toolDiffContext: C.gray80,
 
   // 背景块
-  selectedBg: "#1C1814",
-  // 用户消息灰底：整块长方形，明显高于主背景 #0C0A08
-  userBg: "#3A3530",
-  systemBg: "#14110D",
-  toolPendingBg: "#1C1814",
-  toolSuccessBg: "#0C0A08",
-  toolErrorBg: "#1C1814",
+  selectedBg: C.gray20,
+  // 用户气泡：深灰底，正文用纯白
+  userBg: C.gray20,
+  systemBg: C.gray20,
+  toolPendingBg: C.gray20,
+  toolSuccessBg: C.black,
+  toolErrorBg: C.gray20,
+  // 底部 chrome：白灰 #C5C5C5；输入槽略深一档，能看出「写字区」又别太深导致黑字
+  footerBg: C.grayC5,
+  inputFieldBg: "#B0B0B0",
 
   // 模式
-  bashMode: "#66D6A0",
+  bashMode: C.cyan,
 };

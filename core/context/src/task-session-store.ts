@@ -39,8 +39,11 @@ export interface TaskPlanEntry {
   id: string;
   desc: string;
   deps: string[];
-  status: "pending" | "in_progress" | "completed";
+  status: "pending" | "in_progress" | "completed" | "failed" | "cancelled";
   summary: string;
+  report?: string;
+  failReason?: string;
+  laneId?: string;
   /** 关联的归档 task 块 ID 列表（压缩时由系统自动追加） */
   relatedBlockIds?: string[];
 }

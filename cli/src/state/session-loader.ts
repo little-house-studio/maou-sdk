@@ -9,7 +9,76 @@
 
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import type { ChatMessage, ToolCardState } from "./types.js";
+import type { ChatMessage, ToolCardState, SessionEventKind, MessageAuthor } from "./types.js";
+import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
+
+function parseAuthor(ev: Record<string, unknown>, kind: SessionEventKind): MessageAuthor {
+  const raw = ev.author as MessageAuthor | undefined;
+  if (raw && typeof raw === "object" && typeof raw.type === "string") {
+    return { type: raw.type, id: raw.id, displayName: raw.displayName ?? raw.id };
+  }
+  const source = String(ev.source ?? "");
+  const toolName = String(ev.tool_name ?? "");
+  const from = String(ev.from ?? "");
+  const agentName = String(ev.agentName ?? ev.agent_name ?? "");
+  if (source === "todo_notice") return { type: "system", id: "todo", displayName: "todo" };
+  if (source === "empty_retry") return { type: "system", id: "runtime", displayName: "runtime" };
+  if (source === "verification") return { type: "system", id: "verify", displayName: "verify" };
+  if (source === "message_bus") return { type: "agent", id: from || "peer", displayName: from || "peer" };
+  if (source === "terminal-notification" || kind === "tool_async_notify") {
+    return { type: "tool", id: toolName || "use_terminal", displayName: toolName || "use_terminal" };
+  }
+  if (kind === "human_user" || kind === "queued_user") return { type: "human", id: "user", displayName: "user" };
+  if (kind === "assistant_turn") return { type: "agent", id: agentName || "ai", displayName: agentName || "ai" };
+  if (kind === "tool_result") return { type: "tool", id: toolName || "tool", displayName: toolName || "tool" };
+  if (kind === "agent_message") return { type: "agent", id: from || "agent", displayName: from || "agent" };
+  if (kind === "runtime_control") return { type: "system", id: "runtime", displayName: "runtime" };
+  if (kind === "system_notice") return { type: "system", id: "system", displayName: "system" };
+  return { type: "system", id: "unknown", displayName: "unknown" };
+}
+
+/** 与 context resolveSessionEventKind 对齐（轻量本地实现） */
+function resolveKind(ev: Record<string, unknown>): SessionEventKind {
+  if (typeof ev.kind === "string") {
+    const k = ev.kind as SessionEventKind;
+    const ok = [
+      "human_user", "queued_user", "agent_message", "runtime_control", "system_notice",
+      "tool_call", "tool_result", "tool_async_notify", "assistant_turn", "compact", "unknown",
+    ];
+    if (ok.includes(k)) return k;
+  }
+  const source = String(ev.source ?? "");
+  const map: Record<string, SessionEventKind> = {
+    human: "human_user",
+    message_bus: "agent_message",
+    empty_retry: "runtime_control",
+    verification: "runtime_control",
+    todo_notice: "system_notice",
+    "terminal-notification": "tool_async_notify",
+    hook: "system_notice",
+  };
+  if (map[source]) return map[source];
+  const role = String(ev.role ?? "");
+  if (role === "tool") {
+    const tid = String(ev.toolCallId ?? ev.tool_call_id ?? "");
+    return tid.startsWith("term_notify_") ? "tool_async_notify" : "tool_result";
+  }
+  if (role === "assistant") return "assistant_turn";
+  if (role === "user") {
+    const c = String(ev.content ?? "");
+    if (c.includes("<terminal-message>")) return "tool_async_notify";
+    if (c.includes("<system_notice")) return "system_notice";
+    if (c.includes("<continue>")) return "runtime_control";
+    if (c.startsWith("[来自 ")) return "agent_message";
+    if (ev.queued) return "queued_user";
+    return "human_user";
+  }
+  return "unknown";
+}
+
+function isNoticeKind(k: SessionEventKind): boolean {
+  return k === "system_notice" || k === "runtime_control" || k === "agent_message" || k === "compact";
+}
 
 export interface LoadedSession {
   messages: ChatMessage[];
@@ -72,13 +141,65 @@ export function loadSessionMessages(sessionId: string, cwd = process.cwd()): Loa
           : undefined;
 
       if (role === "user") {
+        const kind = resolveKind(ev);
+        const content = repairUtf8Mojibake(String(ev.content ?? ""));
+        // 伪 user → 系统类消息（不画用户气泡）
+        if (isNoticeKind(kind) || kind === "tool_async_notify") {
+          if (kind === "tool_async_notify" || content.includes("<terminal-message>")) {
+            // 走后面 tool 兼容分支：先塞成 assistant 工具卡
+            const card: ToolCardState = {
+              id: `legacy_term_${ts}`,
+              name: "use_terminal",
+              args: asArgs({ event: "background_complete", legacy: true }),
+              result: content,
+              done: true,
+              isError: false,
+            };
+            let attached = false;
+            for (let i = messages.length - 1; i >= 0; i--) {
+              if (messages[i]!.role === "assistant") {
+                messages[i]!.toolCalls = [...(messages[i]!.toolCalls ?? []), card];
+                attached = true;
+                break;
+              }
+            }
+            if (!attached) {
+              messages.push({
+                id: `load_tool_${ts}_${Math.random().toString(36).slice(2, 6)}`,
+                role: "assistant",
+                content: "",
+                ts,
+                streaming: false,
+                toolCalls: [card],
+                kind: "tool_async_notify",
+                source: String(ev.source ?? "terminal-notification"),
+              });
+            }
+            continue;
+          }
+          messages.push({
+            id: `load_sys_${ts}_${Math.random().toString(36).slice(2, 6)}`,
+            role: "system",
+            content,
+            ts,
+            streaming: false,
+            round,
+            kind,
+            source: typeof ev.source === "string" ? ev.source : undefined,
+            author: parseAuthor(ev, kind),
+          });
+          continue;
+        }
         messages.push({
           id: `load_${ts}_${Math.random().toString(36).slice(2, 6)}`,
           role: "user",
-          content: String(ev.content ?? ""),
+          content,
           ts,
           streaming: false,
           round,
+          kind,
+          source: typeof ev.source === "string" ? ev.source : "human",
+          author: parseAuthor(ev, kind),
         });
         continue;
       }
@@ -119,6 +240,9 @@ export function loadSessionMessages(sessionId: string, cwd = process.cwd()): Loa
           round,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           usage,
+          kind: "assistant_turn",
+          author: parseAuthor(ev, "assistant_turn"),
+          agentName: typeof ev.agentName === "string" ? ev.agentName : undefined,
         };
         const msgIdx = messages.length;
         messages.push(msg);
@@ -132,6 +256,21 @@ export function loadSessionMessages(sessionId: string, cwd = process.cwd()): Loa
         const tid = String(ev.toolCallId ?? ev.tool_call_id ?? "");
         const content = String(ev.content ?? "");
         const ok = toolOk(ev);
+        const isTermNotify =
+          ev.source === "terminal-notification" ||
+          tid.startsWith("term_notify_");
+        const toolName = String(
+          ev.tool_name ?? (isTermNotify ? "use_terminal" : "tool"),
+        );
+        // 终端后台通知：args 标成 background_complete，UI 显示为工具卡而非 user 气泡
+        const toolArgs = isTermNotify
+          ? asArgs(
+              ev.tool_parameters ?? {
+                event: "background_complete",
+                terminal_id: ev.terminal_id,
+              },
+            )
+          : asArgs(ev.tool_parameters);
         const loc = tid ? toolIndex.get(tid) : undefined;
         if (loc) {
           const m = messages[loc.msgIdx];
@@ -141,20 +280,20 @@ export function loadSessionMessages(sessionId: string, cwd = process.cwd()): Loa
             card.result = card.result ? `${card.result}\n${content}` : content;
             card.done = true;
             card.isError = !ok;
-            if (card.name === "tool" && ev.tool_name) {
-              card.name = String(ev.tool_name);
+            if (card.name === "tool" && toolName) {
+              card.name = toolName;
             }
           }
         } else {
-          // 无配对 tool_call：挂到最近一条 assistant，或新建 system 行
+          // 无配对 tool_call：挂到最近一条 assistant（工具卡），或新建 system 行
           let attached = false;
           for (let i = messages.length - 1; i >= 0; i--) {
             const m = messages[i]!;
             if (m.role === "assistant") {
               const card: ToolCardState = {
                 id: tid || `orphan_${ts}`,
-                name: String(ev.tool_name ?? "tool"),
-                args: asArgs(ev.tool_parameters),
+                name: toolName,
+                args: toolArgs,
                 result: content,
                 done: true,
                 isError: !ok,
@@ -166,14 +305,59 @@ export function loadSessionMessages(sessionId: string, cwd = process.cwd()): Loa
             }
           }
           if (!attached && content) {
-            messages.push({
-              id: `load_sys_${ts}_${Math.random().toString(36).slice(2, 6)}`,
-              role: "system",
-              content: `[tool] ${ev.tool_name ?? ""} ${content}`.trim(),
+            // 会话里尚无 assistant 时：造一条仅含工具卡的 assistant 消息（仍是工具类，非 user）
+            const card: ToolCardState = {
+              id: tid || `orphan_${ts}`,
+              name: toolName,
+              args: toolArgs,
+              result: content,
+              done: true,
+              isError: !ok,
+            };
+            const msg: ChatMessage = {
+              id: `load_tool_${ts}_${Math.random().toString(36).slice(2, 6)}`,
+              role: "assistant",
+              content: "",
               ts,
               streaming: false,
-            });
+              toolCalls: [card],
+            };
+            messages.push(msg);
+            if (tid) toolIndex.set(tid, { msgIdx: messages.length - 1, cardIdx: 0 });
           }
+        }
+        continue;
+      }
+
+      // 兼容旧数据：曾把终端通知写成 role=user + <terminal-message>
+      if (role === "user" && String(ev.content ?? "").includes("<terminal-message>")) {
+        const content = repairUtf8Mojibake(String(ev.content ?? ""));
+        const card: ToolCardState = {
+          id: `legacy_term_${ts}`,
+          name: "use_terminal",
+          args: asArgs({ event: "background_complete", legacy: true }),
+          result: content,
+          done: true,
+          isError: false,
+        };
+        let attached = false;
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const m = messages[i]!;
+          if (m.role === "assistant") {
+            m.toolCalls = [...(m.toolCalls ?? []), card];
+            attached = true;
+            break;
+          }
+        }
+        if (!attached) {
+          messages.push({
+            id: `load_tool_${ts}_${Math.random().toString(36).slice(2, 6)}`,
+            role: "assistant",
+            content: "",
+            ts,
+            streaming: false,
+            toolCalls: [card],
+          });
         }
         continue;
       }

@@ -60,6 +60,46 @@ export function hr(cols: number, char = "─", minWidth = 8, maxWidth = 200): st
   return char.repeat(w);
 }
 
+/**
+ * 科技感倒角分隔线（线条版，备用）
+ *  top: ╱────────╲
+ *  bot: ╲────────╱
+ */
+export function techRule(
+  cols: number,
+  edge: "top" | "bottom" = "top",
+): { left: string; mid: string; right: string; full: string } {
+  const w = Math.max(2, cols);
+  const midW = Math.max(0, w - 2);
+  const mid = "─".repeat(midW);
+  if (edge === "top") {
+    return { left: "╱", mid, right: "╲", full: `╱${mid}╲` };
+  }
+  return { left: "╲", mid, right: "╱", full: `╲${mid}╱` };
+}
+
+/**
+ * 填色缺角（面板顶边）：◤ / ◥
+ *
+ * Ink 约定：
+ *   color            = 主背景 bg（缺角三角）
+ *   backgroundColor  = footerBg（面板填色）
+ * 外层行 Box 用 footerBg 即可。
+ */
+export function techFillTop(
+  cols: number,
+  /** 中间填充字符；默认空格=纯填色无横线 */
+  midChar = " ",
+): { left: string; mid: string; right: string } {
+  const w = Math.max(2, cols);
+  const midW = Math.max(0, w - 2);
+  return {
+    left: "◤",
+    mid: midChar.repeat(midW),
+    right: "◥",
+  };
+}
+
 /** 截断：超长字符串加省略号（响应式裁剪用） */
 export function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, Math.max(1, max - 1)) + "…" : s;
@@ -93,6 +133,10 @@ export function systemEventSymbol(kind: string): string {
     permission: "🔓",
     env_error: "⚠",
     other: "ℹ",
+    agent_message: "✉",
+    runtime_control: "↻",
+    system_notice: "📋",
+    session_inject: "↓",
   };
   return map[kind] ?? "ℹ";
 }

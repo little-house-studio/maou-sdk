@@ -2,6 +2,5 @@ packages:
   - 'core/*'
   - 'example/*'
   - 'cli'
-  - 'tui'
   - 'agent/*'
   - '*-engine'

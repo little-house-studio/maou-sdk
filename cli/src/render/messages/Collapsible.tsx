@@ -62,6 +62,8 @@ export function CollapsibleText({
   maxLines = DEFAULT_MAX,
   streaming = false,
   bg,
+  label,
+  defaultOpen = false,
 }: {
   text: string;
   color?: string;
@@ -71,13 +73,17 @@ export function CollapsibleText({
   bg?: string;
   /** 用户气泡：每行 pad 到该宽度 */
   fillWidth?: number;
+  /** 可选区标题（如「输入」「输出」） */
+  label?: string;
+  /** 默认是否展开（默认 false=过长先折） */
+  defaultOpen?: boolean;
 }) {
   const t = useTheme();
   const term = useTerminalSize();
   const colW = Math.max(12, term.cols - 8);
   const total = useMemo(() => estimateLines(text, colW), [text, colW]);
   const need = !streaming && total > maxLines;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const ref = useRef<DOMElement | null>(null);
   const cid = useClickTarget(
     ref,
@@ -95,6 +101,11 @@ export function CollapsibleText({
 
   return (
     <Box ref={ref} flexDirection="column">
+      {label ? (
+        <Text color={t.dim} backgroundColor={bg}>
+          {label}
+        </Text>
+      ) : null}
       {lines.map((l, i) => (
         <Text key={i} color={color ?? t.fg} backgroundColor={bg}>
           {l || " "}
@@ -103,7 +114,7 @@ export function CollapsibleText({
       {need && (
         <Text color={isHover ? t.accent : t.dim} backgroundColor={bg}>
           {open
-            ? ` ▲ 收起（共 ${total} 行）`
+            ? ` ▲ 收起（共 ${total} 行 · 点击收起）`
             : ` ▼ 展开全文（已折叠 ${total} 行 · 点击展开）`}
         </Text>
       )}

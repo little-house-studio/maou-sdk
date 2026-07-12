@@ -10,11 +10,12 @@ import { useTheme } from "../theme/theme-context.js";
 const KEYS: [string, string][] = [
   ["Enter", "发送"],
   ["Alt+Enter", "换行"],
-  ["Tab / Shift+Tab", "补全确认 / 切换思考级别"],
+  ["Tab / Shift+Tab", "补全确认 / 切换审核模式"],
   ["Ctrl+K", "命令面板"],
   ["Ctrl+M", "选择模型"],
   ["Ctrl+N", "新对话"],
   ["Ctrl+E", "全屏编辑器（Enter 换行不发送）"],
+  ["/prompt", "预览当前 agent system 提示词（Esc 返回）"],
   ["Esc", "中断 / 关闭弹窗"],
   ["Ctrl+C", "退出"],
 ];

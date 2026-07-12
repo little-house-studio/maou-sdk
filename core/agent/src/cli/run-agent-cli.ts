@@ -27,6 +27,8 @@ export interface AgentCliOptions {
   source?: string;
   /** 初始化 agent 名（如 supervisor 模式用 "supervisor"）。 */
   initAgentName?: string;
+  /** 审核/沙箱模式：normal | auto | yolo 等 */
+  sandboxMode?: string;
 }
 
 /**
@@ -44,6 +46,7 @@ export async function runAgentCli(
     abortSignal: opts.signal,
     source: opts.source ?? "cli",
     ...(opts.initAgentName ? { initAgentName: opts.initAgentName } : {}),
+    ...(opts.sandboxMode ? { sandboxMode: opts.sandboxMode } : {}),
   })) {
     opts.onEvent(ev);
     if (ev.type === "done" || ev.type === "error") return;

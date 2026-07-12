@@ -7,13 +7,13 @@
  */
 
 import { useRef, useEffect } from "react";
-import { runAgentCli } from "@little-house-studio/agent";
+import { runAgentCli, setSupervisorAbortSignal } from "@little-house-studio/agent";
 import type { AgentHandle } from "@little-house-studio/agent";
-import { setSupervisorAbortSignal } from "@little-house-studio/coding-agent";
 import { useStore } from "../state/store.js";
 import type { AgentCliConfig } from "../types.js";
 import { join } from "node:path";
-import { SoundManager } from "../hooks/useSound.js";
+import { SoundManager, loadSoundConfig } from "../hooks/useSound.js";
+import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
 
 export function useAgent(config: AgentCliConfig) {
   const agentRef = useRef<AgentHandle | null>(null);
@@ -21,7 +21,8 @@ export function useAgent(config: AgentCliConfig) {
   const soundRef = useRef<SoundManager | null>(null);
   const maouRoot = join(process.env.HOME ?? "", ".maou");
 
-  if (!soundRef.current) soundRef.current = new SoundManager();
+  // 从 ~/.maou/config.json ui.sounds 加载初始配置（仅首次构造）
+  if (!soundRef.current) soundRef.current = new SoundManager(loadSoundConfig());
   const sound = soundRef.current;
 
   // agent 切换：监听 agentSwitchNonce，缓存当前会话 + 恢复目标会话（或新建）
@@ -56,6 +57,8 @@ export function useAgent(config: AgentCliConfig) {
 
   async function send(text: string) {
     const store = useStore.getState();
+    // 兜底：若输入链仍带入 latin1 乱码，发送前修回 UTF-8
+    text = repairUtf8Mojibake(text);
     if (!text.trim()) return;
 
     // 生成中：入队，生成结束自动 drain（不中断当前生成）
@@ -93,20 +96,38 @@ export function useAgent(config: AgentCliConfig) {
           supervisorPending = { sessionId: ev.sessionId, initialMessage: ev.initialMessage };
         }
       };
+      const sandboxMode = store.approvalMode; // 审核模式 → runtime sandboxMode
       await runAgentCli(text, {
         runtime: handle.runtime,
         sessionId,
         preset,
+        sandboxMode,
         onEvent: (ev) => {
           // 音效触发（副作用，不在 reducer）
           if (ev.type === "done") {
-            sound.play("done"); sound.clearIdleTimer();
+            sound.play("done");
+            sound.clearIdleTimer();
             const de = ev as { type: string; [k: string]: unknown };
             captureSupervisor(de);
+          } else if (ev.type === "error") {
+            sound.play("error");
+            sound.clearIdleTimer();
+          } else if (
+            ev.type === "log" &&
+            (ev.level === "error" || ev.level === "warning" || ev.level === "warn")
+          ) {
+            sound.play("warning");
+            if (useStore.getState().streaming) sound.resetIdleTimer();
+          } else if (
+            ev.type === "model.error" ||
+            ev.type === "model.loop_detected" ||
+            ev.type === "round_limit"
+          ) {
+            sound.play("warning");
+          } else {
+            // 其他事件：streaming 中重置空闲计时器（防误报「卡住」）
+            if (useStore.getState().streaming) sound.resetIdleTimer();
           }
-          else if (ev.type === "error") { sound.play("error"); sound.clearIdleTimer(); }
-          else if (ev.type === "log" && (ev.level === "error" || ev.level === "warning" || ev.level === "warn")) sound.play("warning");
-          else if (ev.type === "model.error" || ev.type === "model.loop_detected" || ev.type === "round_limit") sound.play("warning");
           useStore.getState().onStream(ev);
         },
         signal: abortRef.current.signal,
@@ -119,6 +140,7 @@ export function useAgent(config: AgentCliConfig) {
           runtime: handle.runtime,
           sessionId: sp.sessionId,
           preset,
+          sandboxMode,
           initAgentName: "supervisor",
           onEvent: (ev) => useStore.getState().onStream(ev),
           signal: abortRef.current.signal,
@@ -127,6 +149,8 @@ export function useAgent(config: AgentCliConfig) {
       }
       // runAgentCli 遇 done/error 即 return，state 已由 reducer 更新
     } catch (e) {
+      sound.play("error");
+      sound.clearIdleTimer();
       useStore.getState().toastMsg(String(e).slice(0, 60), "err");
       // 兜底：确保 streaming 关闭（reducer 可能没收到 error 事件）
       useStore.getState().setStreaming(false);

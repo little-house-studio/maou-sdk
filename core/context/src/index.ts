@@ -76,6 +76,30 @@ export {
 // 消息构建
 export { buildMessages } from "./message-builder.js";
 
+// 会话事件语义（author × kind × wireRole）
+export {
+  appendSessionEvent,
+  resolveSessionEventKind,
+  resolveMessageAuthor,
+  isSessionEventKind,
+  isHumanTurnKind,
+  isUserBubbleKind,
+  isNoticeUiKind,
+  defaultWireRole,
+  defaultAuthorForKind,
+  formatAuthorLabel,
+  authorHuman,
+  authorAgent,
+  authorSystem,
+  authorTool,
+} from "./session-event.js";
+export type {
+  SessionEventKind,
+  AppendSessionEventInput,
+  MessageAuthor,
+  MessageAuthorType,
+} from "./session-event.js";
+
 // 上下文压缩
 export { maybeCompress, compressMaou, assignTaskIds } from "./compressor.js";
 export type { Summarizer, CompressOptions, CompressMaouResult, CompressionStage, CompressionResult, TaskSummary } from "./compressor.js";

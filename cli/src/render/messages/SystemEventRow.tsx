@@ -22,6 +22,10 @@ const KIND_COLOR: Record<SystemEvent["kind"], string> = {
   permission: "blue",
   env_error: "red",
   other: "gray",
+  agent_message: "cyan",
+  runtime_control: "yellow",
+  system_notice: "blue",
+  session_inject: "gray",
 };
 
 export function SystemEventRow({ ev }: { ev: SystemEvent }) {

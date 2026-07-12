@@ -8,11 +8,17 @@
  *
  * 底层由 Rust terminal-engine 驱动：
  * - 跨平台 PTY（portable-pty: Unix openpty + Windows ConPTY）
- * - 命令过滤（黑白名单 + 预设危险命令拦截）
+ * - 命令过滤（自定义黑白名单；破坏性规则改由 DCG）
  * - 200 并行上限
  * - 原子持久化 + ring buffer
  * - 结构化日志
  * - V1 沙箱（路径限制）
+ *
+ * 安全三层（run 前，见 terminal-security.ts）：
+ *   致命 fatal  — 硬拦（DCG critical/灾难规则 + maou-hard-deny），不可二次执行绕过
+ *   危险 dangerous — 需确认（用户/审核 Agent/相同命令再执行一次）
+ *   安全 safe — 放行或仅走普通白名单/ask/auto
+ * 引擎层：sandbox + 自定义 filter
  *
  * before_user 终端状态面板由 Runtime 层自动注入，无需 AI 主动调用。
  */
@@ -22,7 +28,17 @@ import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { compressTerminalOutput, compressOutput } from "../../compress/output-compressor.js";
 import { createToolResponse } from "../../base.js";
 import { truncateMiddle, formatMetadata, errToString } from "../../browser/god_tool/use_browser/_util.js";
-import { decideCommand, getTerminalReviewer, getTerminalApprover, addToWhitelist, addToBlacklist, commandPrefix, recordReviewApprove, recordReviewReject } from "../terminal-policy.js";
+import {
+  getTerminalReviewer,
+  getTerminalApprover,
+  addToWhitelist,
+  addToBlacklist,
+  commandPrefix,
+  recordReviewApprove,
+  recordReviewReject,
+  getMode,
+  gateTerminalCommand,
+} from "../../security/index.js";
 
 // Rust 终端引擎
 import * as engine from "@little-house-studio/terminal-engine";
@@ -152,80 +168,129 @@ export class TerminalTool extends Tool {
   }
 
   /**
-   * 终端审批门：返回 null 放行；返回 ToolResponse 表示被拦截（拒绝/待确认）。
-   * yolo 直接放行；normal 非白名单→待确认；auto 非名单→小模型审核；黑名单→拒绝。
-   * 被拦的命令原样再次执行即放行（误报兜底）。
+   * 终端审批门：返回 null 放行；返回 ToolResponse 表示被拦截。
+   * 三层：fatal / dangerous / safe（见 gateTerminalCommand）。
    */
   private async _approve(command: string, ctx: ToolContext): Promise<ToolResponse | null> {
     const agent = ctx.agentName || "main";
-    const decision = decideCommand(command, agent);
+    // sandboxMode 可覆盖 agent 持久化 mode（HTTP yolo 场景）
+    const mode =
+      ctx.sandboxMode === "yolo" || ctx.sandboxMode === "auto" || ctx.sandboxMode === "normal"
+        ? ctx.sandboxMode
+        : getMode(agent);
 
-    // 黑名单命令无论什么模式都拒绝（安全兜底，不可绕过）
-    if (decision.action === "deny") {
-      return createToolResponse(false,
-        `⛔ [系统拦截] 命令被终端安全策略拒绝（黑名单），不是你的命令写错，是系统安全策略禁止此类命令：\`${command}\`\n原因：${decision.reason}\n这是环境限制，无法绕过。请换用其他工具达成目的（如用 write_file 代替 echo 重定向、用 glob/grep 代替 find）。如果确实需要，可让用户手动执行。`,
-        { payload: { policy: "deny", command, reason: decision.reason } });
+    const gate = await gateTerminalCommand(command, agent, mode);
+
+    if (gate.action === "allow") return null;
+
+    if (gate.action === "deny_fatal") {
+      return createToolResponse(false, gate.message || "致命指令已拦截", {
+        payload: gate.payload,
+      });
     }
 
-    // yolo 模式：除黑名单外全部放行（之前 _approve 漏了检查 sandboxMode，
-    // 导致 HTTP/监督场景 yolo 模式下命令仍被 ask 拦截，主 agent 困在"命令需确认"循环）
-    if (ctx.sandboxMode === "yolo") {
-      return null;
-    }
-
-    if (decision.action === "allow") return null;
-
-    if (decision.action === "ask") {
-      // 交互式审批：TUI 注入 approver 时弹菜单让用户选 Yes/No
+    if (gate.action === "deny_dangerous_pending") {
+      // 危险级：优先尝试交互审批 / 审核 Agent，否则靠二次相同命令
       const approver = getTerminalApprover();
-      if (approver) {
+      if (approver && mode === "normal") {
         try {
-          const verdict = await approver(command, { agentName: agent, cwd: ctx.workingDir || ctx.projectRoot });
+          const verdict = await approver(command, {
+            agentName: agent,
+            cwd: ctx.workingDir || ctx.projectRoot,
+          });
           if (verdict.approve) {
-            // "Yes且不再问"：按命令前缀放行（如 curl *），同类命令不再审批
             if (verdict.persist === "whitelist") addToWhitelist(agent, commandPrefix(command));
-            return null; // 放行，继续执行
+            return null;
           }
           if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
           return createToolResponse(false,
-            `⛔ [系统拦截] 用户在审批菜单手动拒绝了此命令（不是命令本身有误）：\`${command}\`\n请换一种方式或询问用户原因。`,
-            { payload: { policy: "ask-denied", command } });
-        } catch (err) {
-          // 用户取消/超时 → 保持原 ask 文字行为兜底
-          return createToolResponse(false,
-            `🔐 [系统拦截] 命令审批被取消/超时（非命令错误）：\`${command}\`（${errToString(err)}）\n这是交互审批被打断，不是你的命令有问题。可换工具或稍后重试。`,
-            { payload: { policy: "ask-cancelled", command } });
+            `⛔ [危险] 用户拒绝了该危险命令：\`${command}\``,
+            { payload: { ...gate.payload, policy: "dangerous-user-denied" } });
+        } catch {
+          /* fall through to double-confirm message */
         }
       }
-      // 未注入 approver（非 TUI 场景，如 HTTP/监督模式）→ 命令无法被审批，卡住
-      return createToolResponse(false,
-        `🔐 [系统拦截·环境限制] 命令需要用户确认才能执行，但当前是无人审批的环境（HTTP/监督模式，没有交互式审批菜单），命令无法放行：\`${command}\`\n` +
-        `这是环境限制，不是你的命令有误。当前 sandboxMode=normal（审核模式），非白名单命令都会被拦。\n` +
-        `**重要**：如果你是在被监督的任务里，不要反复试同类命令——会卡死验收。请换用文件工具（write_file/edit_file/glob/grep）达成目的，或让 supervisor 切换到 yolo 模式。`,
-        { payload: { policy: "ask", command } });
+      if (mode === "auto") {
+        const reviewer = getTerminalReviewer();
+        if (reviewer) {
+          try {
+            const verdict = await reviewer(command, {
+              agentName: agent,
+              cwd: ctx.workingDir || ctx.projectRoot,
+            });
+            if (verdict.approve) {
+              recordReviewApprove(agent, command);
+              return null;
+            }
+            // 审核拒绝：保留二次执行窗口（已 mark）
+            return createToolResponse(false,
+              `⚠️ [危险·审核未通过] \`${command}\`\n理由：${verdict.reason}\n` +
+                `若仍需执行：在窗口期内再发送一次完全相同的命令以确认。`,
+              { payload: { ...gate.payload, policy: "dangerous-review-reject", reason: verdict.reason } });
+          } catch (err) {
+            return createToolResponse(false,
+              `⚠️ [危险·审核异常] \`${command}\`（${errToString(err)}）\n可稍后重试或二次相同命令确认。`,
+              { payload: { ...gate.payload, policy: "dangerous-review-error" } });
+          }
+        }
+      }
+      return createToolResponse(false, gate.message || "危险指令需确认", {
+        payload: gate.payload,
+      });
     }
 
-    // review（auto 模式）：调小模型审核
+    if (gate.action === "ask") {
+      const approver = getTerminalApprover();
+      if (approver) {
+        try {
+          const verdict = await approver(command, {
+            agentName: agent,
+            cwd: ctx.workingDir || ctx.projectRoot,
+          });
+          if (verdict.approve) {
+            if (verdict.persist === "whitelist") addToWhitelist(agent, commandPrefix(command));
+            return null;
+          }
+          if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
+          return createToolResponse(false,
+            `⛔ [系统拦截] 用户拒绝了此命令：\`${command}\``,
+            { payload: { policy: "ask-denied", command, tier: "safe" } });
+        } catch (err) {
+          return createToolResponse(false,
+            `🔐 [系统拦截] 命令审批被取消/超时：\`${command}\`（${errToString(err)}）`,
+            { payload: { policy: "ask-cancelled", command, tier: "safe" } });
+        }
+      }
+      return createToolResponse(false,
+        `🔐 [安全层·需确认] 非破坏性命令，但当前为审核模式且未在白名单：\`${command}\`\n` +
+          `无人审批环境请用文件工具，或切换 yolo / 将命令加入白名单。`,
+        { payload: gate.payload });
+    }
+
+    // review（安全层 auto）
     const reviewer = getTerminalReviewer();
     if (!reviewer) {
       return createToolResponse(false,
-        `🔐 [系统拦截·配置缺失] 当前是 auto 审核模式，但系统未配置审核器，命令无法审核放行：\`${command}\`\n这是环境配置问题，不是命令错误。请换用文件工具，或让用户配置审核器/切换 yolo 模式。`,
-        { payload: { policy: "review-no-reviewer", command } });
+        `🔐 [安全层·配置缺失] auto 模式未配置审核器：\`${command}\``,
+        { payload: { policy: "review-no-reviewer", command, tier: "safe" } });
     }
     try {
-      const verdict = await reviewer(command, { agentName: agent, cwd: ctx.workingDir || ctx.projectRoot });
+      const verdict = await reviewer(command, {
+        agentName: agent,
+        cwd: ctx.workingDir || ctx.projectRoot,
+      });
       if (verdict.approve) {
         recordReviewApprove(agent, command);
-        return null; // 审核通过，放行
+        return null;
       }
       recordReviewReject(agent, command);
       return createToolResponse(false,
-        `⛔ 小模型审核未通过：\`${command}\`\n理由：${verdict.reason}\n如果这是误报，原样再次执行完全相同的命令即可放行。`,
-        { payload: { policy: "review-reject", command, reason: verdict.reason } });
+        `⛔ 审核未通过：\`${command}\`\n理由：${verdict.reason}`,
+        { payload: { policy: "review-reject", command, reason: verdict.reason, tier: "safe" } });
     } catch (err) {
       return createToolResponse(false,
-        `🔐 审核异常，命令暂不执行：\`${command}\`（${errToString(err)}）\n原样再次执行相同命令即放行。`,
-        { payload: { policy: "review-error", command } });
+        `🔐 审核异常：\`${command}\`（${errToString(err)}）`,
+        { payload: { policy: "review-error", command, tier: "safe" } });
     }
   }
 
@@ -497,6 +562,21 @@ export function initTerminalEngine(logDir?: string, persistPath?: string): void 
     engine.initEngine(logDir);
     if (persistPath) {
       engine.setPersistPath(persistPath);
+    }
+    // 破坏性预设改由 DCG 负责；引擎层只保留自定义黑白名单 + 沙箱
+    try {
+      // napi 字段名以生成的 TS 类型为准（snake 或 camel）
+      const filterCfg = {
+        preset_blacklist_enabled: false,
+        presetBlacklistEnabled: false,
+        blacklist: [],
+        whitelist: [],
+        whitelist_mode: false,
+        whitelistMode: false,
+      };
+      engine.setFilter(filterCfg as engine.FilterConfigNapi);
+    } catch {
+      /* older native build may lack field */
     }
   } catch {
     // 引擎初始化失败时静默降级（可能 native module 未安装）

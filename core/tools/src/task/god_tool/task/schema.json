@@ -1,6 +1,6 @@
 {
-  "name": "task",
-  "description": "任务管理集成统一入口（上帝工具，占位）",
+  "name": "todo",
+  "description": "会话级 todo 清单领域说明（上帝工具占位，未注册执行）。请使用 todo_manage / todo_finish。",
   "parameters": {
     "type": "object",
     "properties": {

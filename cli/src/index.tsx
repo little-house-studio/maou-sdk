@@ -68,7 +68,7 @@ const filteredStdout = process.env.MAOU_NO_FILTER === "1" ? process.stdout : cre
 
 loadConfig(target).then(async (config) => {
   // vram-layer：patch Output.get + fakeStdout
-  const { initVramLayer, createFakeStdout, renderWithSelection, setThemeBg } = await import("./render/vram-layer.js");
+  const { initVramLayer, createFakeStdout, setThemeBg, scheduleFullPaint, renderWithSelection } = await import("./render/vram-layer.js");
   await initVramLayer();
   // 首屏兜底：onRender 可能在 App 的 setThemeBg effect 之前 fire，先按初始主题 bg 填好背景，
   // 避免首帧空白区显示终端默认底（透明闪烁）。
@@ -77,26 +77,14 @@ loadConfig(target).then(async (config) => {
   const initTheme = themePath ? (loadThemeFile(themePath) ?? TAU_CETI) : TAU_CETI;
   setThemeBg(initTheme.bg);
   const fakeStdout = createFakeStdout();
-  // 进备用屏 + 开 ?1003 全追踪 + 隐藏光标
-  process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?1003h\x1b[?1006h\x1b[?25l");
-  // vram-layer 重绘节流：流式 delta 每秒可达 50+ 次，buildGrid 是 O(rows×cols)，不节流会卡
-  let lastRender = 0;
-  let renderPending = false;
-  const doRender = () => {
-    lastRender = Date.now();
-    const cols = process.stdout.columns || 80;
-    const rows = process.stdout.rows || 24;
-    renderWithSelection(cols, rows);
-  };
-  const scheduleRender = () => {
-    const now = Date.now();
-    if (now - lastRender >= 30) {
-      doRender();
-    } else if (!renderPending) {
-      renderPending = true;
-      setTimeout(() => { renderPending = false; doRender(); }, 30);
-    }
-  };
+  // 进备用屏 + 开鼠标（真实 stdout！）+ 隐藏光标
+  process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l");
+  // Ink 布局完成 → 全量帧（选区绘制走 schedulePaint 脏行，避免与鼠标双刷闪烁）
+  const scheduleRender = () => scheduleFullPaint();
+  // 把 fakeStdout 交给尺寸单例（App 内 TerminalSizeProvider 也会再登记一次）
+  const { setInkStdoutForResize, syncTerminalSize } = await import("./hooks/useTerminalSize.js");
+  setInkStdoutForResize(fakeStdout);
+
   const { waitUntilExit } = render(<App config={config} themePath={themePath} />, {
     exitOnCtrlC: false,
     stdin: filteredStdin as NodeJS.ReadStream,
@@ -104,14 +92,18 @@ loadConfig(target).then(async (config) => {
     patchConsole: false,
     onRender: scheduleRender,
   });
-  setTimeout(doRender, 200);
-  process.stdout.on("resize", () => {
-    fakeStdout.columns = process.stdout.columns || 80;
-    fakeStdout.rows = process.stdout.rows || 24;
-    fakeStdout.emit("resize");
+  setTimeout(() => scheduleFullPaint(), 200);
+
+  const onResize = () => {
+    syncTerminalSize(true);
+    const cols = process.stdout.columns || 80;
+    const rows = process.stdout.rows || 24;
     process.stdout.write("\x1b[2J\x1b[H");
-    setTimeout(() => renderWithSelection(process.stdout.columns || 80, process.stdout.rows || 24), 150);
-  });
+    setTimeout(() => renderWithSelection(process.stdout.columns || cols, process.stdout.rows || rows, { selectionOnly: false }), 40);
+    setTimeout(() => scheduleFullPaint(), 160);
+  };
+  process.stdout.on("resize", onResize);
+  process.on("SIGWINCH", onResize);
   waitUntilExit().then(() => {
     process.stdout.write("\x1b[?25h\x1b[?1006l\x1b[?1003l\x1b[?1049l");
     process.exit(0);

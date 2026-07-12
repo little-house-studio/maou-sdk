@@ -7,5 +7,5 @@
   "round_limit": 25,
   "max_retries": 8,
   "terminal_mode": "auto",
-  "tools": ["reader", "write_file", "edit_file", "glob", "grep", "find_code", "use_terminal", "task_finish"]
+  "tools": ["reader", "write_file", "edit_file", "glob", "grep", "find_code", "use_terminal", "todo_finish"]
 }

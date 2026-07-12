@@ -119,6 +119,41 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
     }
   } else {
     for (const msg of sessionMessages) {
+      // 后台终端完成通知：session 存 role=tool，但 call id 是合成的、历史上无对应 assistant.tool_calls。
+      // 发给 LLM 前插入合成 assistant tool_call，保证 tool 角色合法，且语义仍是工具结果（非 user）。
+      const isTermNotify =
+        msg.role === "tool" &&
+        (msg.source === "terminal-notification" ||
+          (typeof msg.toolCallId === "string" && msg.toolCallId.startsWith("term_notify_")) ||
+          (typeof msg.tool_call_id === "string" && String(msg.tool_call_id).startsWith("term_notify_")));
+
+      if (isTermNotify) {
+        const callId = String(msg.toolCallId ?? msg.tool_call_id ?? `term_notify_${messages.length}`);
+        const params =
+          (msg.tool_parameters as Record<string, unknown> | undefined) ??
+          { event: "background_complete", terminal_id: msg.terminal_id };
+        messages.push({
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: callId,
+              type: "function",
+              function: {
+                name: String(msg.tool_name ?? "use_terminal"),
+                arguments: JSON.stringify(params),
+              },
+            },
+          ],
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: callId,
+          content: msg.content,
+        });
+        continue;
+      }
+
       const entry: Record<string, unknown> = {
         role: msg.role,
         content: msg.content,
@@ -136,6 +171,8 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
       }
       if (msg.toolCallId) {
         entry.tool_call_id = msg.toolCallId;
+      } else if (msg.tool_call_id) {
+        entry.tool_call_id = msg.tool_call_id;
       }
       messages.push(entry);
 

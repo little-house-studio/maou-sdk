@@ -33,7 +33,7 @@ export {
   cleanupWorkspaceLsp,
 } from './code/lsp/tool.js'
 
-// 终端审批策略（normal/auto/yolo + 黑白名单 + 小模型审核器注入 + 交互式审批器注入）
+// 操作安全（三层门禁 + DCG + 审批策略）— 统一从 security/ 导出
 export {
   setTerminalPolicyRoot,
   setTerminalReviewer,
@@ -45,12 +45,40 @@ export {
   decideCommand as decideTerminalCommand,
   normalizeCommand as normalizeTerminalCommand,
   commandPrefix as terminalCommandPrefix,
-} from './terminal/terminal-policy.js'
-export type { TerminalMode, TerminalReviewer, TerminalApprover, PolicyAction, PolicyDecision } from './terminal/terminal-policy.js'
+  gateTerminalCommand,
+  assessCommandSecurity,
+  evaluateWithDcg,
+  checkLocalSecurityRules,
+  checkMaouHardDeny,
+} from './security/index.js'
+export type {
+  TerminalMode,
+  TerminalReviewer,
+  TerminalApprover,
+  PolicyAction,
+  PolicyDecision,
+  SecurityTier,
+  SecurityAssessment,
+  SecurityGateResult,
+} from './security/index.js'
 
 // 技能管理（从 context 下放到此；context 包会从这里再导出）
-export { SkillScanner, SkillContextManager } from './skill-context.js'
-export type { SkillEntry, SkillChange, SkillContextResult } from './skill-context.js'
+export {
+  SkillScanner,
+  SkillContextManager,
+  setDefaultSkillScanOptions,
+  getDefaultSkillScanOptions,
+  resolveSkillScanOptions,
+  getSystemNpmSkillDirs,
+  skillNameFromPath,
+} from './skill-context.js'
+export type {
+  SkillEntry,
+  SkillChange,
+  SkillContextResult,
+  SkillScanOptions,
+  SkillSource,
+} from './skill-context.js'
 
 // ── 动态工具加载器 ──
 export { DynamicToolLoader } from './dynamic-tool-loader.js'
@@ -69,10 +97,31 @@ export {
 } from './compress/output-compressor.js'
 export type { CompressOptions, CompressLevel } from './compress/output-compressor.js'
 
-// ── 任务规划管理器（TaskManager 单例 + TaskScheduler 依赖链推进）──
+// ── 会话级 Todo 清单 + 编排（TaskManager + TodoOrchestrator）──
 // 注：TaskManager 通过 setPersistCallback 解耦持久化（由调用方注入回调）
-export { TASK_MANAGER, TaskManager, TaskScheduler } from './task/task_manage/tool.js'
-export type { Task } from './task/task_manage/tool.js'
+// 内部仍写 task_plan.json；调度见 core/agent/docs/TODO_ORCHESTRATOR.md
+export { TASK_MANAGER, TODO_MANAGER, TaskManager, TaskScheduler, TodoManageTool, TaskManageTool } from './task/task_manage/tool.js'
+export type { Task, TodoItem } from './task/task_manage/tool.js'
+export { TodoFinishTool, TaskFinishTool } from './task/task_finish/tool.js'
+export { TodoOrchestrator, TODO_ORCHESTRATOR } from './task/todo-orchestrator.js'
+export type { TodoForkRunner } from './task/todo-orchestrator.js'
+export type {
+  TodoEvent,
+  TodoEventType,
+  TodoLane,
+  TodoNotice,
+  TodoNoticeKind,
+  TodoPlanMeta,
+  TodoFinishInput,
+  TodoNodeStatus,
+  LaneKind,
+  LaneStatus,
+} from './task/todo-types.js'
+export {
+  formatTodoNoticeMessage,
+  preprocessTodoSlash,
+  buildPlanRequiredNotice,
+} from './task/todo-notice.js'
 
 // ── 文件编辑历史 + 回退（diff 标记，支撑「被影响文件的回退机制」）──
 export {

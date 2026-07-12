@@ -35,7 +35,7 @@ export class LspTool extends Tool {
       "- rename：安全重命名预览（只返回会改哪些位置，不写盘）。\n" +
       "- completion：代码补全。\n" +
       "- symbols/workspace_symbols：列文件符号 / 全工程搜符号。\n" +
-      "支持 TS/JS/Python/Rust 等（按文件扩展名自动选语言服务器）。",
+      "按文件扩展名/特殊文件名自动选语言服务器。内置含 TS/JS/Vue/Svelte/Python/Rust/Go/C/C++/Java/Kotlin/C#/PHP/Ruby/SQL/Dockerfile/Terraform/Solidity 等 50+ 语言；未装对应 server 会提示安装命令。",
     parameters: {
       type: "object",
       properties: {

@@ -41,7 +41,7 @@ export type {
 
 // ── Token 用量追踪与费用计算 ──────────────────────────────────────────────
 
-export { TokenTracker } from "./token-tracker.js";
+export { TokenTracker, uncachedInputTokens } from "./token-tracker.js";
 export type {
   TokenUsage,
   PricingInfo,

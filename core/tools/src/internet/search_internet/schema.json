@@ -1,33 +1,28 @@
 {
   "name": "search_internet",
-  "description": "搜索互联网，返回实时结果。每次同时传入多个子查询并发搜索以获取全面信息，必须指定时间范围。",
+  "description": "搜索互联网，返回按可靠性与时效排序的实时结果。支持多子查询并发、时间窗口、垂直分类。摘要不可当最终事实，重要信息请打开链接核实。",
   "parameters": {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "主搜索词。"
+        "description": "主搜索词。宜短、具体；技术问题加版本号或项目名。"
       },
       "reason": {
         "type": "string",
-        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+        "description": "为何必须联网（可选，便于审计）。"
       },
       "sub_queries": {
         "type": "array",
         "items": {
           "type": "string"
         },
-        "description": "附加子查询列表。复杂问题拆成多个具体子查询并发搜索，效果更好。"
+        "description": "附加子查询列表（最多 4）。复杂问题拆多角度并发，效果更好。例：主 query「React 19」+ sub_queries [\"React 19 breaking changes\", \"React 19 migration\"]。"
       },
       "time": {
         "type": "string",
-        "enum": [
-          "d",
-          "w",
-          "m",
-          "y"
-        ],
-        "description": "时间范围。d=近24小时, w=近一周, m=近一月, y=近一年。"
+        "enum": ["d", "w", "m", "y"],
+        "description": "时效窗口。d=近24小时, w=近一周, m=近一月, y=近一年。查最新动态务必用 d 或 w。"
       },
       "category": {
         "type": "string",
@@ -41,15 +36,14 @@
           "video",
           "general"
         ],
-        "description": "搜索内容分类，自动限定搜索到该分类下的核心站点。coding=编程资源(GitHub/SO/npm/PyPI/MDN), academic=学术权威(Arxiv/Scholar/Wikipedia/IEEE), knowledge=知识经验(知乎/Reddit/HN/Quora), news=资讯新闻(Google News/36kr/TechCrunch), tools=工具资讯(ProductHunt/AlternativeTo/V2EX/少数派), social=社交媒体(Twitter/微博/Reddit), video=视频教程(YouTube/B站), general=不限(默认)"
+        "description": "垂直源：coding=GitHub/SO/npm/MDN 等 API 合并；tools=GitHub/Docker/dev.to；academic=Arxiv/Wiki；news=HN/Google News；knowledge=HN/SO；video=YouTube；general=全网。"
+      },
+      "max_results": {
+        "type": "number",
+        "description": "返回条数上限，默认 10，最大 15。"
       }
     },
-    "required": [
-      "query",
-      "sub_queries",
-      "time",
-      "reason"
-    ],
+    "required": ["query"],
     "additionalProperties": false
   }
 }

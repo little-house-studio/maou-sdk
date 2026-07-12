@@ -210,7 +210,8 @@ const DEFAULT_PROJECT_AGENT_TEMPLATE: ProjectAgentTemplate = {
     "search_internet",
     "use_skill",
     "find_skill",
-    "task_finish",
+    "todo_manage",
+    "todo_finish",
   ],
   systemPrompt: `# 编程 Agent
 
@@ -224,7 +225,7 @@ const DEFAULT_PROJECT_AGENT_TEMPLATE: ProjectAgentTemplate = {
 ## 工具纪律
 - 只使用授权工具（见工具白名单）。读文件优先 read，检索优先 grep/glob，跑命令用 bash/terminal。
 - 破坏性或对外操作（删除、覆盖、推送）先确认，除非已被明确授权。
-- 完成一个完整任务后调用 task_finish 收尾。
+- 多步骤复杂需求先用 todo_manage 建清单；每完成一项调用 todo_finish；全部完成后回复用户。
 
 ## 输出
 - 用简洁中文说明你做了什么、为什么、验证结果。引用代码用 file_path:line 形式。

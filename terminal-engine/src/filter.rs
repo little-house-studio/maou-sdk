@@ -1,33 +1,28 @@
 /**
- * filter.rs — 命令过滤系统
+ * filter.rs — 命令过滤系统（引擎层兜底）
  *
- * 1. 预设黑名单（危险命令）
- * 2. 自定义黑名单（regex）
- * 3. 自定义白名单（regex，覆盖黑名单）
- * 4. 文件加载（JSON 配置）
+ * 破坏性命令的主策略已迁移到 TypeScript 层的 **DCG**（Destructive Command Guard）
+ * + maou-hard-deny。本模块保留：
+ *   1. 可选预设黑名单（默认 **关闭**，避免与 DCG 双拦/规则落后）
+ *   2. 自定义黑名单（regex）
+ *   3. 自定义白名单（regex，覆盖黑名单）
+ *   4. 白名单模式 / JSON 配置加载
+ *
+ * 预设列表仅作 DCG 不可用时的紧急兜底（手动打开 preset_blacklist_enabled）。
  */
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// 预设危险命令黑名单（不可移除，只能被白名单覆盖）
+/// 紧急兜底预设（默认关闭；完整规则见 DCG packs + maou-hard-deny）
 const PRESET_BLACKLIST: &[&str] = &[
     r"rm\s+-rf\s+/",          // rm -rf /
     r"rm\s+-rf\s+~",          // rm -rf ~
-    r"rm\s+-rf\s+\*",         // rm -rf *
     r"mkfs\.",                // mkfs.*
     r"dd\s+if=.*of=/dev/",    // dd to device
-    r">\s*/dev/sd",           // write to disk device
-    r"shutdown",              // shutdown
-    r"reboot",                // reboot
-    r"halt",                  // halt
-    r"init\s+0",              // init 0
-    r"init\s+6",              // init 6
     r":\(\)\{\s*:\|:&\s*\};:",// fork bomb
-    r"mv\s+/dev/null\s+/",    // mv /dev/null to root
-    r"chmod\s+-R\s+777\s+/",  // chmod -R 777 /
-    r"chown\s+-R\s+.*\s+/",   // chown -R to root
+    r"\b(shutdown|reboot|halt|poweroff)\b",
 ];
 
 /// 过滤器配置
@@ -46,7 +41,8 @@ pub struct FilterConfig {
 impl Default for FilterConfig {
     fn default() -> Self {
         Self {
-            preset_blacklist_enabled: true,
+            // 默认关：主路径用 DCG；需要引擎层兜底时显式打开
+            preset_blacklist_enabled: false,
             blacklist: Vec::new(),
             whitelist: Vec::new(),
             whitelist_mode: false,

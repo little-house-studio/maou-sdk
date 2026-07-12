@@ -64,8 +64,9 @@
     - `add_skill` 🚧 — 创建/添加技能（占位）
     - `god_tool/skill` 🚧 — 统一入口（占位）
 - `task/` — 任务调度
-    - `task_manage` ✅ — 任务管理（依赖链自动推进）
-    - `task_finish` ✅ — 汇报任务完成
+    - `todo_manage` ✅ — 会话级 todo 清单（依赖链自动推进；别名 task_manage）
+    - `todo_finish` ✅ — 汇报单条 todo 完成（别名 task_finish）
+    - **编排目标态**（全自动 fork / 动态链合并 / notice 注入 / 调试页）：见 [`../agent/docs/TODO_ORCHESTRATOR.md`](../agent/docs/TODO_ORCHESTRATOR.md)
     - `god_tool/task` 🚧 — 统一入口（占位）
 - `terminal/` — 终端
     - `use_terminal` ✅ — 执行 shell 命令 / 管理常驻终端

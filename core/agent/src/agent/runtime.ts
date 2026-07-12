@@ -48,7 +48,28 @@ import { MessageBus } from "./message-bus.js";
 import type { ToolRegistry, ToolExecutor } from "@little-house-studio/tools";
 import type { ToolContext } from "@little-house-studio/tools";
 import { collectDiff, formatDiffForReport } from "@little-house-studio/tools";
-import { cleanupAgentTerminals, listTerminals, getTerminalLogs, setTerminalMode, SkillContextManager, TASK_MANAGER, createSubagentDelegateTool } from "@little-house-studio/tools";
+import {
+  cleanupAgentTerminals,
+  listTerminals,
+  getTerminalLogs,
+  setTerminalMode,
+  SkillContextManager,
+  TASK_MANAGER,
+  TODO_ORCHESTRATOR,
+  createSubagentDelegateTool,
+  formatTodoNoticeMessage,
+  preprocessTodoSlash,
+  buildPlanRequiredNotice,
+} from "@little-house-studio/tools";
+import {
+  appendSessionEvent,
+  authorHuman,
+  authorAgent,
+  authorSystem,
+  authorTool,
+} from "@little-house-studio/context";
+import type { AgentSkillOptions } from "../bootstrap/skills.js";
+import { createAgentSkillManager, applyAgentSkillOptions } from "../bootstrap/skills.js";
 import type { SubagentExecutorLike } from "@little-house-studio/types";
 import type { StreamEvent } from "@little-house-studio/types";
 import { Profiler } from "@little-house-studio/types";
@@ -137,8 +158,13 @@ export interface RuntimeOptions {
   createMemoryStore?: (maouRoot: string, agentName: string) => MemoryStore;
   /** TokenTracker 工厂（缺省 new TokenTracker(maouRoot, agentName, preset)） */
   createTokenTracker?: (maouRoot: string, agentName: string, preset: Record<string, unknown>) => TokenTracker;
-  /** SkillContextManager 工厂（缺省 new SkillContextManager(agentName, projectRoot, maouRoot)） */
+  /** SkillContextManager 工厂（缺省 createAgentSkillManager + skillOptions） */
   createSkillManager?: (agentName: string, projectRoot: string, maouRoot: string) => SkillContextManager;
+  /**
+   * Skill 扫描 / 白名单（Agent 层）。
+   * includeSystemNpmSkills 默认 true → 扫描 ~/.agents/skills 等 NPM 全局路径。
+   */
+  skillOptions?: AgentSkillOptions;
 }
 
 export interface ModelCallParams {
@@ -260,6 +286,7 @@ export class AgentRuntime {
   private createMemoryStoreFn: (maouRoot: string, agentName: string) => MemoryStore;
   private createTokenTrackerFn: (maouRoot: string, agentName: string, preset: Record<string, unknown>) => TokenTracker;
   private createSkillManagerFn: (agentName: string, projectRoot: string, maouRoot: string) => SkillContextManager;
+  private skillOptions?: AgentSkillOptions;
 
   constructor(options: RuntimeOptions) {
     this.compiler = options.compiler;
@@ -286,7 +313,12 @@ export class AgentRuntime {
     this.createCheckpointStoreFn = options.createCheckpointStore ?? ((s) => new CheckpointStore(s));
     this.createMemoryStoreFn = options.createMemoryStore ?? ((r, n) => new MemoryStore(r, n));
     this.createTokenTrackerFn = options.createTokenTracker ?? ((r, n, p) => new TokenTracker(r, n, p));
-    this.createSkillManagerFn = options.createSkillManager ?? ((n, p, r) => new SkillContextManager(n, p, r));
+    // skill 选项：先写入 tools 默认，保证 use_skill 与 bake 同口径
+    applyAgentSkillOptions(options.skillOptions);
+    this.skillOptions = options.skillOptions;
+    this.createSkillManagerFn =
+      options.createSkillManager ??
+      ((n, p, r) => createAgentSkillManager(n, p, r, this.skillOptions));
 
     // 注入 interrupt 回调：interrupt 模式 enqueue 时自动 abort 当前 run
     // （未注入时只返回 shouldAbort=true，需调用方自行 abort）
@@ -813,9 +845,25 @@ export class AgentRuntime {
     }
     endToolSetup();
 
-    // ── 将用户消息写入 session（供后续请求回溯历史） ──
-    this.sessions.appendMessage(sessionId!, "user", userMessage);
-    this.hooks?.preMessage({ role: "user", content: userMessage } as any);
+    // ── /todo：清洗指令词 + 靠后追加 plan_required notice（不改 system，保 cache）──
+    const todoPre = preprocessTodoSlash(userMessage);
+    let effectiveUserMessage = todoPre.message;
+    if (todoPre.requirePlan) {
+      const notice = buildPlanRequiredNotice();
+      notice.targetSessionId = sessionId!;
+      effectiveUserMessage = `${effectiveUserMessage}\n\n${formatTodoNoticeMessage(notice)}`;
+      yield this.logEvent("info", "[todo] /todo 已注入 plan_required system_notice");
+    }
+
+    // ── 将用户消息写入 session（kind=human_user, author=human）──
+    appendSessionEvent(this.sessions, sessionId!, {
+      kind: "human_user",
+      content: effectiveUserMessage,
+      source: "human",
+      author: authorHuman("user", "user"),
+      meta: todoPre.requirePlan ? { had_todo_slash: true } : undefined,
+    });
+    this.hooks?.preMessage({ role: "user", content: effectiveUserMessage } as any);
 
     // ── 3. Agent 循环 ──
     let roundCount = 0;
@@ -848,10 +896,19 @@ export class AgentRuntime {
         const tagged = busMsg.replyTo
           ? `[来自 ${busMsg.from}（回复 ${busMsg.replyTo.slice(0, 8)}）]\n${busMsg.body}`
           : `[来自 ${busMsg.from}]\n${busMsg.body}`;
-        this.sessions.appendMessage(sessionId!, "user", tagged, {
+        appendSessionEvent(this.sessions, sessionId!, {
+          kind: "agent_message",
+          content: tagged,
           source: "message_bus",
+          author: authorAgent(busMsg.from, busMsg.from),
+          meta: { from: busMsg.from, busMessageId: busMsg.id },
+        });
+        yield this.event("session_inject", {
+          kind: "agent_message",
+          source: "message_bus",
+          content: tagged,
           from: busMsg.from,
-          busMessageId: busMsg.id,
+          author: { type: "agent", id: busMsg.from, displayName: busMsg.from },
         });
         yield this.logEvent("info", `📬 收到 ${busMsg.from} → ${runAgentName} 的总线消息，已注入 session`);
       }
@@ -914,7 +971,9 @@ export class AgentRuntime {
       this.log("info", `[RUN] round ${roundCount + 1} start`);
       this.hooks?.agentStart(roundCount + 1);
 
-      // ── 3a-pre. 注入后台终端完成/超时通知 ──
+      // ── 3a-pre. 注入后台终端完成/超时通知（工具类消息，非 user）──
+      // 落盘 role=tool + source=terminal-notification；CLI 作 ToolCard；
+      // LLM 侧 message-builder 会为无配对 tool_call 的通知补合成 assistant.tool_calls，保证 API 合法。
       {
         const bgTerminals = listTerminals(agentName);
         for (const t of bgTerminals) {
@@ -924,18 +983,60 @@ export class AgentRuntime {
 
           notifiedBgCompletions.add(t.id);
           const output = await getTerminalLogs(t.id, agentName, 2000);
-          const status =
+          const statusLabel =
             t.state === "killed" ? "已终止" :
             t.exitCode === 0 ? "已完成" :
             t.exitCode != null ? `已失败(退出码${t.exitCode})` : "已结束";
+          const ok = t.exitCode === 0 || (t.exitCode == null && t.state !== "killed");
           const content =
             `<terminal-message>\n` +
-            `终端「${t.description}」(ID: ${t.id}) ${status}。\n` +
+            `终端「${t.description}」(ID: ${t.id}) ${statusLabel}。\n` +
             (output ? `\n输出:\n${output}\n` : "") +
             `</terminal-message>`;
-          this.sessions.appendMessage(sessionId!, "user", content, {
+          // 合成 tool_call_id：异步通知不绑原 tool_call（原 call 可能已用占位 tool_result 回过）
+          const notifyCallId = `term_notify_${t.id}_${Date.now().toString(36)}`;
+          appendSessionEvent(this.sessions, sessionId!, {
+            kind: "tool_async_notify",
+            wireRole: "tool",
+            content,
             source: "terminal-notification",
-            terminal_id: t.id,
+            author: authorTool("use_terminal", "use_terminal"),
+            meta: {
+              terminal_id: t.id,
+              tool_name: "use_terminal",
+              toolCallId: notifyCallId,
+              tool_call_id: notifyCallId,
+              tool_ok: ok,
+              ok,
+              tool_parameters: {
+                event: "background_complete",
+                terminal_id: t.id,
+                description: t.description,
+                exit_code: t.exitCode,
+                state: t.state,
+              },
+            },
+          });
+          // 实时 UI：先 tool_call 再 tool_result，挂到当前 assistant 作工具卡（非 user 气泡）
+          yield this.event("tool_call", {
+            tool: {
+              id: notifyCallId,
+              name: "use_terminal",
+              parameters: {
+                event: "background_complete",
+                terminal_id: t.id,
+                description: t.description,
+              },
+            },
+            round: roundCount + 1,
+          });
+          yield this.event("tool_result", {
+            toolCallId: notifyCallId,
+            name: "use_terminal",
+            content,
+            ok,
+            round: roundCount + 1,
+            source: "terminal-notification",
           });
         }
       }
@@ -1221,6 +1322,10 @@ export class AgentRuntime {
       }
       lastRoundToolSummary = Object.entries(runToolCounts).map(([n, c]) => `${n}×${c}`).join("、");
       this.sessions.appendMessage(sessionId!, "assistant", contentToUse, {
+        kind: "assistant_turn",
+        source: "assistant",
+        author: authorAgent(runAgentName || agentName || "assistant", runAgentName || agentName || "ai"),
+        agentName: runAgentName || agentName,
         round: currentRound,
         retry_count: result.retryIndex,
         raw_response: result.rawResponse,
@@ -1259,12 +1364,27 @@ export class AgentRuntime {
           // 角色区分提示：supervisor 该调 chat_main/verify；主 agent 该调 write_file 等
           const hint = isSupervisorActive
             ? "你是监督 Agent，**禁止只输出文字**，必须立刻调用工具。若要派活给主 Agent，现在就调 supervisor_chat_main(message=\"派活内容\")；若主 Agent 已汇报，调 supervisor_task_control(action=verify, round_report=\"汇报内容\")；若验收合格，调 supervisor_task_control(action=confirm_end)。"
-            : "请继续执行任务——直接调用工具（write_file/edit_file/use_terminal 等）开始具体操作，不要只思考或只输出文字。当前是 yolo 模式，use_terminal 可自由跑 npm install/build/test 等命令，不会被拦截。如果任务已完成，调用 task_finish。";
+            : "请继续执行任务——直接调用工具（write_file/edit_file/use_terminal 等）开始具体操作，不要只思考或只输出文字。当前是 yolo 模式，use_terminal 可自由跑 npm install/build/test 等命令，不会被拦截。若有 todo 清单且当前项已完成，调用 todo_finish；全部完成后回复用户。";
+          // todo 线路空转：额外 nudge（靠后 system_notice）
+          try {
+            TODO_ORCHESTRATOR.evaluateNudge(sessionId!, sessionId!, false);
+            this.flushTodoNotices(sessionId!);
+          } catch { /* ignore */ }
           yield this.logEvent("warning", `[RUN] session=${sessionId} 检测到${reason}（${emptyResponseRetries}/${MAX_EMPTY_RETRIES}），注入 <continue> 重试`);
-          this.sessions.appendMessage(sessionId!, "user",
-            `<continue>你上一轮${reason}。${hint}</continue>`,
-            { source: "empty_retry", round: currentRound },
-          );
+          appendSessionEvent(this.sessions, sessionId!, {
+            kind: "runtime_control",
+            content: `<continue>你上一轮${reason}。${hint}</continue>`,
+            source: "empty_retry",
+            author: authorSystem("runtime", "runtime"),
+            meta: { round: currentRound },
+          });
+          yield this.event("session_inject", {
+            kind: "runtime_control",
+            source: "empty_retry",
+            content: `继续：${reason}`,
+            round: currentRound,
+            author: { type: "system", id: "runtime", displayName: "runtime" },
+          });
           this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
@@ -1303,7 +1423,7 @@ export class AgentRuntime {
           preset, // 当前轮 preset（供 ToolContext.mainPreset，避免实例字段被嵌套 run 污染）
         );
 
-        // task_complete phase：本轮若有工具完成（尤其 task_finish），且全部 task 已完成，
+        // task_complete phase：本轮若有工具完成（尤其 todo_finish），且全部 todo 已完成，
         // 立即投递 after_task_complete 模式的消息（不必等 loop_end 兜底）。
         if (this.checkAllTasksComplete(sessionId!)) {
           const taskCompleteMessages = this.messageQueue.dequeueIfReady(sessionId!, "task_complete", {
@@ -1337,7 +1457,20 @@ export class AgentRuntime {
           yield this.logEvent("warning", `验证未通过（exit=${v.code}），注入失败结果让模型修复（${verifyAttempts}/${MAX_VERIFY_FIX}）`);
           const note =
             `<verification-failed>\n命令 \`${verifyCommand}\` 失败（exit=${v.code}）。请修复以下问题后再结束：\n\n${v.output}\n</verification-failed>`;
-          this.sessions.appendMessage(sessionId!, "user", note, { source: "verification", round: currentRound });
+          appendSessionEvent(this.sessions, sessionId!, {
+            kind: "runtime_control",
+            content: note,
+            source: "verification",
+            author: authorSystem("verify", "verify"),
+            meta: { round: currentRound },
+          });
+          yield this.event("session_inject", {
+            kind: "runtime_control",
+            source: "verification",
+            content: note.slice(0, 200),
+            round: currentRound,
+            author: { type: "system", id: "verify", displayName: "verify" },
+          });
           yield this.event("verification", { ok: false, command: verifyCommand, attempt: verifyAttempts });
           this.hooks?.agentStop(currentRound);
           roundCount++;
@@ -1632,6 +1765,9 @@ export class AgentRuntime {
       pluginSettings: {},
       workingDir: workingDir ?? this.projectRoot,  // agent 工作目录（终端、文件读写）
       compressionLevel,
+      // skill 扫描与 bake 同口径（use_skill / find_skill 读取）
+      maouRoot: this.maouRoot,
+      skillOptions: this.skillOptions,
       // 注入 SubagentExecutor（若 harness 配置了 runFn）—— agent_message 工具据此真并行 fork
       // 同时设置 parentSessionId，让 fork 时生成的子 sessionId 关联到当前 session
       subagentExecutor: this.subagentExecutor
@@ -1678,7 +1814,7 @@ export class AgentRuntime {
     // 保证下一轮 LLM 看到的工具结果顺序与调用顺序一致。
     //
     // 收集本轮所有「真实执行」（非 background）工具的 ok 状态，
-    // 用于 endsLoop 判定时考虑执行失败（task_finish 失败时不应退出 loop）。
+    // 用于 endsLoop 判定时考虑执行失败（todo_finish 失败时不应退出 loop）。
     const executedTools: { name: string; ok: boolean }[] = [];
 
     let i = 0;
@@ -1750,24 +1886,31 @@ export class AgentRuntime {
 
     // ③ per-tool loop 控制 + task 表接管 loop 条件（#2）：
     // 优先用模板的 loop.ts 脚本（shouldContinueLoop）自定义判定；无脚本则走内联逻辑：
-    // 一轮内若所有被调工具都是 endsLoop（收尾型，如 task_finish），默认结束 loop；
-    // 但若当前 session 的 task 表还有未完成 todo，强制继续下一轮——
-    // 让 AI 必须把所有规划任务做完才能退出（task 表接管 loop 条件）。
+    // 一轮内若所有被调工具都是 endsLoop（收尾型，如 todo_finish），默认结束 loop；
+    // 但若当前 session 的 todo 清单还有未完成项，强制继续下一轮——
+    // 让 AI 必须把所有规划 todo 做完才能退出（todo 清单接管 loop 条件）。
     //
-    // 失败兜底（致命#3）：endsLoop 工具执行失败（ok=false）时，不退出 loop，
-    // 让 AI 看到错误信息后继续处理（否则 task_finish 失败也会退出 loop，用户卡死）。
+    // 失败兜底：endsLoop 工具执行失败（ok=false）时，不退出 loop，
+    // 让 AI 看到错误信息后继续处理（否则 todo_finish 失败也会退出 loop，用户卡死）。
     const toolCallsCtx = toolCalls.map((tc) => ({ name: tc.name, endsLoop: this.toolEndsLoop(tc.name) }));
     const endsLoopFailed = executedTools.some(
       (t) => this.toolEndsLoop(t.name) && t.ok === false,
     );
     let tasksIncomplete = false;
     try {
-      const tasks = TASK_MANAGER.getTasks(sessionId);
-      tasksIncomplete = tasks.length > 0 && !tasks.every((t) => t.status === "completed");
+      const root = TODO_ORCHESTRATOR.resolveRootSession(sessionId);
+      const tasks = TASK_MANAGER.getTasks(root);
+      // 仍有 pending/in_progress 则未完成；failed/cancelled/completed 均为终态
+      tasksIncomplete =
+        tasks.length > 0 &&
+        tasks.some((t) => t.status === "pending" || t.status === "in_progress");
     } catch (err) {
       // 读取失败不应中断整个 run：降级为"无未完成任务"，让 endsLoop 正常判定。
       this.log("warn", `[Runtime] TaskManager 读取失败，降级为无未完成任务: ${err}`);
     }
+
+    // 工具结果之后：注入 todo system_notice + 可能的 nudge（在 loop 判定前，保证下一轮可见）
+    this.afterTodoTools(sessionId, toolCalls.length > 0);
 
     // 优先：模板 loop.ts 脚本自定义判定
     const loopScript = await this._loadLoopScript(agentName);
@@ -1827,7 +1970,7 @@ export class AgentRuntime {
     return script;
   }
 
-  /** 该工具调用后是否终止 loop（收尾型，如 task_finish）。 */
+  /** 该工具调用后是否终止 loop（收尾型，如 todo_finish）。 */
   private toolEndsLoop(name: string): boolean {
     try {
       return Boolean(this.tools.get(name)?.definition.endsLoop);
@@ -1943,11 +2086,62 @@ export class AgentRuntime {
    */
   private checkAllTasksComplete(sessionId: string): boolean {
     try {
-      const tasks = TASK_MANAGER.getTasks(sessionId);
+      const root = TODO_ORCHESTRATOR.resolveRootSession(sessionId);
+      const tasks = TASK_MANAGER.getTasks(root);
       if (tasks.length === 0) return false;
-      return tasks.every((t) => t.status === "completed");
+      // 全部终态（含 failed）即 plan settled
+      return tasks.every(
+        (t) =>
+          t.status === "completed" ||
+          t.status === "failed" ||
+          t.status === "cancelled",
+      );
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * 将 TodoOrchestrator 待投递 notice 追加为靠后 user 消息（保护 prompt cache）。
+   * 仅注入 targetSessionId === 当前 session 的条目；其余 requeue。
+   */
+  private flushTodoNotices(sessionId: string): number {
+    try {
+      const notices = TODO_ORCHESTRATOR.drainNotices(sessionId);
+      if (notices.length === 0) return 0;
+      let n = 0;
+      const requeue: typeof notices = [];
+      for (const notice of notices) {
+        const target = notice.targetSessionId || sessionId;
+        if (target === sessionId) {
+          const body = formatTodoNoticeMessage(notice);
+          appendSessionEvent(this.sessions, sessionId, {
+            kind: "system_notice",
+            content: body,
+            source: "todo_notice",
+            author: authorSystem("todo", "todo"),
+            meta: { notice_kind: notice.kind, plan_id: notice.planId, lane_id: notice.laneId },
+          });
+          n++;
+        } else {
+          requeue.push(notice);
+        }
+      }
+      TODO_ORCHESTRATOR.requeueNotices(sessionId, requeue);
+      return n;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** 工具轮次后：flush notice + 空转催促 */
+  private afterTodoTools(sessionId: string, hadToolCalls: boolean): void {
+    this.flushTodoNotices(sessionId);
+    try {
+      TODO_ORCHESTRATOR.evaluateNudge(sessionId, sessionId, hadToolCalls);
+      this.flushTodoNotices(sessionId);
+    } catch {
+      /* ignore */
     }
   }
 
@@ -2147,6 +2341,9 @@ export class AgentRuntime {
       }
 
       const toolMeta: Record<string, unknown> = {
+        kind: "tool_result",
+        source: "tool",
+        author: authorTool(toolCall.name, toolCall.name),
         round, toolCallId: toolCall.id, tool_name: toolCall.name,
         tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
         tool_ok: res.result.ok,

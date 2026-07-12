@@ -17,7 +17,7 @@ import { create } from "zustand";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { UIState, ChatMessage, SystemEvent, Toast, CompletionState, SupervisorState } from "./types.js";
 import type { CompletionItem } from "../overlay/Completer.js";
-import { complete } from "../overlay/Completer.js";
+import { complete, applyCompletion } from "../overlay/Completer.js";
 import { reduce } from "./reducer.js";
 import { dispatchDisplayEvent } from "../events/display-events.js";
 import { SUPERVISOR_MANAGER } from "@little-house-studio/agent";
@@ -25,6 +25,8 @@ import { SUPERVISOR_MANAGER } from "@little-house-studio/agent";
 interface Store extends UIState {
   setAgentMeta: (agentName: string, provider: string, model: string, maxContext: number) => void;
   setThinking: (level: number) => void;
+  setApprovalMode: (mode: UIState["approvalMode"]) => void;
+  cycleApprovalMode: () => UIState["approvalMode"];
   setOverlay: (kind: UIState["overlay"]) => void;
   setSessionId: (id: string | null) => void;
   setProviderModel: (p: string, m: string) => void;
@@ -61,11 +63,14 @@ interface Store extends UIState {
   chatScrollOffset: number;          // 当前滚动偏移（0=底部看最新）
   maxChatScroll: number;             // 最大滚动偏移（contentHeight - viewportHeight，组件回写）
   autoFollow: boolean;               // 是否自动跟随底部（新消息到达时滚到底）
-  scrollChat: (dir: "up" | "down") => void;
+  scrollChat: (dir: "up" | "down", step?: number) => void;
   setChatScrollOffset: (n: number) => void;
   setMaxChatScroll: (n: number, followGrowth?: boolean) => void;
   setAutoFollow: (b: boolean) => void;
   scrollToBottom: () => void;
+  /** ScrollHistory 实测消息视口（1-based 屏幕行，不含 ↑预览/↓回底 chrome） */
+  chatViewport: { top: number; bottom: number; height: number } | null;
+  setChatViewport: (v: { top: number; bottom: number; height: number } | null) => void;
   // InputBar 滚轮驱动（内容 >viewportLines 时，鼠标在输入框行内滚轮 → 移光标）
   inputLineCount: number;            // InputBar 当前内容行数（InputBar 上报）
   setInputLineCount: (n: number) => void;
@@ -76,6 +81,9 @@ interface Store extends UIState {
   setInputRect: (r: { left: number; top: number; width: number; height: number } | null) => void;
   inputTextSel: { startIdx: number; endIdx: number } | null;  // 字符索引，按 code point
   setInputTextSel: (s: { startIdx: number; endIdx: number } | null) => void;
+  /** InputBar 草稿（选区复制用字符切片，避免 VRAM 乱码） */
+  inputDraft: string;
+  setInputDraft: (v: string) => void;
   inputSelectCmd: { col: number; line: number; phase: "start" | "extend"; nonce: number } | null;
   dispatchInputSelect: (col: number, line: number, phase: "start" | "extend") => void;
   overlayScrollCmd: { dir: "up" | "down"; nonce: number } | null;
@@ -104,9 +112,16 @@ interface Store extends UIState {
   resetHistoryIndex: () => void;
   // 补全菜单（提升到 store，供 InputBar 与 app.tsx 全局按键共享）
   completion: CompletionState | null;
-  updateCompletion: (input: string) => void;   // 输入变化时重算候选
+  /** 输入/光标变化时重算候选；cursorIndex 为 UTF-16 索引 */
+  updateCompletion: (input: string, cursorIndex?: number) => void;
   cycleCompletion: (dir: "up" | "down") => void;
-  acceptCompletion: (currentInput?: string) => string | null;  // 返回补全后的完整输入文本
+  /**
+   * 接受当前补全。返回新文本 + 新光标索引；失败 null。
+   */
+  acceptCompletion: (
+    currentInput?: string,
+    cursorIndex?: number,
+  ) => { text: string; cursorIndex: number } | null;
   closeCompletion: () => void;
   // ToolCard 展开/折叠时调整滚动偏移（保持卡片头不动）
   expandShift: (delta: number) => void;
@@ -140,6 +155,7 @@ const initialState: UIState = {
   maxContext: 0,
   round: 0,
   thinkingLevel: 2,
+  approvalMode: "normal",
   rounds: [],
   cacheHistory: [],
   currentRoundUsage: { input: 0, output: 0 },
@@ -197,7 +213,20 @@ function saveLastSession(agentName: string, sessionId: string): void {
 
 // 纯 UI 命令白名单（开 overlay / 退出 / 调思考级别）。
 // 其余 /xxx 透传 runtime 由 SDK commandRegistry 识别。
-const LOCAL_COMMANDS = new Set(["model", "sessions", "help", "settings", "agents", "quit", "thinking"]);
+const LOCAL_COMMANDS = new Set([
+  "model",
+  "sessions",
+  "help",
+  "settings",
+  "agents",
+  "quit",
+  "thinking",
+  "prompt",
+]);
+
+/** toast 自动消失计时（模块级，避免连发 toast 时旧 timer 清掉新提示） */
+let _toastTimer: ReturnType<typeof setTimeout> | null = null;
+let _toastGen = 0;
 
 export const useStore = create<Store>((set, get) => ({
   ...initialState,
@@ -205,6 +234,15 @@ export const useStore = create<Store>((set, get) => ({
   setAgentMeta: (agentName, provider, model, maxContext) =>
     set({ agentName, provider, model, maxContext }),
   setThinking: (level) => set({ thinkingLevel: Math.max(0, Math.min(5, level)) }),
+  setApprovalMode: (mode) => set({ approvalMode: mode }),
+  cycleApprovalMode: () => {
+    const order = ["normal", "auto", "yolo"] as const;
+    const cur = get().approvalMode;
+    const i = Math.max(0, order.indexOf(cur as typeof order[number]));
+    const next = order[(i + 1) % order.length]!;
+    set({ approvalMode: next });
+    return next;
+  },
   setOverlay: (overlay) => set({ overlay }),
   setSessionId: (sessionId) => {
     set({ sessionId });
@@ -215,7 +253,15 @@ export const useStore = create<Store>((set, get) => ({
   },
   setProviderModel: (provider, model) => set({ provider, model }),
   pushUserMessage: (text) => set((s) => ({
-    messages: [...s.messages, { id: `u${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, role: "user", content: text, ts: Date.now() }],
+    messages: [...s.messages, {
+      id: `u${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      role: "user",
+      content: text,
+      ts: Date.now(),
+      kind: "human_user" as const,
+      source: "human",
+      author: { type: "human" as const, id: "user", displayName: "user" },
+    }],
     streaming: true,
     currentRoundUsage: { input: 0, output: 0 },
     eventBlock: { mode: "thinking", upTokens: 0, downTokens: 0, detail: undefined },
@@ -223,7 +269,32 @@ export const useStore = create<Store>((set, get) => ({
   clearMessages: () => set({ messages: [], systemEvents: [], currentAssistantId: null, rounds: [], cacheHistory: [], round: 0, sessionId: null, toast: null }),
   setStreaming: (streaming) => set({ streaming }),
   setAborting: (aborting) => set({ aborting }),
-  toastMsg: (text, kind = "info") => set({ toast: { text: text.slice(0, 80), kind } }),
+  toastMsg: (text, kind = "info") => {
+    const t = (text ?? "").trim();
+    // 空串 = 立即清除
+    if (!t) {
+      if (_toastTimer) {
+        clearTimeout(_toastTimer);
+        _toastTimer = null;
+      }
+      set({ toast: null });
+      return;
+    }
+    set({ toast: { text: t.slice(0, 80), kind } });
+    // 自动消失：ok/info 2.2s · warn 3s · err 4s（避免「已复制」一直占位）
+    if (_toastTimer) clearTimeout(_toastTimer);
+    const gen = ++_toastGen;
+    const ms =
+      kind === "err" ? 4000
+      : kind === "warn" ? 3000
+      : 2200;
+    _toastTimer = setTimeout(() => {
+      // 仅清除仍是这一次 toast 的情况（中途又 toast 了则 gen 已变）
+      if (gen !== _toastGen) return;
+      set({ toast: null });
+      _toastTimer = null;
+    }, ms);
+  },
 
   fullEditorInitial: null,
   fullEditorResult: null as string | null,
@@ -241,23 +312,40 @@ export const useStore = create<Store>((set, get) => ({
   isLocalCommand: (id) => LOCAL_COMMANDS.has(id),
 
   runCommand: (id) => {
-    const s = useStore.getState();
+    // 注意：打开 overlay 时不要再 set({ overlay: null })，否则立刻被关掉。
     switch (id) {
-      case "model": s.setOverlay("model"); break;
-      case "sessions": s.setOverlay("sessions"); break;
-      case "help": s.setOverlay("help"); break;
-      case "settings": s.setOverlay("settings"); break;
-      case "agents": s.setOverlay("agents"); break;
-      case "quit": s.requestExit(); break;
+      case "model":
+        set({ overlay: "model" });
+        break;
+      case "sessions":
+        set({ overlay: "sessions" });
+        break;
+      case "help":
+        set({ overlay: "help" });
+        break;
+      case "settings":
+        set({ overlay: "settings" });
+        break;
+      case "agents":
+        set({ overlay: "agents" });
+        break;
+      case "prompt":
+        // 本地预览 system prompt，不进入 messages / LLM 上下文
+        set({ overlay: "prompt" });
+        break;
+      case "quit":
+        get().requestExit();
+        break;
       case "thinking": {
-        const cur = s.thinkingLevel;
-        s.setThinking((cur + 1) % 6);
-        s.toastMsg(`思考级别: ${s.thinkingLevel}`, "info");
+        const cur = get().thinkingLevel;
+        get().setThinking((cur + 1) % 6);
+        get().toastMsg(`思考级别: ${get().thinkingLevel}`, "info");
+        set({ overlay: null }); // 从命令面板进来时关掉面板
         break;
       }
-      default: return;  // 未知命令不关 overlay（透传路径已在 InputBar 处理）
+      default:
+        return;
     }
-    set({ overlay: null });
   },
 
   exitRequested: false,
@@ -275,15 +363,12 @@ export const useStore = create<Store>((set, get) => ({
   chatScrollOffset: 0,
   maxChatScroll: 0,
   autoFollow: true,
-  scrollChat: (dir) => set((s) => {
-    // 一格一行：每次滚轮/边缘滚动只移动 1 行（网页感）
-    const step = 1;
+  scrollChat: (dir, stepArg) => set((s) => {
+    // 默认每格 3 行；拖选边缘自动滚可传 1 更顺
+    const step = Math.max(1, stepArg ?? 3);
     const max = s.maxChatScroll;
-    // 若仍在 autoFollow 钉底，用 offset=0 作起点再往上滚，才能立刻脱离跟随
     const base = s.autoFollow ? 0 : s.chatScrollOffset;
-    // wheelUp（向上看更早）→ offset 增大；wheelDown（向下看更新）→ offset 减小
     const next = Math.max(0, Math.min(max, base + (dir === "up" ? step : -step)));
-    // 用户主动滚到底（offset=0）→ 重启 autoFollow；否则关闭
     const atBottom = next <= 0;
     return { chatScrollOffset: next, autoFollow: atBottom };
   }),
@@ -302,6 +387,17 @@ export const useStore = create<Store>((set, get) => ({
   }),
   setAutoFollow: (b) => set({ autoFollow: b }),
   scrollToBottom: () => set({ chatScrollOffset: 0, autoFollow: true }),
+  chatViewport: null,
+  setChatViewport: (v) => set((s) => {
+    if (!v && !s.chatViewport) return s;
+    if (
+      v && s.chatViewport &&
+      v.top === s.chatViewport.top &&
+      v.bottom === s.chatViewport.bottom &&
+      v.height === s.chatViewport.height
+    ) return s;
+    return { chatViewport: v };
+  }),
 
   inputLineCount: 1,
   setInputLineCount: (n) => set({ inputLineCount: n }),
@@ -311,6 +407,8 @@ export const useStore = create<Store>((set, get) => ({
   setInputRect: (r) => set({ inputRect: r }),
   inputTextSel: null,
   setInputTextSel: (s) => set({ inputTextSel: s }),
+  inputDraft: "",
+  setInputDraft: (v) => set({ inputDraft: v }),
   inputSelectCmd: null,
   dispatchInputSelect: (col, line, phase) => set((s) => ({ inputSelectCmd: { col, line, phase, nonce: (s.inputSelectCmd?.nonce ?? 0) + 1 } })),
   overlayScrollCmd: null,
@@ -379,11 +477,26 @@ export const useStore = create<Store>((set, get) => ({
   },
   resetHistoryIndex: () => set({ historyIndex: -1 }),
 
-  // 补全菜单：输入变化时重算候选（同步 complete()）
+  // 补全菜单：输入 + 光标位置驱动
   completion: null,
-  updateCompletion: (input) => {
-    const { items, prefix } = complete(input);
-    set({ completion: items.length > 0 ? { items, sel: 0, prefix } : null });
+  updateCompletion: (input, cursorIndex) => {
+    const { items, prefix, range } = complete(input, cursorIndex);
+    if (items.length === 0) {
+      set({ completion: null });
+      return;
+    }
+    set((s) => {
+      let sel = 0;
+      if (s.completion?.items?.length) {
+        const prevVal = s.completion.items[s.completion.sel]?.value;
+        if (prevVal) {
+          const idx = items.findIndex((it) => it.value === prevVal);
+          if (idx >= 0) sel = idx;
+        }
+        sel = Math.max(0, Math.min(sel, items.length - 1));
+      }
+      return { completion: { items, sel, prefix, range } };
+    });
   },
   cycleCompletion: (dir) => set((s) => {
     if (!s.completion || s.completion.items.length === 0) return s;
@@ -391,21 +504,27 @@ export const useStore = create<Store>((set, get) => ({
     const next = dir === "up" ? (s.completion.sel - 1 + n) % n : (s.completion.sel + 1) % n;
     return { completion: { ...s.completion, sel: next } };
   }),
-  /** 接受当前补全项。传入完整输入以正确替换 @ 路径 token（不吞掉 @ 前文本）。 */
-  acceptCompletion: (currentInput = ""): string | null => {
-    let result: string | null = null;
+  /**
+   * 接受补全：替换 completion.range，光标落到插入末尾。
+   */
+  acceptCompletion: (currentInput = "", cursorIndex?: number) => {
+    let result: { text: string; cursorIndex: number } | null = null;
     set((s) => {
-      if (!s.completion) return s;
-      const sel = s.completion.items[s.completion.sel];
-      if (!sel) return s;
-      if (currentInput.startsWith("/")) {
-        result = sel.value + " ";
-      } else {
-        const atIdx = currentInput.lastIndexOf("@");
-        result = atIdx >= 0
-          ? currentInput.slice(0, atIdx) + sel.value + " "
-          : sel.value + " ";
+      if (!s.completion || s.completion.items.length === 0) {
+        return { completion: null };
       }
+      const sel = s.completion.items[s.completion.sel];
+      if (!sel) return { completion: null };
+      // 优先用打开菜单时的 range；若调用方传了新 cursor 且 range 失效则重算
+      let range = s.completion.range;
+      if (
+        cursorIndex !== undefined &&
+        (range.end !== cursorIndex || range.start > cursorIndex)
+      ) {
+        const again = complete(currentInput, cursorIndex);
+        if (again.range) range = again.range;
+      }
+      result = applyCompletion(currentInput, sel, range);
       return { completion: null };
     });
     return result;

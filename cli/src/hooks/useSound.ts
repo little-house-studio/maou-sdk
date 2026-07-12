@@ -5,13 +5,15 @@
  *   - 平台检测：macOS→afplay，Linux→paplay/aplay，无播放器→BEL 回退
  *   - play(id)：播放 WAV 音效
  *   - 空闲检测：startIdleTimer/resetIdleTimer/clearIdleTimer
- *   - 配置：SoundConfig + 环境变量覆盖
+ *   - 配置：SoundConfig + ~/.maou/config.json ui.sounds + 环境变量覆盖
  *
  * 音频播放用 child_process.spawn + unref()（fire-and-forget，不阻塞事件循环）。
  * 不做桌面通知（Ink CLI 用备用屏，OSC 通知不适用）。
+ *
+ * 音效文件：src/sounds/*.wav（dev 经 tsx 直读）/ dist/sounds/*.wav（build 后拷贝）。
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
@@ -37,6 +39,58 @@ export const DEFAULT_SOUND_CONFIG: SoundConfig = {
   events: { done: true, error: true, warning: true, approval: true },
   idleTimeoutSec: 60,
 };
+
+/**
+ * 从 ~/.maou/config.json 读取 ui.sounds 配置段。
+ * 轻量读取，不依赖 ConfigStore（避免 zod/jsonc-parser 重依赖）。
+ *
+ * 支持字段：
+ *   enabled, volume, idleTimeout / idleTimeoutSec,
+ *   done / error / warning / approval（boolean 事件开关）
+ */
+export function loadSoundConfig(): Partial<SoundConfig> | undefined {
+  const maouRoot = process.env.HOME ?? "";
+  const cfgPath = join(maouRoot, ".maou", "config.json");
+  if (!existsSync(cfgPath)) return undefined;
+  try {
+    const raw = JSON.parse(readFileSync(cfgPath, "utf-8")) as Record<string, unknown>;
+    const ui = raw.ui as Record<string, unknown> | undefined;
+    if (!ui) return undefined;
+    const sounds = ui.sounds as Record<string, unknown> | undefined;
+    if (!sounds) return undefined;
+
+    const result: Partial<SoundConfig> = {};
+    if (typeof sounds.enabled === "boolean") result.enabled = sounds.enabled;
+    if (typeof sounds.volume === "number") result.volume = sounds.volume;
+    if (typeof sounds.idleTimeout === "number" || typeof sounds.idleTimeoutSec === "number") {
+      result.idleTimeoutSec =
+        typeof sounds.idleTimeoutSec === "number"
+          ? sounds.idleTimeoutSec
+          : (sounds.idleTimeout as number);
+    }
+
+    const evtDone = typeof sounds.done === "boolean" ? sounds.done : undefined;
+    const evtError = typeof sounds.error === "boolean" ? sounds.error : undefined;
+    const evtWarning = typeof sounds.warning === "boolean" ? sounds.warning : undefined;
+    const evtApproval = typeof sounds.approval === "boolean" ? sounds.approval : undefined;
+    if (
+      evtDone !== undefined ||
+      evtError !== undefined ||
+      evtWarning !== undefined ||
+      evtApproval !== undefined
+    ) {
+      result.events = {
+        done: evtDone ?? true,
+        error: evtError ?? true,
+        warning: evtWarning ?? true,
+        approval: evtApproval ?? true,
+      };
+    }
+    return result;
+  } catch {
+    return undefined;
+  }
+}
 
 // ── 平台音频播放器检测 ────────────────────────────────────────
 interface AudioPlayer {

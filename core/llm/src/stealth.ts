@@ -22,14 +22,16 @@ export const CLAUDE_CODE_TOOL_MAP: Record<string, string> = {
   find_code: "Grep",
   search_internet: "WebSearch",
   use_browser: "WebFetch",
-  task_manage: "TodoWrite",
+  todo_manage: "TodoWrite",
+  task_manage: "TodoWrite", // 兼容旧名
   notebook: "NotebookEdit",
   agent_message: "Task",
   agent_manage: "Task",
   project_manage: "Task",
   board: "Read",
   use_skill: "Task",
-  task_finish: "TodoWrite",
+  todo_finish: "TodoWrite",
+  task_finish: "TodoWrite", // 兼容旧名
 };
 
 /** 工具名映射器（有状态、可逆） */

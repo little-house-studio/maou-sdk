@@ -28,6 +28,28 @@ export interface ThinkingBlock {
   duration?: number;     // 生成耗时（ms），streaming 结束时填
 }
 
+/** 与 context SessionEventKind 对齐（CLI 本地副本） */
+export type SessionEventKind =
+  | "human_user"
+  | "queued_user"
+  | "agent_message"
+  | "runtime_control"
+  | "system_notice"
+  | "tool_call"
+  | "tool_result"
+  | "tool_async_notify"
+  | "assistant_turn"
+  | "compact"
+  | "unknown";
+
+/** 发言人身份（与 context MessageAuthor 对齐） */
+export type MessageAuthorType = "human" | "agent" | "system" | "tool";
+export interface MessageAuthor {
+  type: MessageAuthorType;
+  id?: string;
+  displayName?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -42,18 +64,45 @@ export interface ChatMessage {
   round?: number;        // 所属 loop 块编号
   agentType?: string;    // agent 类型（子 agent 时）
   agentName?: string;    // 子 agent 名字
+  /** 会话事件语义（非 human 的 user wire 不应画用户气泡） */
+  kind?: SessionEventKind;
+  source?: string;
+  /** 发言人：user / agent:xxx / system:xxx / tool:xxx */
+  author?: MessageAuthor;
 }
 
 /** 系统事件（压缩/中断/失败/权限/环境等，独立行渲染） */
 export interface SystemEvent {
   id: string;
-  kind: "compress" | "abort" | "retry_fail" | "hook" | "permission" | "env_error" | "other";
+  kind:
+    | "compress"
+    | "abort"
+    | "retry_fail"
+    | "hook"
+    | "permission"
+    | "env_error"
+    | "other"
+    | "agent_message"
+    | "runtime_control"
+    | "system_notice"
+    | "session_inject";
   content: string;
   ts: number;
   detail?: string;       // 点击展开看详细
 }
 
 export type EventMode = "idle" | "thinking" | "generating" | "tool_pending" | "error";
+
+/** 审核模式（对应工具层 sandboxMode） */
+export type ApprovalMode = "normal" | "auto" | "yolo";
+
+export const APPROVAL_MODES: readonly ApprovalMode[] = ["normal", "auto", "yolo"] as const;
+
+export const APPROVAL_LABELS: Record<ApprovalMode, { short: string; full: string; hint: string }> = {
+  normal: { short: "询问", full: "Normal", hint: "每次询问" },
+  auto: { short: "自动", full: "Auto", hint: "小模型审核自动放行" },
+  yolo: { short: "全放", full: "Yolo", hint: "全部执行不问" },
+};
 
 export interface EventBlock {
   mode: EventMode;
@@ -80,13 +129,15 @@ export interface CacheStat {
   input: number;
 }
 
-export type OverlayKind = null | "command" | "model" | "sessions" | "help" | "settings" | "agents";
+export type OverlayKind = null | "command" | "model" | "sessions" | "help" | "settings" | "agents" | "prompt";
 
 /** 补全菜单状态（提升到 store，供 InputBar 与 app.tsx 全局按键共享） */
 export interface CompletionState {
   items: CompletionItem[];
   sel: number;        // 当前选中索引
-  prefix: string;     // 触发补全的前缀（/ 或 @path）
+  prefix: string;     // 触发补全的前缀（如 "/s"、"@src/"）
+  /** 在完整输入串中要替换的区间 [start, end)（end 通常=光标） */
+  range: { start: number; end: number };
 }
 
 /** goal 监督状态（从 SDK SUPERVISOR_MANAGER 查询，done event meta 触发） */
@@ -113,6 +164,11 @@ export interface UIState {
   maxContext: number;
   round: number;
   thinkingLevel: number;
+  /**
+   * 审核/审批模式（= runtime sandboxMode）
+   * normal 每次询问 · auto 小模型审核 · yolo 全放行
+   */
+  approvalMode: ApprovalMode;
   rounds: RoundUsage[];          // 每轮 token（sparkline 用，最近 20）
   cacheHistory: CacheStat[];     // 最近 20 轮缓存统计（cacheRead/input，合并算平均率）
   currentRoundUsage: RoundUsage; // 本轮累计

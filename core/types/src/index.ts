@@ -59,7 +59,7 @@ export interface ToolDefinition {
   /**
    * 该工具调用后是否**终止** loop（不再进入下一轮）。
    * 缺省/false = 继续 loop（拿到结果 → 下一轮，标准行为）。
-   * true = 收尾型工具（如 task_finish）。
+   * true = 收尾型工具（如 todo_finish）。
    * 规则：一轮内若**所有**被调工具都是 endsLoop，则结束 loop；只要有一个非 endsLoop 工具就继续。
    */
   endsLoop?: boolean
@@ -92,6 +92,20 @@ export interface ToolContext {
   workingDir: string
   /** 工具输出压缩级别：off=不压；normal=保守(默认)；aggressive=更激进。由 AgentRuntime 从 agent.json 注入。 */
   compressionLevel?: "off" | "normal" | "aggressive"
+  /**
+   * maou 根目录（通常 ~/.maou）。由 AgentRuntime 注入。
+   * use_skill / find_skill 等据此扫描全局 skills，勿用 sandboxRoot 顶替。
+   */
+  maouRoot?: string
+  /**
+   * Skill 扫描选项（Agent 层 skillOptions）。
+   * includeSystemNpmSkills 默认 true → 扫描 ~/.agents/skills 等。
+   */
+  skillOptions?: {
+    includeSystemNpmSkills?: boolean
+    extraDirs?: string[]
+    enabledSkills?: string[]
+  }
   /**
    * 子 Agent 真并行执行器（由 AgentRuntime 注入；harness 提供 runFn）。
    *

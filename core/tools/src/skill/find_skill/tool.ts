@@ -263,13 +263,16 @@ export class FindSkillTool extends Tool {
 
   private async handleInstall(source: string, ctx: ToolContext): Promise<ToolResponse> {
     try {
-      // 确定安装目录：agent 所属的 .maou/skills
-      // 全局 agent: ~/.maou/skills
-      // 项目 agent: project/.maou/skills
-      const isGlobalAgent = ctx.projectRoot === ctx.sandboxRoot || ctx.agentName === "default";
-      const maouDir = isGlobalAgent
-        ? join(homedir(), ".maou")
-        : join(ctx.projectRoot, ".maou");
+      // 安装目录与 SkillScanner 对齐（复数 skills）：
+      // - 默认：project/.maou/skills（项目级，find_skill 主路径）
+      // - 无 projectRoot 时回退 ~/.maou/skills
+      // 系统 NPM 全局（~/.agents/skills）请用: npx skills add ... -g
+      const projectRoot = ctx.projectRoot?.trim();
+      // 项目级 .maou/skills 与扫描器一致；无 projectRoot 时用 maouRoot/skills
+      const maouDir =
+        projectRoot && projectRoot.length > 0
+          ? join(projectRoot, ".maou")
+          : (ctx.maouRoot?.trim() || join(homedir(), ".maou"));
       const skillsDir = join(maouDir, "skills");
 
       // 确保目录存在
