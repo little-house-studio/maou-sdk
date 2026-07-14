@@ -15,6 +15,7 @@ import {
   getChatViewMetrics,
   getInputBounds,
   getStickyAnchor,
+  inputHasRangeSelection,
   isPaintPending,
   normalizeStream,
   getStickyLine,
@@ -22,6 +23,24 @@ import {
   syncPaintViewFromLogical,
   type CellPos,
 } from "./selection-model.js";
+import { selCellSgr, bindSelFxPaint, selFxClear } from "./sel-fx.js";
+import {
+  pinHardwareCursorForIme,
+  bindViewportFullPaint,
+} from "../input/terminal-viewport.js";
+import { invalidateClickTargetCache } from "../input/click-target.js";
+import { perfInc } from "../hooks/perf.js";
+import { notePaintFrame, noteUiPhase } from "../hooks/process-stats.js";
+import { useStore } from "../state/store.js";
+import {
+  PAINT_FULL_MS,
+  PAINT_FULL_STREAM_MS,
+  PAINT_FULL_SCROLL_MS,
+  PAINT_SEL_MS,
+  CURSOR_BLINK_MS,
+  TERM_BREAKPOINTS,
+} from "../config/ui-constants.js";
+import { nativePaintDiff, type FlatFrame } from "./native-raster.js";
 
 export type { CellPos };
 export type Selection = { start: CellPos; end: CellPos } | null;
@@ -38,8 +57,10 @@ export interface GridCell {
   w: number;
 }
 
-const SEL_BG = "\x1b[48;2;37;99;235m";
-const SEL_FG = "\x1b[38;2;255;255;255m";
+// 选区：静态/短闪 paint（无循环动画）
+bindSelFxPaint(() => schedulePaint({ selectionOnly: true }));
+// 视口恢复需要全量重绘
+bindViewportFullPaint(() => schedulePaint({ full: true }));
 
 /** 兼容旧 API：有活动选区则返回屏幕近似范围 */
 export function getSelection(): Selection {
@@ -59,6 +80,7 @@ export function getSelection(): Selection {
 export function clearSelection(): void {
   if (!getActiveSel()) return;
   clearActiveSel();
+  selFxClear();
   schedulePaint({ selectionOnly: true });
 }
 
@@ -94,14 +116,35 @@ let styledCharsToString: ((chars: any[]) => string) | null = null;
 let sliceAnsi: ((input: string, begin: number, end: number) => string) | null = null;
 
 let cachedBuilt: GridCell[][] | null = null;
-let cachedBuiltKey = "";
+/** 构建 cachedBuilt 时所基于的 lastGrid 引用（同引用则免重建） */
+let cachedBuiltFrom: any[][] | null = null;
+let cachedBuiltCols = 0;
+let cachedBuiltRows = 0;
 /** 上一帧选区覆盖的行（1-based），用于脏行合并 */
 let prevSelRows: { r1: number; r2: number } | null = null;
 
 function invalidateGridCache(): void {
   cachedBuilt = null;
-  cachedBuiltKey = "";
+  cachedBuiltFrom = null;
+  cachedBuiltCols = 0;
+  cachedBuiltRows = 0;
 }
+
+/**
+ * 作废「已画出的帧」缓存。
+ * 清屏 / 拉宽后若仍用 prevEncoded 做行 diff，会认为「未变」跳过写出，
+ * 屏幕上留下空白或残影。调用后下一帧必须整屏重写。
+ */
+export function invalidatePaintCache(): void {
+  prevEncodedLines = null;
+  prevEncodedCols = 0;
+  prevSelRows = null;
+  paintCacheValid = false;
+  invalidateGridCache();
+}
+
+/** 终端上帧缓冲是否仍可信（清屏/resize 后为 false） */
+let paintCacheValid = true;
 
 export async function initVramLayer() {
   if (origGet) return;
@@ -118,6 +161,8 @@ export async function initVramLayer() {
   const sliceAnsiMod = await import(pathToFileURL(sliceAnsiPath).href);
   sliceAnsi = sliceAnsiMod.default ?? sliceAnsiMod;
   styledCharsToString = (await import("@alcalzone/ansi-tokenize")).styledCharsToString;
+  // 启动插入光标闪烁时钟
+  ensureCursorBlinkTimer();
 
   OutputProto.get = function () {
     const output: any[][] = [];
@@ -199,11 +244,17 @@ export async function initVramLayer() {
       }
     }
     lastGrid = output;
-    invalidateGridCache();
-    // 滚动后 Ink 新帧就绪：同步 paint metrics，补采 lineCache（不再二次 schedule 造成闪烁）
-    if (isPaintPending() || getActiveSel()?.mode === "chat" || getStickyAnchor()?.kind === "chat") {
+    // 不在此处 invalidate：buildGrid 用 lastGrid 引用判断缓存；
+    // 旧实现每帧 invalidate + isPaintPending 时 capture→N 次 buildGrid，滚动 ↑grd、帧率塌掉。
+    // 仅 chat 拖选 / sticky 需要在新帧上补 lineCache；普通滚动留给 schedulePaint 一次 build。
+    const needChatCapture =
+      getActiveSel()?.mode === "chat" || getStickyAnchor()?.kind === "chat";
+    if (needChatCapture) {
       syncPaintViewFromLogical();
       captureChatVisibleLines({ alsoSticky: true });
+    } else if (isPaintPending()) {
+      // 滚动中 paint 排队：只同步 metrics，不扫 grid
+      syncPaintViewFromLogical();
     }
     const fn = styledCharsToString!;
     const generatedOutput = output
@@ -254,18 +305,47 @@ export function snapToCell(row: number, col: number, grid?: GridCell[][]): CellP
   return { row: r, col: c };
 }
 
-export function buildGrid(cols: number, rows: number): GridCell[][] {
-  // 用 lastGrid 引用 identity + 尺寸做 key；内容更新时 lastGrid 换引用或 invalidate
-  const key = `${cols}x${rows}:${lastGrid ? lastGrid.length : 0}x${lastGrid?.[0]?.length ?? 0}:${lastInkOutput.length}`;
-  if (cachedBuilt && cachedBuiltKey === key) return cachedBuilt;
+/** ASCII 单码点宽 1，跳过昂贵的 stringWidth/ICU */
+function cellWidth(ch: string): number {
+  if (!ch) return 1;
+  if (ch.length === 1) {
+    const code = ch.charCodeAt(0);
+    // 可打印 ASCII
+    if (code >= 0x20 && code <= 0x7e) return 1;
+    if (code === 0x09) return 1; // tab 当 1（上层已展开更好）
+  }
+  // 全角 / emoji / 组合字符走完整测量
+  return stringWidth(ch) || 1;
+}
 
-  const grid: GridCell[][] = [];
+export function buildGrid(cols: number, rows: number): GridCell[][] {
+  // 同 lastGrid 引用 + 同尺寸 → 直接复用（同一 Ink 帧内 extract/paint 多次调用只建一次）
+  if (
+    cachedBuilt &&
+    cachedBuiltFrom === lastGrid &&
+    cachedBuiltCols === cols &&
+    cachedBuiltRows === rows
+  ) {
+    perfInc("buildGridCacheHit");
+    return cachedBuilt;
+  }
+  perfInc("buildGrid");
+  // 未命中缓存 = 真扫 cell，HUD 用 grd 阶段反映
+  noteUiPhase("grid");
+
+  const grid: GridCell[][] = new Array(rows);
   for (let r = 0; r < rows; r++) {
-    grid.push(new Array(cols).fill(null).map(() => ({ ch: " ", sgr: "", w: 1 })));
+    const row: GridCell[] = new Array(cols);
+    for (let c = 0; c < cols; c++) {
+      row[c] = { ch: " ", sgr: "", w: 1 };
+    }
+    grid[r] = row;
   }
   if (!lastGrid) {
     cachedBuilt = grid;
-    cachedBuiltKey = key;
+    cachedBuiltFrom = lastGrid;
+    cachedBuiltCols = cols;
+    cachedBuiltRows = rows;
     return grid;
   }
   for (let r = 0; r < Math.min(lastGrid.length, rows); r++) {
@@ -279,7 +359,7 @@ export function buildGrid(cols: number, rows: number): GridCell[][] {
         if (grid[r]![c]!.w > 0) grid[r]![c] = { ch: "", sgr: "", w: 0 };
         continue;
       }
-      const w = stringWidth(ch) || 1;
+      const w = cellWidth(ch);
       let sgr = "";
       if (cell.styles?.length) {
         for (const s of cell.styles) {
@@ -293,7 +373,9 @@ export function buildGrid(cols: number, rows: number): GridCell[][] {
     }
   }
   cachedBuilt = grid;
-  cachedBuiltKey = key;
+  cachedBuiltFrom = lastGrid;
+  cachedBuiltCols = cols;
+  cachedBuiltRows = rows;
   return grid;
 }
 
@@ -323,8 +405,92 @@ function inInputTextCell(screenRow1: number, screenCol1: number): boolean {
   return screenCol1 >= c0 && screenCol1 <= c1;
 }
 
-/** 亮底输入区的块状黑光标 */
-const CURSOR_BLOCK_SGR = "\x1b[0m\x1b[48;2;0;0;0m\x1b[38;2;255;255;255m";
+/** 输入区块状光标：计算机蓝底 + 白字（与选区同色，光标≈选区） */
+const CURSOR_BLOCK_SGR = "\x1b[0m\x1b[48;2;33;33;255m\x1b[38;2;255;255;255m";
+
+// ── 插入光标闪烁（非选区时）────────────────────────────────
+/** true = 显示蓝块；false = 熄灭（按普通字画） */
+let cursorBlinkOn = true;
+let cursorBlinkTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * 仅重绘输入框行（光标闪烁）。
+ * 禁止 full paint：旧实现每 530ms 整屏 encode + 写 stdout，空闲 UI CPU 可到 60%+。
+ * 网格内容未变，只改 encode 相位；用 cachedBuilt 即可。
+ */
+function paintCursorBlinkRowsOnly(): void {
+  if (!paintCacheValid || !cachedBuilt) {
+    // 尚无稳定帧：跳过，等下次内容 full paint 再闪
+    return;
+  }
+  // 光标闪也算一帧写出（通常只 1～几行）
+  notePaintFrame();
+  const cols = process.stdout.columns || TERM_BREAKPOINTS.fallbackCols;
+  const rows = process.stdout.rows || TERM_BREAKPOINTS.fallbackRows;
+  if (cachedBuilt.length < rows || (cachedBuilt[0]?.length ?? 0) < cols) {
+    return;
+  }
+  const b = getInputBounds();
+  if (!b || b.width <= 0 || b.height <= 0) return;
+  const rLo = Math.max(1, Math.floor(b.top));
+  const rHi = Math.min(rows, Math.floor(b.top + b.height - 1));
+  if (rLo > rHi) return;
+
+  let out = "\x1b[?25l";
+  for (let r = rLo; r <= rHi; r++) {
+    const line = encodeLine(cachedBuilt, r - 1, cols);
+    out += `\x1b[${r};1H${themeBgSgr}\x1b[K${line}`;
+    if (prevEncodedLines && prevEncodedLines.length === rows) {
+      prevEncodedLines[r - 1] = line;
+    }
+  }
+  out += "\x1b[0m\x1b[?25l";
+  try {
+    process.stdout.write(out);
+  } catch {
+    /* ignore */
+  }
+  pinHardwareCursorForIme();
+}
+
+function ensureCursorBlinkTimer(): void {
+  if (cursorBlinkTimer) return;
+  cursorBlinkTimer = setInterval(() => {
+    // 有输入选区时不闪：保持熄灭相位，避免选区上叠光标
+    if (inputHasRangeSelection()) {
+      if (cursorBlinkOn) {
+        cursorBlinkOn = false;
+        // 不强制 paint：选区本身会重绘
+      }
+      return;
+    }
+    cursorBlinkOn = !cursorBlinkOn;
+    // 只重画输入行，禁止整屏 full paint
+    paintCursorBlinkRowsOnly();
+  }, CURSOR_BLINK_MS);
+  if (typeof cursorBlinkTimer === "object" && "unref" in cursorBlinkTimer) {
+    cursorBlinkTimer.unref();
+  }
+}
+
+/** 光标是否应画成蓝块（闪烁相位） */
+export function isCursorBlinkVisible(): boolean {
+  return cursorBlinkOn;
+}
+
+/**
+ * 用户移动/输入时重置为「亮」，避免打字时刚好灭掉。
+ * InputBar onCursorChange / onChange 可调。
+ */
+export function notifyCursorActivity(): void {
+  ensureCursorBlinkTimer();
+  if (!cursorBlinkOn && !inputHasRangeSelection()) {
+    cursorBlinkOn = true;
+    schedulePaint({ full: true });
+  } else {
+    cursorBlinkOn = true;
+  }
+}
 
 function encodeLine(grid: GridCell[][], r: number, cols: number): string {
   let line = "";
@@ -335,38 +501,89 @@ function encodeLine(grid: GridCell[][], r: number, cols: number): string {
   const screenRow1 = r + 1;
   for (let c = 0; c < cols && visW < cols; c++) {
     const cell = row[c]!;
+    // 宽字符 continuation：跳过，宽度已算在主胞
     if (cell.w === 0) continue;
     const screenCol1 = c + 1;
+    const ch = cell.ch === "" ? " " : cell.ch;
+
     if (inSel(screenRow1, screenCol1)) {
-      line += `\x1b[0m${SEL_BG}${SEL_FG}${cell.ch}\x1b[0m`;
-      lastSgr = "\x1b[0m";
+      // 合并相邻同色选区 SGR，减少每字 reset（宽字符/中文不易被拆坏）
+      const selSgr = `\x1b[0m${selCellSgr(screenCol1)}`;
+      if (selSgr !== lastSgr) {
+        line += selSgr;
+        lastSgr = selSgr;
+      }
+      line += ch;
       visW += cell.w;
     } else {
       const cellSgr = cell.sgr || "";
-      // 输入槽亮底 + 反色软光标 → 改画黑块光标，避免和 #B0B0B0 融在一起
+      // 输入槽反色软光标 → 计算机蓝块（与选区同色）；非选区时按相位闪烁
+      // 标准编辑器：有非零宽选区时不画插入光标（只显示选区）
       const inv = sgrHasInverse(cellSgr);
-      const useBlackCursor =
-        inv && (inInputTextCell(screenRow1, screenCol1) || sgrLightBg(cellSgr));
-      if (useBlackCursor) {
-        if (lastSgr !== CURSOR_BLOCK_SGR) {
-          line += CURSOR_BLOCK_SGR;
-          lastSgr = CURSOR_BLOCK_SGR;
+      const useInputCursor =
+        inv &&
+        !inputHasRangeSelection() &&
+        (inInputTextCell(screenRow1, screenCol1) || sgrLightBg(cellSgr));
+      if (useInputCursor) {
+        ensureCursorBlinkTimer();
+        if (cursorBlinkOn) {
+          if (lastSgr !== CURSOR_BLOCK_SGR) {
+            line += CURSOR_BLOCK_SGR;
+            lastSgr = CURSOR_BLOCK_SGR;
+          }
+          line += ch;
+          visW += cell.w;
+          continue;
         }
-        // 空格光标画成实心块感：用满宽空白即可（黑底已够醒目）
-        line += cell.ch === "" ? " " : cell.ch;
+        // 熄灭相位：剥 inverse，按普通字画
+        const stripped = cellSgr
+          .replace(/\x1b\[7m/g, "")
+          .replace(/\x1b\[27m/g, "");
+        const hasBg = stripped.includes("48;");
+        const targetSgr =
+          !hasBg && themeBgSgr ? themeBgSgr + stripped : stripped || "\x1b[0m";
+        const normalized = targetSgr.startsWith("\x1b[0m")
+          ? targetSgr
+          : `\x1b[0m${targetSgr}`;
+        if (normalized !== lastSgr) {
+          line += normalized;
+          lastSgr = normalized;
+        }
+        line += ch;
+        visW += cell.w;
+        continue;
+      }
+      // 有选区时 Ink 仍可能吐反色格：剥掉 inverse，按普通字画，避免「光标+选区」叠影
+      if (inv && inputHasRangeSelection() && inInputTextCell(screenRow1, screenCol1)) {
+        const stripped = cellSgr
+          .replace(/\x1b\[7m/g, "")
+          .replace(/\x1b\[27m/g, "");
+        const hasBg = stripped.includes("48;");
+        const targetSgr = (!hasBg && themeBgSgr) ? themeBgSgr + stripped : (stripped || "\x1b[0m");
+        const normalized = targetSgr.startsWith("\x1b[0m") ? targetSgr : `\x1b[0m${targetSgr}`;
+        if (normalized !== lastSgr) {
+          line += normalized;
+          lastSgr = normalized;
+        }
+        line += ch;
         visW += cell.w;
         continue;
       }
       const hasBg = cellSgr.includes("48;");
       const targetSgr = (!hasBg && themeBgSgr) ? themeBgSgr + cellSgr : (cellSgr || "\x1b[0m");
-      if (targetSgr !== lastSgr) {
-        line += `\x1b[0m${targetSgr}`;
-        lastSgr = targetSgr;
+      const normalized = targetSgr.startsWith("\x1b[0m") ? targetSgr : `\x1b[0m${targetSgr}`;
+      if (normalized !== lastSgr) {
+        line += normalized;
+        lastSgr = normalized;
       }
-      line += cell.ch;
+      line += ch;
       visW += cell.w;
     }
   }
+  // 行末复位：SGR + 强制关闭 OSC 8 超链接（NavBar 手型链），
+  // 否则部分终端会把未闭合 link 画成整行/整屏虚线下划线。
+  if (lastSgr !== "\x1b[0m") line += "\x1b[0m";
+  line += "\x1b]8;;\x1b\\";
   return line;
 }
 
@@ -377,17 +594,21 @@ function selRowRange(screenRows: number): { r1: number; r2: number } | null {
 /**
  * 全量或脏行写出。
  * selectionOnly=true 且网格未变时只重画 (旧选区∪新选区) 行，显著减闪。
+ * forceAllLines / 缓存失效 / 尺寸变化 → 整屏重写（清屏、拉宽后必须）。
  */
 export function renderWithSelection(
   cols: number,
   rows: number,
-  opts: { selectionOnly?: boolean } = {},
+  opts: { selectionOnly?: boolean; forceAllLines?: boolean } = {},
 ): void {
   const grid = buildGrid(cols, rows);
   const nextRange = selRowRange(rows);
 
   // 仅选区变：脏行 = 旧∪新（不碰 \x1b[H 全屏，防闪）
-  if (opts.selectionOnly) {
+  // 缓存已失效时不能只画选区行，否则清屏后大片空白
+  if (opts.selectionOnly && paintCacheValid) {
+    perfInc("paintSel");
+    notePaintFrame();
     let rLo = rows + 1;
     let rHi = 0;
     const add = (a: number, b: number) => {
@@ -410,26 +631,119 @@ export function renderWithSelection(
     out += "\x1b[0m\x1b[?25l";
     process.stdout.write(out);
     prevSelRows = nextRange;
+    // 选区重绘也钉一次 IME，避免光标漂到右下角
+    pinHardwareCursorForIme();
     return;
   }
 
-  // 全量
-  let out = "\x1b[H\x1b[?25l";
-  for (let r = 0; r < rows; r++) {
-    const line = encodeLine(grid, r, cols);
-    out += `\x1b[${r + 1};1H${themeBgSgr}\x1b[K${line}`;
+  // 全量帧：按行 diff，只写变化行（StatusBar 每秒时钟不再整屏重刷）
+  // 清屏/resize 后 paintCacheValid=false → 必须整屏写出
+  perfInc("paintFull");
+  notePaintFrame();
+  const sameSize =
+    paintCacheValid &&
+    !!prevEncodedLines &&
+    prevEncodedLines.length === rows &&
+    prevEncodedCols === cols;
+  const forceAll = opts.forceAllLines || !sameSize || !paintCacheValid;
+
+  // 优先 Rust encode+diff（Ink 组件不变；失败则 JS 回退）
+  const flat = gridToFlatFrame(grid, cols, rows);
+  const native = flat
+    ? nativePaintDiff(flat, themeBgSgr, prevEncodedLines, forceAll)
+    : null;
+  if (native && native.native) {
+    if (native.out) {
+      try {
+        process.stdout.write(native.out);
+      } catch {
+        /* ignore */
+      }
+    }
+    prevEncodedLines = native.lines;
+    prevEncodedCols = cols;
+    prevSelRows = nextRange;
+    paintCacheValid = true;
+    // 滚动中不要每帧打爆 click 缓存（chrome 矩形大多未变）
+    if (!useStore.getState().scrollActive) {
+      invalidateClickTargetCache();
+    }
+    pinHardwareCursorForIme();
+    return;
   }
-  out += "\x1b[0m\x1b[?25l";
-  process.stdout.write(out);
+
+  const lines: string[] = new Array(rows);
+  for (let r = 0; r < rows; r++) {
+    lines[r] = encodeLine(grid, r, cols);
+  }
+  let out = "\x1b[?25l";
+  let dirty = 0;
+  if (forceAll) {
+    // 尺寸变化或缓存失效：整屏重写，避免 diff 跳过导致空白
+    out = "\x1b[H\x1b[?25l";
+    for (let r = 0; r < rows; r++) {
+      out += `\x1b[${r + 1};1H${themeBgSgr}\x1b[K${lines[r]}`;
+      dirty++;
+    }
+  } else {
+    for (let r = 0; r < rows; r++) {
+      if (prevEncodedLines![r] === lines[r]) continue;
+      out += `\x1b[${r + 1};1H${themeBgSgr}\x1b[K${lines[r]}`;
+      dirty++;
+    }
+  }
+  if (dirty > 0) {
+    out += "\x1b[0m\x1b[?25l";
+    process.stdout.write(out);
+  }
+  prevEncodedLines = lines;
+  prevEncodedCols = cols;
   prevSelRows = nextRange;
+  paintCacheValid = true;
+  // 全量帧后 Yoga 布局已稳定 → 刷新点击矩形缓存（滚动中跳过，降 hover 重测）
+  if (!useStore.getState().scrollActive) {
+    invalidateClickTargetCache();
+  }
+  // 帧末：硬件光标钉在输入格内（隐藏），IME 预编辑跟在框内而不是卷出右缘
+  pinHardwareCursorForIme();
 }
+
+/** GridCell[][] → Rust FlatFrame（失败返回 null） */
+function gridToFlatFrame(
+  grid: GridCell[][],
+  cols: number,
+  rows: number,
+): FlatFrame | null {
+  try {
+    const n = cols * rows;
+    const ch = new Array<string>(n);
+    const sgr = new Array<string>(n);
+    const w = new Array<number>(n);
+    let i = 0;
+    for (let r = 0; r < rows; r++) {
+      const row = grid[r];
+      for (let c = 0; c < cols; c++) {
+        const cell = row?.[c];
+        ch[i] = cell?.ch ?? " ";
+        sgr[i] = cell?.sgr ?? "";
+        w[i] = cell?.w ?? 1;
+        i++;
+      }
+    }
+    return { cols, rows, ch, sgr, w };
+  } catch {
+    return null;
+  }
+}
+
+/** 上一帧编码后的行（用于 diff paint） */
+let prevEncodedLines: string[] | null = null;
+let prevEncodedCols = 0;
 
 // ── 统一调度：合并 Ink onRender 与鼠标 paint，避免双刷闪烁 ──
 let paintTimer: ReturnType<typeof setTimeout> | null = null;
 let paintWantSelectionOnly = true;
 let paintForceFull = false;
-const PAINT_MIN_MS = 16; // ~60fps
-
 export function schedulePaint(opts: { selectionOnly?: boolean; full?: boolean } = {}): void {
   if (opts.full) {
     paintForceFull = true;
@@ -437,22 +751,70 @@ export function schedulePaint(opts: { selectionOnly?: boolean; full?: boolean } 
   } else if (!opts.selectionOnly) {
     paintWantSelectionOnly = false;
   }
-  // selectionOnly 且已有 full 排队 → 保持 full
-  if (paintTimer) return;
+  // 已有更重的 full 在排队：保持
+  if (paintTimer && paintForceFull) return;
+  // 已有 timer 且只要 selection → 升级/保持
+  if (paintTimer) {
+    if (!opts.selectionOnly || opts.full) {
+      // 需要 full：取消旧 timer，按 full 延迟重排
+      clearTimeout(paintTimer);
+      paintTimer = null;
+    } else {
+      return; // 已有 selection paint 在排
+    }
+  }
+  const st = useStore.getState();
+  const streaming = !!st.streaming;
+  const scrolling = !!st.scrollActive;
+  const delay =
+    paintForceFull || !paintWantSelectionOnly
+      ? scrolling
+        ? PAINT_FULL_SCROLL_MS
+        : streaming
+          ? PAINT_FULL_STREAM_MS
+          : PAINT_FULL_MS
+      : PAINT_SEL_MS;
   paintTimer = setTimeout(() => {
     paintTimer = null;
-    const cols = process.stdout.columns || 80;
-    const rows = process.stdout.rows || 24;
-    const selectionOnly = paintWantSelectionOnly && !paintForceFull;
+    const cols = process.stdout.columns || TERM_BREAKPOINTS.fallbackCols;
+    const rows = process.stdout.rows || TERM_BREAKPOINTS.fallbackRows;
+    // 尺寸变了：旧 prevEncoded 不可信（尤其是拉宽后右侧未写）
+    if (
+      prevEncodedCols !== cols ||
+      (prevEncodedLines && prevEncodedLines.length !== rows)
+    ) {
+      invalidatePaintCache();
+    }
+    const selectionOnly = paintWantSelectionOnly && !paintForceFull && paintCacheValid;
+    const forceAll = paintForceFull && !paintCacheValid;
     paintWantSelectionOnly = true;
     paintForceFull = false;
-    renderWithSelection(cols, rows, { selectionOnly });
-  }, PAINT_MIN_MS);
+    renderWithSelection(cols, rows, {
+      selectionOnly,
+      forceAllLines: forceAll || !paintCacheValid,
+    });
+  }, delay);
 }
 
 /** Ink onRender / 内容变化：全量帧 */
 export function scheduleFullPaint(): void {
   schedulePaint({ full: true });
+}
+
+/**
+ * 清屏后 / 强制立刻重绘：作废 diff 缓存并排队全量帧。
+ * （供 clearTerminalScreen、resize 使用）
+ */
+export function requestScreenRefresh(opts?: { clear?: boolean }): void {
+  if (opts?.clear && process.stdout.isTTY) {
+    try {
+      process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+    } catch {
+      /* ignore */
+    }
+  }
+  invalidatePaintCache();
+  scheduleFullPaint();
 }
 
 /** 从当前帧缓冲抽一行纯文本（1-based screen row） */

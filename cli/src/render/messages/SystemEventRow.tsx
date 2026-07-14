@@ -15,7 +15,7 @@ import { useClickTarget } from "../../input/click-target.js";
 import { MsgBody } from "./MsgLayout.js";
 
 const KIND_COLOR: Record<SystemEvent["kind"], string> = {
-  compress: "magenta",
+  compress: "yellow", // 压缩报告：黄色系统事件
   abort: "red",
   retry_fail: "yellow",
   hook: "cyan",

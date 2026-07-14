@@ -17,6 +17,7 @@ import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { useClickTarget } from "../input/click-target.js";
 import { useCleanInput } from "../hooks/useCleanInput.js";
+import { handleEscapeCancel, isEscapeKey } from "../hooks/escape-cancel.js";
 
 export interface SelectItem {
   value: string;
@@ -58,9 +59,14 @@ export function SelectList({ items, onSelect, visibleCount = 8, innerWidth = 42 
     setSelected((s) => Math.max(0, Math.min(s, Math.max(0, items.length - 1))));
   }, [items.length]);
 
-  // 键盘：对齐 @inkjs/ui useSelect（↑↓ focus，Enter select）
-  useCleanInput((_char, key) => {
+  // 键盘：对齐 @inkjs/ui useSelect（↑↓ focus，Enter select，Esc 统一取消栈）
+  useCleanInput((char, key) => {
     if (!useStore.getState().overlay) return;
+    // 本地再走统一 Esc，防止全局 handler 漏接时菜单卡死
+    if (isEscapeKey(char, key)) {
+      handleEscapeCancel();
+      return;
+    }
     if (key.upArrow) setSelected((s) => Math.max(0, s - 1));
     else if (key.downArrow) setSelected((s) => Math.min(items.length - 1, s + 1));
     else if (key.return) {

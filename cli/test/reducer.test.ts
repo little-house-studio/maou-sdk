@@ -130,11 +130,12 @@ describe("reducer: 27 StreamEvent types", () => {
 
   it("cacheHistory: 合并平均缓存率（sum(cacheRead)/sum(input)，非 mean-of-rates）+ 0 缓存轮次纳入", () => {
     let s = freshState();
+    s = { ...s, model: "gpt-4o", provider: "openai" };
     // 第1轮：cache=900, input=1000 → 命中率 90%
-    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 1000, completion_tokens: 10, cached_tokens: 900 } });
+    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 1000, completion_tokens: 10, cached_tokens: 900 }, model: "gpt-4o", role: "main" } as StreamEvent);
     s = apply(s, { type: "agent_round", round: 2 });
     // 第2轮：cache=0, input=100 → 命中率 0%（必须纳入，否则平均偏高）
-    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 100, completion_tokens: 5, cached_tokens: 0 } });
+    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 100, completion_tokens: 5, cached_tokens: 0 }, model: "gpt-4o", role: "main" } as StreamEvent);
     s = apply(s, { type: "done", rounds: 2 });
     expect(s.cacheHistory).toHaveLength(2);
     // 合并：900/(1000+100) = 81.8% → 82%（若用 mean-of-rates 会得 45%；若排除0轮次会得 90%）
@@ -144,6 +145,50 @@ describe("reducer: 27 StreamEvent types", () => {
     // 缓存率公式 = cacheRead/input（input 是 prompt_tokens，已含 cache）
     expect(sumCache).toBe(900);
     expect(sumInput).toBe(1100);
+  });
+
+  it("cacheHistory: 无 cache 能力的主模型（xopqwen）不写入假 0%，token 仍累计", () => {
+    let s = freshState();
+    s = { ...s, model: "xopqwen36v35b", provider: "xfyun" };
+    s = apply(s, {
+      type: "model.usage",
+      usage: { prompt_tokens: 5000, completion_tokens: 20, cached_tokens: 0 },
+      model: "xopqwen36v35b",
+      role: "main",
+      agentName: "test",
+    } as StreamEvent);
+    expect(s.currentRoundUsage.input).toBe(5000);
+    s = apply(s, { type: "done", rounds: 1 });
+    expect(s.cacheHistory).toHaveLength(0);
+  });
+
+  it("model.usage: helper/supervisor 不计入主上下文 cache 与 token", () => {
+    let s = freshState();
+    s = { ...s, model: "gpt-4o", provider: "openai", agentName: "coding" };
+    s = apply(s, {
+      type: "model.usage",
+      usage: { prompt_tokens: 100, completion_tokens: 5, cached_tokens: 80 },
+      model: "gpt-4o-mini",
+      role: "helper",
+    } as StreamEvent);
+    expect(s.currentRoundUsage.input).toBe(0);
+    s = apply(s, {
+      type: "model.usage",
+      usage: { prompt_tokens: 200, completion_tokens: 5, cached_tokens: 100 },
+      model: "gpt-4o",
+      role: "main",
+      agentName: "supervisor",
+    } as StreamEvent);
+    expect(s.currentRoundUsage.input).toBe(0);
+    s = apply(s, {
+      type: "model.usage",
+      usage: { prompt_tokens: 300, completion_tokens: 10, cached_tokens: 200 },
+      model: "gpt-4o",
+      role: "main",
+      agentName: "coding",
+    } as StreamEvent);
+    expect(s.currentRoundUsage.input).toBe(300);
+    expect(s.currentRoundUsage.cacheRead).toBe(200);
   });
 
   it("done: 结束 streaming + 归档 rounds", () => {
@@ -228,9 +273,9 @@ describe("reducer: 27 StreamEvent types", () => {
   });
 });
 
-  it("xfyun qwen 真实 usage 形状解析（prompt_tokens_details.cached_tokens 提取）", () => {
-    // 真实捕获的 xfyun last_usage 形状（from /Users/mac/.maou/agents/main/sessions/last.json）
-    const xfyunUsage = {
+  it("openai-compat 真实 usage 形状解析（prompt_tokens_details.cached_tokens 提取）", () => {
+    // 真实捕获的 usage 形状（prompt_tokens_details.cached_tokens）
+    const usage = {
       prompt_tokens: 6135,
       completion_tokens: 472,
       total_tokens: 6607,
@@ -239,7 +284,9 @@ describe("reducer: 27 StreamEvent types", () => {
       prompt_cache_hit_tokens: 5504,
       prompt_cache_miss_tokens: 631,
     };
-    let s = apply(freshState(), { type: "model.usage", usage: xfyunUsage });
+    let s = freshState();
+    s = { ...s, model: "gpt-4o", provider: "openai" };
+    s = apply(s, { type: "model.usage", usage, model: "gpt-4o", role: "main" } as StreamEvent);
     // parseUsage 应从 prompt_tokens_details.cached_tokens 提取
     expect(s.currentRoundUsage.cacheRead).toBe(5504);
     expect(s.currentRoundUsage.input).toBe(6135);

@@ -11,6 +11,13 @@
 
 import type { StreamEvent } from "@little-house-studio/types";
 import type { UIState, ChatMessage, ToolCardState, RoundUsage, SystemEvent } from "./types.js";
+import { TOAST_TEXT_MAX } from "../config/ui-constants.js";
+import {
+  isMainAgentMainModelUsage,
+  modelReportsPromptCache,
+  cacheHistoryFromEventCache,
+  loadCacheHistoryFromLedger,
+} from "../lib/prompt-cache.js";
 
 let idc = 0;
 export const uid = (): string => `m${Date.now()}_${idc++}`;
@@ -21,28 +28,48 @@ type Patch = Partial<UIState>;
 const MAX_RESULT = 500_000;
 const HISTORY = 20;
 
+function clipToast(s: string): string {
+  return s.slice(0, TOAST_TEXT_MAX);
+}
+
 /** 从 usage 对象取 input/output token（兼容各家字段名） */
 function parseUsage(u: Record<string, unknown> | undefined): { input: number; output: number; cacheRead?: number } {
   if (!u) return { input: 0, output: 0 };
   const input = Number(u.prompt_tokens ?? u.input_tokens ?? u.inputTokens ?? 0) || 0;
   const output = Number(u.completion_tokens ?? u.output_tokens ?? u.outputTokens ?? 0) || 0;
   const details = u.prompt_tokens_details as { cached_tokens?: number } | undefined;
-  // 注意：保留 cacheRead=0（不转 undefined），让 0% 缓存轮次也进入 cacheHistory，
-  // 否则平均值会只算有命中的轮次，导致偏高。
   const cacheRead = Number(u.cached_tokens ?? u.cache_read_input_tokens ?? details?.cached_tokens ?? 0) || 0;
   return { input, output, cacheRead };
 }
 
-function pushRound(state: UIState, usage: RoundUsage): Patch {
+/**
+ * 归档一轮 token 到 rounds。
+ * cacheHistory 优先镜像 agent 层 PromptCacheLedger 快照（event.cache）；
+ * 无 snapshot 时回退本地累加（兼容旧事件/测试）。
+ */
+function pushRound(
+  state: UIState,
+  usage: RoundUsage,
+  eventCache?: unknown,
+): Patch {
   const full: RoundUsage = { ...usage, total: usage.total ?? (usage.input + usage.output) };
   const rounds = [...state.rounds, full].slice(-HISTORY);
-  // 存原始量 {cacheRead, input}，而非预算比率 ——
-  // 平均缓存率必须用 sum(cacheRead)/sum(cacheRead+input) 合并计算，
-  // 否则 mean-of-rates 在分母差异大的轮次间会产生显著偏差。
-  // cacheRead 0 也纳入（0 缓存轮次拉低平均，反映真实命中率）。
+  const fromAgent = cacheHistoryFromEventCache(eventCache);
   let cacheHistory = state.cacheHistory;
-  if (usage.input > 0 || (usage.cacheRead ?? 0) > 0) {
-    cacheHistory = [...state.cacheHistory, { cacheRead: usage.cacheRead ?? 0, input: usage.input }].slice(-HISTORY);
+  if (fromAgent) {
+    cacheHistory = fromAgent;
+  } else {
+    // 回退：仅主模型且支持 cache 时本地 append
+    const eligible =
+      usage.cacheEligible === true &&
+      modelReportsPromptCache(state.model, state.provider) &&
+      (usage.input > 0 || (usage.cacheRead ?? 0) > 0);
+    if (eligible) {
+      cacheHistory = [
+        ...state.cacheHistory,
+        { cacheRead: usage.cacheRead ?? 0, input: usage.input, model: state.model || undefined },
+      ].slice(-HISTORY);
+    }
   }
   return { rounds, cacheHistory };
 }
@@ -108,22 +135,63 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     // ── 状态文本 ──────────────────────────────────────────
     case "status": {
       const text = (ev.text ?? ev.message ?? "") as string;
-      return { eventBlock: { ...state.eventBlock, mode: "thinking", detail: text || undefined } };
+      const isRetry = /重试|retry|loop.?detect/i.test(text);
+      return {
+        eventBlock: {
+          ...state.eventBlock,
+          mode: isRetry ? "retrying" : "thinking",
+          detail: text || undefined,
+        },
+      };
     }
 
     // ── 思考增量 ──────────────────────────────────────────
+    // 若尚无 assistant 占位（思考常先于正文到达），先建一条空 assistant，避免 thinking 被丢掉
     case "thinking_delta": {
-      const delta = ev.delta ?? "";
-      const blocks = state.messages.find(m => m.id === state.currentAssistantId)?.thinkingBlocks ?? [];
-      let newBlocks: ChatMessage["thinkingBlocks"];
-      const last = blocks[blocks.length - 1];
-      if (last?.streaming) {
-        newBlocks = [...blocks.slice(0, -1), { ...last, content: last.content + delta }];
-      } else {
-        newBlocks = [...blocks, { id: uid(), content: delta, streaming: true, startTs: Date.now() }];
+      const delta = String(ev.delta ?? "");
+      if (!delta) return { eventBlock: { ...state.eventBlock, mode: "thinking" } };
+
+      let messages = state.messages;
+      let currentAssistantId = state.currentAssistantId;
+      let existing = currentAssistantId
+        ? messages.find((m) => m.id === currentAssistantId)
+        : undefined;
+
+      // 当前占位已带 toolCalls → 说明是上一轮工具消息，思考属于新一轮
+      if (existing?.toolCalls?.length) {
+        existing = undefined;
+        currentAssistantId = null;
       }
-      return patchCurrentAssistant(state, { thinkingBlocks: newBlocks }) ?? {
-        eventBlock: { ...state.eventBlock, mode: "thinking" },
+      if (!currentAssistantId || !existing) {
+        currentAssistantId = uid();
+        existing = {
+          id: currentAssistantId,
+          role: "assistant",
+          content: "",
+          streaming: true,
+          ts: Date.now(),
+          thinkingBlocks: [],
+          round: state.round + 1,
+          kind: "assistant_turn",
+          author: { type: "agent", id: "ai", displayName: "ai" },
+        };
+        messages = [...messages, existing];
+      }
+
+      const blocks = existing.thinkingBlocks ?? [];
+      const last = blocks[blocks.length - 1];
+      const newBlocks =
+        last?.streaming
+          ? [...blocks.slice(0, -1), { ...last, content: last.content + delta }]
+          : [...blocks, { id: uid(), content: delta, streaming: true, startTs: Date.now() }];
+
+      messages = messages.map((m) =>
+        m.id === currentAssistantId ? { ...m, thinkingBlocks: newBlocks, streaming: true } : m,
+      );
+      return {
+        messages,
+        currentAssistantId,
+        eventBlock: { ...state.eventBlock, mode: "thinking", detail: "思考中…" },
       };
     }
 
@@ -161,15 +229,40 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       // 渲染时工具卡片"悬浮"在底部，回复显示顺序错乱。
       const id = state.currentAssistantId;
       const existing = id ? state.messages.find(m => m.id === id) : undefined;
-      const canUpdate = existing && !existing.toolCalls?.length && existing.streaming;
+      // 允许更新「仅思考占位」的 streaming 消息（可能 content 仍为空）
+      const canUpdate = existing && !existing.toolCalls?.length && (existing.streaming || !!existing.thinkingBlocks?.length);
       let messages = state.messages;
+      const nowTs = Date.now();
       if (canUpdate) {
         messages = messages.map(m => m.id === id ? {
-          ...m, content: content || m.content, streaming: false,
+          ...m,
+          content: content || m.content,
+          streaming: false,
           usage: { input: usage.input, output: usage.output, maxContext },
+          // 收尾思考块 duration，避免一直显示 streaming
+          thinkingBlocks: m.thinkingBlocks?.map((b) => ({
+            ...b,
+            streaming: false,
+            duration: b.duration ?? (b.startTs ? nowTs - b.startTs : undefined),
+          })),
         } : m);
       } else {
-        messages = [...messages, { id: uid(), role: "assistant", content, streaming: false, ts: Date.now(), usage: { input: usage.input, output: usage.output, maxContext } }];
+        // 若上一轮占位有 thinking 但 canUpdate 失败，尽量挂到新消息（不丢思考）
+        const orphanThink =
+          existing?.thinkingBlocks?.length && existing.toolCalls?.length
+            ? existing.thinkingBlocks
+            : undefined;
+        messages = [...messages, {
+          id: uid(),
+          role: "assistant",
+          content,
+          streaming: false,
+          ts: nowTs,
+          usage: { input: usage.input, output: usage.output, maxContext },
+          thinkingBlocks: orphanThink,
+          kind: "assistant_turn",
+          author: { type: "agent", id: "ai", displayName: "ai" },
+        }];
       }
       const patch: Patch = {
         messages,
@@ -231,36 +324,110 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     }
 
     // ── model.usage（裸 usage，不含 max_context） ─────────
+    // 仅累计「当前会话主 agent 的主模型」；分桶权威在 agent PromptCacheLedger。
     case "model.usage": {
+      if (isSupervisorEv) return {};
+      const evRec = ev as Record<string, unknown>;
+      const usageModel = String(evRec.model ?? "");
+      const usageAgent = String(evRec.agentName ?? evRec.agent_name ?? "");
+      const usageRole = String(evRec.role ?? "main");
+      if (
+        !isMainAgentMainModelUsage({
+          role: usageRole,
+          usageModel: usageModel || state.model,
+          mainModel: state.model,
+          agentName: usageAgent || state.agentName,
+          mainAgentName: state.agentName,
+        })
+      ) {
+        return {};
+      }
+
       const usage = parseUsage(ev.usage as Record<string, unknown> | undefined);
       const cur = state.currentRoundUsage;
-      // cacheRead 也累加（多步轮次：agent 模式下一轮可能多次 LLM 调用，每次都有 cache）。
-      // 之前用 ?? 会丢弃前几次的 cache，导致缓存率偏低。
+      const eligible = modelReportsPromptCache(usageModel || state.model, state.provider);
       const merged: RoundUsage = {
         input: cur.input + usage.input,
         output: cur.output + usage.output,
-        cacheRead: (cur.cacheRead ?? 0) + (usage.cacheRead ?? 0),
+        cacheRead: eligible
+          ? (cur.cacheRead ?? 0) + (usage.cacheRead ?? 0)
+          : (cur.cacheRead ?? 0),
+        cacheEligible: eligible || cur.cacheEligible === true,
       };
+      // 镜像 agent 层 samples（未 seal 的 current 不在 samples 里，history 仍是已封印轮次）
+      const fromAgent = cacheHistoryFromEventCache(evRec.cache);
       return {
         currentRoundUsage: merged,
+        ...(fromAgent ? { cacheHistory: fromAgent } : {}),
         eventBlock: { ...state.eventBlock, upTokens: merged.input, downTokens: merged.output },
+      };
+    }
+
+    // ── 主模型切换：切到新桶（旧桶留在 agent ledger，可恢复）──
+    case "model_switched": {
+      const nextModel = String((ev as { model?: string }).model ?? state.model);
+      const { cacheHistory } = loadCacheHistoryFromLedger(
+        state.agentName,
+        state.sessionId,
+        nextModel || state.model,
+      );
+      return {
+        model: nextModel || state.model,
+        cacheHistory,
+        currentRoundUsage: { input: 0, output: 0 },
       };
     }
 
     // ── 轮次 ──────────────────────────────────────────────
     case "agent_round": {
       const round = ev.round ?? state.round + 1;
-      // 上一轮结束，归档 usage 到 rounds 历史，重置当前轮
-      const patch = pushRound(state, state.currentRoundUsage);
+      // agent 层已 seal；event.cache 为封印后快照。CLI 归档 token + 镜像 samples。
+      const patch = pushRound(state, state.currentRoundUsage, (ev as { cache?: unknown }).cache);
       return { round, currentRoundUsage: { input: 0, output: 0 }, ...patch };
     }
 
     // ── log（带 level）vs info（无 level） ────────────────
     case "log": {
       const level = ev.level as string | undefined;
-      const message = ev.message as string | undefined;
-      if (level === "error") return { toast: { text: (message ?? "").slice(0, 80), kind: "err" } };
-      if (level === "warning" || level === "warn") return { toast: { text: (message ?? "").slice(0, 80), kind: "warn" } };
+      const message = (ev.message as string | undefined) ?? "";
+      // 压缩报告 → 黄色系统事件行（kind=compress）
+      if (
+        message.includes("上下文已压缩") ||
+        message.includes("ContextEngine] 压缩失败") ||
+        message.includes("压缩失败，本轮跳过")
+      ) {
+        const sysEvent: SystemEvent = {
+          id: uid(),
+          kind: "compress",
+          content: clipToast(message.replace(/^\[ContextEngine\]\s*/, "")),
+          ts: Date.now(),
+          detail: message,
+        };
+        return {
+          systemEvents: [...state.systemEvents, sysEvent],
+          toast: {
+            text: clipToast(message.includes("失败") ? "压缩失败，将稍后重试" : "上下文已压缩"),
+            kind: message.includes("失败") ? "warn" : "info",
+          },
+        };
+      }
+      if (level === "error") return { toast: { text: clipToast(message), kind: "err" } };
+      if (level === "warning" || level === "warn") {
+        const isRetry = /重试|retry|循环输出|stall|可重试/i.test(message);
+        const detail = clipToast(message).slice(0, 36);
+        return {
+          toast: { text: clipToast(message), kind: "warn" },
+          ...(isRetry
+            ? {
+                eventBlock: {
+                  ...state.eventBlock,
+                  mode: "retrying" as const,
+                  detail,
+                },
+              }
+            : {}),
+        };
+      }
       return {}; // info/debug 静默
     }
     case "info": {
@@ -272,12 +439,27 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     // ── trace 类（toast 提示或静默） ──────────────────────
     case "model.error": {
       const err = (ev.error as string | undefined) ?? (ev.message as string | undefined) ?? "模型错误";
-      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: err.slice(0, 80), ts: Date.now() };
-      return { toast: { text: err.slice(0, 80), kind: "err" }, systemEvents: [...state.systemEvents, sysEvent] };
+      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: clipToast(err), ts: Date.now() };
+      return { toast: { text: clipToast(err), kind: "err" }, systemEvents: [...state.systemEvents, sysEvent] };
     }
     case "model.loop_detected": {
-      const sysEvent: SystemEvent = { id: uid(), kind: "retry_fail", content: "循环输出，重试中", ts: Date.now() };
-      return { toast: { text: "循环输出，重试中", kind: "warn" }, systemEvents: [...state.systemEvents, sysEvent] };
+      const retry = typeof ev.retry === "number" ? ev.retry + 1 : undefined;
+      const detail = retry != null ? `循环输出 #${retry}` : "循环输出";
+      const sysEvent: SystemEvent = {
+        id: uid(),
+        kind: "retry_fail",
+        content: "循环输出，重试中",
+        ts: Date.now(),
+      };
+      return {
+        toast: { text: "循环输出，重试中", kind: "warn" },
+        systemEvents: [...state.systemEvents, sysEvent],
+        eventBlock: {
+          ...state.eventBlock,
+          mode: "retrying",
+          detail,
+        },
+      };
     }
     case "model.tool_detected": {
       return {}; // 已有 tool_pending 跟进
@@ -285,21 +467,42 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     case "round_limit": {
       const m = (ev.message as string | undefined) ?? "轮次上限";
       const sysEvent: SystemEvent = { id: uid(), kind: "retry_fail", content: m, ts: Date.now() };
-      return { toast: { text: m.slice(0, 80), kind: "warn" }, systemEvents: [...state.systemEvents, sysEvent] };
+      return {
+        toast: { text: clipToast(m), kind: "warn" },
+        systemEvents: [...state.systemEvents, sysEvent],
+        eventBlock: {
+          ...state.eventBlock,
+          mode: "retrying",
+          detail: clipToast(m).slice(0, 36),
+        },
+      };
     }
     case "verification": {
       return { eventBlock: { ...state.eventBlock, detail: ev.ok ? "验证通过" : "验证失败" } };
     }
     case "loop_check": {
+      // 运行时空响应 / continue 类检查：有文案则显示为重试中
+      const msg = String(ev.message ?? ev.detail ?? "");
+      if (/重试|retry|empty|continue|空/i.test(msg)) {
+        return {
+          eventBlock: {
+            ...state.eventBlock,
+            mode: "retrying",
+            detail: (msg || "重试中").slice(0, 36),
+          },
+        };
+      }
       return {};
     }
 
     // ── 结束 ──────────────────────────────────────────────
     case "done": {
-      // 归档本轮 usage
+      // 归档本轮 usage；cache 优先用 agent 层 done 事件上的分桶快照
       const roundPatch = state.currentRoundUsage.input || state.currentRoundUsage.output
-        ? pushRound(state, state.currentRoundUsage)
-        : {};
+        ? pushRound(state, state.currentRoundUsage, (ev as { cache?: unknown }).cache)
+        : (cacheHistoryFromEventCache((ev as { cache?: unknown }).cache)
+          ? { cacheHistory: cacheHistoryFromEventCache((ev as { cache?: unknown }).cache)! }
+          : {});
       const now = Date.now();
       const messages = state.messages.map(m =>
         m.id === state.currentAssistantId || m.streaming
@@ -344,13 +547,13 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       // 陷阱①：error 后 runAgentCli 即 return，必须这里置 streaming:false
       const msg = typeof ev.message === "string" ? ev.message : String(ev.message ?? "错误");
       const messages = state.messages.map(m => m.streaming ? { ...m, streaming: false } : m);
-      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: msg.slice(0, 80), ts: Date.now() };
+      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: clipToast(msg), ts: Date.now() };
       return {
         messages,
         streaming: false,
         aborting: false,
         currentAssistantId: null,
-        toast: { text: msg.slice(0, 80), kind: "err" },
+        toast: { text: clipToast(msg), kind: "err" },
         eventBlock: { mode: "error", upTokens: 0, downTokens: 0, detail: msg.slice(0, 40) },
         systemEvents: [...state.systemEvents, sysEvent],
       };

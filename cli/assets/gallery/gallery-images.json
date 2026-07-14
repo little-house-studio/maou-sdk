@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "description": "Maou 空会话画廊。改本文件或 works/<id>/source.* 后重启 CLI 会自动重烘焙。后续画作自行添加即可。",
+  "works": [
+    {
+      "id": "fallen-angel",
+      "enabled": true,
+      "titleZh": "堕落天使",
+      "titleEn": "L'Ange déchu / The Fallen Angel",
+      "artistZh": "亚历山大·卡巴内尔",
+      "artistEn": "Alexandre Cabanel",
+      "year": "1847",
+      "note": "Musée Fabre, Montpellier",
+      "image": "1.png",
+      "license": "public-domain",
+      "tags": ["hell", "fallen-angel", "cabanel"]
+    },
+    {
+      "id": "dante-virgil",
+      "enabled": true,
+      "titleZh": "但丁与维吉尔",
+      "titleEn": "Dante et Virgile / Dante and Virgil in Hell",
+      "artistZh": "威廉·阿道夫·布格罗",
+      "artistEn": "William-Adolphe Bouguereau",
+      "year": "1850",
+      "note": "Musée d'Orsay, Paris",
+      "image": "gallery/dante-virgil.jpg",
+      "license": "public-domain",
+      "tags": ["hell", "dante", "bouguereau"]
+    }
+  ]
+}

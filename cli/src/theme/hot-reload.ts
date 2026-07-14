@@ -1,57 +1,46 @@
 /**
- * 主题热重载 —— 监听 ~/.maou/themes/*.json，改文件即时 setTheme。
- * 阶段 6：JSON 文件 watch + 解析 + 合并 TAU_CETI 兜底。
+ * 主题热重载 —— 监听 ~/.maou/themes/*.json
+ * 包内主题目录：assets/themes/<name>.json
  */
 
-import { watch, existsSync, readdirSync, readFileSync } from "node:fs";
+import { watch, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import type { ThemeTokens } from "./tokens.js";
-import { TAU_CETI } from "./tau-ceti.js";
+import {
+  loadThemeFromPath,
+  listThemesMeta,
+  packageThemesDir,
+  userThemesDir,
+  type LoadedTheme,
+} from "./load-theme.js";
 
-const THEMES_DIR = join(homedir(), ".maou", "themes");
-
-/** 从 JSON 文件加载主题（合并 TAU_CETI 兜底缺失字段） */
 export function loadThemeFile(path: string): ThemeTokens | null {
-  try {
-    const data = JSON.parse(readFileSync(path, "utf-8"));
-    if (!data || typeof data !== "object") return null;
-    const colors = data.colors ?? data;
-    // 合并：TAU_CETI 兜底，文件覆盖
-    return { ...TAU_CETI, ...colors } as ThemeTokens;
-  } catch {
-    return null;
-  }
+  return loadThemeFromPath(path)?.tokens ?? null;
 }
 
-/** 列出可用主题名 */
+export function loadFullThemeFile(path: string): LoadedTheme | null {
+  return loadThemeFromPath(path);
+}
+
+/** 列出可用主题（用户 + 包内） */
 export function listThemes(): { id: string; name: string }[] {
-  if (!existsSync(THEMES_DIR)) return [{ id: "tau-ceti", name: "Tau Ceti (内置)" }];
-  const out = [{ id: "tau-ceti", name: "Tau Ceti (内置)" }];
-  try {
-    for (const f of readdirSync(THEMES_DIR)) {
-      if (!f.endsWith(".json")) continue;
-      const id = f.replace(/\.json$/, "");
-      try {
-        const data = JSON.parse(readFileSync(join(THEMES_DIR, f), "utf-8"));
-        out.push({ id, name: data.name ?? id });
-      } catch { /* skip */ }
-    }
-  } catch { /* ignore */ }
-  return out;
+  return listThemesMeta().map((t) => ({
+    id: t.id,
+    name: t.source === "user" ? `${t.name} (用户)` : t.name,
+  }));
 }
 
-/** 监听主题目录，文件变更时回调（setTheme） */
+/** 监听用户主题目录 */
 export function watchThemes(onChange: (theme: ThemeTokens) => void): () => void {
-  if (!existsSync(THEMES_DIR)) return () => {};
+  const dir = userThemesDir();
+  if (!existsSync(dir)) return () => {};
   let debounce: NodeJS.Timeout | null = null;
   try {
-    const watcher = watch(THEMES_DIR, { recursive: false }, (_event, filename) => {
-      if (!filename || !filename.endsWith(".json")) return;
-      // 防抖
+    const watcher = watch(dir, { recursive: false }, (_event, filename) => {
+      if (!filename || !String(filename).endsWith(".json")) return;
       if (debounce) clearTimeout(debounce);
       debounce = setTimeout(() => {
-        const t = loadThemeFile(join(THEMES_DIR, filename));
+        const t = loadThemeFile(join(dir, String(filename)));
         if (t) onChange(t);
       }, 200);
     });
@@ -60,3 +49,5 @@ export function watchThemes(onChange: (theme: ThemeTokens) => void): () => void 
     return () => {};
   }
 }
+
+export { packageThemesDir, userThemesDir };

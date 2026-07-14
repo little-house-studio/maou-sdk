@@ -24,6 +24,12 @@ export function enableMouse(
 
 export function disableMouse(out: NodeJS.WriteStream): void {
   out.write("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
+  // 重置 OSC 22 指针（避免退出后仍保持手型）
+  try {
+    out.write("\x1b]22;\x1b\\\x1b]22;\x07");
+  } catch {
+    /* ignore */
+  }
 }
 
 export const MOUSE_RE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;

@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
+import { userConfigPath } from "../config/paths.js";
 
 // ── 音效标识 ──────────────────────────────────────────────────
 export type SoundId = "done" | "error" | "warning" | "approval";
@@ -49,8 +50,7 @@ export const DEFAULT_SOUND_CONFIG: SoundConfig = {
  *   done / error / warning / approval（boolean 事件开关）
  */
 export function loadSoundConfig(): Partial<SoundConfig> | undefined {
-  const maouRoot = process.env.HOME ?? "";
-  const cfgPath = join(maouRoot, ".maou", "config.json");
+  const cfgPath = userConfigPath();
   if (!existsSync(cfgPath)) return undefined;
   try {
     const raw = JSON.parse(readFileSync(cfgPath, "utf-8")) as Record<string, unknown>;

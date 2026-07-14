@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import type { ChatMessage, ToolCardState, SessionEventKind, MessageAuthor } from "./types.js";
 import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
+import { projectSessionFile, projectSessionsDir } from "../config/paths.js";
 
 function parseAuthor(ev: Record<string, unknown>, kind: SessionEventKind): MessageAuthor {
   const raw = ev.author as MessageAuthor | undefined;
@@ -112,7 +113,7 @@ function toolOk(ev: Record<string, unknown>): boolean {
 
 /** 读会话 jsonl 重建 messages（失败返回 null） */
 export function loadSessionMessages(sessionId: string, cwd = process.cwd()): LoadedSession | null {
-  const file = join(cwd, ".maou", "sessions", `${sessionId}.jsonl`);
+  const file = projectSessionFile(sessionId, cwd);
   if (!existsSync(file)) return null;
   try {
     const raw = readFileSync(file, "utf-8");
@@ -394,7 +395,7 @@ export function loadSessionMessages(sessionId: string, cwd = process.cwd()): Loa
 
 /** 列出可用会话 id（最新在前） */
 export function listSessions(cwd = process.cwd()): string[] {
-  const dir = join(cwd, ".maou", "sessions");
+  const dir = projectSessionsDir(cwd);
   if (!existsSync(dir)) return [];
   try {
     return readdirSync(dir)

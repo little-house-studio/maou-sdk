@@ -91,7 +91,14 @@ export interface SystemEvent {
   detail?: string;       // 点击展开看详细
 }
 
-export type EventMode = "idle" | "thinking" | "generating" | "tool_pending" | "error";
+export type EventMode =
+  | "idle"
+  | "thinking"
+  | "generating"
+  | "tool_pending"
+  | "retrying"
+  | "error";
+
 
 /** 审核模式（对应工具层 sandboxMode） */
 export type ApprovalMode = "normal" | "auto" | "yolo";
@@ -121,15 +128,30 @@ export interface RoundUsage {
   output: number;
   total?: number;
   cacheRead?: number;
+  /** 本轮是否计入 cacheHistory（主模型且模型支持 cache 上报） */
+  cacheEligible?: boolean;
 }
 
-/** 单轮缓存统计原始量（用于正确计算合并缓存率，避免 mean-of-rates 偏差） */
+/** 单轮缓存统计原始量（用于正确计算合并缓存率，避免 mean-of-rates 偏差）
+ *  仅主 agent 当前主模型、且模型支持 prompt-cache 上报时写入。
+ */
 export interface CacheStat {
   cacheRead: number;
   input: number;
+  /** 产生该样本时的主模型 id（换模后历史作废） */
+  model?: string;
 }
 
 export type OverlayKind = null | "command" | "model" | "sessions" | "help" | "settings" | "agents" | "prompt";
+
+/** 终端命令交互审批请求（normal 模式阻塞 agent 直至用户选择） */
+export interface TerminalApprovalState {
+  id: string;
+  command: string;
+  agentName: string;
+  cwd?: string;
+  hint?: string;
+}
 
 /** 补全菜单状态（提升到 store，供 InputBar 与 app.tsx 全局按键共享） */
 export interface CompletionState {
@@ -158,6 +180,11 @@ export interface UIState {
   streaming: boolean;
   aborting: boolean;
   sessionId: string | null;
+  /**
+   * 空会话画廊种子（/new 时刷新，同会话内稳定，避免每帧换画）。
+   * 有消息后画廊隐藏，直到再次 new/clear。
+   */
+  gallerySeed: string;
   agentName: string;
   provider: string;
   model: string;
@@ -169,6 +196,8 @@ export interface UIState {
    * normal 每次询问 · auto 小模型审核 · yolo 全放行
    */
   approvalMode: ApprovalMode;
+  /** 当前待用户确认的终端命令；非 null 时底部显示审批条 */
+  terminalApproval: TerminalApprovalState | null;
   rounds: RoundUsage[];          // 每轮 token（sparkline 用，最近 20）
   cacheHistory: CacheStat[];     // 最近 20 轮缓存统计（cacheRead/input，合并算平均率）
   currentRoundUsage: RoundUsage; // 本轮累计
@@ -193,5 +222,11 @@ export interface UIState {
   pendingSend: string | null;
   // 会话按 agent 记忆：切 agent 时缓存当前会话，切回时恢复
   agentSessionMap: Record<string, { sessionId: string | null; messages: ChatMessage[]; systemEvents: SystemEvent[] }>;
-  chatScrollOffset: number;       // 对话区滚动偏移
+  chatScrollOffset: number;       // 对话区滚动偏移（fromBottom）
+  maxChatScroll: number;          // 可滚最大 fromBottom
+  autoFollow: boolean;            // 贴底跟随新消息
+  /** 历史窗口起点；-1=请求收成贴底 200 条 */
+  chatHistoryStart: number;
+  /** 滚轮滚动中（降 paint / hover） */
+  scrollActive: boolean;
 }

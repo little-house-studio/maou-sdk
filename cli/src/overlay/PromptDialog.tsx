@@ -9,12 +9,14 @@ import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useCleanInput } from "../hooks/useCleanInput.js";
+import { handleEscapeCancel, isEscapeKey } from "../hooks/escape-cancel.js";
 import { previewCurrentSystemPrompt } from "../lib/preview-system.js";
+import { DEFAULT_AGENT_NAME, resolveAgentName } from "../config/defaults.js";
 
 export function PromptDialog() {
   const t = useTheme();
   const term = useTerminalSize();
-  const agentName = useStore((s) => s.agentName) || "coding";
+  const agentName = resolveAgentName(useStore((s) => s.agentName), DEFAULT_AGENT_NAME);
   const overlayScrollCmd = useStore((s) => s.overlayScrollCmd);
 
   const preview = useMemo(
@@ -46,8 +48,12 @@ export function PromptDialog() {
   // 本地再绑一层 Esc/q 关闭，防止全局 handler 漏接时卡死在 /prompt
   useCleanInput((char, key) => {
     if (useStore.getState().overlay !== "prompt") return;
-    if (key.escape || char === "\x1b" || char === "q" || char === "Q") {
-      useStore.getState().setOverlay(null);
+    if (isEscapeKey(char, key) || char === "q" || char === "Q") {
+      if (char === "q" || char === "Q") {
+        useStore.getState().setOverlay(null);
+      } else {
+        handleEscapeCancel();
+      }
       return;
     }
     if (key.upArrow) setScroll((s) => clampScroll(s - 1));

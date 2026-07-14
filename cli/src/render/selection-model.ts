@@ -337,6 +337,15 @@ export function dirtyRowsForPaint(screenRows: number): { r1: number; r2: number 
   return { r1, r2 };
 }
 
+/**
+ * 输入框是否有「非零宽」选区（标准编辑器：有选区时不画插入光标）。
+ * 零宽 = 光标；有范围 = 选区，二者互斥。
+ */
+export function inputHasRangeSelection(): boolean {
+  if (!active || active.mode !== "input") return false;
+  return active.a.row !== active.b.row || active.a.col !== active.b.col;
+}
+
 /** 屏幕格是否在选区蓝底内（绘制必须用 paint metrics） */
 export function cellInSelection(screenRow: number, screenCol: number): boolean {
   if (!active) return false;
@@ -354,6 +363,10 @@ export function cellInSelection(screenRow: number, screenCol: number): boolean {
     return inStream(screenRow, screenCol, y1, c1, y2, c2);
   }
   // input：限制在输入框矩形内 + 流式选区
+  // 零宽（a===b）不画：避免单击留下蓝块伪光标；真光标由 Ink 反色格 + 计算机蓝块表示
+  if (active.a.row === active.b.row && active.a.col === active.b.col) {
+    return false;
+  }
   if (inputBounds) {
     const { left, top, width, height, textColOffset } = inputBounds;
     const r1 = top;

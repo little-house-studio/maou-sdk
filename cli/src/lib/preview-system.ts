@@ -6,11 +6,16 @@ import { join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import {
   previewAgentSystemPrompt,
   type PreviewSystemPromptResult,
 } from "@little-house-studio/agent";
+import { userMaouRoot } from "../config/paths.js";
+import {
+  DEFAULT_AGENT_NAME,
+  resolveAgentName,
+  usesCodingTemplate,
+} from "../config/defaults.js";
 
 const require = createRequire(import.meta.url);
 
@@ -46,14 +51,13 @@ export function previewCurrentSystemPrompt(
   agentName: string,
   projectRoot = process.cwd(),
 ): PreviewSystemPromptResult {
-  const name = agentName || "coding";
+  const name = resolveAgentName(agentName, DEFAULT_AGENT_NAME);
   const codingTpl = resolveCodingTemplatePromptRoot();
   return previewAgentSystemPrompt({
     agentName: name,
     projectRoot,
-    maouRoot: join(homedir(), ".maou"),
-    fallbackPromptRoot:
-      name === "coding" || name === "main" ? codingTpl : undefined,
+    maouRoot: userMaouRoot(),
+    fallbackPromptRoot: usesCodingTemplate(name) ? codingTpl : undefined,
     fallbackEntrypoint: "system/system.md",
   });
 }

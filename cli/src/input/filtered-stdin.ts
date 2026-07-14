@@ -86,17 +86,47 @@ export function createFilteredStdin(source: NodeJS.ReadableStream & {
   ref?: () => unknown; unref?: () => unknown; resume?: () => unknown; pause?: () => unknown;
 }): any {
   const filtered: any = new PassThrough();
+  /**
+   * resume/pause 只控制 PassThrough（Ink 读端），不要 pause 底层 process.stdin：
+   * - source 必须一直 flowing，source.on('data') 才能剥鼠标并把键喂给 Ink
+   * - useMouseInput 也直接挂在 process.stdin 上；pause source 会键盘+鼠标双死
+   * - 旧 bug：resume 只 resume source 不 resume PassThrough → Ink 收不到键
+   * - 随后误修成两边一起 pause → Ink pause 时把 stdin 掐死 → 整屏无法操作
+   */
+  const ptResume = filtered.resume.bind(filtered);
+  const ptPause = filtered.pause.bind(filtered);
   filtered.isTTY = source.isTTY ?? true;
   filtered.isRaw = false;
   filtered.setRawMode = (mode: boolean) => {
     filtered.isRaw = mode;
     source.setRawMode?.(mode);
+    // raw 开启时确保底层 stdin 在流动（有 data 监听后通常已是 flowing）
+    if (mode) {
+      try {
+        source.resume?.();
+      } catch {
+        /* ignore */
+      }
+    }
     return filtered;
   };
-  filtered.ref = () => { source.ref?.(); return filtered; };
-  filtered.unref = () => { source.unref?.(); return filtered; };
-  filtered.resume = () => { source.resume?.(); return filtered; };
-  filtered.pause = () => { source.pause?.(); return filtered; };
+  filtered.ref = () => {
+    source.ref?.();
+    return filtered;
+  };
+  filtered.unref = () => {
+    source.unref?.();
+    return filtered;
+  };
+  filtered.resume = () => ptResume();
+  filtered.pause = () => ptPause();
+
+  // 启动时保证底层 stdin flowing（不依赖 Ink 何时 resume）
+  try {
+    source.resume?.();
+  } catch {
+    /* ignore */
+  }
 
   /** latin1 字节串挂起缓冲 */
   let pending = "";
@@ -121,10 +151,24 @@ export function createFilteredStdin(source: NodeJS.ReadableStream & {
   const flushPendingIfStale = () => {
     flushTimer = null;
     if (!pending) return;
-    // 超时：丢掉未完成 CSI；不完整 UTF-8 仍尽量写出（可能出 �，好过卡死）
+    // 纯 ESC / 以裸 ESC 结尾的挂起：必须当作 Esc 键发出。
+    // 旧逻辑把未完成 CSI（含单独 \x1b）整段丢掉 → 菜单/弹层 Esc 永远关不掉。
+    if (pending === "\x1b") {
+      pending = "";
+      writeBytes(filtered, "\x1b");
+      return;
+    }
+    // 超时：丢掉未完成 CSI 前缀；裸 ESC 单独放行；不完整 UTF-8 尽量写出
     const csi = incompleteCsiTail(pending);
     if (csi && pending.endsWith(csi)) {
-      pending = pending.slice(0, -csi.length);
+      const body = pending.slice(0, -csi.length);
+      if (csi === "\x1b") {
+        pending = "";
+        writeBytes(filtered, body + "\x1b");
+        return;
+      }
+      // 未写完的 CSI（如 \x1b[<\d…）超时丢弃，避免把残片当文本
+      pending = body;
     }
     if (pending) {
       const clean = stripComplete(pending);

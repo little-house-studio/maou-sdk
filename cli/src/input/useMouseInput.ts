@@ -45,6 +45,26 @@ import {
   updateInputSelEnd,
 } from "../render/selection-model.js";
 import { copyToClipboard } from "./osc52.js";
+import { setPointerShape, resetPointerShape, resolvePointerShape } from "./osc22.js";
+import { selFxLive, selFxRelease, selFxClear } from "../render/sel-fx.js";
+import { perfInc } from "../hooks/perf.js";
+import { noteUiPhase } from "../hooks/process-stats.js";
+import {
+  HOVER_MIN_MS,
+  TERM_BREAKPOINTS,
+  INPUT_TEXT_COL_OFFSET_DEFAULT,
+} from "../config/ui-constants.js";
+
+/** inputRect 高度异常（如全屏编辑器残留）时不当作输入区，防止整屏 I 形光标 */
+function isPlausibleInputRect(
+  r: { left: number; top: number; width: number; height: number } | null | undefined,
+): boolean {
+  if (!r) return true; // 无实测矩形时走 hitTest 的行号回退
+  if (r.width <= 0 || r.height <= 0) return false;
+  // 输入槽最多约 4 行 + 边距；超过 10 行视为脏数据
+  if (r.height > 10) return false;
+  return true;
+}
 
 interface DragState {
   mode: "chat" | "global" | "input";
@@ -61,6 +81,8 @@ const DOUBLE_CLICK_MS = 400;
 const DOUBLE_CLICK_DIST = 3;
 const EDGE_ZONE = 1;
 const EDGE_MS = 32;
+/** 拖选中 capture 行缓存节流 */
+const CAPTURE_MIN_MS = 80;
 
 export interface MouseCallbacks {
   onInputCursor?: (charIndex: number, line: number) => void;
@@ -70,7 +92,10 @@ export interface MouseCallbacks {
 }
 
 function termSize() {
-  return { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 };
+  return {
+    cols: process.stdout.columns || TERM_BREAKPOINTS.fallbackCols,
+    rows: process.stdout.rows || TERM_BREAKPOINTS.fallbackRows,
+  };
 }
 
 /** 优先用 ScrollHistory 实测视口，避免把 ↓回底 / 状态栏采进 lineCache */
@@ -99,7 +124,7 @@ function syncChatMetrics(rect: LayoutRect) {
       top: rect.inputRect.top,
       width: rect.inputRect.width,
       height: rect.inputRect.height,
-      textColOffset: rect.inputTextColOffset ?? 4,
+      textColOffset: rect.inputTextColOffset ?? INPUT_TEXT_COL_OFFSET_DEFAULT,
     });
   }
 }
@@ -158,10 +183,11 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
   const dragRef = useRef<DragState | null>(null);
   const lastClickRef = useRef({ time: 0, col: 0, row: 0, count: 0 });
   const lastHoverRef = useRef(0);
+  const lastCaptureRef = useRef(0);
   const handlerRef = useRef<(e: MouseEvent) => void>(() => {});
   const edgeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  syncChatMetrics(rect);
+  // 注意：不要在 render 体里每次 syncChatMetrics —— 仅在事件里更新
 
   const stopEdge = () => {
     if (edgeTimerRef.current) {
@@ -210,6 +236,57 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
   handlerRef.current = (e: MouseEvent) => {
     const { rows } = termSize();
     const rect = rectRef.current;
+
+    // motion：轻量路径，不同步 chat metrics、不跑全量 hitTest（除非要 hover）
+    if (e.type === "motion") {
+      perfInc("mouseMotion");
+      if (dragRef.current?.moved) {
+        setPointerShape("grabbing");
+        return;
+      }
+      const store = useStore.getState();
+      // 滚动中跳过 hover/hitTest，避免每帧扫 DOM
+      if (store.scrollActive) return;
+      const now = Date.now();
+      // 流式时再拉大采样间隔
+      const hoverMin = store.streaming ? HOVER_MIN_MS * 2 : HOVER_MIN_MS;
+      if (now - lastHoverRef.current < hoverMin) return;
+      lastHoverRef.current = now;
+      // 真正做 hitTest / 手型更新的采样点 → HUD mse 阶段
+      noteUiPhase("mouse");
+
+      // 可点区域始终响应 hover/手型（含流式中）；流式仅在空白处显示 progress
+      const hit = hitTestClick(e.col, e.row);
+      const id = hit?.id ?? null;
+      if (store.hoverId !== id) {
+        store.setHoverId(id);
+        perfInc("hoverSet");
+      }
+
+      if (store.streaming && !hit) {
+        setPointerShape("progress");
+        return;
+      }
+
+      // 可点击优先手型；仅当「不在按钮上且真的在输入文字槽」才用 I 形
+      // （避免 inputRect 异常/过大时整屏都是 text 光标）
+      const target = hitTest(e.col, e.row, rows, rect);
+      const overInput =
+        !hit &&
+        target.kind === "input" &&
+        isPlausibleInputRect(rect.inputRect);
+      setPointerShape(
+        resolvePointerShape({
+          dragging: false,
+          clickable: !!hit,
+          overInput,
+          streaming: store.streaming,
+        }),
+      );
+      return;
+    }
+
+    // 非 motion：需要准确区域
     syncChatMetrics(rect);
     const target = hitTest(e.col, e.row, rows, rect);
 
@@ -261,19 +338,8 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
       return;
     }
 
-    if (e.type === "motion") {
-      if (dragRef.current) return;
-      if (useStore.getState().streaming) return;
-      const now = Date.now();
-      if (now - lastHoverRef.current < 50) return;
-      lastHoverRef.current = now;
-      const hit = hitTestClick(e.col, e.row);
-      const id = hit?.id ?? null;
-      if (useStore.getState().hoverId !== id) useStore.getState().setHoverId(id);
-      return;
-    }
-
     if (e.type === "down") {
+      perfInc("mouseDown");
       process.stdout.write("\x1b[?25l");
       stopEdge();
       const now = Date.now();
@@ -287,6 +353,12 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
 
       const mode = resolveMode(e.row, e.col, rows, rect);
       const snap = snapToCell(e.row, e.col);
+      // 按下：可点 pointer > 输入 text > 可拖 grab
+      const downHit = hitTestClick(e.col, e.row);
+      if (downHit) setPointerShape("pointer");
+      else if (mode === "input" && isPlausibleInputRect(rect.inputRect)) {
+        setPointerShape("text");
+      } else setPointerShape("grab");
 
       if (e.shift && (mode === "chat" || mode === "global") && clickCount === 1) {
         if (mode === "chat") {
@@ -317,11 +389,12 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
       }
 
       if (mode === "input") {
+        // 按下不立刻画选区（零宽蓝块=伪第二光标）；仅记录锚点，拖过阈值再开选
         clearActiveSel();
+        selFxClear();
+        useStore.getState().setInputTextSel(null);
+        notifySelectionChanged();
         if (target.kind === "input") {
-          useStore.getState().dispatchInputSelect(target.col, target.line, "start");
-          startInputSel(snap.row, snap.col);
-          notifySelectionChanged();
           dragRef.current = {
             mode: "input", startCol: snap.col, startRow: snap.row,
             moved: false, clickCount, wordMode: false, edgeDir: null,
@@ -348,6 +421,7 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
         }
         // 首帧强制写入整视口，保证起点以下/以上即将滚出的行都进 cache
         captureChatVisibleLines({ alsoSticky: true, fillOnly: false });
+        if (clickCount >= 2) selFxLive();
         notifySelectionChanged();
         dragRef.current = {
           mode: "chat", startCol: snap.col, startRow: snap.row,
@@ -368,6 +442,7 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
       } else {
         startGlobalSel(snap.row, snap.col, false);
       }
+      if (clickCount >= 2) selFxLive();
       notifySelectionChanged();
       dragRef.current = {
         mode: "global", startCol: snap.col, startRow: snap.row,
@@ -384,46 +459,72 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
         Math.abs(e.col - d.startCol) > DRAG_THRESHOLD * 2
       ) {
         d.moved = true;
+        setPointerShape("grabbing");
       }
 
+      const maybeCapture = () => {
+        const t = Date.now();
+        if (t - lastCaptureRef.current < CAPTURE_MIN_MS) return;
+        lastCaptureRef.current = t;
+        captureChatVisibleLines({ alsoSticky: true });
+      };
+
       if (d.mode === "input") {
-        const cur = hitTest(e.col, e.row, rows, rect);
-        if (cur.kind === "input") {
-          useStore.getState().dispatchInputSelect(cur.col, cur.line, "extend");
+        // 首次越过拖拽阈值：用锚点开启选区，再 extend
+        if (d.moved) {
+          const cur = hitTest(e.col, e.row, rows, rect);
           const snap = snapToCell(e.row, e.col);
-          updateInputSelEnd(snap.row, snap.col);
-        } else if (rect.inputRect) {
-          // 拖出输入框：夹到框边
-          const ir = rect.inputRect;
-          const clampRow = Math.max(ir.top, Math.min(ir.top + ir.height - 1, e.row));
-          const clampCol = Math.max(
-            ir.left + (rect.inputTextColOffset ?? 4),
-            Math.min(ir.left + ir.width - 1, e.col),
-          );
-          const line = clampRow - ir.top;
-          const charCol = Math.max(0, clampCol - ir.left - (rect.inputTextColOffset ?? 4));
-          useStore.getState().dispatchInputSelect(charCol, line, "extend");
-          updateInputSelEnd(clampRow, clampCol);
+          if (!useStore.getState().inputTextSel) {
+            // start 锚点：用 drag 起点的屏幕列/行反推字符列
+            const ir = rect.inputRect;
+            if (ir) {
+              const startLine = Math.max(0, d.startRow - ir.top);
+              const startCharCol = Math.max(
+                0,
+                d.startCol - ir.left - (rect.inputTextColOffset ?? INPUT_TEXT_COL_OFFSET_DEFAULT),
+              );
+              useStore.getState().dispatchInputSelect(startCharCol, startLine, "start");
+              startInputSel(d.startRow, d.startCol);
+            }
+          }
+          if (cur.kind === "input") {
+            useStore.getState().dispatchInputSelect(cur.col, cur.line, "extend");
+            updateInputSelEnd(snap.row, snap.col);
+          } else if (rect.inputRect) {
+            const ir = rect.inputRect;
+            const clampRow = Math.max(ir.top, Math.min(ir.top + ir.height - 1, e.row));
+            const clampCol = Math.max(
+              ir.left + (rect.inputTextColOffset ?? INPUT_TEXT_COL_OFFSET_DEFAULT),
+              Math.min(ir.left + ir.width - 1, e.col),
+            );
+            const line = clampRow - ir.top;
+            const charCol = Math.max(0, clampCol - ir.left - (rect.inputTextColOffset ?? INPUT_TEXT_COL_OFFSET_DEFAULT));
+            useStore.getState().dispatchInputSelect(charCol, line, "extend");
+            updateInputSelEnd(clampRow, clampCol);
+          }
+          selFxLive();
+          notifySelectionChanged();
         }
-        notifySelectionChanged();
         return;
       }
 
       if (d.mode === "chat") {
         const m = getChatViewMetrics("logical");
-        // 视口外/边缘：钉 end + auto-scroll（不必鼠标回到框内才更新）
         if (e.row <= m.top + EDGE_ZONE) {
           ensureEdge("up");
           pinChatEndToEdge("up", e.col);
-          // 仅脏行高亮（paint 仍对齐当前帧时 end 在顶边）
-          captureChatVisibleLines({ alsoSticky: true });
+          maybeCapture();
+          if (d.moved) selFxLive();
           notifySelectionChanged();
           return;
         }
+        // 拖出视口底边（含落到 EventBlock/输入栏）：仍钉在对话区最后一行，
+        // 避免选区“卡住半截”且无法选到框内最底几行
         if (e.row >= m.bottom - EDGE_ZONE) {
           ensureEdge("down");
           pinChatEndToEdge("down", e.col);
-          captureChatVisibleLines({ alsoSticky: true });
+          maybeCapture();
+          if (d.moved) selFxLive();
           notifySelectionChanged();
           return;
         }
@@ -436,8 +537,12 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
           } else {
             updateChatSelEnd(ay, e.col);
           }
+        } else if (e.row > m.bottom) {
+          // 视口外下方：强制钉底（与 edge 一致）
+          pinChatEndToEdge("down", e.col);
         }
-        captureChatVisibleLines({ alsoSticky: true });
+        if (d.moved) selFxLive();
+        // 拖选中途不每帧 capture（昂贵）；松手再采
         notifySelectionChanged();
         return;
       }
@@ -451,6 +556,7 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
       } else {
         updateGlobalSelEnd(snap.row, snap.col);
       }
+      if (d.moved) selFxLive();
       notifySelectionChanged();
       return;
     }
@@ -459,30 +565,63 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
       const d = dragRef.current;
       dragRef.current = null;
       stopEdge();
+      // 松手后按当前位置恢复指针
+      {
+        const hit = hitTestClick(e.col, e.row);
+        const overInput = target.kind === "input";
+        setPointerShape(
+          resolvePointerShape({
+            clickable: !!hit,
+            overInput,
+            streaming: useStore.getState().streaming && !hit && !overInput,
+          }),
+        );
+      }
       if (!d) return;
 
       if (d.mode === "input") {
         if (!d.moved) {
           useStore.getState().setInputTextSel(null);
           clearActiveSel();
+          selFxClear();
           notifySelectionChanged();
-          // 单击：移光标
+          // 单击：移光标（不留零宽选区）
           if (target.kind === "input") {
             cbRef.current.onInputCursor?.(target.col, target.line);
           }
         } else {
-          const text = extractSelection();
-          if (text.trim()) toastCopy(text);
+          const ts = useStore.getState().inputTextSel;
+          // 零宽/无效选区：清掉，避免蓝块伪光标
+          if (!ts || ts.startIdx === ts.endIdx) {
+            useStore.getState().setInputTextSel(null);
+            clearActiveSel();
+            selFxClear();
+            notifySelectionChanged();
+            if (target.kind === "input") {
+              cbRef.current.onInputCursor?.(target.col, target.line);
+            }
+          } else {
+            selFxRelease();
+            const text = extractSelection();
+            if (text.trim()) toastCopy(text);
+            notifySelectionChanged();
+          }
         }
         return;
       }
 
       if (d.clickCount >= 2 || d.moved) {
+        // 有效选区松手：彩虹 → 闪白 → 灰底停留
+        selFxRelease();
         const finishCopy = () => {
           if (d.mode === "chat") captureChatVisibleLines({ alsoSticky: true });
           const text = extractSelection();
           if (text.trim()) toastCopy(text);
-          else clearSelection();
+          else {
+            clearSelection();
+            selFxClear();
+          }
+          notifySelectionChanged();
         };
         // 边缘滚后 paint 可能尚未与 lastGrid 对齐：等一帧再采，避免丢尾
         if (d.mode === "chat" && isPaintPending()) {
@@ -496,6 +635,7 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
       // 单击未拖：保留 sticky 锚点，清掉瞬时点选高亮（可选保留一格）
       // 不 clear sticky；清 active 蓝底避免残留
       clearActiveSel();
+      selFxClear();
       notifySelectionChanged();
 
       if (target.kind === "input") {
@@ -510,6 +650,7 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
   useEffect(() => {
     if (!enabled) return;
     enableMouse(process.stdout, { drag: true, anyMotion: true });
+    setPointerShape("default");
     const onData = (buf: Buffer) => {
       process.stdout.write("\x1b[?25l");
       for (const ev of parseMouse(buf.toString("latin1"))) {
@@ -519,6 +660,7 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
     process.stdin.on("data", onData);
     return () => {
       process.stdin.off("data", onData);
+      resetPointerShape();
       disableMouse(process.stdout);
       stopEdge();
     };

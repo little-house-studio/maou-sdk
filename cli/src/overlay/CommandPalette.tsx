@@ -7,7 +7,7 @@ import { Overlay } from "./Overlay.js";
 import { SelectList, type SelectItem } from "./SelectList.js";
 
 const COMMANDS: SelectItem[] = [
-  { value: "new", label: "新对话", description: "清空消息" },
+  { value: "new", label: "新对话", description: "清屏 · 画廊 · /new" },
   { value: "model", label: "选择模型", description: "Ctrl+M" },
   { value: "sessions", label: "切换会话", description: "历史会话" },
   { value: "prompt", label: "System Prompt", description: "/prompt 预览（不进上下文）" },

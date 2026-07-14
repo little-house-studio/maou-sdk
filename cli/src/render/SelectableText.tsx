@@ -124,7 +124,7 @@ export function SelectableText({ children, color, bold, dimColor, backgroundColo
           ? <Text color={color} bold={bold} dimColor={dimColor} backgroundColor={backgroundColor} wrap={wrap}>{""}</Text>
           : segs.map((s, i) =>
               s.style === "sel"
-                ? <Text key={i} backgroundColor="blue" color="white">{s.text}</Text>
+                ? <Text key={i} backgroundColor="#2121FF" color="white">{s.text}</Text>
                 : <Text key={i} color={color} bold={bold} dimColor={dimColor} backgroundColor={backgroundColor} wrap={wrap}>{s.text}</Text>
             )}
       </Box>
@@ -157,7 +157,7 @@ export function SelectableText({ children, color, bold, dimColor, backgroundColo
           <Box key={li}>
             {segs.map((s, i) =>
               s.style === "sel"
-                ? <Text key={i} backgroundColor="blue" color="white">{s.text}</Text>
+                ? <Text key={i} backgroundColor="#2121FF" color="white">{s.text}</Text>
                 : <Text key={i} color={color} bold={bold} dimColor={dimColor} backgroundColor={backgroundColor} wrap={wrap}>{s.text}</Text>
             )}
           </Box>

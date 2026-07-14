@@ -86,11 +86,14 @@ export function useInputSelection(opts: InputSelectionOptions): {
     timerRef.current = setTimeout(() => { timerRef.current = null; }, 50);
   };
 
+  const terminalApprovalId = useStore((s) => s.terminalApproval?.id ?? null);
+
   useEffect(() => {
     if (!active) return;
     const measure = () => {
       const r = getElementRect(boxRef.current);
-      if (r) {
+      // 拒绝异常大矩形（全屏编辑器误写 / yoga 脏数据）→ 否则整屏 I 形光标
+      if (r && r.width > 0 && r.height > 0 && r.height <= 10) {
         setInputRect(r);
         setInputBounds({
           left: r.left,
@@ -103,8 +106,12 @@ export function useInputSelection(opts: InputSelectionOptions): {
     };
     measure();
     const id = setTimeout(measure, 60);
-    return () => clearTimeout(id);
-  }, [value, active, boxRef, setInputRect, colOffset]);
+    const id2 = setTimeout(measure, 160); // 审批条弹出后布局下移再测一次
+    return () => {
+      clearTimeout(id);
+      clearTimeout(id2);
+    };
+  }, [value, active, boxRef, setInputRect, colOffset, terminalApprovalId]);
 
   // overlay 等 inactive 时清选区，避免蓝底残留、退格删错
   useEffect(() => {
@@ -120,30 +127,41 @@ export function useInputSelection(opts: InputSelectionOptions): {
     const idx = colToIndex(value, col, line);
     const rect = useStore.getState().inputRect;
     if (phase === "start") {
+      // 仅记锚点，不画零宽选区（蓝块=伪光标）
       setInputTextSel({ startIdx: idx, endIdx: idx });
-      setForced([line, idx]);
-      if (rect) {
-        const p = indexToCol(value, idx);
-        startInputSel(rect.top + p.line, rect.left + colOffset + p.col);
-        notifySelectionChanged();
-      }
+      setForced(indexToCursorPos(value, idx));
+      clearActiveSel();
+      notifySelectionChanged();
     } else {
       const cur = useStore.getState().inputTextSel;
-      if (cur) {
-        setInputTextSel({ startIdx: cur.startIdx, endIdx: idx });
-        if (rect) {
-          const p = indexToCol(value, idx);
-          updateInputSelEnd(rect.top + p.line, rect.left + colOffset + p.col);
-          notifySelectionChanged();
-        }
+      if (!cur) {
+        setInputTextSel({ startIdx: idx, endIdx: idx });
+        return;
+      }
+      setInputTextSel({ startIdx: cur.startIdx, endIdx: idx });
+      // 有宽度才画选区
+      if (cur.startIdx !== idx && rect) {
+        const a = indexToCol(value, cur.startIdx);
+        const b = indexToCol(value, idx);
+        startInputSel(rect.top + a.line, rect.left + colOffset + a.col);
+        updateInputSelEnd(rect.top + b.line, rect.left + colOffset + b.col);
+        notifySelectionChanged();
+      } else if (cur.startIdx === idx) {
+        clearActiveSel();
+        notifySelectionChanged();
       }
     }
   }, [inputSelectCmd, value, active, setInputTextSel, colOffset]);
 
-  // 同步 input 模式屏幕高亮端点（value 变化时）
+  // 同步 input 模式屏幕高亮端点（value 变化时）；零宽不画
   useEffect(() => {
-    if (!inputTextSel || inputTextSel.startIdx === inputTextSel.endIdx) return;
-    if (getSelMode() !== "input") return;
+    if (!inputTextSel || inputTextSel.startIdx === inputTextSel.endIdx) {
+      if (getSelMode() === "input") {
+        clearActiveSel();
+        notifySelectionChanged();
+      }
+      return;
+    }
     const rect = useStore.getState().inputRect;
     if (!rect) return;
     let s = inputTextSel.startIdx, e = inputTextSel.endIdx;
@@ -157,6 +175,18 @@ export function useInputSelection(opts: InputSelectionOptions): {
 
   const hasTextSel = !!inputTextSel && inputTextSel.startIdx !== inputTextSel.endIdx;
 
+  const collapseSel = (to: "start" | "end") => {
+    const sel = useStore.getState().inputTextSel;
+    if (!sel) return;
+    let s = sel.startIdx, e = sel.endIdx;
+    if (s > e) [s, e] = [e, s];
+    const idx = to === "start" ? s : e;
+    setInputTextSel(null);
+    clearActiveSel();
+    vramClearSelection();
+    setForced(indexToCursorPos(valueRef.current, idx));
+  };
+
   useCleanInput((_input, key) => {
     if (!active || !hasTextSel) return;
     const sel = useStore.getState().inputTextSel;
@@ -165,11 +195,15 @@ export function useInputSelection(opts: InputSelectionOptions): {
     if (s > e) [s, e] = [e, s];
     const v = valueRef.current;
 
-    // Esc：只清选区，不关掉全局 overlay（由 app 处理）
-    if (key.escape || _input === "\x1b") {
-      setInputTextSel(null);
-      clearActiveSel();
-      vramClearSelection();
+    // Esc：由全局统一取消栈处理（清选区为一层回退）；此处不重复处理
+
+    // 方向键：折叠选区为光标（标准编辑器）
+    if (key.leftArrow || key.upArrow) {
+      collapseSel("start");
+      return;
+    }
+    if (key.rightArrow || key.downArrow) {
+      collapseSel("end");
       return;
     }
 
@@ -193,15 +227,8 @@ export function useInputSelection(opts: InputSelectionOptions): {
       return;
     }
 
-    if (key.backspace || key.delete) {
-      const newVal = v.slice(0, s) + v.slice(e);
-      onChange(newVal);
-      setInputTextSel(null);
-      clearActiveSel();
-      vramClearSelection();
-      setForced(indexToCursorPos(newVal, s));
-      return;
-    }
+    // Backspace/Delete：由 InputBar 统一处理（词/句/字 + 选区删除），避免双删
+
     // 复制：Ctrl+C 或 Ctrl+Shift+C 的 char 分支在 app；这里兼容
     if (key.ctrl && (_input === "\x03" || _input === "c" || _input === "C")) {
       copyToClipboard(v.slice(s, e));

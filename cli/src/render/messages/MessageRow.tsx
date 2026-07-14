@@ -8,7 +8,8 @@ import type { DOMElement } from "ink";
 import stringWidth from "string-width";
 import { useTheme } from "../../theme/theme-context.js";
 import type { ChatMessage, MessageAuthor } from "../../state/types.js";
-import { MarkdownRenderer, estimateMarkdownLines } from "./MarkdownRenderer.js";
+import { MarkdownRenderer, estimateMarkdownLines, hasStructuredMarkdown } from "./MarkdownRenderer.js";
+import { MdPaper, mdPaperLayout } from "./MdPaper.js";
 import { ToolCard } from "./ToolCard.js";
 import { ThinkingBlock } from "./ThinkingBlock.js";
 import { CollapsibleText, estimateLines } from "./Collapsible.js";
@@ -18,6 +19,50 @@ import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { useClickTarget } from "../../input/click-target.js";
 import { useStore } from "../../state/store.js";
 import { repairUtf8Mojibake } from "../../input/filtered-stdin.js";
+import { useAnimFrame, spinnerChar, neonRgb } from "../../hooks/useAnimFrame.js";
+import { chatInnerCols, chatBodyCols } from "../../layout/chat-width.js";
+
+/** 流式 LIVE 徽章：酸性霓虹色扫过 */
+function LiveBadge({ frame }: { frame: number }) {
+  const label = " LIVE ";
+  const chars = [...label];
+  return (
+    <Text bold>
+      {chars.map((ch, i) => {
+        const [r, g, b] = neonRgb(frame * 0.35 + i * 0.45);
+        const hex = `#${[r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
+        return (
+          <Text key={i} color={hex} backgroundColor="#1A1A1A">
+            {ch}
+          </Text>
+        );
+      })}
+    </Text>
+  );
+}
+
+/** 助手消息头：流式时 spinner + LIVE 霓虹 */
+function AssistantHead({
+  logoColor,
+  streaming,
+  text,
+}: {
+  logoColor: string;
+  streaming: boolean;
+  text: string;
+}) {
+  const frame = useAnimFrame(streaming, 120);
+  const spin = spinnerChar(frame);
+  return (
+    <MsgHead logo={streaming ? spin : "◈"} color={logoColor}>
+      <Text color={logoColor}>
+        {text}
+        {streaming ? " · " : ""}
+      </Text>
+      {streaming ? <LiveBadge frame={frame} /> : null}
+    </MsgHead>
+  );
+}
 
 /** 头栏身份标签：user | agent:xxx | system:xxx | tool:xxx */
 function authorLabel(author: MessageAuthor | undefined, fallback: string): string {
@@ -180,41 +225,73 @@ function UserBubble({
 
 const ASSISTANT_FOLD_LINES = 12;
 
-/** assistant 正文：流式纯文本；结束后 markdown；超长折叠仍渲染 MD（限行） */
+/** assistant 正文：普通文字无缩进；仅结构化 MD 走居中纸面（左右对称留白） */
 function AssistantBody({ content, streaming }: { content: string; streaming: boolean }) {
   const t = useTheme();
   const term = useTerminalSize();
-  const colW = Math.max(12, term.cols - 8);
-  // 用 markdown 视觉行估算，避免「折叠时按原文 | 管道行」误判
-  const total = useMemo(
-    () => estimateMarkdownLines(content, colW),
-    [content, colW],
+  // 流式光标动画（hooks 必须无条件调用）；略慢一点减卡
+  const streamFrame = useAnimFrame(streaming, 110);
+  // 正文列：对话区内层 − logo，绝不吃到右边框
+  const plainW = chatBodyCols(term.cols);
+  const paper = mdPaperLayout(plainW);
+  const colW = paper.contentW;
+
+  const asMd = useMemo(
+    () => !streaming && hasStructuredMarkdown(content),
+    [content, streaming],
   );
-  const need = !streaming && total > ASSISTANT_FOLD_LINES;
+  const total = useMemo(
+    () => (asMd ? estimateMarkdownLines(content, colW) : estimateLines(content, plainW)),
+    [asMd, content, colW, plainW],
+  );
+  const need = !streaming && asMd && total > ASSISTANT_FOLD_LINES;
   const [open, setOpen] = useState(false);
   const ref = useRef<DOMElement | null>(null);
   const cid = useClickTarget(ref, () => { if (need) setOpen((o) => !o); }, [need, open]);
   const isHover = useStore((s) => s.hoverId) === cid;
 
-  if (!content) return null;
+  if (!content && !streaming) return null;
 
+  // 流式：霓虹扫尾光标 + 正文
   if (streaming) {
-    return <Text color={t.assistant} wrap="wrap">{content}</Text>;
+    const cursor = spinnerChar(streamFrame);
+    const [cr, cg, cb] = neonRgb(streamFrame * 0.4);
+    const cursorColor = `#${[cr, cg, cb].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
+    return (
+      <Text color={t.assistant} wrap="wrap">
+        {content}
+        <Text color={cursorColor} bold>{` ${cursor}`}</Text>
+      </Text>
+    );
+  }
+  if (!asMd) {
+    return (
+      <CollapsibleText
+        text={content}
+        color={t.assistant}
+        maxLines={ASSISTANT_FOLD_LINES}
+      />
+    );
   }
 
-  // 折叠 / 展开：都走 MarkdownRenderer；折叠时 maxLines 截断（表格/标题仍按 MD 渲染）
+  // 结构化 MD：左竖线标示 + 限宽折行，整块不铺底（避免右侧空填色）
   return (
-    <Box ref={ref} flexDirection="column">
-      <MarkdownRenderer
-        md={content}
-        maxLines={need && !open ? ASSISTANT_FOLD_LINES : undefined}
-      />
+    <Box ref={ref} flexDirection="column" alignSelf="flex-start">
+      <MdPaper width={plainW}>
+        <MarkdownRenderer
+          md={content}
+          contentWidth={colW}
+          maxLines={need && !open ? ASSISTANT_FOLD_LINES : undefined}
+        />
+      </MdPaper>
       {need && (
-        <Text color={isHover ? t.accent : t.dim}>
-          {open
-            ? ` ▲ 收起（共 ${total} 行 · 点击收起）`
-            : ` ▼ 展开全文（已折叠约 ${total} 行 · 点击展开）`}
-        </Text>
+        <Box marginLeft={2}>
+          <Text color={isHover ? t.accent : t.dim}>
+            {open
+              ? ` ▲ 收起（共 ${total} 行 · 点击收起）`
+              : ` ▼ 展开全文（已折叠约 ${total} 行 · 点击展开）`}
+          </Text>
+        </Box>
       )}
     </Box>
   );
@@ -224,7 +301,8 @@ function MessageRowImpl({ msg, frame }: { msg: ChatMessage; frame: number }) {
   const t = useTheme();
   const term = useTerminalSize();
   const ts = timecode(new Date(msg.ts));
-  const blockW = Math.max(16, term.cols - 2);
+  // 外层 Chat 有 single 边框，内容区 = cols-2
+  const blockW = chatInnerCols(term.cols);
 
   if (msg.role === "user") {
     // 非真人 user（wire 妥协）：按系统/agent 通知渲染，避免灰底用户气泡
@@ -279,14 +357,15 @@ function MessageRowImpl({ msg, frame }: { msg: ChatMessage; frame: number }) {
       msg.author ?? (msg.agentName ? { type: "agent", id: msg.agentName, displayName: msg.agentName } : undefined),
       "agent:ai",
     );
-
+    // 流式头动画（MessageRowImpl 每次都跑 hooks 的话会破坏 hook 顺序——只能放子组件）
     return (
       // AI 消息头上方空一行，与上一条消息（用户/上一轮 ai）隔开
       <MsgShell marginTop={1}>
-        {/* 不再画 ─ ↺ n ─ 轮次隔离线，轮次信息保留在头里 */}
-        <MsgHead logo="◈" color={t.dim}>
-          {`${loopMark(round, 0)} | ${who} | ${ts}${dur ? ` | (${dur})` : ""}${dnTok ? ` | ↓${dnTok}` : ""}${streaming ? " · …" : ""}`}
-        </MsgHead>
+        <AssistantHead
+          logoColor={streaming ? t.accent : t.dim}
+          streaming={streaming}
+          text={`${loopMark(round, 0)} | ${who} | ${ts}${dur ? ` | (${dur})` : ""}${dnTok ? ` | ↓${dnTok}` : ""}`}
+        />
         {thinking.length > 0 && (
           <MsgBody>
             {thinking.map((b) => (
@@ -294,7 +373,7 @@ function MessageRowImpl({ msg, frame }: { msg: ChatMessage; frame: number }) {
             ))}
           </MsgBody>
         )}
-        {content ? (
+        {(content || streaming) ? (
           <MsgBody>
             <AssistantBody content={content} streaming={streaming} />
           </MsgBody>
@@ -324,5 +403,5 @@ function MessageRowImpl({ msg, frame }: { msg: ChatMessage; frame: number }) {
   );
 }
 
-// 默认浅比较 props；尺寸变化靠组件内 useTerminalSize 的 setState 自行重渲
-export const MessageRow = memo(MessageRowImpl);
+// 默认浅比较 props；frame 仅兜底静态值，不参与比较（避免父级 frame 抖动打穿 memo）
+export const MessageRow = memo(MessageRowImpl, (a, b) => a.msg === b.msg);

@@ -15,9 +15,13 @@ const KEYS: [string, string][] = [
   ["Ctrl+M", "选择模型"],
   ["Ctrl+N", "新对话"],
   ["Ctrl+E", "全屏编辑器（Enter 换行不发送）"],
-  ["/prompt", "预览当前 agent system 提示词（Esc 返回）"],
-  ["Esc", "中断 / 关闭弹窗"],
-  ["Ctrl+C", "退出"],
+  ["/compact", "强制压缩上下文"],
+  ["/usage", "会话用量（费用/时长/改动，同 Claude Code）"],
+  ["/cost", "同 /usage"],
+  ["/context", "上下文占用与压缩阈值"],
+  ["/prompt", "预览 system 提示词"],
+  ["Esc", "取消/返回/关闭（选区→补全→弹层→中断）"],
+  ["Ctrl+C", "同 Esc 取消；无可取消时连按退出"],
 ];
 
 export function HelpDialog() {

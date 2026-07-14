@@ -5,6 +5,7 @@
  */
 
 import stringWidth from "string-width";
+import { INPUT_TEXT_COL_OFFSET_DEFAULT } from "../config/ui-constants.js";
 
 export type HitTarget =
   | { kind: "input"; col: number; line: number }   // 输入框，col=光标字符列，line=0-based 行
@@ -33,23 +34,23 @@ export function hitTest(col: number, row: number, rows: number, rect: LayoutRect
   if (rect.overlayTop !== undefined && row >= rect.overlayTop) {
     return { kind: "overlay", row: row - rect.overlayTop };
   }
-  // 优先：实测 inputRect
-  if (rect.inputRect) {
+  // 优先：实测 inputRect（高度异常时忽略，防整屏被当成输入区 → I 形光标）
+  if (rect.inputRect && rect.inputRect.height > 0 && rect.inputRect.height <= 10) {
     const r = rect.inputRect;
     if (col >= r.left && col < r.left + r.width && row >= r.top && row < r.top + r.height) {
-      const offset = rect.inputTextColOffset ?? 4;
+      const offset = rect.inputTextColOffset ?? INPUT_TEXT_COL_OFFSET_DEFAULT;
       const charCol = Math.max(0, col - r.left - offset);
       const clickLine = row - r.top;  // 0-based 从 TextArea 顶部数
       return { kind: "input", col: charCol, line: clickLine };
     }
-  } else {
-    // fallback：硬编码行号（inputRect 未就绪时）
+  } else if (!rect.inputRect || rect.inputRect.height > 10) {
+    // fallback：命名常量行号（inputRect 未就绪时）
     const inputBottom = rows - rect.inputRowFromBottom;
     const lineCount = Math.max(1, rect.inputLineCount ?? 1);
     const inputTop = inputBottom - lineCount + 1;
     if (row >= inputTop && row <= inputBottom) {
       const clickLine = row - inputTop;
-      const charCol = Math.max(0, col - 4);
+      const charCol = Math.max(0, col - INPUT_TEXT_COL_OFFSET_DEFAULT);
       return { kind: "input", col: charCol, line: clickLine };
     }
   }

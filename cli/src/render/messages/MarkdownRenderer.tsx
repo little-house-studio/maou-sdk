@@ -6,7 +6,7 @@
  * - 行内 code / strong / em / link 着色
  */
 
-import React from "react";
+import React, { useMemo } from "react";
 import { Box, Text } from "ink";
 import { marked, type Token } from "marked";
 import stringWidth from "string-width";
@@ -15,6 +15,7 @@ import type { ThemeTokens } from "../../theme/tokens.js";
 import { CodeBlock } from "./CodeBlock.js";
 import { hr } from "../../layout/decorators.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
+import { chatBodyCols } from "../../layout/chat-width.js";
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -273,21 +274,24 @@ function renderTable(
 export function MarkdownRenderer({
   md,
   maxLines,
+  contentWidth,
 }: {
   md: string;
   /** 最多渲染多少「视觉行」（折叠预览用）；不传 = 全文 */
   maxLines?: number;
+  /** 内容折行/表格预算宽；不传则按终端估算 */
+  contentWidth?: number;
 }) {
   const t = useTheme();
   const term = useTerminalSize();
+  // lexer 很重：长会话里同一 md 反复 parse 是卡顿源；md 不变则复用 tokens
+  const tokens = useMemo(() => (md ? marked.lexer(md) : []), [md]);
   if (!md) return null;
-
-  const tokens = marked.lexer(md);
   const out: React.ReactNode[] = [];
   let key = 0;
   let used = 0;
   const limit = maxLines ?? Infinity;
-  const contentW = Math.max(24, term.cols - 8);
+  const contentW = Math.max(16, contentWidth ?? chatBodyCols(term.cols) - 4);
 
   const can = (need: number) => used + need <= limit || used === 0;
   const spend = (n: number) => {
@@ -302,7 +306,9 @@ export function MarkdownRenderer({
       const lang = (tk as { lang?: string }).lang;
       const codeLines = Math.max(1, code.split("\n").length + 2); // 边框粗估
       if (!can(Math.min(codeLines, 4)) && used > 0) break;
-      out.push(<CodeBlock key={key++} code={code} lang={lang} />);
+      out.push(
+        <CodeBlock key={key++} code={code} lang={lang} maxWidth={Math.min(contentW + 2, chatBodyCols(term.cols))} />,
+      );
       spend(Math.min(codeLines, limit - used + codeLines));
     } else if (tk.type === "heading") {
       if (!can(1) && used > 0) break;
@@ -399,6 +405,43 @@ export function MarkdownRenderer({
   }
 
   return <Box flexDirection="column">{out}</Box>;
+}
+
+/**
+ * 是否包含「结构化 Markdown」块（标题/列表/代码块/表格/引用/分隔线）。
+ * 仅有普通段落/纯文本 → false（应走纯文本渲染，不套 MD 纸面）。
+ */
+export function hasStructuredMarkdown(md: string): boolean {
+  if (!md || !md.trim()) return false;
+  // 快速启发式（避免每帧 lexer）；命中再 lexer 确认
+  const quick =
+    /```[\s\S]*?```/.test(md) ||
+    /^\s{0,3}#{1,6}\s+\S/m.test(md) ||
+    /^\s{0,3}([-*+]|\d+\.)\s+\S/m.test(md) ||
+    /^\s{0,3}>\s?\S/m.test(md) ||
+    /^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/m.test(md) ||
+    /\|.+\|/.test(md);
+  if (!quick) return false;
+  try {
+    const tokens = marked.lexer(md);
+    for (const tk of tokens) {
+      switch (tk.type) {
+        case "heading":
+        case "list":
+        case "code":
+        case "table":
+        case "blockquote":
+        case "hr":
+        case "html":
+          return true;
+        default:
+          break;
+      }
+    }
+    return false;
+  } catch {
+    return quick;
+  }
 }
 
 /**

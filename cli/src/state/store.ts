@@ -14,6 +14,15 @@
  */
 
 import { create } from "zustand";
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { UIState, ChatMessage, SystemEvent, Toast, CompletionState, SupervisorState } from "./types.js";
 import type { CompletionItem } from "../overlay/Completer.js";
@@ -21,17 +30,41 @@ import { complete, applyCompletion } from "../overlay/Completer.js";
 import { reduce } from "./reducer.js";
 import { dispatchDisplayEvent } from "../events/display-events.js";
 import { SUPERVISOR_MANAGER } from "@little-house-studio/agent";
+import { loadCacheHistoryFromLedger } from "../lib/prompt-cache.js";
+import { perfInc } from "../hooks/perf.js";
+import { noteUiPhase } from "../hooks/process-stats.js";
+import {
+  userHistoryPath,
+  projectLastSessionPath,
+  projectSessionsDir,
+  projectSessionFile,
+} from "../config/paths.js";
+import { DEFAULT_AGENT_NAME, resolveAgentName } from "../config/defaults.js";
+import {
+  STREAM_THROTTLE_MS,
+  TOAST_TEXT_MAX,
+  HISTORY_CHUNK_ROUNDS,
+  HISTORY_OVERSCROLL_NOTCHES,
+  SCROLL_IDLE_MS,
+  SCROLL_COALESCE_MS,
+} from "../config/ui-constants.js";
 
 interface Store extends UIState {
   setAgentMeta: (agentName: string, provider: string, model: string, maxContext: number) => void;
   setThinking: (level: number) => void;
   setApprovalMode: (mode: UIState["approvalMode"]) => void;
   cycleApprovalMode: () => UIState["approvalMode"];
+  setTerminalApproval: (req: UIState["terminalApproval"]) => void;
   setOverlay: (kind: UIState["overlay"]) => void;
   setSessionId: (id: string | null) => void;
   setProviderModel: (p: string, m: string) => void;
   pushUserMessage: (text: string) => void;
   clearMessages: () => void;
+  /**
+   * 新会话：清空消息/事件/滚动，刷新画廊种子，可选清屏。
+   * 画廊会立刻显示，直到用户发出第一条非命令内容。
+   */
+  startNewSession: (opts?: { clearScreen?: boolean; toast?: string }) => void;
   onStream: (ev: StreamEvent) => void;
   setStreaming: (b: boolean) => void;
   setAborting: (b: boolean) => void;
@@ -65,9 +98,26 @@ interface Store extends UIState {
   autoFollow: boolean;               // 是否自动跟随底部（新消息到达时滚到底）
   scrollChat: (dir: "up" | "down", step?: number) => void;
   setChatScrollOffset: (n: number) => void;
-  setMaxChatScroll: (n: number, followGrowth?: boolean) => void;
+  /**
+   * 更新可滚范围。
+   * mode:
+   *  - pin-content（默认）：保持 contentTopY（offset += Δmax）—— 适合底部追加内容
+   *  - pin-offset：保持 offset 不变 —— 适合「上方/已见消息」测高修正（防上滑时跳 10+ 格）
+   */
+  setMaxChatScroll: (n: number, mode?: boolean | "pin-content" | "pin-offset") => void;
+  /** 同时设定 max + offset（测高精细锚定用） */
+  setChatScrollLayout: (max: number, offset: number) => void;
   setAutoFollow: (b: boolean) => void;
   scrollToBottom: () => void;
+  /**
+   * 历史窗口起点（items 下标）：贴底时自动收成最近 200 条；
+   * 顶缘过滚 5 格后可减小起点以加载更早 100 条。
+   */
+  chatHistoryStart: number;
+  setChatHistoryStart: (n: number) => void;
+  /** 滚轮/拖选滚动中（降 paint / 关 hover） */
+  scrollActive: boolean;
+  markScrollActive: () => void;
   /** ScrollHistory 实测消息视口（1-based 屏幕行，不含 ↑预览/↓回底 chrome） */
   chatViewport: { top: number; bottom: number; height: number } | null;
   setChatViewport: (v: { top: number; bottom: number; height: number } | null) => void;
@@ -149,13 +199,17 @@ const initialState: UIState = {
   streaming: false,
   aborting: false,
   sessionId: null,
-  agentName: "maou",
+  gallerySeed: `boot-${Date.now().toString(36)}`,
+  // 必须与 config.name / loadLastSession 过滤一致（旧值 "maou" 会导致
+  // /new 写入 agentName=maou，启动用 coding 过滤时 miss → 回退到旧 jsonl）
+  agentName: DEFAULT_AGENT_NAME,
   provider: "",
   model: "",
   maxContext: 0,
   round: 0,
   thinkingLevel: 2,
   approvalMode: "normal",
+  terminalApproval: null,
   rounds: [],
   cacheHistory: [],
   currentRoundUsage: { input: 0, output: 0 },
@@ -176,39 +230,170 @@ const initialState: UIState = {
   pendingSend: null,
   agentSessionMap: {},
   chatScrollOffset: 0,
+  maxChatScroll: 0,
+  autoFollow: true,
+  chatHistoryStart: -1,
+  scrollActive: false,
 };
 
-// 输入历史持久化（~/.maou/history.json）
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, dirname } from "node:path";
-const HISTORY_PATH = join(homedir(), ".maou", "history.json");
+// 输入历史 / 上次会话持久化（路径见 config/paths）
 function loadInputHistory(): string[] {
   try {
-    return JSON.parse(readFileSync(HISTORY_PATH, "utf-8")).items ?? [];
+    return JSON.parse(readFileSync(userHistoryPath(), "utf-8")).items ?? [];
   } catch {
     return [];
   }
 }
 function saveInputHistory(items: string[]): void {
   try {
-    mkdirSync(dirname(HISTORY_PATH), { recursive: true });
-    writeFileSync(HISTORY_PATH, JSON.stringify({ items }, null, 2));
+    const p = userHistoryPath();
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify({ items }, null, 2));
   } catch { /* 静默 */ }
 }
 
-// 上次会话持久化（~/.maou/last-session.json）—— 启动自动加载用
-const LAST_SESSION_PATH = join(homedir(), ".maou", "last-session.json");
-export function loadLastSession(): { agentName: string; sessionId: string } | null {
-  try {
-    return JSON.parse(readFileSync(LAST_SESSION_PATH, "utf-8"));
-  } catch { return null; }
+/** 项目态上次会话（按 cwd 隔离；不同路径互不串读） */
+export interface ProjectLastSession {
+  agentName: string;
+  sessionId: string;
+  /** 绝对路径，启动时再校验一次 */
+  cwd?: string;
 }
-function saveLastSession(agentName: string, sessionId: string): void {
+
+/**
+ * coding 产品族 agent 名：历史上 store 默认 "maou"、产品 config "coding"、
+ * 模板偶发 "main"。指针层视为同一产品，避免 /new 后因名字不一致回退旧会话。
+ */
+function isSameProductAgent(a?: string, b?: string): boolean {
+  if (!a || !b) return true;
+  if (a === b) return true;
+  const aliases = new Set(["coding", "maou", "main"]);
+  return aliases.has(a) && aliases.has(b);
+}
+
+/**
+ * 读取「当前工作区」上次会话。
+ * 1) <cwd>/.maou/last-session.json（且 session 文件存在）—— 含空 jsonl
+ * 2) 否则本项目 sessions/ 下按 mtime 最新、非空的 jsonl
+ *
+ * 关键：指针存在就优先信指针。agentName 仅在「明显不同产品」时忽略指针；
+ * coding/maou/main 互通，防止 /new 写入 maou、启动用 coding 过滤导致 miss。
+ */
+export function loadLastSession(
+  cwd: string = process.cwd(),
+  agentName?: string,
+): ProjectLastSession | null {
+  const absCwd = resolve(cwd);
+  // 1) 项目 last-session 指针（含 /new 空会话）
   try {
-    mkdirSync(dirname(LAST_SESSION_PATH), { recursive: true });
-    writeFileSync(LAST_SESSION_PATH, JSON.stringify({ agentName, sessionId }, null, 2));
-  } catch { /* 静默 */ }
+    const raw = JSON.parse(
+      readFileSync(projectLastSessionPath(absCwd), "utf-8"),
+    ) as ProjectLastSession;
+    if (raw?.sessionId && typeof raw.sessionId === "string") {
+      const cwdOk = !raw.cwd || resolve(raw.cwd) === absCwd;
+      const agentOk = isSameProductAgent(agentName, raw.agentName);
+      const fileOk = existsSync(projectSessionFile(raw.sessionId, absCwd));
+      if (cwdOk && agentOk && fileOk) {
+        return {
+          agentName: raw.agentName || agentName || DEFAULT_AGENT_NAME,
+          sessionId: raw.sessionId,
+          cwd: absCwd,
+        };
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
+  // 2) 回退：本项目最新「非空」session。
+  // 仅当 last-session 缺失/损坏/session 文件不存在时才用 mtime。
+  // /new 空会话有指针时绝不能走到这里，否则会「复活」旧对话。
+  try {
+    const dir = projectSessionsDir(absCwd);
+    if (!existsSync(dir)) return null;
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => ({
+        id: f.replace(/\.jsonl$/, ""),
+        mtime: statSync(join(dir, f)).mtimeMs,
+        size: statSync(join(dir, f)).size,
+      }))
+      .filter((x) => x.size > 2)
+      .sort((a, b) => b.mtime - a.mtime);
+    const top = files[0];
+    if (!top) return null;
+    return {
+      agentName: agentName || DEFAULT_AGENT_NAME,
+      sessionId: top.id,
+      cwd: absCwd,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** 写项目 last-session 指针；失败抛错给调用方决定是否静默 */
+export function saveLastSession(
+  agentName: string,
+  sessionId: string,
+  cwd: string = process.cwd(),
+): void {
+  const absCwd = resolve(cwd);
+  const p = projectLastSessionPath(absCwd);
+  mkdirSync(dirname(p), { recursive: true });
+  const payload: ProjectLastSession = {
+    agentName: resolveAgentName(agentName, DEFAULT_AGENT_NAME),
+    sessionId,
+    cwd: absCwd,
+  };
+  writeFileSync(p, JSON.stringify(payload, null, 2), "utf-8");
+}
+
+/** 生成新 session id（与 SessionStore 风格接近，足够唯一） */
+function newSessionId(): string {
+  const now = new Date();
+  const ts = now.toISOString().replace(/[-:T.Z]/g, "").slice(0, 14);
+  const rand = Math.random().toString(36).slice(2, 10);
+  return `${ts}-${rand}`;
+}
+
+/**
+ * 落盘「空会话」并更新 last-session 指针。
+ * 这样下次启动：
+ *  1) 读 last-session → 空 jsonl → 不恢复消息（画廊）
+ *  2) 不会 fallback 到旧的大 jsonl
+ */
+export function persistEmptySession(
+  agentName: string,
+  cwd: string = process.cwd(),
+): string {
+  const absCwd = resolve(cwd);
+  const sessionId = newSessionId();
+  const name = resolveAgentName(agentName, DEFAULT_AGENT_NAME);
+  const dir = projectSessionsDir(absCwd);
+  mkdirSync(dir, { recursive: true });
+  // 空 jsonl；指针存在时 loadLastSession 不会因 size=0 丢掉它
+  const jsonl = projectSessionFile(sessionId, absCwd);
+  writeFileSync(jsonl, "", "utf-8");
+  const metaPath = join(dir, `${sessionId}.meta.json`);
+  writeFileSync(
+    metaPath,
+    JSON.stringify(
+      {
+        id: sessionId,
+        title: "新对话",
+        agent_name: name,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+    "utf-8",
+  );
+  // 指针必须写成功；否则下次启动会 mtime 回退到旧对话
+  saveLastSession(name, sessionId, absCwd);
+  return sessionId;
 }
 
 // 纯 UI 命令白名单（开 overlay / 退出 / 调思考级别）。
@@ -222,6 +407,9 @@ const LOCAL_COMMANDS = new Set([
   "quit",
   "thinking",
   "prompt",
+  // 新会话 / 清空：本地处理，避免走 runtime 留下 "/new" 气泡挡住画廊
+  "new",
+  "clear",
 ]);
 
 /** toast 自动消失计时（模块级，避免连发 toast 时旧 timer 清掉新提示） */
@@ -232,26 +420,65 @@ export const useStore = create<Store>((set, get) => ({
   ...initialState,
 
   setAgentMeta: (agentName, provider, model, maxContext) =>
-    set({ agentName, provider, model, maxContext }),
+    set((s) => {
+      const nextAgent = agentName || s.agentName;
+      const nextModel = model || s.model;
+      // 从 agent 层 ledger 恢复 (agent, session, model) 桶镜像（可恢复，非清空销毁）
+      const { cacheHistory } = loadCacheHistoryFromLedger(nextAgent, s.sessionId, nextModel);
+      return {
+        agentName: nextAgent,
+        provider,
+        model: nextModel,
+        maxContext,
+        cacheHistory,
+        currentRoundUsage: { input: 0, output: 0 },
+      };
+    }),
   setThinking: (level) => set({ thinkingLevel: Math.max(0, Math.min(5, level)) }),
-  setApprovalMode: (mode) => set({ approvalMode: mode }),
+  setApprovalMode: (mode) => {
+    set({ approvalMode: mode });
+    // 同步 tools 层 terminal-policy.json（按当前 agent）
+    void import("@little-house-studio/tools")
+      .then((m) => {
+        const agent = resolveAgentName(get().agentName, DEFAULT_AGENT_NAME);
+        m.setTerminalMode(agent, mode);
+      })
+      .catch(() => {});
+  },
   cycleApprovalMode: () => {
     const order = ["normal", "auto", "yolo"] as const;
     const cur = get().approvalMode;
     const i = Math.max(0, order.indexOf(cur as typeof order[number]));
     const next = order[(i + 1) % order.length]!;
-    set({ approvalMode: next });
+    get().setApprovalMode(next);
     return next;
   },
+  setTerminalApproval: (req) => set({ terminalApproval: req }),
   setOverlay: (overlay) => set({ overlay }),
   setSessionId: (sessionId) => {
-    set({ sessionId });
+    const s = get();
+    const { cacheHistory } = loadCacheHistoryFromLedger(s.agentName, sessionId, s.model);
+    set({ sessionId, cacheHistory, currentRoundUsage: { input: 0, output: 0 } });
     if (sessionId) {
-      const an = get().agentName;
-      if (an) saveLastSession(an, sessionId);
+      const an = resolveAgentName(get().agentName, DEFAULT_AGENT_NAME);
+      try {
+        saveLastSession(an, sessionId, process.cwd());
+      } catch {
+        /* 指针写失败不阻断 UI */
+      }
     }
   },
-  setProviderModel: (provider, model) => set({ provider, model }),
+  setProviderModel: (provider, model) =>
+    set((s) => {
+      // 换模 = 切到新桶镜像；旧 (agent,session,oldModel) 桶仍在 agent ledger
+      const { cacheHistory } = loadCacheHistoryFromLedger(s.agentName, s.sessionId, model);
+      return {
+        provider,
+        model,
+        cacheHistory,
+        currentRoundUsage: { input: 0, output: 0 },
+      };
+    }),
   pushUserMessage: (text) => set((s) => ({
     messages: [...s.messages, {
       id: `u${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -266,7 +493,76 @@ export const useStore = create<Store>((set, get) => ({
     currentRoundUsage: { input: 0, output: 0 },
     eventBlock: { mode: "thinking", upTokens: 0, downTokens: 0, detail: undefined },
   })),
-  clearMessages: () => set({ messages: [], systemEvents: [], currentAssistantId: null, rounds: [], cacheHistory: [], round: 0, sessionId: null, toast: null }),
+  clearMessages: () =>
+    set({
+      messages: [],
+      systemEvents: [],
+      currentAssistantId: null,
+      rounds: [],
+      cacheHistory: [],
+      round: 0,
+      sessionId: null,
+      toast: null,
+      streaming: false,
+      aborting: false,
+      chatScrollOffset: 0,
+      maxChatScroll: 0,
+      autoFollow: true,
+    }),
+
+  startNewSession: (opts) => {
+    const clearScreen = opts?.clearScreen !== false;
+    const toast = opts?.toast ?? "新会话";
+    // 新种子 → 画廊换一张（同会话空态保持稳定）
+    const gallerySeed = `new-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    const agentName = resolveAgentName(get().agentName, DEFAULT_AGENT_NAME);
+    // 落盘空会话 + 更新 last-session，避免下次启动 fallback 到旧 jsonl
+    let sessionId: string | null = null;
+    try {
+      sessionId = persistEmptySession(agentName, process.cwd());
+    } catch (e) {
+      // 仍清空 UI，但提示落盘失败（否则用户以为已 /new，重启却回到旧会话）
+      get().toastMsg(`新会话落盘失败: ${String(e).slice(0, 60)}`, "err");
+      sessionId = newSessionId();
+    }
+    set((s) => ({
+      messages: [],
+      systemEvents: [],
+      currentAssistantId: null,
+      rounds: [],
+      cacheHistory: [],
+      round: 0,
+      sessionId,
+      streaming: false,
+      aborting: false,
+      chatScrollOffset: 0,
+      maxChatScroll: 0,
+      autoFollow: true,
+      overlay: null,
+      gallerySeed,
+      eventBlock: { mode: "idle" as const, upTokens: 0, downTokens: 0 },
+      currentRoundUsage: { input: 0, output: 0 },
+      terminalApproval: null,
+      // 清掉「按 agent 缓存」里当前 agent 的旧上下文（coding/maou 都清）
+      agentSessionMap: {
+        ...s.agentSessionMap,
+        [agentName]: {
+          sessionId,
+          messages: [],
+          systemEvents: [],
+        },
+        coding: {
+          sessionId,
+          messages: [],
+          systemEvents: [],
+        },
+      },
+    }));
+    if (clearScreen) {
+      void import("../lib/clear-screen.js").then((m) => m.clearTerminalScreen());
+    }
+    get().toastMsg(toast, "ok");
+  },
   setStreaming: (streaming) => set({ streaming }),
   setAborting: (aborting) => set({ aborting }),
   toastMsg: (text, kind = "info") => {
@@ -280,7 +576,7 @@ export const useStore = create<Store>((set, get) => ({
       set({ toast: null });
       return;
     }
-    set({ toast: { text: t.slice(0, 80), kind } });
+    set({ toast: { text: t.slice(0, TOAST_TEXT_MAX), kind } });
     // 自动消失：ok/info 2.2s · warn 3s · err 4s（避免「已复制」一直占位）
     if (_toastTimer) clearTimeout(_toastTimer);
     const gen = ++_toastGen;
@@ -343,6 +639,13 @@ export const useStore = create<Store>((set, get) => ({
         set({ overlay: null }); // 从命令面板进来时关掉面板
         break;
       }
+      case "new":
+        get().startNewSession({ clearScreen: true, toast: "新会话" });
+        break;
+      case "clear":
+        // 清空历史：同样回空会话画廊（不挡画作）
+        get().startNewSession({ clearScreen: true, toast: "已清空" });
+        break;
       default:
         return;
     }
@@ -363,30 +666,62 @@ export const useStore = create<Store>((set, get) => ({
   chatScrollOffset: 0,
   maxChatScroll: 0,
   autoFollow: true,
-  scrollChat: (dir, stepArg) => set((s) => {
-    // 默认每格 3 行；拖选边缘自动滚可传 1 更顺
-    const step = Math.max(1, stepArg ?? 3);
-    const max = s.maxChatScroll;
-    const base = s.autoFollow ? 0 : s.chatScrollOffset;
-    const next = Math.max(0, Math.min(max, base + (dir === "up" ? step : -step)));
-    const atBottom = next <= 0;
-    return { chatScrollOffset: next, autoFollow: atBottom };
-  }),
+  chatHistoryStart: -1,
+  scrollActive: false,
+  setChatHistoryStart: (n) => set({ chatHistoryStart: n }),
+  markScrollActive: () => {
+    markScrollActiveNow();
+  },
+  scrollChat: (dir, stepArg) => {
+    enqueueChatScroll(dir, Math.max(1, stepArg ?? 1));
+  },
   setChatScrollOffset: (n) => set((s) => ({ chatScrollOffset: Math.max(0, Math.min(s.maxChatScroll, n)) })),
   // maxChatScroll 回写：内容高度变化时由 ScrollHistory 调用。
   // followGrowth=true（流式内容增长）：!autoFollow 时 max 增大 Δ，offset 同步加 Δ 保持视口钉住。
   // 守卫：max 无变化时不 set（避免闪烁）。
-  setMaxChatScroll: (n, followGrowth = false) => set((s) => {
+  setMaxChatScroll: (n, mode = "pin-content") => set((s) => {
     const max = Math.max(0, n);
     if (max === s.maxChatScroll) return s;
     const delta = max - s.maxChatScroll;
-    if (followGrowth && !s.autoFollow && delta > 0) {
-      return { maxChatScroll: max, chatScrollOffset: Math.max(0, Math.min(max, s.chatScrollOffset + delta)) };
+    // 兼容旧 boolean：true → pin-content，false → pin-offset
+    const m: "pin-content" | "pin-offset" =
+      mode === true || mode === "pin-content"
+        ? "pin-content"
+        : mode === false || mode === "pin-offset"
+          ? "pin-offset"
+          : "pin-content";
+    if (s.autoFollow) {
+      return { maxChatScroll: max, chatScrollOffset: 0 };
     }
-    return { maxChatScroll: max };
+    if (m === "pin-offset") {
+      // 测高修正：offset 不动 → 上方变高时视口内容不往「更早」跳
+      return {
+        maxChatScroll: max,
+        chatScrollOffset: Math.max(0, Math.min(max, s.chatScrollOffset)),
+      };
+    }
+    // pin-content：底部追加时保持 contentTopY
+    const nextOffset = Math.max(0, Math.min(max, s.chatScrollOffset + delta));
+    return { maxChatScroll: max, chatScrollOffset: nextOffset };
+  }),
+  setChatScrollLayout: (max, offset) => set((s) => {
+    const m = Math.max(0, max);
+    const o = Math.max(0, Math.min(m, offset));
+    if (m === s.maxChatScroll && o === s.chatScrollOffset) return s;
+    return {
+      maxChatScroll: m,
+      chatScrollOffset: o,
+      autoFollow: o <= 0 ? true : false,
+    };
   }),
   setAutoFollow: (b) => set({ autoFollow: b }),
-  scrollToBottom: () => set({ chatScrollOffset: 0, autoFollow: true }),
+  scrollToBottom: () =>
+    set({
+      chatScrollOffset: 0,
+      autoFollow: true,
+      // 回底：折叠到最近 HISTORY_BASE（由 ScrollHistory 根据 items.length 纠正起点）
+      chatHistoryStart: -1, // -1 = 请求「收成贴底窗口」
+    }),
   chatViewport: null,
   setChatViewport: (v) => set((s) => {
     if (!v && !s.chatViewport) return s;
@@ -572,12 +907,20 @@ export const useStore = create<Store>((set, get) => ({
   restoreSession: (agentName) => {
     const cached = get().agentSessionMap[agentName];
     if (cached) {
+      const s = get();
+      const { cacheHistory } = loadCacheHistoryFromLedger(
+        agentName,
+        cached.sessionId,
+        s.model,
+      );
       set({
         sessionId: cached.sessionId,
         messages: cached.messages,
         systemEvents: cached.systemEvents,
         currentAssistantId: null,
         round: cached.messages.length,
+        cacheHistory,
+        currentRoundUsage: { input: 0, output: 0 },
       });
       return true;
     }
@@ -595,8 +938,107 @@ export const useStore = create<Store>((set, get) => ({
   },
 }));
 
+// ── 滚轮：每事件 ±1 行，合并窗口内合成一次 store 更新（降 ink/paint）──
+const WHEEL_LINES = 1;
+let overscrollUp = 0;
+let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingScrollDelta = 0;
+/** 合并窗内向上滚轮次数（顶缘过滚按「格」计，不是按合并后的行数） */
+let pendingUpNotches = 0;
+let scrollFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function markScrollActiveNow(): void {
+  const s = useStore.getState();
+  if (!s.scrollActive) useStore.setState({ scrollActive: true });
+  if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
+  scrollIdleTimer = setTimeout(() => {
+    scrollIdleTimer = null;
+    // 静止前冲刷残余 delta
+    flushPendingScroll();
+    useStore.setState({ scrollActive: false });
+  }, SCROLL_IDLE_MS);
+}
+
+function applyChatScrollDelta(delta: number, upNotches = 0): void {
+  if (delta === 0 && upNotches === 0) return;
+  noteUiPhase("scroll");
+  useStore.setState((s) => {
+    const max = s.maxChatScroll;
+    const base = s.autoFollow ? 0 : s.chatScrollOffset;
+
+    if (delta < 0) overscrollUp = 0;
+
+    const next = Math.max(0, Math.min(max, base + delta));
+    // 合并后一次跳多行：超出顶缘的 residual 才算过滚
+    const residualUp = delta > 0 ? Math.max(0, base + delta - max) : 0;
+
+    if (residualUp > 0 && max >= 0) {
+      const notches =
+        upNotches > 0
+          ? base >= max
+            ? upNotches
+            : Math.max(1, Math.min(upNotches, residualUp))
+          : residualUp;
+      overscrollUp += notches;
+      if (overscrollUp >= HISTORY_OVERSCROLL_NOTCHES) {
+        overscrollUp = 0;
+        const cur = s.chatHistoryStart;
+        const nextStart =
+          cur < 0
+            ? cur - HISTORY_CHUNK_ROUNDS
+            : Math.max(0, cur - HISTORY_CHUNK_ROUNDS);
+        return {
+          chatHistoryStart: nextStart,
+          chatScrollOffset: max,
+          autoFollow: false,
+        };
+      }
+    }
+
+    const atBottom = next <= 0;
+    if (atBottom) overscrollUp = 0;
+    if (next === s.chatScrollOffset && atBottom === s.autoFollow) return s;
+    // 回到底部：autoFollow + start=-1 → ScrollHistory 收成最近 200
+    if (atBottom) {
+      return {
+        chatScrollOffset: 0,
+        autoFollow: true,
+        chatHistoryStart: -1,
+      };
+    }
+    return { chatScrollOffset: next, autoFollow: false };
+  });
+}
+
+function flushPendingScroll(): void {
+  if (scrollFlushTimer) {
+    clearTimeout(scrollFlushTimer);
+    scrollFlushTimer = null;
+  }
+  const d = pendingScrollDelta;
+  const up = pendingUpNotches;
+  pendingScrollDelta = 0;
+  pendingUpNotches = 0;
+  if (d === 0 && up === 0) return;
+  applyChatScrollDelta(d, up);
+}
+
+function enqueueChatScroll(dir: "up" | "down", step: number): void {
+  void step;
+  const line = dir === "up" ? WHEEL_LINES : -WHEEL_LINES;
+  pendingScrollDelta += line;
+  if (dir === "up") pendingUpNotches += 1;
+  markScrollActiveNow();
+  // 合并高频触控板事件：~30fps store 更新，视觉仍按累计行数跳
+  if (!scrollFlushTimer) {
+    scrollFlushTimer = setTimeout(() => {
+      scrollFlushTimer = null;
+      flushPendingScroll();
+    }, SCROLL_COALESCE_MS);
+  }
+}
+
 // ── 流式事件节流（模块级，单 store 实例）────────────────────────────────
-const STREAM_THROTTLE_MS = 64;
 const THROTTLE_TYPES = new Set(["assistant_delta", "thinking_delta"]);
 let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingDeltas: StreamEvent[] = [];
@@ -609,6 +1051,8 @@ function flushStreamDeltas(): void {
   const batch = pendingDeltas;
   pendingDeltas = [];
   if (batch.length === 0) return;
+  perfInc("streamFlush");
+  noteUiPhase("stream");
   useStore.setState((s) => {
     let cur: UIState = s;
     for (const ev of batch) {

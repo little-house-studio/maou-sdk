@@ -9,14 +9,15 @@
  *   禁止「临时 forced + 超时清空」：清空后 internal 是旧值，光标会卡在旧位置。
  */
 
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useMemo } from "react";
 import { Box, Text } from "ink";
 import type { DOMElement } from "ink";
-import { TextArea, type TextAreaHandle } from "react-ink-textarea";
+import { TextArea, type TextAreaHandle, type TLabels } from "react-ink-textarea";
 import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useImeCursor } from "../hooks/useImeCursor.js";
+import { useCleanInput } from "../hooks/useCleanInput.js";
 import { useInputSelection } from "../hooks/useInputSelection.js";
 import { colToIndex } from "../input/hit-test.js";
 import {
@@ -25,11 +26,71 @@ import {
   completionInsertSuffix,
   applyCompletion,
   complete,
+  getSlashCommands,
 } from "../overlay/Completer.js";
 import {
   clearSelection as vramClearSelection,
+  notifyCursorActivity,
 } from "../render/vram-layer.js";
 import { clearActiveSel } from "../render/selection-model.js";
+import {
+  deleteBackwardTo,
+  findPrevSentenceBoundary,
+  findPrevWordBoundary,
+  prevCodePointIndex,
+} from "../input/text-edit.js";
+
+/** 计算机蓝 —— 光标/选区/可识别指令同色 */
+const COMPUTER_BLUE = "#2121FF";
+
+/** 识别为已注册斜杠指令时，整段 token 高亮 */
+function buildCommandLabels(): TLabels {
+  const names = getSlashCommands()
+    .map((c) => c.value.replace(/^\//, ""))
+    .filter((n) => /^[\w-]+$/.test(n));
+  if (names.length === 0) return [];
+  const alt = names
+    .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  // 行首完整指令：/model、/compact 等（后跟空白或结尾）
+  return [
+    {
+      pattern: new RegExp(`^/(?:${alt})(?=\\s|$)`, "gm"),
+      label: "command",
+    },
+  ];
+}
+
+/** 粘贴：多字符一次插入时，光标落到插入段末尾 */
+function cursorAfterInsert(prev: string, next: string, prevCursor: number): number | null {
+  if (next.length <= prev.length + 1) return null; // 单字输入不走粘贴逻辑
+  // 公共前缀
+  let i = 0;
+  const minLen = Math.min(prev.length, next.length);
+  while (i < minLen && prev[i] === next[i]) i++;
+  // 公共后缀
+  let j = 0;
+  while (
+    j < prev.length - i &&
+    j < next.length - i &&
+    prev[prev.length - 1 - j] === next[next.length - 1 - j]
+  ) {
+    j++;
+  }
+  const insertEnd = next.length - j;
+  // 插入段长度
+  const insertLen = insertEnd - i;
+  if (insertLen <= 1) return null;
+  return insertEnd;
+}
+import {
+  noteInputContentWidth,
+  scheduleIdleViewportCheck,
+  setImePinTarget,
+  restoreTerminalViewport,
+} from "../input/terminal-viewport.js";
+import stringWidth from "string-width";
+import { getElementRect } from "../input/click-target.js";
 
 interface Props {
   value: string;
@@ -77,6 +138,8 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
   const applyingCompletionRef = useRef(false);
   const savedInputRef = useRef<string | null>(null);
   const acceptingRef = useRef(false);
+  /** 粘贴后锁定光标到插入段末尾，防止 onCursorChange 抢回旧位置 */
+  const pasteCursorLockRef = useRef<number | null>(null);
   /** 最新文本（onCursorChange 时 props.value 可能还是上一帧） */
   const valueRef = useRef(value);
   valueRef.current = value;
@@ -124,11 +187,51 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     setInputLineCount(Math.max(1, value.split("\n").length));
   }, [value, setInputLineCount]);
 
+  // IME / 超长行：检测逻辑溢出；回落后恢复终端横向视口
+  useEffect(() => {
+    const contentCols = Math.max(8, term.cols - 6); // ❯ 前缀 + 边距
+    noteInputContentWidth(value, contentCols);
+    // 组字结束常见：value 稳定后右侧不再需要溢出 → 空闲再确认一次恢复
+    scheduleIdleViewportCheck(150);
+  }, [value, term.cols]);
+
+  // 上报 IME 硬件光标锚点（屏幕 1-based）；setImePinTarget 内会钳制并记录越界 latch
+  useEffect(() => {
+    if (overlay) {
+      setImePinTarget(null);
+      return;
+    }
+    const rect = getElementRect(boxRef.current);
+    const rows = term.rows;
+    const cols = term.cols;
+    const colOffset = 4; // " ❯ " 视觉宽
+    let row: number;
+    let col: number;
+    if (rect && rect.width > 0 && rect.height > 0) {
+      const line = Math.min(cursorPos[0], Math.max(0, rect.height - 1));
+      row = rect.top + line;
+      const lineText = value.split("\n")[cursorPos[0]] ?? "";
+      const before = Array.from(lineText).slice(0, cursorPos[1]).join("");
+      const contentW = Math.max(8, rect.width - colOffset);
+      const vis = stringWidth(before);
+      // 未 wrap 的原始列（可能 > cols）用于触发 overflow latch
+      const rawCol = rect.left + colOffset + vis;
+      const wrappedCol = rect.left + colOffset + (vis % contentW);
+      // 传 rawCol 若越界则 latch；setImePinTarget 再钳到屏幕内
+      col = rawCol > cols ? rawCol : wrappedCol;
+    } else {
+      row = Math.max(1, rows - 2);
+      col = 4 + stringWidth(value.split("\n").pop() ?? "");
+    }
+    setImePinTarget({ focused: true, row, col, cols, rows });
+  }, [value, cursorPos, overlay, term.cols, term.rows]);
+
   useEffect(() => {
     if (overlay) {
       useStore.getState().setInputTextSel(null);
       clearActiveSel();
       vramClearSelection();
+      setImePinTarget(null);
     }
   }, [overlay]);
 
@@ -167,6 +270,63 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     active: !overlay,
   });
 
+  /**
+   * 退格统一在此处理（关掉 TextArea 的 Backspace/Alt+Backspace，避免双删）：
+   *   · 普通 Backspace → 删一字
+   *   · Alt/Option+Backspace（及 Ctrl+W）→ 按词删
+   *   · Ctrl+Backspace → 按句删
+   * 有选区时：一律删掉选区（与标准编辑器一致）
+   */
+  useCleanInput((_input, key) => {
+    if (overlay) return;
+
+    // Ctrl+W：按词删（与 bash 习惯一致；部分终端 Alt+BS 会映射成这个）
+    const isCtrlW =
+      key.ctrl && !key.meta && (_input === "\x17" || _input === "w" || _input === "W");
+    if (!key.backspace && !isCtrlW) return;
+
+    // 有选区：整段删除
+    const ts = useStore.getState().inputTextSel;
+    if (ts && ts.startIdx !== ts.endIdx) {
+      let s = ts.startIdx, e = ts.endIdx;
+      if (s > e) [s, e] = [e, s];
+      const text = valueRef.current;
+      const newText = text.slice(0, s) + text.slice(e);
+      valueRef.current = newText;
+      onChange(newText);
+      useStore.getState().setInputTextSel(null);
+      clearActiveSel();
+      vramClearSelection();
+      placeCursorAtIndex(newText, s);
+      refreshCompletion(newText, s);
+      return;
+    }
+
+    const text = valueRef.current;
+    const cursor = cursorIndexRef.current;
+    if (cursor <= 0) return;
+
+    // 优先级：Ctrl+Backspace 句 > Alt/Meta+Backspace 或 Ctrl+W 词 > 普通一字
+    let boundary: number;
+    if (key.backspace && key.ctrl && !key.meta) {
+      boundary = findPrevSentenceBoundary(text, cursor);
+    } else if (
+      isCtrlW ||
+      (key.backspace && (key.meta || (key as { alt?: boolean }).alt === true))
+    ) {
+      boundary = findPrevWordBoundary(text, cursor);
+    } else {
+      boundary = prevCodePointIndex(text, cursor);
+    }
+
+    const { text: newText, cursor: newCur } = deleteBackwardTo(text, cursor, boundary);
+    if (newText === text) return;
+    valueRef.current = newText;
+    onChange(newText);
+    placeCursorAtIndex(newText, newCur);
+    refreshCompletion(newText, newCur);
+  });
+
   useImeCursor({
     focused: !overlay,
     value,
@@ -180,14 +340,32 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
 
   const handleChange = (v: string) => {
     const cleaned = scrubInput(v);
+    const prev = valueRef.current;
+    const prevIdx = cursorIndexRef.current;
     valueRef.current = cleaned;
     onChange(cleaned);
 
-    // 光标以 onCursorChange 为准（库 setValue 后会 setCursor → onCursorChange）。
-    // 文末追加时乐观推进，避免受控间隙里光标慢一拍。
-    const prev = value;
-    const prevIdx = cursorIndexRef.current;
-    if (prevIdx >= prev.length && cleaned.length >= prev.length) {
+    // 打字/粘贴时清掉输入选区，避免蓝块伪第二光标
+    const ts = useStore.getState().inputTextSel;
+    if (ts) {
+      useStore.getState().setInputTextSel(null);
+      clearActiveSel();
+      vramClearSelection();
+    }
+
+    // 粘贴：多字符一次插入 → 光标到粘贴段末尾
+    const pasteEnd = cursorAfterInsert(prev, cleaned, prevIdx);
+    if (pasteEnd !== null) {
+      pasteCursorLockRef.current = pasteEnd;
+      placeCursorAtIndex(cleaned, pasteEnd);
+      queueMicrotask(() => {
+        if (pasteCursorLockRef.current === pasteEnd) {
+          placeCursorAtIndex(valueRef.current, pasteEnd);
+        }
+        pasteCursorLockRef.current = null;
+      });
+    } else if (prevIdx >= prev.length && cleaned.length >= prev.length) {
+      // 文末追加时乐观推进，避免受控间隙里光标慢一拍
       placeCursorAtIndex(cleaned, cleaned.length);
     } else if (cleaned.length < prev.length) {
       placeCursorAtIndex(cleaned, Math.min(prevIdx, cleaned.length));
@@ -202,6 +380,8 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
       savedInputRef.current = null;
     }
   };
+
+  const commandLabels = useMemo(() => buildCommandLabels(), [showComp, value]);
 
   /**
    * 接受补全（收口路径）：
@@ -279,6 +459,8 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     const trimmed = scrubInput(v).trim();
     if (!trimmed) return;
 
+    // 发送前复位视口，避免带偏的横向滚动进下一轮
+    restoreTerminalViewport();
     useStore.getState().pushInputHistory(trimmed);
     clearInputChrome();
 
@@ -302,27 +484,36 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
 
   const fieldBg = t.inputFieldBg;
   const footerBg = t.footerBg;
+  /** 补全弹出层：计算机蓝，与 footer 浅灰区分 */
+  const compBg = t.info;
   const inputLines = Math.max(1, Math.min(4, value.split("\n").length || 1));
 
   return (
     <Box flexShrink={0} flexDirection="column" backgroundColor={footerBg} width="100%">
       {showComp && (
-        <Box flexDirection="column" paddingLeft={2} backgroundColor={footerBg} width="100%">
-          {completion!.items.slice(0, 5).map((it, i) => (
-            <Text
-              key={it.value}
-              backgroundColor={footerBg}
-              color={i === completion!.sel ? "#000000" : t.userBg}
-              bold={i === completion!.sel}
-            >
-              {i === completion!.sel ? "▸ " : "  "}
-              {it.label}{" "}
-              <Text backgroundColor={footerBg} color="#808080">
-                {it.description}
+        <Box flexDirection="column" paddingLeft={2} backgroundColor={compBg} width="100%">
+          {completion!.items.slice(0, 5).map((it, i) => {
+            const isSel = i === completion!.sel;
+            // 选中行：荧光黄绿底 + 黑字；未选中：计算机蓝底 + 白字
+            const rowBg = isSel ? t.accent : compBg;
+            const rowFg = isSel ? "#000000" : "#FFFFFF";
+            const descFg = isSel ? "#242424" : "#A8A8FF";
+            return (
+              <Text
+                key={it.value}
+                backgroundColor={rowBg}
+                color={rowFg}
+                bold={isSel}
+              >
+                {isSel ? "▸ " : "  "}
+                {it.label}{" "}
+                <Text backgroundColor={rowBg} color={descFg}>
+                  {it.description}
+                </Text>
               </Text>
-            </Text>
-          ))}
-          <Text backgroundColor={footerBg} color={t.userBg}>
+            );
+          })}
+          <Text backgroundColor={compBg} color="#C5C5FF">
             {" ↑↓ 选择 · Tab/Enter 确认 · Esc 关闭"}
           </Text>
         </Box>
@@ -335,13 +526,15 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
         backgroundColor={footerBg}
         minHeight={inputLines}
       >
-        <Text backgroundColor={footerBg} color={t.accent} bold>
+        {/* 浅灰 footer 上用黑字：❯ / 正文 / 占位符 */}
+        <Text backgroundColor={footerBg} color="#000000" bold>
           {" ❯ "}
         </Text>
         <Box flexGrow={1} flexShrink={1} backgroundColor={fieldBg} minHeight={inputLines}>
           <TextArea
             ref={taRef}
-            focus={!overlay}
+            // 有选区时失焦：隐藏 Ink 插入光标（标准编辑器：选区与光标互斥）
+            focus={!overlay && !hasTextSel}
             value={value}
             // 始终受控：父组件必须跟随 onCursorChange，否则打字光标会卡住
             cursorPosition={cursorPos}
@@ -364,18 +557,44 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
             autoNewLineLimit={0}
             keybindings={
               showComp
-                ? { "Ctrl+E": false, "Up": false, "Down": false }
+                ? {
+                    "Ctrl+E": false,
+                    "Up": false,
+                    "Down": false,
+                    // 退格全交 InputBar（词/句/字）
+                    "Backspace": false,
+                    "Alt+Backspace": false,
+                    "Ctrl+W": false,
+                  }
                 : hasTextSel
-                  ? { "Ctrl+E": false, "Backspace": false, "Delete": false }
-                  : { "Ctrl+E": false }
+                  ? {
+                      "Ctrl+E": false,
+                      "Backspace": false,
+                      "Alt+Backspace": false,
+                      "Ctrl+W": false,
+                      "Delete": false,
+                    }
+                  : {
+                      "Ctrl+E": false,
+                      "Backspace": false,
+                      "Alt+Backspace": false,
+                      "Ctrl+W": false,
+                    }
             }
             onCursorChange={(pos) => {
+              // 粘贴锁：强制停在插入段末尾
+              if (pasteCursorLockRef.current !== null) {
+                placeCursorAtIndex(valueRef.current, pasteCursorLockRef.current);
+                return;
+              }
               // 库在受控模式下打字/移动都会走这里；必须写回 state，光标才会跟字
               const text = valueRef.current;
               cursorPosRef.current = pos;
               setCursorPos(pos);
               const idx = cursorToIndex(text, pos[0], pos[1]);
               cursorIndexRef.current = idx;
+              // 移动/输入时重置闪烁为「亮」，避免刚好灭掉
+              notifyCursorActivity();
               if (!applyingCompletionRef.current && !applyingHistoryRef.current) {
                 refreshCompletion(text, idx);
               }
@@ -410,9 +629,12 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
                 useStore.getState().setOverlay("agents");
               }
             }}
+            labels={commandLabels}
             styles={{
-              text: { color: t.fg, bgColor: fieldBg, bold: true },
-              placeholder: { color: t.muted, bgColor: fieldBg, italic: true },
+              text: { color: "#000000", bgColor: fieldBg, bold: true },
+              placeholder: { color: "#000000", bgColor: fieldBg, italic: true },
+              // 可识别斜杠指令：计算机蓝字
+              command: { color: COMPUTER_BLUE, bgColor: fieldBg, bold: true },
             }}
           />
         </Box>

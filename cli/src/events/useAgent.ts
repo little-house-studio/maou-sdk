@@ -11,19 +11,48 @@ import { runAgentCli, setSupervisorAbortSignal } from "@little-house-studio/agen
 import type { AgentHandle } from "@little-house-studio/agent";
 import { useStore } from "../state/store.js";
 import type { AgentCliConfig } from "../types.js";
-import { join } from "node:path";
 import { SoundManager, loadSoundConfig } from "../hooks/useSound.js";
 import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
+import { userMaouRoot } from "../config/paths.js";
+import {
+  setSlashCatalogProvider,
+  RUNTIME_SLASH_FALLBACK,
+  type CompletionItem,
+} from "../overlay/Completer.js";
 
 export function useAgent(config: AgentCliConfig) {
   const agentRef = useRef<AgentHandle | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const soundRef = useRef<SoundManager | null>(null);
-  const maouRoot = join(process.env.HOME ?? "", ".maou");
+  const maouRoot = userMaouRoot();
 
-  // 从 ~/.maou/config.json ui.sounds 加载初始配置（仅首次构造）
+  // 从用户态 config.json ui.sounds 加载初始配置（仅首次构造）
   if (!soundRef.current) soundRef.current = new SoundManager(loadSoundConfig());
   const sound = soundRef.current;
+
+  // 补全目录：runtime commandRegistry + 兜底表（skill 由 Completer 扫描）
+  useEffect(() => {
+    setSlashCatalogProvider(() => {
+      const items: CompletionItem[] = [];
+      try {
+        const reg = (agentRef.current as { runtime?: { commandRegistry?: { list: () => Array<{ name: string; description?: string }> } } } | null)
+          ?.runtime?.commandRegistry;
+        if (reg) {
+          for (const c of reg.list()) {
+            items.push({
+              value: `/${c.name}`,
+              label: `/${c.name}`,
+              description: c.description ?? "",
+            });
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      return items.length > 0 ? items : [...RUNTIME_SLASH_FALLBACK];
+    });
+    return () => setSlashCatalogProvider(null);
+  }, []);
 
   // agent 切换：监听 agentSwitchNonce，缓存当前会话 + 恢复目标会话（或新建）
   const switchNonce = useStore((s) => s.agentSwitchNonce);
@@ -60,6 +89,18 @@ export function useAgent(config: AgentCliConfig) {
     // 兜底：若输入链仍带入 latin1 乱码，发送前修回 UTF-8
     text = repairUtf8Mojibake(text);
     if (!text.trim()) return;
+
+    // /new · /clear：本地新会话（清屏 + 画廊），不走 runtime、不留下 "/new" 气泡
+    const cmd = text.trim().replace(/^\//, "").toLowerCase();
+    if (cmd === "new" || cmd === "clear") {
+      abortRef.current?.abort();
+      agentRef.current = null; // 下次真正发消息再 createAgent + startSession
+      store.startNewSession({
+        clearScreen: true,
+        toast: cmd === "clear" ? "已清空" : "新会话",
+      });
+      return;
+    }
 
     // 生成中：入队，生成结束自动 drain（不中断当前生成）
     if (store.streaming) {
@@ -165,6 +206,10 @@ export function useAgent(config: AgentCliConfig) {
     if (store.aborting) return;
     store.setAborting(true);
     abortRef.current?.abort();
+    // 中断时取消挂起的终端审批，避免 Promise 泄漏、审批条卡住
+    void import("../input/terminal-approval.js").then((m) => {
+      m.cancelAllTerminalApprovals("aborted");
+    }).catch(() => {});
     sound.clearIdleTimer();
     store.toastMsg("已中断", "info");
   }

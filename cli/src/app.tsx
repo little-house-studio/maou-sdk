@@ -9,8 +9,19 @@ import { useApp } from "ink";
 import { ThemeProvider, TAU_CETI } from "./theme/theme-context.js";
 import type { ThemeTokens } from "./theme/tokens.js";
 import { watchThemes, loadThemeFile } from "./theme/hot-reload.js";
+import {
+  resolveThemeArg,
+  setActiveTheme,
+  type LoadedTheme,
+} from "./theme/load-theme.js";
+
 import { Layout } from "./layout/Layout.js";
 import { useCleanInput } from "./hooks/useCleanInput.js";
+import {
+  handleEscapeCancel,
+  isEscapeKey,
+  registerAbortStream,
+} from "./hooks/escape-cancel.js";
 import { useTerminalSize, TerminalSizeProvider } from "./hooks/useTerminalSize.js";
 import { useStore, loadLastSession } from "./state/store.js";
 import { loadSessionMessages } from "./state/session-loader.js";
@@ -21,14 +32,43 @@ import { extractSelection as vramExtract, clearSelection as vramClear, getSelect
 import { copyToClipboard } from "./input/osc52.js";
 import type { LayoutRect } from "./input/hit-test.js";
 import type { AgentCliConfig } from "./types.js";
+import {
+  FULL_EDITOR_TEXT_COL_OFFSET,
+  INPUT_TEXT_COL_OFFSET_DEFAULT,
+} from "./config/ui-constants.js";
+import {
+  installCliTerminalApprover,
+  uninstallCliTerminalApprover,
+  cancelAllTerminalApprovals,
+} from "./input/terminal-approval.js";
 
 export function App({ config, themePath }: { config: AgentCliConfig; themePath?: string }) {
   const { exit } = useApp();
   const { send, abort, sound } = useAgent(config);
   useSupervisorState();
+
+  // Esc / 统一取消栈：注册流式中断
+  useEffect(() => {
+    registerAbortStream(() => abort());
+    return () => registerAbortStream(null);
+  }, [abort]);
+
+  // normal 模式终端审批：注入 tools 层 setTerminalApprover，阻塞直到用户点 Y/N
+  useEffect(() => {
+    installCliTerminalApprover();
+    return () => {
+      cancelAllTerminalApprovals("app unmount");
+      uninstallCliTerminalApprover();
+    };
+  }, []);
   const [frame, setFrame] = useState(0);
   const [inputValue, setInputValue] = useState("");
-  const [theme, setTheme] = useState<ThemeTokens>(() => themePath ? (loadThemeFile(themePath) ?? TAU_CETI) : TAU_CETI);
+  const [loadedTheme, setLoadedThemeState] = useState<LoadedTheme>(() => {
+    const t = resolveThemeArg(themePath);
+    setActiveTheme(t, false);
+    return t;
+  });
+  const [theme, setTheme] = useState<ThemeTokens>(() => loadedTheme.tokens);
   const streaming = useStore((s) => s.streaming);
   const overlay = useStore((s) => s.overlay);
   const fullEditorInitial = useStore((s) => s.fullEditorInitial);
@@ -39,36 +79,77 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   const setAgentMeta = useStore((s) => s.setAgentMeta);
   const term = useTerminalSize();
 
-  // 初始化 provider/model/maxContext（从 config 拿真实值）
+  // 初始化 provider/model/maxContext：优先全局 api.roles.main，否则 presets 列表第一项
   useEffect(() => {
-    const ps = config.getProviders?.() ?? [];
-    if (ps.length > 0) {
-      const ms = config.getModels?.(ps[0]!.id) ?? [];
-      if (ms.length > 0) {
-        const preset = config.getPreset(ps[0]!.id, ms[0]!.id) as { maxContext?: number; maxTokens?: number };
-        const maxContext = preset.maxContext ?? preset.maxTokens ?? 0;
-        setAgentMeta(config.name, ps[0]!.id, ms[0]!.id, maxContext);
-      } else {
-        setAgentMeta(config.name, ps[0]!.id, "", 0);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { getRolePresetFromMaouConfig } = await import("@little-house-studio/agent");
+        const main = getRolePresetFromMaouConfig("main") as {
+          name?: string;
+          model?: string;
+          maxContext?: number;
+          maxTokens?: number;
+        } | undefined;
+        if (cancelled) return;
+        if (main?.name && main?.model) {
+          const maxContext = main.maxContext ?? main.maxTokens ?? 0;
+          // provider id 与 Completer/ModelDialog 一致：preset.name
+          setAgentMeta(config.name, main.name, main.model, maxContext);
+          return;
+        }
+      } catch {
+        /* fall through */
       }
-    } else {
-      setAgentMeta(config.name, "", "", 0);
-    }
+      if (cancelled) return;
+      const ps = config.getProviders?.() ?? [];
+      if (ps.length > 0) {
+        const ms = config.getModels?.(ps[0]!.id) ?? [];
+        if (ms.length > 0) {
+          const preset = config.getPreset(ps[0]!.id, ms[0]!.id) as {
+            maxContext?: number;
+            maxTokens?: number;
+          };
+          const maxContext = preset.maxContext ?? preset.maxTokens ?? 0;
+          setAgentMeta(config.name, ps[0]!.id, ms[0]!.id, maxContext);
+        } else {
+          setAgentMeta(config.name, ps[0]!.id, "", 0);
+        }
+      } else {
+        setAgentMeta(config.name, "", "", 0);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [config, setAgentMeta]);
 
-  // 启动自动加载上次会话（last-session.json 记录的 agent + sessionId）
+  // 启动自动恢复「当前工作区」上次会话（.maou/last-session.json，按 cwd 隔离）
+  // /new 会落盘空会话并改写 last-session：下次只绑 id、不恢复消息 → 画廊
   const didRestore = useRef(false);
   useEffect(() => {
     if (didRestore.current) return;
     didRestore.current = true;
-    const last = loadLastSession();
-    if (!last || last.agentName !== config.name) return;
-    const loaded = loadSessionMessages(last.sessionId);
-    if (loaded && loaded.messages.length > 0) {
-      useStore.getState().setMessages(loaded.messages);
-      useStore.getState().setSessionId(last.sessionId);
-      useStore.getState().setAutoFollow(true);
+    const cwd = process.cwd();
+    const agent = config.name || "coding";
+    const last = loadLastSession(cwd, agent);
+    if (!last?.sessionId) return;
+
+    // 始终先绑定指针 id（含 /new 空会话），避免后续 startSession 另开旧档
+    useStore.getState().setSessionId(last.sessionId);
+
+    const loaded = loadSessionMessages(last.sessionId, cwd);
+    // 空文件 / 解析无消息：保持画廊，绝不另寻旧 jsonl
+    if (!loaded || loaded.messages.length === 0) {
+      useStore.getState().setMessages([]);
+      return;
     }
+    useStore.getState().setMessages(loaded.messages);
+    useStore.getState().setAutoFollow(true);
+    useStore.getState().toastMsg(
+      `已恢复本项目会话 ${last.sessionId.slice(0, 8)}（${loaded.messages.length} 条）`,
+      "info",
+    );
   }, [config.name]);
 
   // spinner 动画已局部化到 MessageRow/ToolCard（各自 interval），
@@ -96,7 +177,10 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
 
   // 主题热重载：~/.maou/themes/*.json 变更即时换色
   useEffect(() => {
-    return watchThemes((t) => setTheme(t));
+    return watchThemes((t) => {
+      setTheme(t);
+      setLoadedThemeState((prev) => ({ ...prev, tokens: t }));
+    });
   }, []);
 
   // 同步当前主题 bg 到渲染层：渲染层是 React 外的同步函数，靠此 effect 接收主题。
@@ -131,9 +215,10 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   const fullEditorOpen = fullEditorInitial !== null;
   const inputLineCount = useStore((s) => s.inputLineCount);
   const inputRect = useStore((s) => s.inputRect);
+  // chatBottom 回退：底栏约 EventBlock+Input+Info+Nav≈4 行，再留余量；优先用 store.chatViewport
   const mouseRect: LayoutRect = fullEditorOpen
-    ? { inputRowFromBottom: 0, inputLineCount, chatTop: 2, chatBottom: term.rows - 3, inputRect, inputTextColOffset: 1 }
-    : { inputRowFromBottom: 2, inputLineCount, chatTop: 2, chatBottom: term.rows - 3, inputRect, inputTextColOffset: 4 };
+    ? { inputRowFromBottom: 0, inputLineCount, chatTop: 2, chatBottom: Math.max(4, term.rows - 4), inputRect, inputTextColOffset: FULL_EDITOR_TEXT_COL_OFFSET }
+    : { inputRowFromBottom: 2, inputLineCount, chatTop: 2, chatBottom: Math.max(4, term.rows - 8), inputRect, inputTextColOffset: INPUT_TEXT_COL_OFFSET_DEFAULT };
 
   useMouseInput(mouseEnabled, mouseRect, {
     onInputCursor: (col, line) => {
@@ -145,22 +230,38 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     onOverlayScroll: (dir) => { useStore.getState().scrollOverlay(dir); },
   });
 
-  // 全局快捷键（全屏编辑器开时由 FullScreenEditor 自己处理，不干预）
-  // Ctrl+C 分层逻辑：有选区→清选区 | streaming→中断/退出 | 空闲→双击退出
+  // 全局快捷键
+  // Esc：统一取消/返回/关闭（见 escape-cancel.ts，全场景一层回退）
+  // Ctrl+C：有可取消层时等同 Esc；否则 streaming 停任务；空闲双击退出
   const ctrlCAtRef = useRef(0);
   const ctrlCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useCleanInput((char, key) => {
-    if (fullEditorInitial !== null) return;
+    // Esc 任何场景都走统一取消栈（含全屏编辑器）
+    if (isEscapeKey(char, key)) {
+      handleEscapeCancel();
+      return;
+    }
+
+    // 全屏编辑器其余键由 FullScreenEditor 处理
+    if (useStore.getState().fullEditorInitial !== null) return;
+
     // Ctrl+C 识别：key.ctrl+c / ETX(\x03) / 部分 Ink 只给 \x03 不置 ctrl
     const isCtrlC =
       char === "\x03" ||
       (key.ctrl && (char === "c" || char === "C" || char === "" || char == null));
     if (isCtrlC) {
-      // 0. overlay 打开时：第一次 Ctrl+C 关 overlay（与 Esc 一致），不直接退
-      const ov = useStore.getState().overlay;
-      if (ov) {
-        useStore.getState().setOverlay(null);
-        useStore.getState().toastMsg("已关闭面板 · 再按 Ctrl+C 退出", "info");
+      // 0. 有可取消层时：与 Esc 同一栈（关面板/清选区/停任务等），不直接退
+      const esc = handleEscapeCancel();
+      if (esc.handled) {
+        if (esc.action === "overlay" || esc.action === "nested_back") {
+          useStore.getState().toastMsg("已关闭面板 · 再按 Ctrl+C 退出", "info");
+        } else if (esc.action === "screen_selection" || esc.action === "input_selection") {
+          useStore.getState().toastMsg("已取消选区 · 再按 Ctrl+C 退出", "info");
+        } else if (esc.action === "abort_stream") {
+          useStore.getState().toastMsg("已停止当前上下文中的任务", "warn");
+        } else if (esc.action === "terminal_approval") {
+          useStore.getState().toastMsg("已拒绝命令", "info");
+        }
         ctrlCAtRef.current = Date.now();
         return;
       }
@@ -179,32 +280,16 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
         }
         return;
       }
-      // 2. 有选区：清选区（松手已自动复制，这里只清蓝底，不退出）
-      if (vramGet()) {
-        vramClear();
-        useStore.getState().toastMsg("已取消选区 · 再按 Ctrl+C 退出", "info");
-        ctrlCAtRef.current = Date.now();
-        return;
-      }
-      // 3. streaming（非监督）：第一次中断，3秒内第二次退出
-      if (useStore.getState().streaming && !useStore.getState().aborting) {
-        abort();
-        ctrlCAtRef.current = Date.now();
-        useStore.getState().toastMsg("已中断 · 再按一次 Ctrl+C 退出", "warn");
-        return;
-      }
-      // 4. 空闲 / 已中断：双击确认退出（3 秒内）
+      // 2. 空闲：双击确认退出界面（3 秒内）
       const now = Date.now();
       if (now - ctrlCAtRef.current < 3000) {
         if (ctrlCTimerRef.current) clearTimeout(ctrlCTimerRef.current);
         useStore.getState().toastMsg("正在退出…", "ok");
-        useStore.getState().requestExit(); // → useApp().exit()，走 waitUntilExit 恢复备用屏
-        // 兜底强退：给 Ink 极短时间 unmount；绝不能等 1s（用户体感「退出很慢」）
-        // 终端恢复序列由 installExitGuard 的 process.on('exit') 保证
+        useStore.getState().requestExit();
         setTimeout(() => process.exit(0), 50);
       } else {
         ctrlCAtRef.current = now;
-        useStore.getState().toastMsg("再按一次 Ctrl+C 退出", "warn");
+        useStore.getState().toastMsg("再按一次 Ctrl+C 退出界面", "warn");
         if (ctrlCTimerRef.current) clearTimeout(ctrlCTimerRef.current);
         ctrlCTimerRef.current = setTimeout(() => {
           if (Date.now() - ctrlCAtRef.current >= 2900) {
@@ -239,25 +324,6 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
         }
         return;
       }
-    }
-    // Esc / 裸 \x1b：优先关 overlay（用 getState 避免闭包陈旧）
-    if (key.escape || char === "\x1b") {
-      // 有选区先清蓝底，但若有 overlay 同一次 Esc 一并关闭（避免 /prompt 卡住）
-      if (vramGet()) vramClear();
-      if (useStore.getState().completion) {
-        useStore.getState().closeCompletion();
-        return;
-      }
-      const ov = useStore.getState().overlay;
-      if (ov) {
-        useStore.getState().setOverlay(null);
-        return;
-      }
-      if (useStore.getState().streaming) {
-        abort();
-        return;
-      }
-      return;
     }
     // 补全菜单开时：上下键只在这里 cycle 一次（InputBar 已 disable Up/Down，避免双跳）
     if (useStore.getState().completion?.items?.length) {
@@ -295,7 +361,10 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     if (key.ctrl && char === "k") { useStore.getState().setOverlay("command"); return; }
     if (key.ctrl && char === "m") { useStore.getState().setOverlay("model"); return; }
     if (key.ctrl && char === ",") { useStore.getState().setOverlay("settings"); return; }
-    if (key.ctrl && char === "n") { useStore.getState().clearMessages(); useStore.getState().toastMsg("新会话", "ok"); return; }
+    if (key.ctrl && char === "n") {
+      useStore.getState().startNewSession({ clearScreen: true, toast: "新会话" });
+      return;
+    }
     // Ctrl+E 触发全屏编辑器（react-ink-textarea 已禁用其默认行尾行为）
     // 外部 $EDITOR（原 Ctrl+G）已移除，旧实现见 legacy/pre-lib-migration/hooks/useExternalEditor.ts
     if (key.ctrl && char === "e") { useStore.getState().openFullEditor(inputValue); return; }
@@ -318,7 +387,7 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
   };
 
   return (
-    <ThemeProvider initial={theme}>
+    <ThemeProvider initial={theme} initialLoaded={loadedTheme}>
       {/* 登记 fakeStdout + 单例 resize/SIGWINCH → 全树自适应 */}
       <TerminalSizeProvider>
         <Layout

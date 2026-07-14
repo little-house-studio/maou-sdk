@@ -1,7 +1,7 @@
 /**
  * ToolCard —— 工具调用卡片（两级折叠）
  *
- * 外层（默认收纳）：
+ * 外层（默认收纳；长命令 / 执行中终端默认展开看 ring+进度）：
  *   标题：name + 目标摘要 + reason + 耗时
  *   点击标题/卡片头 → 展开看输入与结果
  *
@@ -10,16 +10,27 @@
  */
 
 import React, { useState, useMemo, useRef, useEffect } from "react";
-import { Box, Text, useBoxMetrics } from "ink";
+import { Box, Text } from "ink";
 import type { DOMElement } from "ink";
+import stringWidth from "string-width";
 import { useTheme } from "../../theme/theme-context.js";
 import { useStore } from "../../state/store.js";
 import type { ToolCardState } from "../../state/types.js";
 import { DiffRenderer } from "./DiffRenderer.js";
 import { useClickTarget } from "../../input/click-target.js";
-import { truncate, durationStr } from "../../layout/decorators.js";
+import { durationStr } from "../../layout/decorators.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
+import { readBoxHeight } from "../../hooks/useBoxSize.js";
 import { CollapsibleText } from "./Collapsible.js";
+import { useAnimFrame, spinnerChar, neonRgb } from "../../hooks/useAnimFrame.js";
+import { toolCardOuterCols } from "../../layout/chat-width.js";
+import {
+  extractProgressPct,
+  formatElapsed,
+  pctBar,
+  ringChar,
+  useBackgroundTerminals,
+} from "../../hooks/useBackgroundTerminals.js";
 
 const WRITE_TOOLS = new Set([
   "create", "edit", "write", "patch", "rm", "remove", "mkdir", "move",
@@ -139,6 +150,17 @@ function DiffCollapsible({ result, color }: { result: string; color: string }) {
   );
 }
 
+/** 是否「长命令」：use_terminal / bash / 参数含 background 或命令偏长 */
+function isLongCommandTool(name: string, args: string, raw: Record<string, unknown> | null): boolean {
+  const n = name.toLowerCase();
+  if (n === "use_terminal" || n === "bash" || n === "terminal" || n === "shell") return true;
+  if (raw && (raw.background === true || raw.action === "run")) return true;
+  if (typeof raw?.command === "string" && raw.command.length >= 40) return true;
+  // 结果很长时也算（用于完成后默认展开）
+  if (args.length > 200) return true;
+  return false;
+}
+
 export function ToolCard({
   tool,
   index: _index,
@@ -150,65 +172,159 @@ export function ToolCard({
 }) {
   const t = useTheme();
   const isWrite = WRITE_TOOLS.has(tool.name.toLowerCase());
-  const [open, setOpen] = useState(false);
-
   const waiting = !tool.done && tool.result === undefined;
-  const term = useTerminalSize();
-  const innerW = Math.max(12, term.cols - 12);
-
   const parsed = useMemo(() => parseArgs(tool.args), [tool.args]);
-  const callDur = durationStr(tool.callDuration);
+  const longCmd = isLongCommandTool(tool.name, tool.args, parsed.raw);
+  // 仅执行中默认展开；历史/已完成卡一律折叠（用户点过标题后以手动为准）
+  const [open, setOpen] = useState(() => waiting);
+  const [userToggled, setUserToggled] = useState(false);
 
-  // 标题摘要：优先 path/command；reason 单独一行或跟在后面
-  const targetShort = useMemo(
-    () => (parsed.target ? truncate(parsed.target.replace(/\n/g, " "), Math.max(8, Math.floor(innerW * 0.35))) : ""),
-    [parsed.target, innerW],
-  );
-  const reasonShort = useMemo(
-    () =>
-      parsed.reason
-        ? truncate(parsed.reason.replace(/\n/g, " "), Math.max(12, Math.floor(innerW * 0.4)))
-        : "",
-    [parsed.reason, innerW],
-  );
+  // 进入 waiting：若未手动操作则展开（看 ring/进度）
+  useEffect(() => {
+    if (waiting && !userToggled) setOpen(true);
+  }, [waiting, userToggled]);
+
+  // 完成/历史：未手动操作则强制收起，降挂载与 paint 成本
+  useEffect(() => {
+    if (!waiting && !userToggled) setOpen(false);
+  }, [waiting, userToggled]);
+
+  const anim = useAnimFrame(waiting, 140);
+  const term = useTerminalSize();
+  const cardW = toolCardOuterCols(term.cols);
+  const innerW = Math.max(12, cardW - 4);
+  // 仅执行中或用户主动展开时订终端轮询
+  const { running: bgRunning } = useBackgroundTerminals({
+    enabled: waiting || (longCmd && open),
+  });
+
+  const callDur = durationStr(tool.callDuration);
+  const termId =
+    (typeof parsed.raw?.id === "string" && parsed.raw.id) ||
+    (typeof parsed.raw?.terminal_id === "string" && parsed.raw.terminal_id) ||
+    null;
+  const matchedBg = termId
+    ? bgRunning.find((x) => x.id === termId)
+    : bgRunning.find((x) =>
+        tool.name.toLowerCase().includes("terminal") &&
+        (x.command === String(parsed.raw?.command ?? "") ||
+          x.description === String(parsed.raw?.description ?? "")),
+      );
+  const liveElapsed = matchedBg?.elapsedMs
+    ?? (tool.callStartTs ? Date.now() - tool.callStartTs : 0);
+  const livePct =
+    matchedBg?.progressPct ??
+    extractProgressPct(tool.result ?? "", String(parsed.raw?.command ?? ""), parsed.reason);
 
   const headRef = useRef<DOMElement | null>(null);
   const rootRef = useRef<DOMElement | null>(null);
-  const rootMetrics = useBoxMetrics(rootRef);
   const prevHeightRef = useRef<number>(0);
 
-  const canExpand = tool.result !== undefined || tool.done || !!tool.args;
+  const canExpand = tool.result !== undefined || tool.done || !!tool.args || waiting;
   const toggle = () => {
-    if (canExpand) setOpen((o) => !o);
+    if (!canExpand) return;
+    setUserToggled(true);
+    // 展开前记下高度；禁止 useBoxMetrics 持续监听（滚动时 top 漂移 → #185）
+    prevHeightRef.current = readBoxHeight(rootRef) || prevHeightRef.current;
+    setOpen((o) => !o);
   };
   // 只在标题行注册点击，避免与内层 Collapsible 抢点
   const cid = useClickTarget(headRef, toggle, [tool.result, tool.id, open, tool.done, canExpand]);
   const isHover = useStore((s) => s.hoverId) === cid;
 
+  // 用户手动展开/收起后：一次性测高并 shift 滚动，不挂 layout 监听
   useEffect(() => {
-    const h = rootMetrics.height ?? 0;
-    const delta = h - prevHeightRef.current;
-    if (prevHeightRef.current > 0 && delta !== 0) {
-      useStore.getState().expandShift(delta);
+    if (!userToggled) {
+      // 首帧/历史卡：只记高度，不 shift（避免加载历史时 N 卡连环 expandShift）
+      const t = setTimeout(() => {
+        const h = readBoxHeight(rootRef);
+        if (h > 0) prevHeightRef.current = h;
+      }, 0);
+      return () => clearTimeout(t);
     }
-    prevHeightRef.current = h;
-  }, [rootMetrics.height]);
+    let alive = true;
+    const apply = () => {
+      if (!alive) return;
+      const h = readBoxHeight(rootRef);
+      if (h <= 0) return;
+      const prev = prevHeightRef.current;
+      const delta = h - prev;
+      prevHeightRef.current = h;
+      if (prev > 0 && delta !== 0) {
+        useStore.getState().expandShift(delta);
+      }
+    };
+    const t0 = setTimeout(apply, 0);
+    const t1 = setTimeout(apply, 16);
+    const t2 = setTimeout(apply, 48);
+    return () => {
+      alive = false;
+      clearTimeout(t0);
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [open, userToggled]);
 
   const isDiff = useMemo(
     () => isWrite && !!tool.result && /^@@ |^--- |^\+\+\+ /m.test(tool.result),
     [tool.result, isWrite],
   );
 
-  const borderColor = isHover ? t.accent : t.border;
+  // 执行中：边框霓虹脉冲
+  const pulseRgb = neonRgb(anim * 0.5);
+  const pulseHex = `#${pulseRgb.map((x) => x.toString(16).padStart(2, "0")).join("")}`;
+  const borderColor = isHover ? t.accent : waiting ? pulseHex : t.border;
   const headBg = isHover
     ? t.accent
     : waiting
-      ? t.warn
+      ? pulseHex
       : tool.isError
         ? t.err
         : t.accent;
 
-  const chevron = canExpand ? (open ? "▼" : "▶") : waiting ? "…" : "";
+  const spin = spinnerChar(anim);
+  const chevron = canExpand ? (open ? "▼" : "▶") : waiting ? spin : "";
+
+  // 单行标题：name + target + reason + (dur) chevron；超宽先缩 reason，再缩 target
+  const nameLabel = waiting ? ` ${spin} ${tool.name} ` : ` ${tool.name} `;
+  const tailLabel = `${callDur ? `(${callDur}) ` : ""}${chevron}`;
+  const nameW = stringWidth(nameLabel);
+  const tailW = stringWidth(tailLabel ? ` ${tailLabel}` : "");
+  let remain = Math.max(0, innerW - nameW - tailW);
+
+  /** 按视觉列宽截断（CJK=2） */
+  const clipVis = (s: string, maxW: number): string => {
+    if (maxW <= 1) return "…";
+    if (stringWidth(s) <= maxW) return s;
+    let used = 0;
+    let out = "";
+    for (const ch of s) {
+      const w = stringWidth(ch) || 1;
+      if (used + w > maxW - 1) break;
+      out += ch;
+      used += w;
+    }
+    return out + "…";
+  };
+
+  let targetPart = "";
+  if (parsed.target && remain > 4) {
+    const rawT = parsed.target.replace(/\n/g, " ");
+    // target 最多占剩余一半，给 reason 留空
+    const tMax = Math.max(4, Math.min(stringWidth(rawT), Math.floor(remain * 0.5)));
+    const tBody = clipVis(rawT, tMax);
+    if (tBody) {
+      targetPart = ` ${tBody}`;
+      remain -= stringWidth(targetPart);
+    }
+  }
+
+  let reasonPart = "";
+  if (parsed.reason && remain > 3) {
+    const rawR = parsed.reason.replace(/\n/g, " ");
+    const rBody = clipVis(rawR, remain - 1); // 前导空格
+    if (rBody) reasonPart = ` ${rBody}`;
+  }
 
   return (
     <Box
@@ -217,29 +333,25 @@ export function ToolCard({
       borderStyle="single"
       borderColor={borderColor}
       paddingX={1}
-      width={Math.max(16, term.cols - 6)}
+      width={cardW}
       flexShrink={0}
+      overflow="hidden"
     >
-      {/* ── 标题行：name + 目标 + reason + 耗时 ── */}
-      <Box ref={headRef} flexDirection="column">
-        <Box>
-          <Text backgroundColor={headBg} color="#000" bold>{` ${tool.name} `}</Text>
-          {targetShort ? (
-            <Text color={t.muted}>{` ${targetShort} `}</Text>
-          ) : null}
-          <Text color={t.dim}>
-            {`${callDur ? `(${callDur}) ` : ""}${chevron}`}
-          </Text>
-        </Box>
-        {/* 收纳态也显示 reason（工具「做什么」） */}
-        {reasonShort ? (
-          <Text color={isHover ? t.accent : t.dim} wrap="truncate-end">
-            {`  ${reasonShort}`}
-          </Text>
+      {/* ── 标题单行：name | target | reason | 耗时/chevron ── */}
+      <Box ref={headRef} flexDirection="row" width={innerW} overflow="hidden">
+        <Text backgroundColor={headBg} color="#000" bold>
+          {nameLabel}
+        </Text>
+        {targetPart ? <Text color={t.muted}>{targetPart}</Text> : null}
+        {reasonPart ? (
+          <Text color={isHover ? t.accent : waiting ? pulseHex : t.dim}>{reasonPart}</Text>
+        ) : null}
+        {tailLabel ? (
+          <Text color={waiting ? pulseHex : t.dim}>{` ${tailLabel}`}</Text>
         ) : null}
       </Box>
 
-      {/* ── 展开：输入 + 输出，各自可再折叠 ── */}
+      {/* ── 展开：输入 + 输出，各自可再折叠；长命令显示 ring/进度 ── */}
       {open && (
         <Box flexDirection="column" marginTop={0}>
           <ArgsSection text={parsed.pretty} maxWidth={innerW} />
@@ -251,9 +363,27 @@ export function ToolCard({
             />
           )}
           {waiting && (
-            <Text color={t.warn}>{"  … 执行中"}</Text>
+            <Box flexDirection="column" marginTop={0}>
+              <Text color={pulseHex}>
+                {`  ${ringChar(anim)} ${spin} 执行中… ${formatElapsed(liveElapsed)}`}
+                {livePct != null ? ` · ${livePct}%` : ""}
+                {termId || matchedBg?.id ? ` · ${termId || matchedBg?.id}` : ""}
+              </Text>
+              <Text color={t.dim}>
+                {`  ${pctBar(livePct, Math.min(16, Math.max(8, innerW - 4)), anim)}`}
+                {livePct != null ? ` ${livePct}%` : " running"}
+              </Text>
+            </Box>
           )}
         </Box>
+      )}
+      {/* 收纳态仍给长命令一行 ring 进度，避免「卡住」错觉 */}
+      {!open && waiting && longCmd && (
+        <Text color={pulseHex}>
+          {` ${ringChar(anim)} ${formatElapsed(liveElapsed)}`}
+          {livePct != null ? ` ${livePct}%` : ""}
+          {` ${pctBar(livePct, 8, anim)}`}
+        </Text>
       )}
     </Box>
   );

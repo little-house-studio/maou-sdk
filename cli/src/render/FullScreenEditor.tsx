@@ -14,6 +14,11 @@ import { TextArea, type TextAreaHandle, type TLabels, type TStyles } from "react
 import { useTheme } from "../theme/theme-context.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useCleanInput } from "../hooks/useCleanInput.js";
+import {
+  handleEscapeCancel,
+  isEscapeKey,
+  registerFullEditorValue,
+} from "../hooks/escape-cancel.js";
 import { useInputSelection } from "../hooks/useInputSelection.js";
 import { useStore } from "../state/store.js";
 
@@ -50,9 +55,17 @@ export function FullScreenEditor({ initial, onExit }: Props) {
   const taRef = useRef<TextAreaHandle>(null);
   const boxRef = useRef<DOMElement | null>(null);
   const [value, setValue] = useState(initial);
+  const valueRef = useRef(value);
+  valueRef.current = value;
   const [cursor, setCursor] = useState<[number, number]>([0, 0]);
   const [forcedCursor, setForcedCursor] = useState<[number, number] | null>(null);
   const inputCursorShift = useStore((s) => s.inputCursorShift);
+
+  // 供全局 Esc 读取最新草稿（避免只带回 initial）
+  useEffect(() => {
+    registerFullEditorValue(() => valueRef.current);
+    return () => registerFullEditorValue(null);
+  }, []);
 
   // 文本选区（框选删除）：全屏编辑器复用同一套，colOffset=1（无 ❯ 前缀，仅 paddingX=1）
   const { hasTextSel } = useInputSelection({
@@ -67,9 +80,11 @@ export function FullScreenEditor({ initial, onExit }: Props) {
     active: true,
   });
 
-  // Esc 退出，值带回（react-ink-textarea keybindings 不支持 Esc，用 useCleanInput）
+  // Esc 退出：统一取消栈
   useCleanInput((char, key) => {
-    if (key.escape) onExit(value, false);
+    if (isEscapeKey(char, key)) {
+      handleEscapeCancel({ fullEditorValue: valueRef.current });
+    }
   });
 
   // 滚轮驱动光标移动（全屏开时，useMouseInput 的 rect 让滚轮走 onInputScroll → shiftInputCursor）

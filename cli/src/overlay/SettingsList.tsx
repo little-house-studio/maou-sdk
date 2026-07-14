@@ -18,7 +18,7 @@ export function SettingsList() {
   const settings: [string, string][] = [
     ["审核模式", `${approvalMode} (Shift+Tab 循环)`],
     ["思考级别", `${thinkingLevel}`],
-    ["主题", `Tau Ceti（${listThemes().length} 个可用）`],
+    ["配色", `${listThemes().length} 套（Ctrl+, 切换）`],
     ["鼠标", "关闭（终端原生拖选）"],
   ];
 

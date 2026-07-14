@@ -1,61 +1,343 @@
 /**
- * ScrollHistory —— 行级平滑滚动 + 自动跟随底部（网页感）。
+ * ScrollHistory —— 对话滚动 + 历史窗口
  *
- * offset 语义：0 = 看最新（底部），增大 = 向上看更早。
- * marginTop = -(maxScroll - offset)
- *   offset=0        → mt=-maxScroll → 视口顶对应 contentY = maxScroll
- *   offset=maxScroll → mt=0          → 视口顶对应 contentY = 0
+ * 滚动：fromBottom（0=贴底），总高 = Yoga 实测 contentH（整窗挂载）
+ * 历史窗：
+ *   - 贴底 / 回底：只渲染最近 HISTORY_BASE(200) 条
+ *   - 滚到当前窗顶后再上滚 HISTORY_OVERSCROLL(5) 格：再加载 HISTORY_CHUNK(100)
+ *   - 再回底：自动收回 200
  *
- * 因此：contentYAtViewportTop = maxScroll - offset
- * 跳到消息 y：offset = maxScroll - y
- *
- * 顶部 ↑ 预览：视口上方最近一条「完全不可见」的 user 消息缩写；
- * 点击后把该消息起点对齐到聊天区顶（与预览条同屏位置），流畅重合。
+ * 测高：useBoxSize（只跟 width/height）。禁止 Ink useBoxMetrics——
+ * 它会因滚动时 top 漂移对子树批量 setState → React #185。
+ * 200 窗 + 工具卡折叠压挂载量。
  */
 
-import React, { useRef, useEffect, useState, useCallback } from "react";
-import { Box, Text, useBoxMetrics } from "ink";
+import React, { useRef, useEffect, useMemo } from "react";
+import { Box, Text } from "ink";
 import type { DOMElement } from "ink";
 import stringWidth from "string-width";
 import { useTheme } from "../theme/theme-context.js";
 import { useStore } from "../state/store.js";
 import { useTerminalSize } from "../hooks/useTerminalSize.js";
 import { useClickTarget, getElementRect } from "../input/click-target.js";
+import { useBoxSize } from "../hooks/useBoxSize.js";
 import { MessageRow } from "./messages/MessageRow.js";
 import { SystemEventRow } from "./messages/SystemEventRow.js";
 import type { ChatMessage, SystemEvent } from "../state/types.js";
 import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
+import { GallerySplash } from "../gallery/GallerySplash.js";
+import { maxScrollOf, scrollThumb } from "./chat-scroll.js";
+import {
+  HISTORY_BASE_ROUNDS,
+  HISTORY_CHUNK_ROUNDS,
+  HISTORY_OVERSCROLL_NOTCHES,
+} from "../config/ui-constants.js";
 
 type Item =
   | { type: "msg"; ts: number; id: string; data: ChatMessage }
   | { type: "sys"; ts: number; id: string; data: SystemEvent };
 
-/** 累计 content 子节点高度，返回每项起始 y 与高度；总高度 */
-function measureItems(contentEl: DOMElement | null, count: number): {
-  starts: number[];
-  heights: number[];
-  total: number;
-} {
-  const starts: number[] = [];
-  const heights: number[] = [];
-  let y = 0;
-  for (let i = 0; i < count; i++) {
-    starts.push(y);
-    const child = contentEl?.childNodes?.[i] as DOMElement | undefined;
-    const h = Math.max(0, child?.yogaNode?.getComputedLayout?.()?.height ?? 0);
-    heights.push(h);
-    y += h;
+const BOTTOM_PAD = 4;
+
+export function ScrollHistory({ frame }: { frame: number }) {
+  const t = useTheme();
+  const messages = useStore((s) => s.messages);
+  const systemEvents = useStore((s) => s.systemEvents);
+  const gallerySeed = useStore((s) => s.gallerySeed);
+  const streaming = useStore((s) => s.streaming);
+  const fromBottomStore = useStore((s) => s.chatScrollOffset);
+  const maxChatScrollStore = useStore((s) => s.maxChatScroll);
+  const autoFollow = useStore((s) => s.autoFollow);
+  const scrollActive = useStore((s) => s.scrollActive);
+  const chatHistoryStart = useStore((s) => s.chatHistoryStart);
+  const setChatHistoryStart = useStore((s) => s.setChatHistoryStart);
+  const term = useTerminalSize();
+
+  const rootRef = useRef<DOMElement | null>(null);
+  const viewportRef = useRef<DOMElement | null>(null);
+  const contentRef = useRef<DOMElement | null>(null);
+
+  const olderBtnRef = useRef<DOMElement | null>(null);
+  const olderJumpRef = useRef<() => void>(() => {});
+  useClickTarget(olderBtnRef, () => olderJumpRef.current(), []);
+
+  const items: Item[] = useMemo(() => {
+    const out: Item[] = [
+      ...messages.map((m) => ({ type: "msg" as const, ts: m.ts, id: m.id, data: m })),
+      ...systemEvents.map((e) => ({ type: "sys" as const, ts: e.ts, id: e.id, data: e })),
+    ];
+    out.sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
+    return out;
+  }, [messages, systemEvents]);
+
+  const n = items.length;
+  const baseStart = Math.max(0, n - HISTORY_BASE_ROUNDS);
+
+  // chatHistoryStart < 0 或贴底 → 收成最近 200；否则用 store（过滚加载会减小）
+  const historyStart = useMemo(() => {
+    if (n === 0) return 0;
+    if (autoFollow || chatHistoryStart < 0) return baseStart;
+    return Math.max(0, Math.min(baseStart, chatHistoryStart));
+  }, [n, baseStart, chatHistoryStart, autoFollow]);
+
+  // 贴底 / 收窗(-1) → 同步 baseStart；过滚负值 → 解析为上一起点 - CHUNK
+  const resolvedStartRef = useRef(historyStart);
+  useEffect(() => {
+    if (autoFollow || chatHistoryStart === -1) {
+      if (chatHistoryStart !== baseStart) setChatHistoryStart(baseStart);
+      resolvedStartRef.current = baseStart;
+      return;
+    }
+    if (chatHistoryStart < 0) {
+      const from = resolvedStartRef.current;
+      const next = Math.max(0, from - HISTORY_CHUNK_ROUNDS);
+      setChatHistoryStart(next);
+      resolvedStartRef.current = next;
+      return;
+    }
+    if (chatHistoryStart < resolvedStartRef.current) {
+      resolvedStartRef.current = chatHistoryStart;
+    } else if (chatHistoryStart > baseStart) {
+      setChatHistoryStart(baseStart);
+      resolvedStartRef.current = baseStart;
+    } else {
+      resolvedStartRef.current = chatHistoryStart;
+    }
+  }, [autoFollow, baseStart, chatHistoryStart, setChatHistoryStart]);
+
+  const windowed = useMemo(
+    () => items.slice(historyStart),
+    [items, historyStart],
+  );
+
+  const foldedCount = historyStart;
+  const canLoadMore = historyStart > 0;
+
+  // 内容变多/变宽/卡片展开时补测；滚动只改 marginTop，height 不变 → 不 setState
+  const contentSize = useBoxSize(contentRef, [
+    windowed.length,
+    historyStart,
+    term.cols,
+    term.rows,
+    streaming,
+    messages.length,
+    // ToolCard expandShift 会改 max；借此触发一次高度重读
+    maxChatScrollStore,
+  ]);
+  const viewportSize = useBoxSize(viewportRef, [term.cols, term.rows, windowed.length]);
+
+  const viewH = Math.max(
+    4,
+    Math.round(viewportSize.height || 0) || Math.max(4, term.rows - 12),
+  );
+  const contentH = Math.max(0, Math.round(contentSize.height || 0));
+  const maxS = maxScrollOf(contentH, viewH);
+  const fb = autoFollow ? 0 : Math.max(0, Math.min(fromBottomStore, maxS));
+  const mt = contentH > viewH ? -(contentH - viewH - fb) : 0;
+
+  const prevContentHRef = useRef(0);
+  const prevHistoryStartRef = useRef(historyStart);
+  useEffect(() => {
+    const prevH = prevContentHRef.current;
+    const prevHs = prevHistoryStartRef.current;
+    prevContentHRef.current = contentH;
+    prevHistoryStartRef.current = historyStart;
+    const store = useStore.getState();
+
+    if (store.autoFollow) {
+      if (store.maxChatScroll !== maxS || store.chatScrollOffset !== 0) {
+        store.setChatScrollLayout(maxS, 0);
+      }
+      return;
+    }
+
+    // 加载更早：内容在上方变长 → pin-content
+    if (historyStart < prevHs && contentH > prevH && prevH > 0) {
+      store.setMaxChatScroll(maxS, "pin-content");
+      return;
+    }
+
+    if (prevH <= 0 || contentH === prevH) {
+      if (store.maxChatScroll !== maxS) store.setMaxChatScroll(maxS, "pin-offset");
+      else if (store.chatScrollOffset > maxS) store.setChatScrollLayout(maxS, maxS);
+      return;
+    }
+
+    // 高度变化：钉 fromBottom，避免跳格
+    const nextFb = Math.max(0, Math.min(maxS, store.chatScrollOffset));
+    store.setChatScrollLayout(maxS, nextFb);
+  }, [contentH, maxS, viewH, autoFollow, windowed.length, historyStart]);
+
+  // 视口屏幕矩形与滚动偏移无关：勿依赖 fb，否则每滚一格 setChatViewport → 二次全树重渲
+  useEffect(() => {
+    if (scrollActive) return;
+    const measure = () => {
+      const r =
+        getElementRect(viewportRef.current) ?? getElementRect(rootRef.current);
+      if (!r || r.height <= 0) return;
+      useStore.getState().setChatViewport({
+        top: r.top,
+        bottom: r.top + r.height - 1,
+        height: r.height,
+      });
+    };
+    measure();
+    const id = setTimeout(measure, 50);
+    return () => clearTimeout(id);
+  }, [viewH, term.rows, term.cols, windowed.length, contentH, scrollActive]);
+
+  // 滚动中跳过：扫 child yoga 很贵，且每格 fb 都会重算
+  const olderUser = useMemo(() => {
+    if (scrollActive || fb <= 0 || windowed.length === 0) return null;
+    const el = contentRef.current;
+    if (!el?.childNodes?.length) {
+      const users = windowed.filter(
+        (it): it is Item & { type: "msg" } =>
+          it.type === "msg" && it.data.role === "user",
+      );
+      return users.length >= 2 ? users[users.length - 2]! : null;
+    }
+    const topY = contentH > viewH ? contentH - viewH - fb : 0;
+    let last: (Item & { type: "msg" }) | null = null;
+    const count = Math.min(windowed.length, el.childNodes.length);
+    for (let i = 0; i < count; i++) {
+      const child = el.childNodes[i] as DOMElement | undefined;
+      const lay = child?.yogaNode?.getComputedLayout?.();
+      if (!lay) continue;
+      if (Math.round(lay.top + lay.height) > topY + 0.5) break;
+      const it = windowed[i]!;
+      if (it.type === "msg" && it.data.role === "user") last = it;
+    }
+    return last;
+  }, [fb, windowed, contentH, viewH, scrollActive]);
+
+  olderJumpRef.current = () => {
+    if (!olderUser) return;
+    const el = contentRef.current;
+    const idx = windowed.findIndex((it) => it.id === olderUser.id);
+    if (idx < 0 || !el?.childNodes) return;
+    const child = el.childNodes[idx] as DOMElement | undefined;
+    const top = Math.round(child?.yogaNode?.getComputedLayout?.()?.top ?? 0);
+    const newFb = Math.max(0, Math.min(maxS, contentH - viewH - top));
+    useStore.getState().setAutoFollow(false);
+    useStore.getState().setChatScrollLayout(maxS, newFb);
+  };
+
+  const innerW = Math.max(16, term.cols - 2);
+  const showRail = maxS > 0 && viewH >= 4;
+  const chatW = showRail ? Math.max(8, innerW - 1) : innerW;
+  const olderLine = olderUser
+    ? fitPrefixLine("↑ ", userPreviewBody(olderUser.data.content ?? ""), innerW)
+    : "";
+
+  const atTop = !autoFollow && fb >= maxS && maxS >= 0;
+  const topHint = atTop
+    ? canLoadMore
+      ? `↑ 已到本窗顶部 · 再上滚 ${HISTORY_OVERSCROLL_NOTCHES} 格加载更早 ${HISTORY_CHUNK_ROUNDS} 条（已折叠 ${foldedCount}）`
+      : `↑ 已到最早消息`
+    : foldedCount > 0 && fb > 0
+      ? `… 更早 ${foldedCount} 条已折叠`
+      : "";
+
+  if (messages.length === 0 && !streaming) {
+    return (
+      <Box ref={rootRef} flexGrow={1} width={innerW} flexDirection="column" overflow="hidden">
+        <GallerySplash
+          seed={gallerySeed || "boot"}
+          contentCols={innerW}
+          contentRows={Math.max(12, viewH)}
+        />
+      </Box>
+    );
   }
-  return { starts, heights, total: y };
+
+  return (
+    <Box ref={rootRef} flexDirection="column" flexGrow={1} width={innerW} overflow="hidden">
+      {topHint ? (
+        <Box flexShrink={0} width={innerW} overflow="hidden">
+          <Text color={t.dim}>{fitPrefixLine("", topHint, innerW)}</Text>
+        </Box>
+      ) : olderUser && fb > 0 ? (
+        <Box ref={olderBtnRef} flexShrink={0} width={innerW} overflow="hidden">
+          <Text backgroundColor={t.userBg} color={t.user} bold>
+            {olderLine || "↑ (上一条)"}
+          </Text>
+        </Box>
+      ) : null}
+
+      <Box flexGrow={1} flexDirection="row" width={innerW} overflow="hidden">
+        <Box
+          ref={viewportRef}
+          flexGrow={1}
+          width={chatW}
+          overflow="hidden"
+          flexDirection="column"
+        >
+          <Box
+            ref={contentRef}
+            flexShrink={0}
+            marginTop={mt}
+            flexDirection="column"
+            width={chatW}
+          >
+            {windowed.map((it) =>
+              it.type === "msg" ? (
+                <MessageRow key={`m${it.id}`} msg={it.data} frame={frame} />
+              ) : (
+                <SystemEventRow key={`s${it.id}`} ev={it.data} />
+              ),
+            )}
+            <Box height={BOTTOM_PAD} flexShrink={0} width={chatW}>
+              <Text>{" "}</Text>
+            </Box>
+          </Box>
+        </Box>
+
+        {showRail ? (
+          <ScrollRail
+            height={viewH}
+            fromBottom={fb}
+            maxScroll={maxS}
+            trackColor={t.borderMuted ?? t.dim}
+            thumbColor={t.accent2 ?? t.accent}
+          />
+        ) : null}
+      </Box>
+    </Box>
+  );
 }
 
-function hasRealLayout(starts: number[], heights: number[]): boolean {
-  if (heights.length === 0) return false;
-  // 至少有一项非零高，或 cumulative 递增
-  return heights.some((h) => h > 0) || starts.some((s, i) => i > 0 && s > 0);
+function ScrollRail({
+  height,
+  fromBottom,
+  maxScroll,
+  trackColor,
+  thumbColor,
+}: {
+  height: number;
+  fromBottom: number;
+  maxScroll: number;
+  trackColor: string;
+  thumbColor: string;
+}) {
+  const { thumbTop, thumbH } = scrollThumb(fromBottom, maxScroll, height);
+  const h = Math.max(3, height);
+  const lines: React.ReactNode[] = [];
+  for (let i = 0; i < h; i++) {
+    const on = i >= thumbTop && i < thumbTop + thumbH;
+    lines.push(
+      <Text key={i} color={on ? thumbColor : trackColor}>
+        {on ? "█" : "│"}
+      </Text>,
+    );
+  }
+  return (
+    <Box flexDirection="column" width={1} flexShrink={0} height={h} overflow="hidden">
+      {lines}
+    </Box>
+  );
 }
 
-/** 与 MessageRow 用户气泡正文一致的纯文本（预览用） */
 function userPreviewBody(content: string): string {
   const raw = repairUtf8Mojibake(content || "")
     .replace(/&quot;/g, '"')
@@ -87,242 +369,4 @@ function fitPrefixLine(prefix: string, body: string, targetW: number): string {
   }
   const line = `${prefix}${out}`;
   return line + " ".repeat(Math.max(0, targetW - stringWidth(line)));
-}
-
-/**
- * 视口上方最近的 user：完全在 contentTopY 之上（endY <= contentTopY）。
- * 即「当前聊天视口里看不到」的最近一条用户消息。
- */
-function findOlderUser(
-  items: Item[],
-  starts: number[],
-  heights: number[],
-  contentTopY: number,
-): (Item & { type: "msg" }) | null {
-  let lastAbove: (Item & { type: "msg" }) | null = null;
-  for (let i = 0; i < items.length; i++) {
-    const y0 = starts[i] ?? 0;
-    const h = heights[i] ?? 0;
-    const y1 = y0 + h;
-    // 完全在视口顶之上
-    if (y1 <= contentTopY + 0.5) {
-      const it = items[i]!;
-      if (it.type === "msg" && it.data.role === "user") lastAbove = it;
-      continue;
-    }
-    // 第一条与视口相交或更下方的项 —— 其后不可能再「完全在上方」
-    break;
-  }
-  return lastAbove;
-}
-
-export function ScrollHistory({ frame }: { frame: number }) {
-  const t = useTheme();
-  const messages = useStore((s) => s.messages);
-  const systemEvents = useStore((s) => s.systemEvents);
-  const chatScrollOffset = useStore((s) => s.chatScrollOffset);
-  const maxChatScroll = useStore((s) => s.maxChatScroll);
-  const autoFollow = useStore((s) => s.autoFollow);
-  const setMaxChatScroll = useStore((s) => s.setMaxChatScroll);
-  const term = useTerminalSize();
-
-  const viewportRef = useRef(null);
-  const contentRef = useRef(null);
-  const contentMetrics = useBoxMetrics(contentRef);
-  const olderBtnRef = useRef<DOMElement | null>(null);
-  const olderJumpRef = useRef<() => void>(() => {});
-  useClickTarget(olderBtnRef, () => olderJumpRef.current(), []);
-
-  /** 跳转对齐：短暂隐藏 ↑ 条，让目标消息顶到与预览条相同的屏幕行 */
-  const [suppressOlderChrome, setSuppressOlderChrome] = useState(false);
-  /** 待对齐的消息 id + 期望 contentY（layout 后再精算 offset） */
-  const pendingAlignRef = useRef<{ id: string; targetY: number } | null>(null);
-
-  // 合并 messages + systemEvents 按 ts 排序
-  const items: Item[] = [
-    ...messages.map((m) => ({ type: "msg" as const, ts: m.ts, id: m.id, data: m })),
-    ...systemEvents.map((e) => ({ type: "sys" as const, ts: e.ts, id: e.id, data: e })),
-  ].sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
-
-  // 先算 offset，再定 chrome / 视口高度
-  const rawOffset = Math.min(chatScrollOffset, maxChatScroll);
-  const offset = autoFollow ? 0 : rawOffset;
-  const hasNewer = offset > 0;
-  const hasOlderRoom = offset < maxChatScroll;
-
-  // 视口顶对应的 content Y
-  const contentTopY = maxChatScroll - offset;
-
-  const contentEl = contentRef.current as DOMElement | null;
-  const measured = measureItems(contentEl, items.length);
-  const layoutReady = hasRealLayout(measured.starts, measured.heights);
-
-  const olderUserPreview = (() => {
-    if (!hasOlderRoom || items.length === 0 || suppressOlderChrome) return null;
-    if (!layoutReady) {
-      // 未量到高度：不瞎猜「倒数第二条」；仅在贴底时用「倒数第二条 user」作弱提示
-      if (offset === 0 || autoFollow) {
-        const users = items.filter(
-          (it): it is Item & { type: "msg" } =>
-            it.type === "msg" && it.data.role === "user",
-        );
-        if (users.length >= 2) return users[users.length - 2]!;
-        return null;
-      }
-      return null;
-    }
-    return findOlderUser(items, measured.starts, measured.heights, contentTopY);
-  })();
-
-  const showOlder = hasOlderRoom && !!olderUserPreview && !suppressOlderChrome;
-  const chrome = showOlder ? 1 : 0;
-  // hasNewer 时 Layout 多 1 行底条
-  const availableRows = Math.max(4, term.rows - 6 - chrome - (hasNewer ? 1 : 0));
-
-  const contentHeight = contentMetrics.height;
-  useEffect(() => {
-    const max = Math.max(0, contentHeight - availableRows);
-    setMaxChatScroll(max, /*followGrowth=*/ true);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentHeight, availableRows]);
-
-  /**
-   * 跳转后二次对齐：↑ 条隐藏 → availableRows+1 → maxScroll 变，
-   * 在 suppress 期间用新 layout 重算 offset = max - targetY，
-   * 使消息起点落到「原预览条」那一行屏幕位置，再恢复 ↑ 条。
-   */
-  useEffect(() => {
-    if (!suppressOlderChrome) return;
-    const pending = pendingAlignRef.current;
-    if (!pending) {
-      setSuppressOlderChrome(false);
-      return;
-    }
-
-    let cancelled = false;
-    const runAlign = () => {
-      if (cancelled) return;
-      const el = contentRef.current as DOMElement | null;
-      const { starts, heights } = measureItems(el, items.length);
-      if (!hasRealLayout(starts, heights)) {
-        // 下一帧再试
-        requestAnimationFrame(runAlign);
-        return;
-      }
-      const idx = items.findIndex((it) => it.id === pending.id);
-      if (idx < 0) {
-        pendingAlignRef.current = null;
-        setSuppressOlderChrome(false);
-        return;
-      }
-      const targetY = starts[idx] ?? pending.targetY;
-      const max = Math.max(0, contentHeight - availableRows);
-      useStore.getState().setMaxChatScroll(max, false);
-      const nextOffset = Math.max(0, Math.min(max, max - targetY));
-      useStore.getState().setAutoFollow(false);
-      useStore.getState().setChatScrollOffset(nextOffset);
-
-      // 再等一帧让 Ink 落稳，再露出更早预览
-      requestAnimationFrame(() => {
-        if (cancelled) return;
-        pendingAlignRef.current = null;
-        setSuppressOlderChrome(false);
-      });
-    };
-
-    const id = requestAnimationFrame(runAlign);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(id);
-    };
-  }, [suppressOlderChrome, contentHeight, availableRows, items]);
-
-  // 上报真实消息视口屏幕行
-  useEffect(() => {
-    const measure = () => {
-      const r = getElementRect(viewportRef.current as DOMElement | null);
-      if (!r || r.height <= 0) return;
-      useStore.getState().setChatViewport({
-        top: r.top,
-        bottom: r.top + r.height - 1,
-        height: r.height,
-      });
-    };
-    measure();
-    const id = setTimeout(measure, 30);
-    return () => clearTimeout(id);
-  }, [availableRows, showOlder, hasNewer, term.rows, offset, contentHeight]);
-
-  // hooks 必须在任何 early return 之前（空消息时也要同序调用）
-  const jumpToOlderUser = useCallback(() => {
-    if (!olderUserPreview) return;
-    const el = contentRef.current as DOMElement | null;
-    const { starts: st, heights: ht } = measureItems(el, items.length);
-    const idx = items.findIndex((it) => it.id === olderUserPreview.id);
-    if (idx < 0) return;
-
-    let targetY = st[idx] ?? 0;
-    // 高度未就绪时用均分估算，避免跳到 0
-    if (!hasRealLayout(st, ht) && items.length > 0) {
-      const approx = Math.max(1, Math.floor(contentHeight / items.length));
-      targetY = idx * approx;
-    }
-
-    pendingAlignRef.current = { id: olderUserPreview.id, targetY };
-    // 先藏 ↑ 条：视口上扩，下一帧 effect 用新 max 把消息顶对齐到「原预览行」
-    setSuppressOlderChrome(true);
-
-    const maxNow = useStore.getState().maxChatScroll;
-    // 预估 chrome 消失后 max-1
-    const maxAfter = Math.max(0, maxNow - 1);
-    const nextOffset = Math.max(0, Math.min(maxAfter, maxAfter - targetY));
-    useStore.getState().setAutoFollow(false);
-    useStore.getState().setChatScrollOffset(nextOffset);
-  }, [olderUserPreview, items, contentHeight]);
-
-  olderJumpRef.current = jumpToOlderUser;
-
-  if (messages.length === 0) {
-    return (
-      <Box flexGrow={1} justifyContent="center" alignItems="center" flexDirection="column">
-        <Text color={t.accent} bold>▌ MAOU // 待命</Text>
-        <Text color={t.dim}>输入消息开始对话</Text>
-        <Text color={t.dim}>Ctrl+K 命令 · Ctrl+E 全屏 · Ctrl+C 退出</Text>
-      </Box>
-    );
-  }
-
-  const marginTop = -(maxChatScroll - offset);
-
-  // 预览行：与用户气泡同灰底；正文与 MessageRow body 一致
-  const olderPreviewLine = (() => {
-    if (!olderUserPreview || olderUserPreview.type !== "msg") return "";
-    const body = userPreviewBody(olderUserPreview.data.content ?? "");
-    const prefix = "↑ ";
-    const targetW = Math.max(8, term.cols - 2);
-    return fitPrefixLine(prefix, body, targetW);
-  })();
-
-  return (
-    <Box flexDirection="column" flexGrow={1}>
-      {showOlder && olderUserPreview && (
-        <Box ref={olderBtnRef} flexShrink={0}>
-          <Text backgroundColor={t.userBg} color={t.user} bold>
-            {olderPreviewLine || "↑ (上一条)"}
-          </Text>
-        </Box>
-      )}
-      <Box ref={viewportRef} height={availableRows} overflow="hidden" flexDirection="column">
-        <Box ref={contentRef} flexShrink={0} marginTop={marginTop} flexDirection="column">
-          {items.map((it) =>
-            it.type === "msg" ? (
-              <MessageRow key={`m${it.id}`} msg={it.data} frame={frame} />
-            ) : (
-              <SystemEventRow key={`s${it.id}`} ev={it.data} />
-            ),
-          )}
-        </Box>
-      </Box>
-    </Box>
-  );
 }

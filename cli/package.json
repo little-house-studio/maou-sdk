@@ -1,6 +1,6 @@
 {
   "name": "@little-house-studio/cli",
-  "version": "0.3.0",
+  "version": "0.1a",
   "description": "Maou CLI — 极简终端 AI 对话界面",
   "type": "module",
   "license": "MIT",
@@ -25,11 +25,16 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-sounds.mjs",
+    "build:native": "npm run build --prefix native/term-raster",
+    "build:all": "npm run build:native && npm run build",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "dev": "tsx src/index.tsx",
     "dev:watch": "node scripts/dev-watch.mjs",
     "start": "node dist/index.js",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "postinstall": "node dist/commands/postinstall.js 2>/dev/null || true",
+    "gallery:bake": "node scripts/bake-gallery-ascii.mjs"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",
@@ -61,7 +66,8 @@
     "ink-testing-library": "^4.0.0",
     "node-pty": "^1.1.0",
     "tsx": "^4.7.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   },
   "engines": {
     "node": ">=20"

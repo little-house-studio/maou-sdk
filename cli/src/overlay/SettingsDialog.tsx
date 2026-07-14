@@ -1,23 +1,45 @@
 /**
  * SettingsDialog —— 设置弹窗（Ctrl+, 触发）。
- * 一级菜单：API 配置 / 审批模式 / 思考级别。
- * 选 API 配置 → 进入二级模型选择（复用 ModelDialog 逻辑）。
+ * 一级菜单：API 配置 / 审批模式 / 思考级别 / 配色方案。
  */
 
-import React, { useMemo, useState } from "react";
-import { Text } from "ink";
+import React, { useEffect, useMemo, useState } from "react";
 import { Overlay } from "./Overlay.js";
 import { SelectList, type SelectItem } from "./SelectList.js";
 import { useStore } from "../state/store.js";
-import { useTheme } from "../theme/theme-context.js";
+import {
+  useTheme,
+  useSetLoadedTheme,
+  useLoadedTheme,
+} from "../theme/theme-context.js";
+import { registerNestedEscapeBack } from "../hooks/escape-cancel.js";
 import type { AgentCliConfig } from "../types.js";
+import {
+  listThemesMeta,
+  loadThemeById,
+} from "../theme/load-theme.js";
+import { setThemeBg } from "../render/vram-layer.js";
 
-type View = "main" | "model" | "approval" | "thinking";
+type View = "main" | "model" | "approval" | "thinking" | "theme";
 
 export function SettingsDialog({ config }: { config: AgentCliConfig }) {
   const t = useTheme();
+  const loaded = useLoadedTheme();
+  const setLoadedTheme = useSetLoadedTheme();
   const { setProviderModel, setThinking, toastMsg } = useStore();
   const [view, setView] = useState<View>("main");
+
+  // Esc：二级页先返回一级，一级再关面板（统一取消栈 nested_back）
+  useEffect(() => {
+    registerNestedEscapeBack(() => {
+      if (view !== "main") {
+        setView("main");
+        return true;
+      }
+      return false;
+    });
+    return () => registerNestedEscapeBack(null);
+  }, [view]);
 
   const provider = useStore((s) => s.provider);
   const model = useStore((s) => s.model);
@@ -29,7 +51,8 @@ export function SettingsDialog({ config }: { config: AgentCliConfig }) {
     { value: "model", label: "API 配置", description: `${provider}/${model || "未选"}` },
     { value: "approval", label: "审核模式", description: `${approvalMode} · Shift+Tab` },
     { value: "thinking", label: "思考级别", description: `${thinkingLevel} (${["off", "minimal", "low", "medium", "high", "xhigh"][thinkingLevel]})` },
-  ], [provider, model, thinkingLevel, approvalMode]);
+    { value: "theme", label: "配色方案", description: loaded.name || loaded.id },
+  ], [provider, model, thinkingLevel, approvalMode, loaded.id, loaded.name]);
 
   const modelItems: SelectItem[] = useMemo(() => {
     const providers = config.getProviders?.() ?? [];
@@ -56,10 +79,24 @@ export function SettingsDialog({ config }: { config: AgentCliConfig }) {
     { value: "5", label: "Xhigh", description: "超高" },
   ];
 
+  const themeItems: SelectItem[] = useMemo(() => {
+    return listThemesMeta().map((th) => ({
+      value: th.id,
+      label: th.name,
+      description:
+        th.id === loaded.id
+          ? `当前 · ${th.source}`
+          : th.source === "user"
+            ? "用户 ~/.maou/themes"
+            : "内置 assets/themes",
+    }));
+  }, [loaded.id]);
+
   const handleMain = (value: string) => {
     if (value === "model") setView("model");
     else if (value === "approval") setView("approval");
     else if (value === "thinking") setView("thinking");
+    else if (value === "theme") setView("theme");
   };
 
   const handleModel = (value: string) => {
@@ -87,15 +124,48 @@ export function SettingsDialog({ config }: { config: AgentCliConfig }) {
     setView("main");
   };
 
-  const items = view === "main" ? mainItems
-    : view === "model" ? modelItems
-    : view === "approval" ? approvalItems
-    : thinkingItems;
-  const onSelect = view === "main" ? handleMain
-    : view === "model" ? handleModel
-    : view === "approval" ? handleApproval
-    : handleThinking;
-  const title = view === "main" ? "设置" : view === "model" ? "API 配置" : view === "approval" ? "审批模式" : "思考级别";
+  const handleTheme = (value: string) => {
+    const th = loadThemeById(value);
+    if (th) {
+      setLoadedTheme(th, true);
+      setThemeBg(th.tokens.bg);
+      toastMsg(`配色 → ${th.name}`, "ok");
+    } else {
+      toastMsg(`未找到主题 ${value}`, "err");
+    }
+    setView("main");
+  };
+
+  const items =
+    view === "main"
+      ? mainItems
+      : view === "model"
+        ? modelItems
+        : view === "approval"
+          ? approvalItems
+          : view === "theme"
+            ? themeItems
+            : thinkingItems;
+  const onSelect =
+    view === "main"
+      ? handleMain
+      : view === "model"
+        ? handleModel
+        : view === "approval"
+          ? handleApproval
+          : view === "theme"
+            ? handleTheme
+            : handleThinking;
+  const title =
+    view === "main"
+      ? "设置"
+      : view === "model"
+        ? "API 配置"
+        : view === "approval"
+          ? "审批模式"
+          : view === "theme"
+            ? "配色方案"
+            : "思考级别";
 
   return (
     <Overlay title={title} footer="↑↓ 选择 · Enter 确认 · Esc 返回/关闭" width={52}>

@@ -80,7 +80,8 @@ export function CollapsibleText({
 }) {
   const t = useTheme();
   const term = useTerminalSize();
-  const colW = Math.max(12, term.cols - 8);
+  // 与对话正文列对齐，避免长行撑破右边框
+  const colW = Math.max(12, term.cols - 2 - 2 - 4);
   const total = useMemo(() => estimateLines(text, colW), [text, colW]);
   const need = !streaming && total > maxLines;
   const [open, setOpen] = useState(defaultOpen);

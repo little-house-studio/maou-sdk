@@ -73,7 +73,7 @@ export interface ThemeTokens {
   toolDiffRemoved: string;
   toolDiffContext: string;
 
-  // ── 背景块（8）───────────────────────────────────────
+  // ── 背景块（8+）──────────────────────────────────────
   selectedBg: string;
   userBg: string;
   systemBg: string;
@@ -84,6 +84,10 @@ export interface ThemeTokens {
   footerBg: string;
   /** 可写输入区底：中灰 #808080 */
   inputFieldBg: string;
+  /** AI Markdown 居中纸面背景（中性深灰抬升，非冷蓝） */
+  assistantMdBg: string;
+  /** AI Markdown 纸面边框（弱；默认无粗框） */
+  mdPaperBorder: string;
 
   // ── 模式（1）─────────────────────────────────────────
   bashMode: string;

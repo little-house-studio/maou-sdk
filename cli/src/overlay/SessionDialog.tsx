@@ -13,6 +13,7 @@ import { useStore } from "../state/store.js";
 import { loadSessionMessages } from "../state/session-loader.js";
 import { join } from "node:path";
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { projectSessionsDir } from "../config/paths.js";
 
 export function SessionDialog() {
   const t = useTheme();
@@ -20,8 +21,8 @@ export function SessionDialog() {
   const [items, setItems] = useState<SelectItem[]>([]);
 
   useEffect(() => {
-    // 从 .maou/sessions 读会话列表（最新在前）
-    const sessionsDir = join(process.cwd(), ".maou", "sessions");
+    // 从项目 .maou/sessions 读会话列表（最新在前）
+    const sessionsDir = projectSessionsDir();
     const out: SelectItem[] = [];
     if (existsSync(sessionsDir)) {
       try {
@@ -64,7 +65,7 @@ export function SessionDialog() {
   return (
     <Overlay title="会话" footer="↑↓ 选择 · Enter 切换 · Esc 关闭" width={50}>
       {items.length === 0 ? (
-        <Text color={t.dim}>无历史会话（{join(process.cwd(), ".maou", "sessions")}）</Text>
+        <Text color={t.dim}>无历史会话（{projectSessionsDir()}）</Text>
       ) : (
         <SelectList items={items} onSelect={onSelect} />
       )}

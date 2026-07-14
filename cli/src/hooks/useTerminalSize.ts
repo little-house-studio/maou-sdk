@@ -8,11 +8,16 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { useStdout } from "ink";
 import React from "react";
+import {
+  classifyTermBreakpoint,
+  TERM_BREAKPOINTS,
+  type TermBreakpointName,
+} from "../config/ui-constants.js";
 
 export interface TermSize {
   cols: number;
   rows: number;
-  breakpoint: "narrow" | "normal" | "wide";
+  breakpoint: TermBreakpointName;
   showSidebar: boolean;
   showHud: boolean;
   /** 尺寸变更序号，便于依赖 */
@@ -20,17 +25,15 @@ export interface TermSize {
 }
 
 function classify(cols: number): TermSize["breakpoint"] {
-  if (cols < 80) return "narrow";
-  if (cols <= 120) return "normal";
-  return "wide";
+  return classifyTermBreakpoint(cols);
 }
 
 function readRaw(): { cols: number; rows: number } {
   const c = process.stdout.columns;
   const r = process.stdout.rows;
   return {
-    cols: typeof c === "number" && c > 0 ? c : 80,
-    rows: typeof r === "number" && r > 0 ? r : 24,
+    cols: typeof c === "number" && c > 0 ? c : TERM_BREAKPOINTS.fallbackCols,
+    rows: typeof r === "number" && r > 0 ? r : TERM_BREAKPOINTS.fallbackRows,
   };
 }
 
@@ -70,6 +73,7 @@ function notify(next: TermSize) {
 /** 从真实 TTY 同步尺寸；可选强制 notify */
 export function syncTerminalSize(force = false): TermSize {
   const { cols, rows } = readRaw();
+  const sizeChanged = cols !== globalSize.cols || rows !== globalSize.rows;
   if (inkStdoutRef) {
     inkStdoutRef.columns = cols;
     inkStdoutRef.rows = rows;
@@ -77,11 +81,12 @@ export function syncTerminalSize(force = false): TermSize {
       inkStdoutRef.emit?.("resize");
     } catch { /* ignore */ }
   }
-  if (!force && cols === globalSize.cols && rows === globalSize.rows) {
+  if (!force && !sizeChanged) {
     return globalSize;
   }
-  const next = buildSize(globalSize.version + (force || cols !== globalSize.cols || rows !== globalSize.rows ? 1 : 0));
-  if (next.version !== globalSize.version) notify(next);
+  // 尺寸变化时强制 +1 version，确保 useTerminalSize 订阅方重渲（拉宽居中等）
+  const next = buildSize(globalSize.version + 1);
+  notify(next);
   return globalSize;
 }
 
@@ -90,8 +95,8 @@ function ensureInstalled() {
   installed = true;
   process.stdout.on("resize", () => { syncTerminalSize(false); });
   process.on("SIGWINCH", () => { syncTerminalSize(false); });
-  // 兜底：部分终端/进程组丢事件
-  setInterval(() => { syncTerminalSize(false); }, 250);
+  // 兜底：部分终端/进程组丢事件（1s 足够；250ms 是空闲 CPU 噪声源）
+  setInterval(() => { syncTerminalSize(false); }, 1000);
 }
 
 /** 注册 Ink 的 fakeStdout，便于同步 columns/rows */

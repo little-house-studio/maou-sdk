@@ -1,114 +1,178 @@
 #!/usr/bin/env node
-/** Maou CLI 入口 — maou [path] --theme <name> */
-import React from "react";
-import { render } from "ink";
-import { App } from "./app.js";
+/**
+ * Maou CLI 入口 —— 多产品路由器
+ *
+ *   maou coding         启动编程 agent（主产品）
+ *   maou agent          coding 兼容别名
+ *   maou                默认 coding
+ *   maou setup          配置全局 API（全系列产品共用）
+ *   maou doctor         检查/补齐依赖
+ *   maou <path|pkg>     加载自定义 AgentCliConfig
+ *
+ * 后续新产品：在 commands/products.ts 登记后即可 `maou <name>` 启动。
+ */
+
 import { installExitGuard } from "./hooks/useExitGuard.js";
-import type { AgentCliConfig } from "./types.js";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolveMaouConfigPath } from "@little-house-studio/agent";
+import {
+  formatProductList,
+  resolveCliToken,
+} from "./commands/products.js";
 
-async function loadConfig(target?: string): Promise<AgentCliConfig> {
-  if (!target) {
-    const mod = await import("@little-house-studio/coding-agent/cli-config");
-    return (mod.default ?? mod) as AgentCliConfig;
-  }
-  const abs = resolve(target);
-  let importPath = abs;
-  if (!existsSync(abs) || abs.endsWith("/")) {
-    for (const n of ["cli.ts", "index.ts", "agent-cli.ts", "cli-config.ts"]) {
-      const c = `${abs}/${n}`;
-      if (existsSync(c)) { importPath = c; break; }
-    }
-    if (importPath === abs) {
-      const mod = await import(target);
-      return (mod.default ?? mod) as AgentCliConfig;
-    }
-  }
-  const mod = await import(importPath);
-  const cfg = (mod.default ?? mod) as AgentCliConfig;
-  if (!cfg?.createAgent) { console.error(`❌ ${importPath} 缺少 createAgent`); process.exit(1); }
-  return cfg;
-}
+const HELP = `Maou CLI — 终端 AI agent 多产品入口
 
-const argv = process.argv.slice(2);
-let target: string | undefined;
-let themePath: string | undefined;
-for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === "-h" || argv[i] === "--help") {
-    console.log(`Maou CLI — 终端 AI 对话（磁带复古未来主义）\n\n用法:\n  maou              默认 coding agent\n  maou <path>       加载 agent cli 配置\n  maou --theme <p>  加载主题 JSON（默认 Tau Ceti）`);
-    process.exit(0);
-  } else if (argv[i] === "--theme") {
-    themePath = argv[++i];
-  } else if (!argv[i]!.startsWith("-")) target = argv[i];
+用法:
+  maou coding             启动编程 agent（当前主产品）
+  maou agent              同 maou coding（兼容别名）
+  maou                    默认启动 coding
+  maou setup              配置全局 API（全系列产品共用，首次必做）
+  maou setup --force      强制重新配置
+  maou setup --from-env   从环境变量写入 API
+  maou doctor             检查 Node/依赖，缺失则尝试自动安装
+  maou coding --yes       新路径免确认直接创建 .maou
+  maou coding --theme <name|path>  配色方案（assets/themes/<name>.json 或路径）
+  maou <path|pkg>         加载自定义 agent cli 配置
+
+产品:
+${formatProductList()}
+
+启动产品时顺序：
+  0. 依赖预检（缺则自动装）
+  1. 首次系列产品 → maou setup
+  2. 新项目路径 → 确认后创建 .maou
+  3. 进入 TUI
+
+全局 API 配置文件（所有 Maou 系列产品共用）:
+  ${resolveMaouConfigPath()}
+  覆盖：MAOU_HOME 或 MAOU_LLM_CONFIG
+
+环境变量:
+  MAOU_HOME                用户态根目录（默认 ~/.maou）
+  MAOU_LLM_CONFIG          全局 config.json 绝对路径
+  MAOU_API_KEY             临时 key（或 OPENAI_API_KEY / ANTHROPIC_API_KEY）
+  MAOU_SKIP_API_SETUP=1    跳过首次 setup（调试）
+  MAOU_PROJECT_YES=1       等同 --yes（新项目确认）
+  MAOU_NO_AUTO_INSTALL=1   禁止自动安装依赖
+  MAOU_SKIP_DEPS=1         跳过依赖预检
+  MAOU_SKIP_PROJECT_GATE=1 跳过新项目确认
+`;
+
+function printHelp(): void {
+  process.stdout.write(HELP);
 }
 
 // pino 日志不污染 Ink stdout
 process.env.NODE_ENV = "production";
 
-// 退出安全网：crash/SIGINT/SIGTERM/uncaught 都恢复终端
 installExitGuard();
 
-// 重定向 console.log/warn 到 stderr（SDK 内部的 console.log 会撕裂 Ink 备用屏画面，
-// stderr 不进 Ink 渲染，且 patchConsole:false 让 Ink 不拦截 console）
-const origLog = console.log;
-const origWarn = console.warn;
-console.log = (...a: unknown[]) => { process.stderr.write(a.join(" ") + "\n"); };
-console.warn = (...a: unknown[]) => { process.stderr.write(a.join(" ") + "\n"); };
-console.error = (...a: unknown[]) => { process.stderr.write(a.join(" ") + "\n"); };
+console.log = (...a: unknown[]) => {
+  process.stderr.write(a.join(" ") + "\n");
+};
+console.warn = (...a: unknown[]) => {
+  process.stderr.write(a.join(" ") + "\n");
+};
+console.error = (...a: unknown[]) => {
+  process.stderr.write(a.join(" ") + "\n");
+};
 
-// 过滤 stdin：剥离鼠标 SGR/SS3/OSC 序列，防止 react-ink-textarea 把它们当文本插入乱码
-import { createFilteredStdin } from "./input/filtered-stdin.js";
-const filteredStdin = process.env.MAOU_NO_FILTER === "1" ? process.stdin : createFilteredStdin(process.stdin);
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  let themePath: string | undefined;
+  let setupForce = false;
+  let setupFromEnv = false;
+  let yes = false;
 
-// 过滤 stdout：剥离 Ink #935 的 \e[3J（抹 scrollback），保留 \e[2J\e[H 清视口。
-// 防止内容超视口时顶部 border 丢失 + 残留。对应 upstream PR #936（未合并）。
-import { createFilteredStdout } from "./input/filtered-stdout.js";
-const filteredStdout = process.env.MAOU_NO_FILTER === "1" ? process.stdout : createFilteredStdout(process.stdout);
+  /** 解析出的启动意图 */
+  let systemCmd: string | undefined;
+  let productName: string | undefined;
+  let configTarget: string | undefined;
 
-loadConfig(target).then(async (config) => {
-  // vram-layer：patch Output.get + fakeStdout
-  const { initVramLayer, createFakeStdout, setThemeBg, scheduleFullPaint, renderWithSelection } = await import("./render/vram-layer.js");
-  await initVramLayer();
-  // 首屏兜底：onRender 可能在 App 的 setThemeBg effect 之前 fire，先按初始主题 bg 填好背景，
-  // 避免首帧空白区显示终端默认底（透明闪烁）。
-  const { TAU_CETI } = await import("./theme/tau-ceti.js");
-  const { loadThemeFile } = await import("./theme/hot-reload.js");
-  const initTheme = themePath ? (loadThemeFile(themePath) ?? TAU_CETI) : TAU_CETI;
-  setThemeBg(initTheme.bg);
-  const fakeStdout = createFakeStdout();
-  // 进备用屏 + 开鼠标（真实 stdout！）+ 隐藏光标
-  process.stdout.write("\x1b[?1049h\x1b[H\x1b[2J\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l");
-  // Ink 布局完成 → 全量帧（选区绘制走 schedulePaint 脏行，避免与鼠标双刷闪烁）
-  const scheduleRender = () => scheduleFullPaint();
-  // 把 fakeStdout 交给尺寸单例（App 内 TerminalSizeProvider 也会再登记一次）
-  const { setInkStdoutForResize, syncTerminalSize } = await import("./hooks/useTerminalSize.js");
-  setInkStdoutForResize(fakeStdout);
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "-h" || a === "--help") {
+      printHelp();
+      process.exit(0);
+    }
+    if (a === "--theme") {
+      themePath = argv[++i];
+      continue;
+    }
+    if (a === "--force") {
+      setupForce = true;
+      continue;
+    }
+    if (a === "--from-env") {
+      setupFromEnv = true;
+      continue;
+    }
+    if (a === "--yes" || a === "-y") {
+      yes = true;
+      continue;
+    }
+    if (a.startsWith("-")) {
+      // 未知 flag 忽略，避免打断
+      continue;
+    }
 
-  const { waitUntilExit } = render(<App config={config} themePath={themePath} />, {
-    exitOnCtrlC: false,
-    stdin: filteredStdin as NodeJS.ReadStream,
-    stdout: fakeStdout as any,
-    patchConsole: false,
-    onRender: scheduleRender,
-  });
-  setTimeout(() => scheduleFullPaint(), 200);
+    // 第一个非 flag 词决定路由；后续非 flag 仅在尚未有 configTarget 时作路径
+    if (systemCmd || productName || configTarget) {
+      // 已确定主意图后，多余位置参数暂忽略
+      continue;
+    }
 
-  const onResize = () => {
-    syncTerminalSize(true);
-    const cols = process.stdout.columns || 80;
-    const rows = process.stdout.rows || 24;
-    process.stdout.write("\x1b[2J\x1b[H");
-    setTimeout(() => renderWithSelection(process.stdout.columns || cols, process.stdout.rows || rows, { selectionOnly: false }), 40);
-    setTimeout(() => scheduleFullPaint(), 160);
-  };
-  process.stdout.on("resize", onResize);
-  process.on("SIGWINCH", onResize);
-  waitUntilExit().then(() => {
-    process.stdout.write("\x1b[?25h\x1b[?1006l\x1b[?1003l\x1b[?1049l");
+    const resolved = resolveCliToken(a);
+    switch (resolved.kind) {
+      case "system":
+        systemCmd = resolved.cmd;
+        break;
+      case "product":
+        productName = resolved.product.name;
+        break;
+      case "config":
+        configTarget = resolved.target;
+        break;
+      case "unknown":
+        process.stderr.write(
+          `❌ 未知子命令或产品「${resolved.token}」\n\n` +
+            `可用产品:\n${formatProductList()}\n\n` +
+            `系统命令: setup, doctor, help\n` +
+            `自定义配置: maou <path-or-package>\n` +
+            `运行 maou --help 查看完整帮助。\n`,
+        );
+        process.exit(1);
+    }
+  }
+
+  if (systemCmd === "help") {
+    printHelp();
     process.exit(0);
+  }
+
+  if (systemCmd === "doctor") {
+    const { runDoctor } = await import("./commands/deps-check.js");
+    const ok = await runDoctor();
+    process.exit(ok ? 0 : 1);
+  }
+
+  if (systemCmd === "setup") {
+    const { runSetup } = await import("./commands/setup.js");
+    const ok = await runSetup({ force: setupForce, fromEnv: setupFromEnv });
+    process.exit(ok ? 0 : 1);
+  }
+
+  // 产品启动：默认 coding；显式 path 时仍挂默认产品元数据（project 标记）
+  const { launchAgent } = await import("./commands/agent.js");
+  await launchAgent({
+    product: productName ?? "coding",
+    configTarget,
+    themePath,
+    yes,
   });
-}).catch(err => {
+  process.exit(0);
+}
+
+main().catch((err) => {
   process.stderr.write(`❌ ${err?.message ?? err}\n`);
   process.exit(1);
 });
