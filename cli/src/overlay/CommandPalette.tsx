@@ -14,6 +14,7 @@ const COMMANDS: SelectItem[] = [
   { value: "settings", label: "设置", description: "Ctrl+," },
   { value: "agents", label: "Agent 管理", description: "空输入框 ←" },
   { value: "help", label: "帮助", description: "快捷键" },
+  { value: "screenshot", label: "整屏截图", description: "Ctrl+G · /screenshot" },
   { value: "thinking", label: "切换思考级别", description: "设置里改" },
   { value: "quit", label: "退出", description: "Ctrl+C" },
 ];

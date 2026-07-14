@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { z } from 'zod'
 import { parse as parseJsonc } from 'jsonc-parser'
@@ -9,6 +9,8 @@ import type {
   PluginSettings,
   LLMProtocol,
 } from './index.js'
+import { resolveUserConfigPath } from './maou-paths.js'
+import { resolveApiRolePreset, type ApiModelRole } from './api-roles.js'
 
 // ─── Zod Schemas ────────────────────────────────────────────────────────────
 
@@ -44,15 +46,29 @@ const PluginSettingsSchema = z.object({
   }).optional(),
 }).passthrough()
 
+/** preset 引用：name 字符串或数组下标 */
+const PresetRefSchema = z.union([z.string(), z.number().int().min(0)])
+
+const ApiModelRolesSchema = z
+  .object({
+    main: PresetRefSchema.optional(),
+    fast: PresetRefSchema.optional(),
+    vision: PresetRefSchema.optional(),
+    helper: PresetRefSchema.optional(),
+  })
+  .catchall(PresetRefSchema)
+  .optional()
+
 const ApiConfigSchema = z.object({
   presets: z.array(LLMPresetSchema).default([]),
   defaultPreset: z.number().int().min(0).default(0),
   /**
-   * 全局辅助模型 preset 索引（可选）。
-   * 用于压缩/loop判定/路由等辅助调用，未配置时辅助调用回退主 preset。
-   * 优先级：agent.json helperModel > 全局 helperPreset > 主模型 preset
+   * 全局辅助模型 preset 索引（可选，兼容旧配置）。
+   * 优先 roles.helper；再 helperPreset；再 main。
    */
   helperPreset: z.number().int().min(0).optional(),
+  /** 按用途绑定模型：main / fast / vision / helper … */
+  roles: ApiModelRolesSchema,
   agentRoundLimit: z.number().int().positive().default(50),
   contextSettings: ContextSettingsSchema.default({}),
   pluginSettings: PluginSettingsSchema.optional(),
@@ -128,14 +144,14 @@ function deepMerge(
 
 /**
  * 配置存储
- * 加载 project_config.json（项目级开关：dev/features/permissions/prompt）和
- * config.json（用户级全局应用配置：含 LLM api.presets），深度合并后用 Zod 校验。
+ * 加载 project_config.json（项目级开关）和
+ * **全局** config.json（全系列产品共用：LLM api.presets 等），深度合并后用 Zod 校验。
  *
  * 分工：
- * - config.json (~/.maou/config.json)：LLM 配置（api.presets）等全局应用配置的**唯一权威源**。
- * - project_config.json (core/agent_factory/)：项目级开关，跟着 git 走。**不再放 api 段**。
- *
- * 兼容：若 config.json 不存在但旧文件名 user_config.json 存在，自动回退读旧文件（一次性过渡）。
+ * - 用户态 config.json（~/.maou 或 $MAOU_HOME，可用 $MAOU_LLM_CONFIG 覆盖路径）：
+ *   LLM 配置（api.presets）等全局应用配置的**唯一权威源**，所有 maou 系列产品共用。
+ * - project_config.json：项目级开关，跟着 git 走。**不放 api 段**。
+ * - 项目态 <cwd>/.maou：会话等，**不放 API key**。
  */
 export class ConfigStore {
   private config: AppConfig
@@ -148,23 +164,15 @@ export class ConfigStore {
     const projectCfgFallback = join(projectRoot, 'core', 'agent_factory', 'project_config.json')
     this.projectPath = existsSync(projectCfg) ? projectCfg : projectCfgFallback
 
-    // 用户全局配置：优先 ~/.maou/config.json（新文件名）
-    // 兼容：若新文件不存在但旧 user_config.json 存在，回退读旧文件（零摩擦升级）
-    const resolveUserPath = (dir: string): string => {
-      const newPath = join(dir, 'config.json')
-      const oldPath = join(dir, 'user_config.json')
-      if (existsSync(newPath)) return newPath
-      if (existsSync(oldPath)) return oldPath
-      return newPath  // 都不存在时返回新路径（saveUserConfig 会创建）
-    }
-
-    if (userRoot) {
-      this.userPath = resolveUserPath(userRoot)
-    } else {
-      const maouCfg = resolveUserPath(join(projectRoot, '.maou'))
-      this.userPath = existsSync(maouCfg) ? maouCfg : ""
-    }
+    // 始终指向用户态全局配置（系列产品共用）；不回退到 projectRoot/.maou
+    // userRoot 为目录时 resolveUserConfigPath 在其下找 config.json；也可被 MAOU_LLM_CONFIG 覆盖
+    this.userPath = resolveUserConfigPath(userRoot)
     this.config = this.load()
+  }
+
+  /** 全局配置文件绝对路径（调试 / setup 用） */
+  getUserConfigPath(): string {
+    return this.userPath
   }
 
   /** 加载并合并配置 */
@@ -197,9 +205,13 @@ export class ConfigStore {
     return this.config
   }
 
-  /** 获取指定索引的 LLM 预设 */
+  /** 获取指定索引的 LLM 预设（未传 index 时尊重 roles.main / defaultPreset） */
   getPreset(index?: number): LLMPreset {
     const presets = this.config.api.presets
+    if (index === undefined) {
+      const byRole = resolveApiRolePreset(this.config.api, 'main')
+      if (byRole) return byRole
+    }
     const idx = index ?? this.config.api.defaultPreset
     return presets[idx] ?? presets[0] ?? {
       name: 'default',
@@ -214,6 +226,17 @@ export class ConfigStore {
       nativeToolCalling: true,
       nativeStructuredOutput: true,
     }
+  }
+
+  /**
+   * 按角色取 preset：main | fast | vision | helper | 自定义。
+   * 见 config.api.roles。
+   */
+  getRolePreset(role: ApiModelRole = 'main'): LLMPreset {
+    return (
+      resolveApiRolePreset(this.config.api, role) ??
+      this.getPreset()
+    )
   }
 
   /** 获取上下文窗口管理设置 */
@@ -247,10 +270,15 @@ export class ConfigStore {
     return readJsonFile(this.projectPath)
   }
 
-  /** 保存用户配置 */
+  /** 保存用户配置（全局 API 等）；尽量 chmod 0600 保护 key */
   saveUserConfig(data: Record<string, unknown>): void {
     mkdirSync(dirname(this.userPath), { recursive: true })
     writeFileSync(this.userPath, JSON.stringify(data, null, 2), 'utf-8')
+    try {
+      chmodSync(this.userPath, 0o600)
+    } catch {
+      /* Windows 等可能不支持 */
+    }
     this.reload()
   }
 

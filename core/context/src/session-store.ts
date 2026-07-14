@@ -75,6 +75,12 @@ export interface SessionMessage {
   }>;
   /** 工具名称 */
   tool_name?: string;
+  /**
+   * 思考/推理内容（仅当 thinking_context_mode 决定写入上下文时存在）。
+   * 展示层仍用 content；buildMessages / sessionToMaouMessage 会将其包成
+   * `<thinking>` 注入 LLM 历史。
+   */
+  reasoningContent?: string;
   /** 图片数据 */
   images?: Array<{ mimeType: string; data: string }>;
   /** Maou 层注解元数据（旧数据可能为 _harness_meta） */
@@ -371,19 +377,33 @@ export class SessionStore {
   /**
    * Fork 会话：复制源会话的消息和元数据，创建新会话。
    * 新会话有独立的 ID，但包含源会话的完整消息历史。
+   * @param targetSessionId 可选：写入指定 ID（subagent fork 预分配 subSessionId 时用）
    */
-  forkSession(sourceSessionId: string, newTitle?: string): SessionData {
+  forkSession(
+    sourceSessionId: string,
+    newTitle?: string,
+    targetSessionId?: string,
+  ): SessionData {
     const source = this.load(sourceSessionId);
     if (!source) {
       throw new Error(`源会话不存在: ${sourceSessionId}`);
     }
 
+    // 目标 ID 已存在且非空时，不再重复复制（幂等）
+    if (targetSessionId) {
+      const existing = this.load(targetSessionId);
+      if (existing && existing.messages.length > 0) {
+        return existing;
+      }
+    }
+
     const newSession = this.create({
       title: newTitle ?? `${source.title} (副本)`,
       agentName: source.agentName,
+      sessionId: targetSessionId,
     });
 
-    // 复制消息
+    // 完整复制消息（后续可优化为摘要/增量）
     for (const msg of source.messages) {
       this.appendLine(newSession.id, {
         type: "message",

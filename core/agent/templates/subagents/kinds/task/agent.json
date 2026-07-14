@@ -1,0 +1,21 @@
+{
+  "name": "task-template",
+  "display_name": "Task Agent",
+  "role": "task",
+  "scope": "subagent",
+  "subagent_kind": "task",
+  "description": "专业子任务 agent：独立上下文 + loop + 独立/预设工具白名单。",
+  "status": "active",
+  "round_limit": 30,
+  "enable_loop": true,
+  "persist_context": true,
+  "inherit_full_context": false,
+  "permission": "scoped_write",
+  "tool_preset": "explore",
+  "tools": ["reader", "glob", "grep", "find_code", "todo_finish"],
+  "list_in_manager": true,
+  "use_executor": true,
+  "over_round_policy": "wrap_up",
+  "ephemeral": false,
+  "storage_scope": "nested"
+}

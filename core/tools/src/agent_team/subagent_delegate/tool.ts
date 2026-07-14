@@ -20,6 +20,7 @@
 import { Tool } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
+import { loadSubagentKindOptionsFromCtx } from "../subagent-kind-options.js";
 
 /**
  * 创建一个 subagent delegate 工具实例（对应一个子 Agent）。
@@ -74,10 +75,13 @@ export function createSubagentDelegateTool(
 
       const taskId = `delegate-${subagentName}-${Date.now().toString(36)}`;
       try {
+        // 从 agent.json 读取 kind / path / tools 等（explore/reviewer/tester 模板已带 subagent_kind）
+        const kindOpts = loadSubagentKindOptionsFromCtx(ctx, subagentName, "task");
         const result = await ctx.subagentExecutor.fork(taskId, task, {
           // 委托给文件即子 Agent：用独立 agent 配置
           forkMode: "context_and_config",
           agentName: subagentName,
+          ...kindOpts,
         });
         const status = result.ok ? "✅" : "❌";
         const lines = [

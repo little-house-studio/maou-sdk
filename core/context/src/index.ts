@@ -76,6 +76,16 @@ export {
 // 消息构建
 export { buildMessages } from "./message-builder.js";
 
+// 思考回灌上下文策略
+export {
+  parseThinkingContextMode,
+  shouldStoreThinkingInContext,
+  wrapThinking,
+  contentWithThinkingForLlm,
+  DEFAULT_THINKING_CONTEXT_MODE,
+} from "./thinking-context.js";
+export type { ThinkingContextMode } from "./thinking-context.js";
+
 // 会话事件语义（author × kind × wireRole）
 export {
   appendSessionEvent,
@@ -105,7 +115,13 @@ export { maybeCompress, compressMaou, assignTaskIds } from "./compressor.js";
 export type { Summarizer, CompressOptions, CompressMaouResult, CompressionStage, CompressionResult, TaskSummary } from "./compressor.js";
 
 // Token 估算
-export { estimateTokens, estimateTokensFromText } from "./token-estimate.js";
+export {
+  estimateTokens,
+  estimateTokensFromText,
+  estimateTokensFromStrings,
+  contextUsageRatio,
+  contextRemainingRatio,
+} from "./token-estimate.js";
 
 // ContextEngine（编排压缩 + 持久化闭环）
 export { ContextEngine } from "./context-engine.js";

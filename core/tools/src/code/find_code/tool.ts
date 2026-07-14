@@ -97,7 +97,11 @@ export class CodeSearchTool extends Tool {
           enum: ["function", "class", "method", "struct", "enum", "interface", "trait", "variable", "constant", "type", "module", "namespace"],
           description: "符号类型过滤。search 时只返回该类型的符号；unused 时只检测该类型的死代码。默认不过滤。",
         },
-        lang: { type: "string", description: "语言过滤。如 ts、python、rust、go。search/unused 时有效。" },
+        lang: {
+          type: "string",
+          description:
+            "语言过滤。search/unused 时有效。可用正式 id（typescript/javascript/python/rust/go）或别名（ts/js/py/rs）。",
+        },
         in_file: { type: "string", description: "符号所在文件路径。当符号名有歧义（多个定义）时用于消歧。impact/callers 时有效。" },
         exact: { type: "boolean", description: "精确匹配符号名（关闭正则）。默认 false（正则匹配）。" },
         fuzzy: { type: "boolean", description: "模糊匹配符号名。适合不确定确切名称时使用。默认 false。" },

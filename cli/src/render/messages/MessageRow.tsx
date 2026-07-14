@@ -142,7 +142,15 @@ function UserBubble({
   const need = total > 10;
   const [open, setOpen] = useState(false);
   const ref = useRef<DOMElement | null>(null);
-  const cid = useClickTarget(ref, () => { if (need) setOpen((o) => !o); }, [need, open]);
+  const cid = useClickTarget(
+    ref,
+    () => {
+      if (!need) return;
+      setOpen((o) => !o);
+      useStore.getState().bumpContentLayout();
+    },
+    [need, open],
+  );
   const isHover = useStore((s) => s.hoverId) === cid;
 
   // 折叠时只取前 10 显示行
@@ -247,7 +255,15 @@ function AssistantBody({ content, streaming }: { content: string; streaming: boo
   const need = !streaming && asMd && total > ASSISTANT_FOLD_LINES;
   const [open, setOpen] = useState(false);
   const ref = useRef<DOMElement | null>(null);
-  const cid = useClickTarget(ref, () => { if (need) setOpen((o) => !o); }, [need, open]);
+  const cid = useClickTarget(
+    ref,
+    () => {
+      if (!need) return;
+      setOpen((o) => !o);
+      useStore.getState().bumpContentLayout();
+    },
+    [need, open],
+  );
   const isHover = useStore((s) => s.hoverId) === cid;
 
   if (!content && !streaming) return null;

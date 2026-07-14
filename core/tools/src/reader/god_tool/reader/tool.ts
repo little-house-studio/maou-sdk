@@ -8,7 +8,8 @@ import { extname } from "node:path";
 import { Tool, toolDir } from "../../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../../base.js";
 import { createToolResponse } from "../../../base.js";
-import { safePath, errToString } from "../../../browser/god_tool/use_browser/_util.js";
+import { errToString } from "../../../browser/god_tool/use_browser/_util.js";
+import { resolveToolPath } from "../../../path-guard.js";
 import { markRead } from "../../../file/read-registry.js";
 import { extractSignatures } from "../../../compress/output-compressor.js";
 
@@ -98,25 +99,25 @@ export class ReadTool extends Tool {
 
     // 图片检测
     if (isImagePath(filePath)) {
-      return this._readImage(ctx.workingDir || ctx.projectRoot, filePath);
+      return this._readImage(ctx, filePath);
     }
 
-    // 本地文件读取（用 workingDir 作根：agent 真实工作目录，非 maou 安装目录）
-    return this._readLocalFile(ctx.workingDir || ctx.projectRoot, filePath, params, ctx.sessionId);
+    // 本地文件读取（PathGuard / workingDir）
+    return this._readLocalFile(ctx, filePath, params, ctx.sessionId);
   }
 
   /**
    * 读取本地文件
    */
   private _readLocalFile(
-    projectRoot: string,
+    ctx: ToolContext,
     userPath: string,
     params: Record<string, unknown>,
     sessionId?: string,
   ): ToolResponse {
     let fullPath: string;
     try {
-      fullPath = safePath(projectRoot, userPath);
+      fullPath = resolveToolPath(ctx, userPath).path;
     } catch (err: unknown) {
       return createToolResponse(false, errToString(err));
     }
@@ -246,10 +247,10 @@ export class ReadTool extends Tool {
   /**
    * 读取图片文件为 base64
    */
-  private _readImage(projectRoot: string, userPath: string): ToolResponse {
+  private _readImage(ctx: ToolContext, userPath: string): ToolResponse {
     let fullPath: string;
     try {
-      fullPath = safePath(projectRoot, userPath);
+      fullPath = resolveToolPath(ctx, userPath).path;
     } catch (err: unknown) {
       return createToolResponse(false, errToString(err));
     }

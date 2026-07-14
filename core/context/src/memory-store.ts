@@ -87,10 +87,15 @@ export class MemoryStore {
   /** 按关键词召回记忆 */
   recall(query: string, limit?: number): MemoryRecallResult {
     const entries = this._loadAll();
+    // 同分时按 key 稳定排序：避免每轮 accessCount 微变导致记忆顺序翻转，
+    // 进而打掉 provider 的 prompt prefix cache（常见块大小 ~8192 tokens）。
     const scored = entries.map(e => ({
       entry: e,
       score: this._computeRelevance(query, e),
-    })).sort((a, b) => b.score - a.score);
+    })).sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.entry.key.localeCompare(b.entry.key);
+    });
 
     const top = (limit ?? 10) > 0 ? scored.slice(0, limit ?? 10) : scored;
     const memories = top.map(s => {
@@ -105,7 +110,10 @@ export class MemoryStore {
 
     return {
       memories,
-      formattedContext: this._formatForContext(memories),
+      // 再按 key 稳定排一次输出，使 formattedContext 与分数抖动解耦
+      formattedContext: this._formatForContext(
+        [...memories].sort((a, b) => a.key.localeCompare(b.key)),
+      ),
     };
   }
 

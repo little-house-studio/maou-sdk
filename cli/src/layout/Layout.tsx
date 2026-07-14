@@ -37,7 +37,21 @@ function centerLine(text: string, cols: number): string {
   return `${" ".repeat(pad)}${text}`;
 }
 
-/** 贴在对话框与输入 chrome 之间：灰底全宽「回到最底部」 */
+/** 仅订阅滚动态：上滚离开底时显示「回到最底部」，不拖 Layout 整树 */
+function BackToBottomSlot({ hidden }: { hidden?: boolean }) {
+  const autoFollow = useStore((s) => s.autoFollow);
+  const chatScrollOffset = useStore((s) => s.chatScrollOffset);
+  const maxChatScroll = useStore((s) => s.maxChatScroll);
+  const show =
+    !hidden && !autoFollow && Math.min(chatScrollOffset, maxChatScroll) > 0;
+  return (
+    <Box flexShrink={0} width="100%" height={1} overflow="hidden">
+      {show ? <BackToBottomBar /> : <Text>{" "}</Text>}
+    </Box>
+  );
+}
+
+/** 贴在对话框与输入 chrome 之间：灰底全宽「回到最底部」（固定 1 行高） */
 function BackToBottomBar() {
   const t = useTheme();
   const term = useTerminalSize();
@@ -49,7 +63,7 @@ function BackToBottomBar() {
   const right = pad - left;
   const line = `${" ".repeat(left)}${label}${" ".repeat(right)}`;
   return (
-    <Box ref={ref} flexShrink={0} width="100%">
+    <Box ref={ref} flexShrink={0} width="100%" height={1} overflow="hidden">
       <Text backgroundColor={t.userBg} color={t.user} bold>
         {line}
       </Text>
@@ -98,13 +112,8 @@ export function Layout({
   const streaming = useStore((s) => s.streaming);
   // 指令补全弹出时隐藏 EventBlock / InfoBar 状态条，把高度让给补全菜单
   const showComp = completion !== null && (completion.items?.length ?? 0) > 0;
-  // 与 ScrollHistory.hasNewer 一致：上滚离开底部时显示
-  const autoFollow = useStore((s) => s.autoFollow);
-  const chatScrollOffset = useStore((s) => s.chatScrollOffset);
-  const maxChatScroll = useStore((s) => s.maxChatScroll);
-  const showBackToBottom =
-    !overlay && !autoFollow && Math.min(chatScrollOffset, maxChatScroll) > 0;
   // 空会话：提示贴输入框上方（对话框外，隔一行）
+  // 注意：不要在此订阅 chatScrollOffset——否则每次滚 1 格整 Layout（Input/Nav/Event）重渲
   const showEmptyHint =
     !overlay && !showComp && messageCount === 0 && !streaming;
 
@@ -123,8 +132,10 @@ export function Layout({
       {/* normal 模式：终端命令审批条（阻塞 use_terminal，不遮盖对话） */}
       <TerminalApprovalBar />
 
-      {/* 贴在输入 chrome 正上方：灰底全宽「回到最底部」（从对话框内下移到框外） */}
-      {showBackToBottom && <BackToBottomBar />}
+      {/*
+        始终占 1 行；显示逻辑放在子组件内订阅 scroll，避免 Layout 跟滚。
+      */}
+      <BackToBottomSlot hidden={!!overlay} />
 
       {/* Toast：Ctrl+C 确认退出 / 模式切换等（在 chrome 上方，全宽醒目） */}
       <ToastBar />

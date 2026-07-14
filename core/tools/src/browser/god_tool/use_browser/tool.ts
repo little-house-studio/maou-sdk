@@ -32,7 +32,7 @@ export class BrowserTool extends Tool {
       "3. click/type/fill target='[N]' tab='<targetId>'\n" +
       "4. 页面变化后重新 state tab='<targetId>'\n\n" +
       "【常用操作】\n" +
-      "  检查：state, find, screenshot, frames\n" +
+      "  检查：state, find, screenshot, frames, console（浏览器控制台/运行时错误）\n" +
       "  读取：get (text/value/attributes), title, url, html\n" +
       "  交互：click, type, fill, select, keys, hover, scroll, check, uncheck, back\n" +
       "  等待：wait (selector/text/time)\n" +
@@ -41,7 +41,9 @@ export class BrowserTool extends Tool {
       "  会话：bind (绑定已登录标签), unbind, close\n" +
       "  批量：steps 数组串联多步操作\n" +
       "  跨工作区：multi 支持不同 session 的步骤序列\n" +
-      "  监听：watch 后端轮询监听 DOM 变化",
+      "  监听：watch 后端轮询监听 DOM 变化\n\n" +
+      "【前端自检推荐】\n" +
+      "open 本地 Vite 页 → wait → console（或 runtime_errors）查看 JS 报错；再 screenshot 看画面。",
     parameters: {
       type: "object",
       properties: {
@@ -51,7 +53,7 @@ export class BrowserTool extends Tool {
             "操作类型：open|state|find|screenshot|frames|" +
             "get|title|url|html|" +
             "click|type|fill|select|keys|hover|scroll|check|uncheck|back|" +
-            "wait|extract|network|eval|" +
+            "wait|extract|network|eval|console|runtime_errors|" +
             "tab-list|tab-new|tab-select|tab-close|" +
             "bind|unbind|close|help|" +
             "batch|multi|watch",
@@ -140,6 +142,114 @@ export class BrowserTool extends Tool {
     const cwd = ctx.workingDir || ctx.projectRoot;
 
     try {
+      // ── 浏览器控制台 / 运行时错误（前端自检）──
+      if (action === "console" || action === "runtime_errors") {
+        const tab = String(params.tab ?? "").trim();
+        const installAndDump = String(params.js ?? "").trim() || buildConsoleCaptureJs();
+        const evalArgs: Record<string, string> = {
+          url: "",
+          target: "",
+          text: "",
+          js: installAndDump,
+          tab,
+          subtype: "",
+          nth: "",
+          limit: "",
+          text_max: "",
+          depth: "",
+          children_max: "",
+          amount: "",
+          timeout: "",
+          max_chars: "",
+          start: "",
+          path: "",
+          frame: String(params.frame ?? ""),
+          detail: "",
+          filter: "",
+          raw: "",
+          all: "",
+          ttl: "",
+          workspace: "",
+          domain: "",
+          path_prefix: "",
+          wait_type: "",
+        };
+        const r = await opencli.run(session, "eval", evalArgs, { cwd });
+        if (!r.ok) {
+          return createToolResponse(
+            false,
+            `console 采集失败（需先 open 页面并传 tab）：${r.message}\n` +
+              `提示：open url → wait → console tab=<targetId>。curl/tsc 通过 ≠ 浏览器无运行时错误。`,
+          );
+        }
+        const body = formatConsoleDump(r.message);
+        return createToolResponse(true, body, { payload: r.payload });
+      }
+
+      // open 后自动注入 console 钩子（不阻断 open 结果）
+      if (action === "open") {
+        const openArgs: Record<string, string> = {
+          url: String(params.url ?? ""),
+          target: String(params.target ?? ""),
+          text: String(params.text ?? ""),
+          js: String(params.js ?? ""),
+          tab: String(params.tab ?? ""),
+          subtype: String(params.subtype ?? ""),
+          nth: String(params.nth ?? ""),
+          limit: String(params.limit ?? ""),
+          text_max: String(params.text_max ?? ""),
+          depth: String(params.depth ?? ""),
+          children_max: String(params.children_max ?? ""),
+          amount: String(params.amount ?? ""),
+          timeout: String(params.timeout ?? ""),
+          max_chars: String(params.max_chars ?? ""),
+          start: String(params.start ?? ""),
+          path: String(params.path ?? ""),
+          frame: String(params.frame ?? ""),
+          detail: String(params.detail ?? ""),
+          filter: String(params.filter ?? ""),
+          raw: params.raw ? "--raw" : "",
+          all: params.all ? "--all" : "",
+          ttl: String(params.ttl ?? ""),
+          workspace: String(params.workspace ?? ""),
+          domain: String(params.domain ?? ""),
+          path_prefix: String(params.path_prefix ?? ""),
+          wait_type: String(params.wait_type ?? ""),
+        };
+        const opened = await opencli.run(session, "open", openArgs, { cwd });
+        if (opened.ok) {
+          const tabId =
+            String(
+              (opened.payload as { targetId?: string; tab?: string } | undefined)?.targetId ??
+                (opened.payload as { tab?: string } | undefined)?.tab ??
+                "",
+            ).trim() || extractTabIdFromMessage(opened.message);
+          if (tabId) {
+            try {
+              await opencli.run(
+                session,
+                "eval",
+                {
+                  ...openArgs,
+                  js: CONSOLE_HOOK_INSTALL_JS,
+                  tab: tabId,
+                  url: "",
+                },
+                { cwd },
+              );
+            } catch {
+              /* 钩子失败不挡 open */
+            }
+            return createToolResponse(
+              opened.ok,
+              `${opened.message}\n\n💡 已尝试安装控制台钩子。稍后可用 action=console tab='${tabId}' 读取 JS 运行时错误（tsc/curl 通过 ≠ 浏览器无错）。`,
+              { payload: { ...opened.payload, tab: tabId, console_hook: true } },
+            );
+          }
+        }
+        return this.wrap(opened);
+      }
+
       // ── 编排类 ──
       if (action === "batch") {
         const steps = params.steps as Array<Record<string, string>> | undefined;
@@ -194,4 +304,121 @@ export class BrowserTool extends Tool {
     }
     return createToolResponse(r.ok, r.message, extras);
   }
+}
+
+/** 安装 console / error 钩子（幂等） */
+const CONSOLE_HOOK_INSTALL_JS = `(() => {
+  const g = globalThis;
+  if (g.__maouConsoleHooked) return { ok: true, already: true };
+  g.__maouLogs = g.__maouLogs || [];
+  const push = (level, args) => {
+    try {
+      const msg = (args || []).map((a) => {
+        try {
+          if (typeof a === "string") return a;
+          if (a && a.stack) return String(a.stack);
+          return JSON.stringify(a);
+        } catch (_) {
+          return String(a);
+        }
+      }).join(" ");
+      g.__maouLogs.push({ level: String(level), t: Date.now(), msg: msg.slice(0, 2000) });
+      if (g.__maouLogs.length > 80) g.__maouLogs.splice(0, g.__maouLogs.length - 80);
+    } catch (_) {}
+  };
+  for (const level of ["error", "warn", "log", "info", "debug"]) {
+    const orig = console[level] && console[level].bind(console);
+    if (!orig) continue;
+    console[level] = function () {
+      push(level, Array.from(arguments));
+      return orig.apply(console, arguments);
+    };
+  }
+  g.addEventListener("error", (e) => {
+    push("error", [e.message, e.filename, e.lineno, e.colno]);
+  });
+  g.addEventListener("unhandledrejection", (e) => {
+    push("error", ["unhandledrejection", e.reason]);
+  });
+  g.__maouConsoleHooked = true;
+  return { ok: true, installed: true };
+})()`;
+
+/** 安装钩子（若无）并 dump 最近日志 */
+function buildConsoleCaptureJs(): string {
+  return `(() => {
+  const g = globalThis;
+  if (!g.__maouConsoleHooked) {
+    g.__maouLogs = g.__maouLogs || [];
+    const push = (level, args) => {
+      try {
+        const msg = (args || []).map((a) => {
+          try {
+            if (typeof a === "string") return a;
+            if (a && a.stack) return String(a.stack);
+            return JSON.stringify(a);
+          } catch (_) { return String(a); }
+        }).join(" ");
+        g.__maouLogs.push({ level: String(level), t: Date.now(), msg: msg.slice(0, 2000) });
+        if (g.__maouLogs.length > 80) g.__maouLogs.splice(0, g.__maouLogs.length - 80);
+      } catch (_) {}
+    };
+    for (const level of ["error", "warn", "log", "info", "debug"]) {
+      const orig = console[level] && console[level].bind(console);
+      if (!orig) continue;
+      console[level] = function() {
+        push(level, Array.from(arguments));
+        return orig.apply(console, arguments);
+      };
+    }
+    g.addEventListener("error", (e) => push("error", [e.message, e.filename, e.lineno]));
+    g.addEventListener("unhandledrejection", (e) => push("error", ["unhandledrejection", e.reason]));
+    g.__maouConsoleHooked = true;
+  }
+  const logs = (g.__maouLogs || []).slice(-40);
+  return JSON.stringify({ count: logs.length, logs });
+})()`;
+}
+
+function formatConsoleDump(raw: string): string {
+  let parsed: { count?: number; logs?: Array<{ level?: string; msg?: string; t?: number }> } | null =
+    null;
+  try {
+    const m = raw.match(/\{[\s\S]*"logs"[\s\S]*\}/);
+    parsed = JSON.parse(m ? m[0]! : raw);
+  } catch {
+    return (
+      `浏览器控制台原始输出：\n${raw.slice(0, 4000)}\n\n` +
+      `（若为空：先 open 页面并传 tab，稍等页面执行后再 console）`
+    );
+  }
+  const logs = parsed?.logs ?? [];
+  if (logs.length === 0) {
+    return (
+      "浏览器控制台：暂无捕获到 log/error。\n" +
+      "可能原因：① 钩子装在错误之后 ② 页面无报错 ③ 未传 tab。\n" +
+      "建议：open → wait 2s → console tab=<id>；配合 screenshot 看画面。"
+    );
+  }
+  const errors = logs.filter(
+    (l) => l.level === "error" || /error|uncaught/i.test(l.msg ?? ""),
+  );
+  const lines = logs
+    .slice(-30)
+    .map((l) => `  [${l.level ?? "?"}] ${(l.msg ?? "").slice(0, 500)}`);
+  const head =
+    errors.length > 0
+      ? `⚠️ 捕获 ${logs.length} 条日志，其中约 ${errors.length} 条 error 级：\n`
+      : `捕获 ${logs.length} 条控制台日志：\n`;
+  return head + lines.join("\n");
+}
+
+function extractTabIdFromMessage(msg: string): string {
+  const m =
+    msg.match(/targetId[=:\s]+['"]?([a-f0-9-]{8,})/i) ||
+    msg.match(/tab[=:\s]+['"]?([a-f0-9-]{8,})/i) ||
+    msg.match(
+      /\b([0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12})\b/i,
+    );
+  return m?.[1] ?? "";
 }

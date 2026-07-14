@@ -221,9 +221,9 @@ export class GrepTool extends Tool {
     name: "grep",
     aliases: ["search-text", "rg"],
     description:
-      "用正则搜索文件内容。返回匹配的文件路径和行号。底层使用 ripgrep，自动处理 .gitignore、二进制文件、编码。" +
-      " output_mode=files_with_matches 只返回文件名（判断有没有）；" +
-      " content 返回匹配行+上下文；count 返回计数。",
+      "用正则搜索文件内容。默认返回「文件:行号:匹配行」及可选上下文。" +
+      " 底层 ripgrep（无则 Node 降级）。" +
+      " output_mode=content(默认)|files_with_matches|count。",
     parameters: {
       type: "object",
       properties: {
@@ -245,8 +245,9 @@ export class GrepTool extends Tool {
         },
         output_mode: {
           type: "string",
-          enum: ["files_with_matches", "content", "count"],
-          description: "返回模式。files_with_matches(默认)=只返回文件名；content=返回匹配行+上下文；count=返回每文件匹配数。",
+          enum: ["content", "files_with_matches", "count"],
+          description:
+            "返回模式。content(默认)=匹配行+行号+上下文；files_with_matches=只文件名；count=每文件计数。",
         },
         ignore_case: {
           type: "boolean",
@@ -311,10 +312,11 @@ export class GrepTool extends Tool {
 
     const globFilter = params.glob ? String(params.glob) : undefined;
     const typeFilter = params.type ? String(params.type) : undefined;
-    const outputMode = (params.output_mode as string) || "files_with_matches";
+    // 默认 content：返回行号+匹配行（files_with_matches 几乎等于 glob，易被吐槽「白搜」）
+    const outputMode = (params.output_mode as string) || "content";
     const validOutputMode = ["files_with_matches", "content", "count"].includes(outputMode)
       ? (outputMode as "files_with_matches" | "content" | "count")
-      : "files_with_matches";
+      : "content";
     const ignoreCase = Boolean(params.ignore_case);
     const multiline = Boolean(params.multiline);
     const contextC = params.context != null ? Number(params.context) : undefined;

@@ -40,9 +40,10 @@ export * from "./agent/index.js";
 // Hooks 钩子系统
 export * from "./agent/hooks.js";
 
-// Agent Factory 剩余件（skill / git-watcher / sdk types）
+// Agent Factory 剩余件（skill / git-watcher / file-diff-watch / sdk types）
 export * from "./agent_factory/skill.js";
 export * from "./agent_factory/git-watcher.js";
+export * from "./agent_factory/file-diff-watch.js";
 export * from "./agent_factory/types.js";
 
 // 动态上下文编译（团队 Agent 状态 + 终端状态面板）
@@ -66,6 +67,53 @@ export type {
 // 子 Agent 真并行执行器（#4 fork + 并发 + 合并）
 export { SubagentExecutor } from "./agent/subagent-executor.js";
 export type { SubagentRunFn, SubagentExecutorOptions } from "./agent/subagent-executor.js";
+
+// Subagent 四类模型（define + 物化 + 策略多态 + 共享 runFn）
+export {
+  SUBAGENT_KIND_DEFAULTS,
+  TASK_TOOL_PRESETS,
+  resolveSubagentTools,
+  helperUsesExecutor,
+  mergeKindDefaults,
+  resolveForkKindPolicy,
+  defineSubagent,
+  isDefinedSubagent,
+  resolveSubagentDir,
+  materializeSubagent,
+  listManagedSubagents,
+  killSubagent,
+  purgeKilledEphemeral,
+  BaseSubagentPolicy,
+  ForkSubagentPolicy,
+  HelperSubagentPolicy,
+  TaskSubagentPolicy,
+  ProjectSubagentPolicy,
+  SUBAGENT_POLICIES,
+  getSubagentPolicy,
+  resolveSubagentRunPlan,
+  materializeIfNeeded,
+  createDefaultSubagentRunFn,
+} from "./agent/index.js";
+export type {
+  SubagentKind,
+  SubagentPermission,
+  SubagentStorageScope,
+  SubagentLifecycleStatus,
+  SubagentModelConfig,
+  SubagentKindDefaults,
+  TaskToolPresetName,
+  ForkKindPolicy,
+  ResolveForkKindInput,
+  DefineSubagentConfig,
+  DefinedSubagent,
+  MaterializeResult,
+  SubagentListEntry,
+  SubagentRunChannel,
+  SubagentRunPlan,
+  PathGuardSpec,
+  CreateDefaultSubagentRunFnOpts,
+  SubagentRuntimeLike,
+} from "./agent/index.js";
 
 // 子 Agent 事件总线（P1-6 进度追踪 + 生命周期事件）
 export { SubagentEventBus, SUBAGENT_EVENT_BUS } from "./agent/event-bus.js";
@@ -101,7 +149,13 @@ export {
   getDefaultPresetFromMaouConfig,
   getDefaultPresetFromConfigStore,
   resolveMaouConfigPath,
+  isGlobalApiConfigured,
+  saveGlobalApiConfig,
+  getGlobalMaouRoot,
+  getRolePresetFromMaouConfig,
   installTerminalReviewer,
+  resolveTerminalReviewPreset,
+  TERMINAL_AUTO_REVIEW_HELPER,
   createStandardAgentDeps,
   listAgentsForCli,
   resolvePresetForCli,
@@ -126,4 +180,5 @@ export type {
   SkillScanOptions,
   PreviewSystemPromptOptions,
   PreviewSystemPromptResult,
+  GlobalApiWriteOptions,
 } from "./bootstrap/index.js";

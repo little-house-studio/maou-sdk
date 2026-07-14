@@ -218,6 +218,7 @@ export function EventBlock({ draft = "" }: { draft?: string }) {
   const model = useStore((s) => s.model);
   const provider = useStore((s) => s.provider);
   const term = useTerminalSize();
+  // 始终订后台列表（签名不变不 setState）；勿在 hasBg 时开快动画——会 ~130ms 全树 Ink 刷
   const { running: bgRunning } = useBackgroundTerminals();
 
   const style = approvalStyle(approvalMode, t);
@@ -279,8 +280,10 @@ export function EventBlock({ draft = "" }: { draft?: string }) {
 
   const isRetry = liveMode === "retrying";
   const hasBg = bgRunning.length > 0;
-  const busy = (streaming && !aborting) || isRetry || hasBg;
-  const anim = useAnimFrame(busy, 130);
+  // 仅 streaming / 重试用快动画；仅后台终端时用静态 WAIT（否则 IDLE 仍 7～8 ink/s 全树）
+  const needFastAnim = (streaming && !aborting) || isRetry;
+  const busy = needFastAnim || hasBg;
+  const anim = useAnimFrame(needFastAnim, 130);
   // 本轮缓存命中 %：仅主模型且支持 cache 上报时有意义（xopqwen 等 → null）
   const cacheHitPct = (() => {
     if (!modelReportsPromptCache(model, provider)) return null;
@@ -301,7 +304,8 @@ export function EventBlock({ draft = "" }: { draft?: string }) {
   // 忙碌：状态 chip 霓虹变色；重试时用警告黄底，更醒目
   const busyRgb = neonRgb(anim * 0.6);
   const busyHex = `#${busyRgb.map((x) => x.toString(16).padStart(2, "0")).join("")}`;
-  const leftIcon = busy ? spinnerChar(anim) : st.icon;
+  // hasBg 且非 streaming：用 shortStatus 静态图标（⏳），不订动画时钟
+  const leftIcon = needFastAnim ? spinnerChar(anim) : st.icon;
   const leftFg = "#000000";
 
   // 未缓存新输入
@@ -352,8 +356,8 @@ export function EventBlock({ draft = "" }: { draft?: string }) {
   const rightBudget = Math.max(10, Math.floor(midW * 0.28));
   const centerBudget = Math.max(8, midW - leftBudget - rightBudget);
 
-  // 状态 chip 本体（会霓虹）；其余左栏空白用静态底，避免整段宽条五颜六色
-  const statusCore = `${leftIcon} ${st.en}${busy ? spinnerChar(anim + 3) : ""}  ↑${uncachedApprox ? "~" : ""}${compact(uncached)}`;
+  // 状态 chip 本体（仅 streaming 霓虹尾点）；其余左栏空白用静态底
+  const statusCore = `${leftIcon} ${st.en}${needFastAnim ? spinnerChar(anim + 3) : ""}  ↑${uncachedApprox ? "~" : ""}${compact(uncached)}`;
   const statusCoreW = Math.min(leftBudget, Math.max(1, stringWidth(statusCore)));
   const statusPad = Math.max(0, leftBudget - statusCoreW);
   const centerStr = centerFit(
@@ -368,12 +372,12 @@ export function EventBlock({ draft = "" }: { draft?: string }) {
     rightBudget,
   );
 
-  // 中/右始终审核模式底色；左 chip：重试/WAIT 警告黄，其它 busy 霓虹，空闲跟审核底
+  // 中/右始终审核模式底色；左 chip：重试/WAIT 警告黄，streaming 霓虹，空闲跟审核底
   const barBg = style.bg;
   const statusBg =
     isRetry || (hasBg && !streaming)
       ? t.warn
-      : busy
+      : needFastAnim
         ? busyHex
         : style.bg;
   return (

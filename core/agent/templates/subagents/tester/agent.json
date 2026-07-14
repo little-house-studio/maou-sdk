@@ -3,9 +3,30 @@
   "display_name": "Tester",
   "role": "tester",
   "scope": "subagent",
+  "subagent_kind": "task",
   "description": "测试员子 Agent：编写和运行测试。能读文件、写测试文件、执行测试命令。适合「给这个函数写测试」「跑一下测试看通不通过」等测试任务。",
+  "status": "active",
   "round_limit": 25,
   "max_retries": 8,
   "terminal_mode": "auto",
-  "tools": ["reader", "write_file", "edit_file", "glob", "grep", "find_code", "use_terminal", "todo_finish"]
+  "enable_loop": true,
+  "persist_context": true,
+  "inherit_full_context": false,
+  "permission": "scoped_write",
+  "tool_preset": "coding_scoped",
+  "tools": [
+    "reader",
+    "write_file",
+    "edit_file",
+    "glob",
+    "grep",
+    "find_code",
+    "use_terminal",
+    "todo_finish"
+  ],
+  "list_in_manager": true,
+  "use_executor": true,
+  "over_round_policy": "wrap_up",
+  "ephemeral": false,
+  "storage_scope": "nested"
 }

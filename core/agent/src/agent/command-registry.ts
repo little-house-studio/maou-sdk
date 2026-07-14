@@ -76,6 +76,36 @@ export interface CommandRuntimeRef {
   endSupervisorMode?: (supervisorSessionId: string) => string | undefined;
   /** 中断信号 */
   abortSignal?: AbortSignal;
+  /** /compact */
+  forceCompress?: (sessionId: string) => Promise<{
+    ok: boolean;
+    stage?: string;
+    originalTokens?: number;
+    compressedTokens?: number;
+    error?: string;
+  }>;
+  /** /cost 粗算 */
+  getUsageStats?: (sessionId: string) => {
+    input: number;
+    output: number;
+    total: number;
+    rounds: number;
+  } | null;
+  /** /usage 完整报告（对标 Claude Code） */
+  getUsageReport?: (sessionId: string) => {
+    text: string;
+    meta?: Record<string, unknown>;
+  } | null;
+  /** /context */
+  getContextSnapshot?: (sessionId: string) => {
+    used: number;
+    max: number;
+    pct: number;
+    remaining: number;
+    compactAt: number;
+    summaryAt: number;
+    archiveAt: number;
+  } | null;
 }
 
 // ── 注册表 ──────────────────────────────────────────────────────────────
@@ -240,6 +270,116 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
       }
       text += "\n💡 指令不需要 AI 处理，直接执行。";
       return { content: text };
+    },
+  }));
+
+  // /compact：强制压缩当前会话上下文
+  registry.register(defineCommand({
+    name: "compact",
+    description: "强制压缩当前会话上下文（触发 ContextEngine）",
+    execute: async (ctx) => {
+      const force = (ctx.runtime as CommandRuntimeRef & {
+        forceCompress?: (sessionId: string) => Promise<{
+          ok: boolean;
+          stage?: string;
+          originalTokens?: number;
+          compressedTokens?: number;
+          error?: string;
+        }>;
+      }).forceCompress;
+      if (!force) {
+        return { content: "❌ 当前运行时未启用压缩引擎（无 ContextEngine stores）。" };
+      }
+      try {
+        const r = await force(ctx.sessionId);
+        if (!r.ok) {
+          return {
+            content: `△ 压缩未执行：${r.error ?? "未知原因"}`,
+            meta: { compressFailed: true, ...r },
+          };
+        }
+        return {
+          content: `✅ 上下文已压缩 stage=${r.stage ?? "?"} token: ${r.originalTokens ?? "?"} → ${r.compressedTokens ?? "?"}`,
+          meta: {
+            compress: true,
+            stage: r.stage,
+            originalTokens: r.originalTokens,
+            compressedTokens: r.compressedTokens,
+          },
+        };
+      } catch (e) {
+        return { content: `❌ 压缩失败: ${e}`, meta: { compressFailed: true } };
+      }
+    },
+  }));
+
+  // /usage：对标 Claude Code — Session 块（费用/时长/改动）+ token + 上下文 + 今日
+  const usageHandler = (ctx: CommandContext) => {
+    const report = (ctx.runtime as CommandRuntimeRef).getUsageReport?.(ctx.sessionId);
+    if (report?.text) {
+      return { content: report.text, meta: { usage: true, ...(report.meta ?? {}) } };
+    }
+    // 回退：仅 token 粗算
+    const stats = (ctx.runtime as CommandRuntimeRef).getUsageStats?.(ctx.sessionId);
+    if (!stats) {
+      return {
+        content:
+          "Usage\n" +
+          "  Session: 暂无数据（发送几轮对话后再试）\n" +
+          "  提示: 订阅类额度条需厂商账单 API；此处为本地 session 估算。",
+        meta: { usage: true },
+      };
+    }
+    return {
+      content:
+        `Usage (session)\n` +
+        `  Total cost:            (estimate unavailable)\n` +
+        `  Rounds:                ${stats.rounds}\n` +
+        `  Input tokens:          ${stats.input.toLocaleString()}\n` +
+        `  Output tokens:         ${stats.output.toLocaleString()}\n` +
+        `  Total tokens:          ${stats.total.toLocaleString()}`,
+      meta: { usage: true, ...stats },
+    };
+  };
+
+  registry.register(defineCommand({
+    name: "usage",
+    description: "会话用量：费用估算、时长、token、上下文（对标 Claude Code /usage）",
+    execute: usageHandler,
+  }));
+
+  // /cost：usage 别名（兼容旧习惯）
+  registry.register(defineCommand({
+    name: "cost",
+    description: "同 /usage（token 与费用估算）",
+    execute: usageHandler,
+  }));
+
+  // /context：上下文占用与压缩阈值
+  registry.register(defineCommand({
+    name: "context",
+    description: "显示上下文占用、剩余额度与压缩阈值",
+    execute: (ctx) => {
+      const snap = (ctx.runtime as CommandRuntimeRef).getContextSnapshot?.(ctx.sessionId);
+      if (!snap) {
+        return {
+          content: "Context\n  暂无快照（确保会话已有消息）。",
+          meta: { context: true },
+        };
+      }
+      const bar = (pct: number, w = 20) => {
+        const f = Math.round(Math.min(1, pct / 100) * w);
+        return "█".repeat(f) + "░".repeat(Math.max(0, w - f));
+      };
+      return {
+        content:
+          `Context window\n` +
+          `  ${bar(snap.pct)} ${snap.pct.toFixed(1)}%\n` +
+          `  Used:      ~${snap.used.toLocaleString()} / ${snap.max.toLocaleString()} token\n` +
+          `  Remaining: ~${snap.remaining.toLocaleString()}\n` +
+          `  Thresholds: compact ${snap.compactAt}% · summary ${snap.summaryAt}% · archive ${snap.archiveAt}%`,
+        meta: { context: true, ...snap },
+      };
     },
   }));
 

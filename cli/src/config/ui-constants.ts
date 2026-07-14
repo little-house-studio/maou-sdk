@@ -39,9 +39,8 @@ export const PAINT_FULL_MS = 16;
 export const PAINT_FULL_STREAM_MS = 24;
 
 /**
- * 全量 paint 合并（滚轮中）——默认跟手 ~60fps 调度。
- * 单帧若算不完，实测 fps 仍会低于此上限（结构瓶颈）。
- * MAOU_PAINT_SCROLL_MS 可覆盖（数字毫秒）。
+ * 全量 paint 合并（滚轮中）——与 scroll commit 预算对齐（约 25–30fps）。
+ * MAOU_PAINT_SCROLL_MS 可覆盖。
  */
 export const PAINT_FULL_SCROLL_MS = (() => {
   const raw = process.env.MAOU_PAINT_SCROLL_MS;
@@ -49,7 +48,7 @@ export const PAINT_FULL_SCROLL_MS = (() => {
     const n = Number(raw);
     if (Number.isFinite(n) && n >= 0) return Math.min(200, Math.max(0, Math.round(n)));
   }
-  return 16;
+  return 28;
 })();
 
 /** 选区脏行：尽快画 */
@@ -61,14 +60,17 @@ export const ANIM_INTERVAL_MS = 150;
 /** 输入框插入光标闪烁半周期（亮/灭各一次，约 1Hz） */
 export const CURSOR_BLINK_MS = 530;
 
-/** 鼠标 hover 最小间隔（降采样，减 motion CPU） */
-export const HOVER_MIN_MS = 80;
+/**
+ * 鼠标 hover 最小间隔（ms）。
+ * 过大（如 80～160）会感觉「指上去很久才亮」；16≈60Hz 采样足够跟手。
+ */
+export const HOVER_MIN_MS = 16;
 
-/** 滚轮 delta 合并窗口（ms）——略收以抬逻辑滚动频率 */
+/** 滚轮 delta 合并窗口（ms）——虚拟化后可更短以保跟手 */
 export const SCROLL_COALESCE_MS = 16;
 
 /** 滚动结束后视为「已静止」的等待 ms */
-export const SCROLL_IDLE_MS = 150;
+export const SCROLL_IDLE_MS = 120;
 
 // ── 对话历史窗口（轮 ≈ 消息条）────────────────────────────────
 

@@ -14,6 +14,7 @@ import { Sparkline } from "./sparkline.js";
 import { useAnimFrame, spinnerChar, neonRgb } from "../hooks/useAnimFrame.js";
 import { TERM_BREAKPOINTS } from "../config/ui-constants.js";
 import { formatCacheLabel } from "../lib/prompt-cache.js";
+import { isLiteNoStatusClock } from "../config/lite-mode.js";
 
 export function StatusBar() {
   const t = useTheme();
@@ -32,10 +33,11 @@ export function StatusBar() {
   const term = useTerminalSize();
   const [now, setNow] = useState(() => new Date());
 
-  // 时码：1s tick 只改 StatusBar；vram 侧有行 diff，不再因此整屏重刷。
-  // 未 streaming 时降到 2s，进一步砍空闲 setState。
+  // 时码：streaming 1s；空闲 30s；LITE 完全停钟。
+  // 任何 setState 都会触发 Ink onRender→全量 layout。
   useEffect(() => {
-    const ms = streaming ? 1000 : 2000;
+    if (isLiteNoStatusClock()) return;
+    const ms = streaming ? 1000 : 30_000;
     const id = setInterval(() => setNow(new Date()), ms);
     return () => clearInterval(id);
   }, [streaming]);

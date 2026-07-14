@@ -1,0 +1,33 @@
+{
+  "name": "project-template",
+  "display_name": "Project Agent",
+  "role": "project",
+  "scope": "subagent",
+  "subagent_kind": "project",
+  "description": "路径驻扎的小型 coding agent：严格 path + 域外审核列表。",
+  "status": "active",
+  "round_limit": 50,
+  "enable_loop": true,
+  "persist_context": true,
+  "inherit_full_context": false,
+  "permission": "project_scoped_audit",
+  "tool_preset": "coding_scoped",
+  "tools": [
+    "reader",
+    "write_file",
+    "edit_file",
+    "glob",
+    "grep",
+    "find_code",
+    "use_terminal",
+    "todo_manage",
+    "todo_finish"
+  ],
+  "path": ".",
+  "audit_paths": [],
+  "list_in_manager": true,
+  "use_executor": true,
+  "over_round_policy": "wrap_up",
+  "ephemeral": false,
+  "storage_scope": "nested"
+}

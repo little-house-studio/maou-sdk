@@ -1,0 +1,23 @@
+{
+  "name": "helper-template",
+  "display_name": "Helper Agent",
+  "role": "helper",
+  "scope": "subagent",
+  "subagent_kind": "helper",
+  "description": "事件触发的小任务辅助 agent。默认单轮、无工具；仅 persist_context=true 时进 Executor 与管理列表。内置场景：终端审核模式 auto（terminal-auto-review）走 AuxModelCaller，不进管理列表。",
+  "status": "active",
+  "round_limit": 1,
+  "enable_loop": false,
+  "persist_context": false,
+  "inherit_full_context": false,
+  "permission": "readonly",
+  "tools": [],
+  "list_in_manager": false,
+  "use_executor": false,
+  "over_round_policy": "wrap_up",
+  "ephemeral": true,
+  "storage_scope": "nested",
+  "model": {
+    "thinking": false
+  }
+}

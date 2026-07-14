@@ -7,6 +7,7 @@
  */
 
 import { rgbSgrBg, SEL_FG_SGR } from "../hooks/useAnimFrame.js";
+import { isLiteNoSelFx } from "../config/lite-mode.js";
 
 export type SelVisualPhase = "none" | "live" | "flash" | "fade" | "settled";
 
@@ -49,6 +50,13 @@ export function selFxLive(): void {
 export function selFxRelease(): void {
   if (phase === "none") return;
   clearReleaseTimer();
+  // LITE：直接定格，少一次 flash paint
+  if (isLiteNoSelFx()) {
+    phase = "settled";
+    phaseStarted = now();
+    paintKick?.();
+    return;
+  }
   phase = "flash";
   phaseStarted = now();
   paintKick?.();

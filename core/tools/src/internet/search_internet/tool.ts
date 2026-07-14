@@ -38,9 +38,12 @@ const CATEGORY_SITES: Record<string, string[]> = {
     "github.com",
     "stackoverflow.com",
     "developer.mozilla.org",
-    "npmjs.com",
-    "crates.io",
+    "phaser.io",
+    "ebitengine.org",
     "pkg.go.dev",
+    "crates.io",
+    // npmjs 仍可搜，但 rank 会在文档/教程意图下降权 package 页
+    "npmjs.com",
     "pypi.org",
   ],
   academic: ["arxiv.org", "wikipedia.org", "scholar.google.com"],
@@ -167,9 +170,10 @@ export class InternetSearchTool extends Tool {
     // general 时若 query 像技术文档问题，自动叠加 coding 垂直源（不写死答案，只多一路免费召回）
     const autoCoding =
       category === "general" &&
-      /\b(useEffect|useState|useMemo|react|typescript|javascript|npm|pnpm|yarn|zod|node\.?js|webpack|vite|eslint|cleanup|hook|api|sdk|opencode)\b/i.test(
+      (/\b(useEffect|useState|useMemo|react|typescript|javascript|npm|pnpm|yarn|zod|node\.?js|webpack|vite|eslint|cleanup|hook|api|sdk|opencode|phaser|ebiten|godot|unity|three\.?js|webgl|game\s*engine)\b/i.test(
         query,
-      );
+      ) ||
+        /引擎|教程|文档|开源.*游戏|游戏.*框架|赛车|canvas\s*game/i.test(query));
     const autoNews =
       category === "general" &&
       /\b(news|release date|launched|announces|今日|新闻|发布)\b/i.test(query);
@@ -334,14 +338,15 @@ export class InternetSearchTool extends Tool {
       lines.push(`[${i + 1}] [${rel}] ${item.title}`);
       lines.push(`${item.url}`);
       const content = item.definition || item.snippet || "";
-      if (content) lines.push(`Content: ${content.slice(0, 280)}`);
+      // 摘要至少一段可读文字（避免 "a pseudo" 两词截断）
+      if (content) lines.push(`Content: ${content.slice(0, 520)}`);
       const excerpts = item.excerpts?.length
         ? item.excerpts
         : item.snippet
           ? [item.snippet]
           : [];
-      excerpts.slice(0, 4).forEach((ex, j) => {
-        lines.push(`L${j + 1}: ${ex.slice(0, 220)}`);
+      excerpts.slice(0, 5).forEach((ex, j) => {
+        lines.push(`L${j + 1}: ${ex.slice(0, 480)}`);
       });
       lines.push(
         `meta: domain=${item.domain || "?"} source=${item.source} score=${item.score?.toFixed(2) ?? "?"} enriched=${item.enriched ? "yes" : "no"}${item.publishedAt ? ` date=${item.publishedAt}` : ""}`,

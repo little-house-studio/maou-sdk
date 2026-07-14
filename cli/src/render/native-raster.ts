@@ -65,12 +65,19 @@ export function loadNativeRaster(): Binding | null {
     for (const p of preferred) {
       if (existsSync(p)) {
         binding = require(p) as Binding;
+        try {
+          // 延迟 import 避免循环
+          void import("../hooks/process-stats.js").then((m) => m.setNativeRasterFlag(true));
+        } catch {
+          /* ignore */
+        }
         return binding;
       }
     }
     const nodes = readdirSync(dir).filter((f) => f.endsWith(".node"));
     if (nodes[0]) {
       binding = require(join(dir, nodes[0]!)) as Binding;
+      void import("../hooks/process-stats.js").then((m) => m.setNativeRasterFlag(true));
       return binding;
     }
   } catch {

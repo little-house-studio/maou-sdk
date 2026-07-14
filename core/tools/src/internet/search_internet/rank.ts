@@ -58,6 +58,10 @@ const TRUSTED_DOMAINS: Array<{ re: RegExp; boost: number }> = [
   { re: /(^|\.)anthropic\.com$/i, boost: 0.1 },
   { re: /(^|\.)opencode\.ai$/i, boost: 0.14 },
   { re: /(^|\.)aider\.chat$/i, boost: 0.12 },
+  { re: /(^|\.)phaser\.io$/i, boost: 0.16 },
+  { re: /(^|\.)ebitengine\.org$/i, boost: 0.16 },
+  { re: /(^|\.)godotengine\.org$/i, boost: 0.14 },
+  { re: /(^|\.)threejs\.org$/i, boost: 0.14 },
   { re: /(^|\.)dev\.to$/i, boost: 0.06 },
   { re: /(^|\.)medium\.com$/i, boost: 0.04 },
   { re: /(^|\.)reuters\.com$/i, boost: 0.1 },
@@ -89,13 +93,21 @@ const NOISE_DOMAINS: Array<{ re: RegExp; penalty: number; techOnly?: boolean }> 
   { re: /(^|\.)blogspot\./i, penalty: 0.08 },
 ];
 
-/** 技术意图关键词 */
+/** 技术意图关键词（含游戏引擎/文档/教程，避免只命中 npm 包摘要） */
 const TECH_HINT =
-  /\b(api|sdk|cli|agent|coding|code|github|npm|python|rust|typescript|javascript|react|vue|docker|kubernetes|llm|openai|anthropic|开源|编程|框架|库|工具|终端|agentic|opencode|aider|codex)\b/i;
+  /\b(api|sdk|cli|agent|coding|code|github|npm|python|rust|typescript|javascript|react|vue|docker|kubernetes|llm|openai|anthropic|开源|编程|框架|库|工具|终端|agentic|opencode|aider|codex|phaser|ebiten|godot|unity|unreal|three\.?js|webgl|canvas|game\s*engine|引擎|教程|文档|documentation|tutorial|example|示例|guide|howto)\b/i;
+
+/** 用户要的是文档/教程/示例，而非 registry 包列表 */
+const DOCS_TUTORIAL_HINT =
+  /\b(tutorial|guide|howto|documentation|docs|example|示例|教程|文档|入门|getting\s*started|引擎|engine|架构|architecture|如何|怎么用)\b/i;
 
 export function detectTechIntent(query: string, category: string): boolean {
   if (category === "coding" || category === "tools" || category === "academic") return true;
   return TECH_HINT.test(query);
+}
+
+export function detectDocsTutorialIntent(query: string): boolean {
+  return DOCS_TUTORIAL_HINT.test(query);
 }
 
 function sourceReliability(source: string): number {
@@ -261,10 +273,11 @@ export function freshnessScore(
   return Math.max(0, Math.min(1, fresh));
 }
 
-/** 短视频/话题壳/站内搜索页：压制 */
-function shellPenalty(r: SearchResult): number {
+/** 短视频/话题壳/站内搜索页：压制；文档意图下压制 npm 包列表页 */
+function shellPenalty(r: SearchResult, query?: string): number {
   const url = r.url || "";
   const host = r.domain || "";
+  const src = String(r.source ?? "");
   let p = 0;
   if (/douyin\.com|tiktok\.com/i.test(host)) p -= 0.35;
   if (/iqiyi\.com|youku\.com/i.test(host)) p -= 0.18;
@@ -286,11 +299,26 @@ function shellPenalty(r: SearchResult): number {
     p += 0.22;
   }
   if (
-    /(^|\.)(react\.dev|zod\.dev|pnpm\.io|nodejs\.org|developer\.mozilla\.org|openai\.com)$/i.test(
+    /(^|\.)(react\.dev|zod\.dev|pnpm\.io|nodejs\.org|developer\.mozilla\.org|openai\.com|phaser\.io|ebitengine\.org|threejs\.org|godotengine\.org)$/i.test(
       host,
     )
   ) {
     p += 0.18;
+  }
+  // 技术文档/教程意图：npm 包摘要页降权（否则 Phaser/引擎类问题被 npm 霸榜）
+  const q = query ?? "";
+  if (detectDocsTutorialIntent(q) || detectTechIntent(q, "coding")) {
+    const wantsPackage =
+      /\b(npm\s*i|npm\s*install|package\.json|依赖包|哪个包)\b/i.test(q);
+    if (!wantsPackage) {
+      if (/npmjs\.com\/package\//i.test(url) || src === "npm-api") p -= 0.42;
+      if (/pypi\.org\/project\//i.test(url)) p -= 0.25;
+      if (/crates\.io\/crates\//i.test(url) && /引擎|engine|tutorial|教程|文档/i.test(q)) {
+        p -= 0.15;
+      }
+      // 官方文档 / 完整仓库 README 升权
+      if (/\/blob\/|\/tree\/|readme/i.test(url) && /github\.com/i.test(host)) p += 0.12;
+    }
   }
   return p;
 }
@@ -366,7 +394,7 @@ export function scoreResult(r: SearchResult, ctx: RankContext): SearchResult {
   const relRatio = relevanceRatio(r, ctx.query);
   const coverage = tokenCoverage(r, ctx.query);
   const pop = popularityBoost(r);
-  const shell = shellPenalty(r);
+  const shell = shellPenalty(r, ctx.query);
   const clash = entityClashPenalty(r, ctx.query);
   const stale = isStaleForFilter(r.publishedAt, ctx.timeFilter);
 

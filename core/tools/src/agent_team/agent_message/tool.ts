@@ -10,6 +10,7 @@ import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { TASK_MANAGER, TaskScheduler } from "../../task/task_manage/tool.js";
 import type { ForkOptions } from "@little-house-studio/types";
+import { loadSubagentKindOptionsFromCtx } from "../subagent-kind-options.js";
 
 const STATUS_EMOJI: Record<string, string> = {
   idle: "💤", busy: "🔵", working: "🟢", stopped: "🔴", error: "💥",
@@ -107,6 +108,38 @@ export class SubagentTool extends Tool {
             "临时覆盖 agent.json 字段（如 system prompt / tool 白名单 / model）。" +
             "仅 fork_mode='context_and_config' 生效，会创建临时 agent 文件，子 session 结束清理。",
         },
+        // ── 四类 subagent kind ──
+        kind: {
+          type: "string",
+          enum: ["fork", "helper", "task", "project"],
+          description:
+            "子 Agent 类型（默认 fork）：" +
+            "fork=完整复制母上下文；helper=单轮无 tool（非持久走 Aux）；" +
+            "task=专业子任务+预设白名单；project=路径驻扎小型 coding agent。",
+        },
+        tool_preset: {
+          type: "string",
+          enum: ["explore", "web_search", "report", "file_search", "coding_scoped", "none"],
+          description: "task/project 工具白名单预设。",
+        },
+        persist_context: {
+          type: "boolean",
+          description:
+            "是否持久化（helper 默认 false；仅 true 时进管理列表与 Executor）。",
+        },
+        path: {
+          type: "string",
+          description: "project 驻扎路径（project 建议必填）。硬约束由 PathGuard 执行。",
+        },
+        audit_paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "project 域外审核路径列表（audit 模式可读写但标记 needsAudit）。",
+        },
+        enable_loop: {
+          type: "boolean",
+          description: "是否 multi-round loop（helper 默认 false）。",
+        },
       },
       required: ["action"],
       additionalProperties: false,
@@ -126,8 +159,8 @@ export class SubagentTool extends Tool {
     if (forkMode === "context_and_config" && !agentName) {
       return createToolResponse(false, "fork_mode='context_and_config' 时必须传 agent_name（指定子 Agent 使用的 agent 配置）。");
     }
-    // 组装完整 ForkOptions（engine 已支持全部字段，这里把 LLM 参数透传下去）
-    const forkOptions = this.buildForkOptions(params, forkMode, agentName);
+    // 组装完整 ForkOptions；若指定了 agent_name 且未显式 kind，从 agent.json 继承策略
+    const forkOptions = this.buildForkOptions(params, forkMode, agentName, ctx);
 
     // fork：真并行执行子 Agent（依赖 ctx.subagentExecutor 由 runtime 注入）
     if (action === "fork" || action === "create") {
@@ -261,9 +294,38 @@ export class SubagentTool extends Tool {
     params: Record<string, unknown>,
     forkMode: "context_only" | "context_and_config",
     agentName?: string,
+    ctx?: ToolContext,
   ): ForkOptions {
-    const opts: ForkOptions = { forkMode, agentName };
+    // 1) 磁盘策略（指定 agent_name 时）
+    const fromDisk =
+      agentName && ctx
+        ? loadSubagentKindOptionsFromCtx(ctx, agentName, "task")
+        : {};
 
+    // 2) kind：显式 > 磁盘 > 默认 fork（无 agent_name 的克隆场景）
+    const explicitKind =
+      params.kind !== undefined &&
+      params.kind !== null &&
+      String(params.kind).trim() !== "";
+    let kind: ForkOptions["kind"] = "fork";
+    if (explicitKind) {
+      const kindRaw = String(params.kind).trim().toLowerCase();
+      kind =
+        kindRaw === "helper" || kindRaw === "task" || kindRaw === "project" || kindRaw === "fork"
+          ? (kindRaw as ForkOptions["kind"])
+          : "fork";
+    } else if (agentName) {
+      kind = fromDisk.kind ?? "task";
+    }
+
+    const opts: ForkOptions = {
+      ...fromDisk,
+      forkMode,
+      agentName,
+      kind,
+    };
+
+    // 3) 通用 fork 参数
     if (params.max_recursion_depth !== undefined && params.max_recursion_depth !== null) {
       const n = Number(params.max_recursion_depth);
       if (!Number.isNaN(n)) opts.maxRecursionDepth = n;
@@ -286,6 +348,25 @@ export class SubagentTool extends Tool {
     if (params.inherit_mcp === false) opts.inheritMcp = false;
     if (params.config_overrides && typeof params.config_overrides === "object") {
       opts.configOverrides = params.config_overrides as Record<string, unknown>;
+    }
+
+    // 4) 显式 kind 字段覆盖磁盘
+    if (params.tool_preset !== undefined && params.tool_preset !== null) {
+      opts.toolPreset = String(params.tool_preset);
+    }
+    if (params.persist_context === true) opts.persistContext = true;
+    if (params.persist_context === false) opts.persistContext = false;
+    if (params.enable_loop === true) opts.enableLoop = true;
+    if (params.enable_loop === false) opts.enableLoop = false;
+    if (params.path !== undefined && String(params.path).trim()) {
+      opts.path = String(params.path).trim();
+    }
+    if (Array.isArray(params.audit_paths)) {
+      opts.auditPaths = params.audit_paths.map(String);
+    }
+
+    if (opts.kind === "fork") {
+      opts.inheritFullContext = opts.inheritFullContext ?? true;
     }
     return opts;
   }

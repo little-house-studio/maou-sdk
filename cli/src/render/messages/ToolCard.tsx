@@ -1,12 +1,9 @@
 /**
- * ToolCard —— 工具调用卡片（两级折叠）
+ * ToolCard —— 工具调用行（无边框，弱化卡片感）
  *
- * 外层（默认收纳；长命令 / 执行中终端默认展开看 ring+进度）：
- *   标题：name + 目标摘要 + reason + 耗时
- *   点击标题/卡片头 → 展开看输入与结果
- *
- * 内层（展开后）：
- *   输入 args / 输出 result 过长默认折叠，各自点击可再展开/收纳
+ * 收纳态单行：
+ *   [name 色底] target reason ▶
+ * 点击标题行 → 展开输入/结果；执行中可看 ring/进度
  */
 
 import React, { useState, useMemo, useRef, useEffect } from "react";
@@ -23,7 +20,7 @@ import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { readBoxHeight } from "../../hooks/useBoxSize.js";
 import { CollapsibleText } from "./Collapsible.js";
 import { useAnimFrame, spinnerChar, neonRgb } from "../../hooks/useAnimFrame.js";
-import { toolCardOuterCols } from "../../layout/chat-width.js";
+import { chatBodyCols } from "../../layout/chat-width.js";
 import {
   extractProgressPct,
   formatElapsed,
@@ -191,8 +188,8 @@ export function ToolCard({
 
   const anim = useAnimFrame(waiting, 140);
   const term = useTerminalSize();
-  const cardW = toolCardOuterCols(term.cols);
-  const innerW = Math.max(12, cardW - 4);
+  // 无边框：直接用正文列宽
+  const lineW = Math.max(12, chatBodyCols(term.cols));
   // 仅执行中或用户主动展开时订终端轮询
   const { running: bgRunning } = useBackgroundTerminals({
     enabled: waiting || (longCmd && open),
@@ -270,10 +267,9 @@ export function ToolCard({
     [tool.result, isWrite],
   );
 
-  // 执行中：边框霓虹脉冲
+  // 执行中：名称底色霓虹脉冲（无边框）
   const pulseRgb = neonRgb(anim * 0.5);
   const pulseHex = `#${pulseRgb.map((x) => x.toString(16).padStart(2, "0")).join("")}`;
-  const borderColor = isHover ? t.accent : waiting ? pulseHex : t.border;
   const headBg = isHover
     ? t.accent
     : waiting
@@ -285,12 +281,12 @@ export function ToolCard({
   const spin = spinnerChar(anim);
   const chevron = canExpand ? (open ? "▼" : "▶") : waiting ? spin : "";
 
-  // 单行标题：name + target + reason + (dur) chevron；超宽先缩 reason，再缩 target
+  // 单行：name 色底 + target + reason + (dur) chevron
   const nameLabel = waiting ? ` ${spin} ${tool.name} ` : ` ${tool.name} `;
   const tailLabel = `${callDur ? `(${callDur}) ` : ""}${chevron}`;
   const nameW = stringWidth(nameLabel);
   const tailW = stringWidth(tailLabel ? ` ${tailLabel}` : "");
-  let remain = Math.max(0, innerW - nameW - tailW);
+  let remain = Math.max(0, lineW - nameW - tailW);
 
   /** 按视觉列宽截断（CJK=2） */
   const clipVis = (s: string, maxW: number): string => {
@@ -330,15 +326,12 @@ export function ToolCard({
     <Box
       ref={rootRef}
       flexDirection="column"
-      borderStyle="single"
-      borderColor={borderColor}
-      paddingX={1}
-      width={cardW}
+      width={lineW}
       flexShrink={0}
       overflow="hidden"
     >
-      {/* ── 标题单行：name | target | reason | 耗时/chevron ── */}
-      <Box ref={headRef} flexDirection="row" width={innerW} overflow="hidden">
+      {/* 无边框单行：工具名色底 + 摘要 + chevron */}
+      <Box ref={headRef} flexDirection="row" width={lineW} overflow="hidden">
         <Text backgroundColor={headBg} color="#000" bold>
           {nameLabel}
         </Text>
@@ -351,10 +344,10 @@ export function ToolCard({
         ) : null}
       </Box>
 
-      {/* ── 展开：输入 + 输出，各自可再折叠；长命令显示 ring/进度 ── */}
+      {/* 展开：输入 / 输出 / 进度（仍无外框） */}
       {open && (
-        <Box flexDirection="column" marginTop={0}>
-          <ArgsSection text={parsed.pretty} maxWidth={innerW} />
+        <Box flexDirection="column" marginTop={0} width={lineW}>
+          <ArgsSection text={parsed.pretty} maxWidth={lineW} />
           {tool.result !== undefined && (
             <ResultSection
               result={String(tool.result)}
@@ -370,14 +363,14 @@ export function ToolCard({
                 {termId || matchedBg?.id ? ` · ${termId || matchedBg?.id}` : ""}
               </Text>
               <Text color={t.dim}>
-                {`  ${pctBar(livePct, Math.min(16, Math.max(8, innerW - 4)), anim)}`}
+                {`  ${pctBar(livePct, Math.min(16, Math.max(8, lineW - 4)), anim)}`}
                 {livePct != null ? ` ${livePct}%` : " running"}
               </Text>
             </Box>
           )}
         </Box>
       )}
-      {/* 收纳态仍给长命令一行 ring 进度，避免「卡住」错觉 */}
+      {/* 收纳态：长命令一行 ring 进度 */}
       {!open && waiting && longCmd && (
         <Text color={pulseHex}>
           {` ${ringChar(anim)} ${formatElapsed(liveElapsed)}`}

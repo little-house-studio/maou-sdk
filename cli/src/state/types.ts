@@ -229,4 +229,9 @@ export interface UIState {
   chatHistoryStart: number;
   /** 滚轮滚动中（降 paint / hover） */
   scrollActive: boolean;
+  /**
+   * 对话内容几何世代：MD/ToolCard 展开收起时递增，
+   * 驱动 ScrollHistory 重测 contentH（否则贴底裁切、展开不改变最底）。
+   */
+  contentLayoutEpoch: number;
 }

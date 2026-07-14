@@ -53,6 +53,9 @@ const OSC22_UNSUPPORTED_PROGRAMS = new Set([
 export function osc22Supported(): boolean {
   if (!process.stdout.isTTY) return false;
   if (process.env.MAOU_POINTER === "0") return false; // 显式关闭
+  if (process.env.MAOU_LITE === "1" || process.env.MAOU_LITE === "true" || process.env.MAOU_FPS_TEST === "1") {
+    return false; // LITE 帧率试验：关指针形状
+  }
   if (process.env.MAOU_POINTER === "1") return true;  // 强制开
 
   const tp = process.env.TERM_PROGRAM ?? "";

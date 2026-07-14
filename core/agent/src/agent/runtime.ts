@@ -16,22 +16,33 @@
  * 自动压缩：token 达到 70% 阈值时压缩（保留 25% 近期消息）。
  */
 
+import { execSync } from "node:child_process";
 import { PromptCompiler } from "@little-house-studio/prompt";
 import { SessionStore, SessionManager, MemoryStore, CheckpointStore, extractMemories } from "@little-house-studio/context";
 import {
   buildMessages,
   maybeCompress,
   ContextEngine,
+  estimateTokensFromText,
   estimateTokens,
   MAX_ROUNDS,
   DEFAULT_AGENT_ROUND_LIMIT,
   DEFAULT_LOOP_THRESHOLD,
   CONTEXT_THRESHOLD_PERCENT,
+  parseThinkingContextMode,
+  shouldStoreThinkingInContext,
 } from "@little-house-studio/context";
-import type { HarnessSessionStore, TaskSessionStore, Summarizer, LLMMessage } from "@little-house-studio/context";
+import type {
+  HarnessSessionStore,
+  TaskSessionStore,
+  Summarizer,
+  LLMMessage,
+  ThinkingContextMode,
+} from "@little-house-studio/context";
 import { compileDynamicContext } from "../dynamic-context.js";
 import { TokenTracker } from "./token-tracker.js";
 import type { TokenUsage } from "./token-tracker.js";
+import { promptCacheLedger } from "./prompt-cache-ledger.js";
 import { AgentRegistry } from "./registry.js";
 import { getTemplateRef } from "./template-ref.js";
 import { renderAgentPreview, watchAgentPreview } from "./template.js";
@@ -74,6 +85,7 @@ import type { SubagentExecutorLike } from "@little-house-studio/types";
 import type { StreamEvent } from "@little-house-studio/types";
 import { Profiler } from "@little-house-studio/types";
 import type { Hooks } from "./hooks.js";
+import { FileDiffWatch } from "../agent_factory/file-diff-watch.js";
 
 /** loop.ts 脚本的判定上下文（shouldContinueLoop 入参）。 */
 interface LoopScriptCtx {
@@ -165,6 +177,17 @@ export interface RuntimeOptions {
    * includeSystemNpmSkills 默认 true → 扫描 ~/.agents/skills 等 NPM 全局路径。
    */
   skillOptions?: AgentSkillOptions;
+  /**
+   * 会话级文件 diff 监听（变更感知）。
+   * - true：启用默认配置（reader/edit/write 触碰入名单，before_user 注入可选通知）
+   * - 对象：自定义 idle/notice 阈值与工具集
+   * - false/缺省：不启用
+   */
+  fileDiffWatch?: boolean | {
+    maxIdleRounds?: number;
+    maxChangeNoticesWithoutTouch?: number;
+    touchTools?: readonly string[];
+  };
 }
 
 export interface ModelCallParams {
@@ -213,6 +236,28 @@ export interface RunOptions {
    * 把工具名列表通过此字段传入 run()，run() 会把它们加入工具白名单（避免被 nativeToolSchemas 过滤）。
    */
   mcpProxyToolNames?: string[];
+  /**
+   * 子 Agent 工具白名单覆盖（kind 解析后由 SubagentExecutor 传入）。
+   * - undefined：沿用 PERMISSION ∩ agent.json tools
+   * - []：无工具（helper 单轮强制；nativeToolSchemas 收到空集）
+   * - string[]：与既有白名单取交集（若无既有白名单则直接用此列表）
+   */
+  toolWhitelistOverride?: string[];
+  /**
+   * 路径沙箱（project subagent）。也会写入 per-session map 供 processToolCalls 注入。
+   */
+  pathGuard?: {
+    mode: "inherit" | "hard" | "audit";
+    roots: string[];
+    auditRoots?: string[];
+  };
+  /**
+   * 思考回灌上下文模式（覆盖 agent.json thinking_context_mode）。
+   * - never: 不写入
+   * - first_round: 仅本 loop 第一回合（默认）
+   * - always: 每回合都写
+   */
+  thinkingContextMode?: ThinkingContextMode;
 }
 
 // ─── AgentRuntime ──────────────────────────────────────────────────────────
@@ -256,6 +301,11 @@ export class AgentRuntime {
    * 注入到 ToolContext.subagentExecutor，agent_message 工具据此 fork 子 Agent。
    */
   private subagentExecutor?: SubagentExecutorLike;
+  /** per-session 路径沙箱（project/task subagent） */
+  private _sessionPathGuards = new Map<
+    string,
+    { mode: "inherit" | "hard" | "audit"; roots: string[]; auditRoots?: string[] }
+  >();
   /** 已注册的子 Agent delegate 工具名（subagent_<name>），用于下次 run 前清理，
    * 避免上一次 run 注册的 subagent_<name> 在子 Agent 目录变更后残留。 */
   private _registeredSubagentTools: Set<string> = new Set();
@@ -280,6 +330,14 @@ export class AgentRuntime {
    */
   private currentPreset: APIPreset | null = null;
 
+  /**
+   * 压缩失败退避：sessionId → 下次允许再试的时间戳。
+   * 失败时本轮不压、不杀 run；间隔后自动再试，直到成功或用户 abort。
+   */
+  private compressRetryAfter = new Map<string, number>();
+  /** 默认压缩失败后 15s 再试 */
+  private static COMPRESS_RETRY_MS = 15_000;
+
   // ── 可插拔工厂（缺省使用内部默认实现）──
   private createSessionManagerFn: (sessions: SessionStore, maouRoot: string) => SessionManager;
   private createCheckpointStoreFn: (sessions: SessionStore) => CheckpointStore;
@@ -287,6 +345,8 @@ export class AgentRuntime {
   private createTokenTrackerFn: (maouRoot: string, agentName: string, preset: Record<string, unknown>) => TokenTracker;
   private createSkillManagerFn: (agentName: string, projectRoot: string, maouRoot: string) => SkillContextManager;
   private skillOptions?: AgentSkillOptions;
+  /** 会话级文件 diff 监听（coding 等产品可选启用） */
+  private fileDiffWatch: FileDiffWatch | null = null;
 
   constructor(options: RuntimeOptions) {
     this.compiler = options.compiler;
@@ -320,6 +380,20 @@ export class AgentRuntime {
       options.createSkillManager ??
       ((n, p, r) => createAgentSkillManager(n, p, r, this.skillOptions));
 
+    // 文件 diff 监听名单（变更感知）
+    if (options.fileDiffWatch) {
+      const fd =
+        options.fileDiffWatch === true
+          ? {}
+          : options.fileDiffWatch;
+      this.fileDiffWatch = new FileDiffWatch({
+        projectRoot: this.projectRoot,
+        maxIdleRounds: fd.maxIdleRounds,
+        maxChangeNoticesWithoutTouch: fd.maxChangeNoticesWithoutTouch,
+        touchTools: fd.touchTools,
+      });
+    }
+
     // 注入 interrupt 回调：interrupt 模式 enqueue 时自动 abort 当前 run
     // （未注入时只返回 shouldAbort=true，需调用方自行 abort）
     this.messageQueue.setOnInterrupt((sid, mode) => {
@@ -337,6 +411,284 @@ export class AgentRuntime {
     registerBuiltinCommands(this.commandRegistry);
   }
 
+  /** 强制压缩（/compact 与 UI 触发） */
+  async forceCompressSession(sessionId: string): Promise<{
+    ok: boolean;
+    stage?: string;
+    originalTokens?: number;
+    compressedTokens?: number;
+    error?: string;
+  }> {
+    if (!this.harnessStore || !this.taskStore) {
+      return { ok: false, error: "压缩引擎未启用" };
+    }
+    try {
+      const engine = new ContextEngine({
+        sessionId,
+        harnessStore: this.harnessStore,
+        taskStore: this.taskStore,
+        summarizer: this.summarizer,
+      });
+      const session = this.sessions.load(sessionId);
+      const msgs = (session?.messages ?? []) as unknown as Array<Record<string, unknown>>;
+      engine.initFromSessionMessages(msgs);
+      const limit =
+        this.currentPreset?.maxContext ??
+        this.currentPreset?.maxTokens ??
+        65536;
+      const report = await engine.compress(limit);
+      this.compressRetryAfter.delete(sessionId);
+      if (report.stage !== "activeStage") {
+        const existing = this.sessionManager.getRollingSummary(sessionId) ?? "";
+        const merged = existing && report.droppedSummary
+          ? `${existing}\n\n---\n\n${report.droppedSummary}`
+          : (report.droppedSummary || existing);
+        if (merged) {
+          this.sessionManager.setRollingSummary(sessionId, merged);
+          this.sessionManager.saveState();
+        }
+        this.onCompress?.(sessionId, report.stage, report.droppedSummary, report.taskBlocks ?? []);
+      }
+      return {
+        ok: true,
+        stage: report.stage,
+        originalTokens: report.originalTokens,
+        compressedTokens: report.compressedTokens,
+      };
+    } catch (e) {
+      this.compressRetryAfter.set(sessionId, Date.now() + AgentRuntime.COMPRESS_RETRY_MS);
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  getUsageStatsForSession(sessionId: string): {
+    input: number;
+    output: number;
+    total: number;
+    rounds: number;
+    cacheRead?: number;
+  } | null {
+    try {
+      const session = this.sessions.load(sessionId);
+      if (!session) return null;
+      let input = 0;
+      let output = 0;
+      let cacheRead = 0;
+      let rounds = 0;
+      for (const m of session.messages ?? []) {
+        const role = (m as { role?: string }).role;
+        const content = String((m as { content?: string }).content ?? "");
+        const usage = (m as { usage?: Record<string, number> }).usage;
+        if (usage && (usage.input || usage.output || usage.prompt_tokens)) {
+          input += Number(usage.input ?? usage.prompt_tokens ?? usage.input_tokens ?? 0) || 0;
+          output += Number(usage.output ?? usage.completion_tokens ?? usage.output_tokens ?? 0) || 0;
+          cacheRead += Number(usage.cacheRead ?? usage.cache_read_input_tokens ?? 0) || 0;
+        } else {
+          const t = estimateTokensFromText(content);
+          if (role === "user") input += t;
+          else if (role === "assistant") output += t;
+        }
+        if (role === "user") rounds++;
+      }
+      return { input, output, total: input + output, rounds, cacheRead };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Claude Code 风格 /usage 报告：
+   * Session: cost · API duration · wall duration · code changes
+   * Tokens + Context + Today (TokenTracker)
+   */
+  getUsageReportForSession(sessionId: string): {
+    text: string;
+    meta?: Record<string, unknown>;
+  } | null {
+    try {
+      const session = this.sessions.load(sessionId);
+      if (!session) return null;
+
+      const stats = this.getUsageStatsForSession(sessionId) ?? {
+        input: 0,
+        output: 0,
+        total: 0,
+        rounds: 0,
+        cacheRead: 0,
+      };
+      const ctx = this.getContextSnapshotForSession(sessionId);
+
+      // wall / API duration
+      const createdAt = Date.parse(String((session as { createdAt?: string }).createdAt ?? "")) || Date.now();
+      const wallMs = Math.max(0, Date.now() - createdAt);
+      let apiMs = 0;
+      for (const m of session.messages ?? []) {
+        const d = Number((m as { duration?: number }).duration ?? 0);
+        if (d > 0) apiMs += d;
+      }
+
+      // cost from TokenTracker today + session estimate via pricing
+      const agentName = session.agentName || "coding";
+      const preset = (this.currentPreset ?? {}) as Record<string, unknown>;
+      const tracker = this.createTokenTrackerFn(this.maouRoot, agentName, preset);
+      const daily = tracker.getDailySummary();
+      const pricing = (preset.pricing as {
+        input_price?: number;
+        output_price?: number;
+        cache_hit_price?: number;
+        currency?: string;
+      } | undefined) ?? {};
+      const ip = Number(pricing.input_price ?? 0);
+      const op = Number(pricing.output_price ?? 0);
+      const cp = Number(pricing.cache_hit_price ?? 0);
+      const currency = String(pricing.currency ?? "USD").toUpperCase();
+      const cache = stats.cacheRead ?? 0;
+      const effectiveIn = Math.max(0, stats.input - cache);
+      let sessionCost =
+        (effectiveIn / 1e6) * ip + (stats.output / 1e6) * op + (cache / 1e6) * cp;
+      // 无 pricing 时给 0 并标注 estimate
+      const hasPricing = ip > 0 || op > 0 || cp > 0;
+      if (!hasPricing) sessionCost = 0;
+
+      // code changes: git diff --numstat（对标 Claude Code Total code changes）
+      let added = 0;
+      let removed = 0;
+      try {
+        const out = execSync(
+          "git diff --numstat HEAD 2>/dev/null || git diff --numstat 2>/dev/null || true",
+          { cwd: this.projectRoot, encoding: "utf-8", timeout: 3000 },
+        );
+        for (const line of out.split("\n")) {
+          const m = line.trim().match(/^(\d+)\s+(\d+)\s+/);
+          if (!m) continue;
+          added += parseInt(m[1]!, 10) || 0;
+          removed += parseInt(m[2]!, 10) || 0;
+        }
+      } catch {
+        /* no git */
+      }
+
+      const fmtDur = (ms: number) => {
+        if (ms < 1000) return `${ms}ms`;
+        const s = ms / 1000;
+        if (s < 60) return `${s.toFixed(1)}s`;
+        const m = Math.floor(s / 60);
+        const rs = s - m * 60;
+        if (m < 60) return `${m}m ${rs.toFixed(1)}s`;
+        const h = Math.floor(m / 60);
+        const rm = m - h * 60;
+        return `${h}h ${rm}m ${Math.floor(rs)}s`;
+      };
+
+      const costStr = hasPricing
+        ? `${currency === "USD" ? "$" : currency + " "}${sessionCost.toFixed(4)}`
+        : "(set preset.pricing for estimate)";
+
+      const bar = (pct: number, w = 24) => {
+        const f = Math.round(Math.min(1, Math.max(0, pct / 100)) * w);
+        return "█".repeat(f) + "░".repeat(Math.max(0, w - f));
+      };
+
+      const lines: string[] = [
+        "Usage",
+        "",
+        "Session",
+        `  Total cost:            ${costStr}`,
+        `  Total duration (API):  ${fmtDur(apiMs)}`,
+        `  Total duration (wall): ${fmtDur(wallMs)}`,
+        `  Total code changes:    ${added} lines added, ${removed} lines removed`,
+        `  Rounds:                ${stats.rounds}`,
+        "",
+        "Tokens (this session)",
+        `  Input:                 ${stats.input.toLocaleString()}`,
+        `  Output:                ${stats.output.toLocaleString()}`,
+        `  Cache read:            ${(stats.cacheRead ?? 0).toLocaleString()}`,
+        `  Total:                 ${stats.total.toLocaleString()}`,
+      ];
+
+      if (ctx) {
+        lines.push(
+          "",
+          "Context window",
+          `  ${bar(ctx.pct)} ${ctx.pct.toFixed(1)}%`,
+          `  Used:                 ~${ctx.used.toLocaleString()} / ${ctx.max.toLocaleString()}`,
+          `  Remaining:            ~${ctx.remaining.toLocaleString()}`,
+          `  Thresholds:           compact ${ctx.compactAt}% · summary ${ctx.summaryAt}% · archive ${ctx.archiveAt}%`,
+        );
+      }
+
+      if (daily && (daily.total_input_tokens || daily.total_output_tokens || daily.total_cost)) {
+        lines.push(
+          "",
+          "Today (this agent, local TokenTracker)",
+          `  Input:                 ${(daily.total_input_tokens ?? 0).toLocaleString()}`,
+          `  Output:                ${(daily.total_output_tokens ?? 0).toLocaleString()}`,
+          `  Cache hit:             ${(daily.total_cache_hit_tokens ?? 0).toLocaleString()} (${((daily.cache_hit_rate ?? 0) * 100).toFixed(1)}%)`,
+          `  Est. cost:             ${daily.total_cost ?? 0} ${currency}`,
+          `  Records:               ${daily.record_count ?? 0}`,
+        );
+      }
+
+      lines.push(
+        "",
+        "Note: figures are local estimates (session history + TokenTracker).",
+        "Subscription plan bars (5h/weekly) require vendor account API — not available for raw OpenAI-compatible keys.",
+      );
+
+      return {
+        text: lines.join("\n"),
+        meta: {
+          usage: true,
+          sessionCost,
+          wallMs,
+          apiMs,
+          added,
+          removed,
+          ...stats,
+          context: ctx ?? undefined,
+        },
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  getContextSnapshotForSession(sessionId: string): {
+    used: number;
+    max: number;
+    pct: number;
+    remaining: number;
+    compactAt: number;
+    summaryAt: number;
+    archiveAt: number;
+  } | null {
+    try {
+      const session = this.sessions.load(sessionId);
+      if (!session) return null;
+      let used = 0;
+      for (const m of session.messages ?? []) {
+        used += 4;
+        used += estimateTokensFromText(String((m as { content?: string }).content ?? ""));
+      }
+      const max =
+        this.currentPreset?.maxContext ??
+        this.currentPreset?.maxTokens ??
+        65536;
+      const pct = max > 0 ? (used / max) * 100 : 0;
+      return {
+        used,
+        max,
+        pct,
+        remaining: Math.max(0, max - used),
+        compactAt: 70,
+        summaryAt: 80,
+        archiveAt: 90,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * 核心运行循环 —— 异步生成器，yield 流式事件。
    */
@@ -352,6 +704,11 @@ export class AgentRuntime {
     const session = prof.sync("ensure_session", () => this.sessions.ensure(sessionId ?? undefined, options.initAgentName));
     sessionId = session.id;
     this.log("info", `[RUN] start session=${sessionId} msg_len=${userMessage.length}`);
+
+    // pathGuard：RunOptions 优先，否则用 per-session map
+    if (options.pathGuard) {
+      this.setSessionPathGuard(sessionId, options.pathGuard);
+    }
 
     // ── P1-4 生命周期：adopt agent 并标记 running（main agent 跟踪 + subagent 复用）──
     const lifecycle = AgentLifecycleManager.global();
@@ -385,6 +742,10 @@ export class AgentRuntime {
           try { TASK_MANAGER.manage(sid, "delete", null); } catch { /* ignore */ }
         },
         clearMessageQueue: (sid: string) => { this.messageQueue.clear(sid); },
+        forceCompress: async (sid: string) => this.forceCompressSession(sid),
+        getUsageStats: (sid: string) => this.getUsageStatsForSession(sid),
+        getUsageReport: (sid: string) => this.getUsageReportForSession(sid),
+        getContextSnapshot: (sid: string) => this.getContextSnapshotForSession(sid),
         // /goal 指令：创建监督 Agent session + 绑定到主 session
         startSupervisorMode: (mainSessionId: string, agentName: string, chatKey?: string): string => {
           const supervisorSession = this.sessions.create(undefined, agentName);
@@ -493,6 +854,12 @@ export class AgentRuntime {
       effectiveRoundLimit = agentEntry.round_limit;
       this.log("info", `[RUN] agent=${agentName} round_limit=${effectiveRoundLimit}`);
     }
+    // 思考回灌：RunOptions 覆盖 agent.json，缺省 first_round
+    const thinkingContextMode: ThinkingContextMode = parseThinkingContextMode(
+      options.thinkingContextMode ??
+        (agentEntry as { thinking_context_mode?: unknown }).thinking_context_mode,
+    );
+    this.log("info", `[RUN] agent=${agentName} thinking_context_mode=${thinkingContextMode}`);
     const tc = (agentEntry as { tool_compression?: string }).tool_compression;
     if (tc === "off" || tc === "normal" || tc === "aggressive") compressionLevel = tc;
     const vc = (agentEntry as { verify_command?: string }).verify_command;
@@ -804,18 +1171,42 @@ export class AgentRuntime {
       }
     }
 
+    // ── 子 Agent kind 工具白名单覆盖（SubagentExecutor → runFn → 此处）──
+    // helper 单轮：override=[] → 强制无 tool schemas
+    // task/project：override=预设/显式白名单，与既有白名单取交集
+    if (options.toolWhitelistOverride !== undefined) {
+      const override = options.toolWhitelistOverride;
+      if (override.length === 0) {
+        toolWhitelist = new Set<string>(); // 空集 = 无工具
+      } else {
+        const overrideSet = new Set(override);
+        if (toolWhitelist) {
+          const intersection = new Set([...toolWhitelist].filter((x) => overrideSet.has(x)));
+          // 若交集为空仍用 override（子任务预设优先于母 PERMISSION 过窄）
+          toolWhitelist = intersection.size > 0 ? intersection : overrideSet;
+        } else {
+          toolWhitelist = overrideSet;
+        }
+      }
+    }
+
     // ── P2-4 MCP proxy 工具纳入白名单 ──
     // fork 子 Agent 时（inheritMcp !== false），executor 传 mcpProxyTools，
     // runFn 调 registerMcpProxyTools() 注册后把工具名通过 RunOptions.mcpProxyToolNames 传入。
     // 若 agent 配置了白名单（非 *），需把 proxy 工具名加入白名单，否则被 nativeToolSchemas 过滤。
+    // helper 单轮（空 override）不加入 MCP proxy。
     const mcpProxyNames = options.mcpProxyToolNames ?? [];
-    if (toolWhitelist && mcpProxyNames.length > 0) {
+    const stripAllTools = options.toolWhitelistOverride?.length === 0;
+    if (toolWhitelist && mcpProxyNames.length > 0 && !stripAllTools) {
       for (const name of mcpProxyNames) {
         toolWhitelist.add(name);
       }
     }
 
-    const toolSchemas = this.tools.nativeToolSchemas?.(toolWhitelist) ?? null;
+    // 空白名单 → 传空数组 schemas（无 tool），而非 null（null 表示全量）
+    const toolSchemas = stripAllTools
+      ? []
+      : (this.tools.nativeToolSchemas?.(toolWhitelist) ?? null);
     // nativeToolCalling 在循环内按当前 preset 每轮重算（支持 switchPreset 切换模型后
     // 不同 tool-calling 能力）。toolSchemas 固定不变（白名单决定）。
 
@@ -869,6 +1260,8 @@ export class AgentRuntime {
     let roundCount = 0;
     const maxRounds = effectiveRoundLimit > 0 ? effectiveRoundLimit : MAX_ROUNDS;
     const notifiedBgCompletions = new Set<string>();
+    /** 本 run 内 structured_memory 只召回一次，避免子轮 accessCount 抖动打 cache */
+    let runMemoryCache: { formattedContext: string } | null = null;
     // 完成前自动验证（#9）：失败则注入结果让模型自修，最多 MAX_VERIFY_FIX 次
     let verifyAttempts = 0;
     const MAX_VERIFY_FIX = 2;
@@ -1049,6 +1442,13 @@ export class AgentRuntime {
       // ── 3a-pre2. 每轮刷新动态注入（board / pending / agent 状态） ──
       // 首轮编译一次后持续复用，后续轮次只刷新动态部分，避免重复编译 BEFORE_USER.md
       const gitBlock = await prof.async("git_changes", () => this.workspaceChanges(), { round: currentRound });
+      // 会话文件 diff 监听：仅用户新消息轮（roundCount===0）注入 before_user 区
+      let fileDiffNotice = "";
+      if (roundCount === 0 && this.fileDiffWatch && sessionId) {
+        try {
+          fileDiffNotice = this.fileDiffWatch.consumeUserTurnDiffs(sessionId);
+        } catch { /* ignore */ }
+      }
       // Skill 增量：本轮新增/删除/更新的 skill（首轮已 baked 进 systemPrompt，这里只补增量）
       let skillIncremental = "";
       if (roundCount > 0 && skillManager) {
@@ -1058,12 +1458,22 @@ export class AgentRuntime {
         (roundCount === 0 ? dynamicInjections : compileDynamicContext(maouRoot, agentName, sessionId!))
         + (gitBlock ? `\n\n${gitBlock}` : "")
         + (skillIncremental ? `\n\n${skillIncremental}` : "");
+      // before_user 编译内容 + 可选 file_change_notice（用户要求放在 before_user）
+      const effectiveBeforeUser =
+        roundCount === 0
+          ? [beforeUserContent, fileDiffNotice].filter((s) => s && s.trim()).join("\n\n")
+          : "";
 
       // ── 3a. 构建消息数组 ──
-      const memoryResult = prof.sync("memory_recall", () => {
-        const memoryStore = this.createMemoryStoreFn(this.maouRoot, agentName);
-        return memoryStore.recall(userMessage, 5);
-      }, { round: currentRound });
+      // 记忆只在首轮召回并整 run 复用：子轮反复 recall 会写回 accessCount，
+      // 导致 structured_memory 顺序/内容抖动，打掉 prompt prefix cache。
+      if (roundCount === 0 || !runMemoryCache) {
+        runMemoryCache = prof.sync("memory_recall", () => {
+          const memoryStore = this.createMemoryStoreFn(this.maouRoot, agentName);
+          return memoryStore.recall(userMessage, 5);
+        }, { round: currentRound });
+      }
+      const memoryResult = runMemoryCache;
 
       // 自动压缩检查
       // 上下文压缩阈值应基于输入上下文上限（maxContext），而非输出上限（maxTokens）。
@@ -1078,52 +1488,63 @@ export class AgentRuntime {
       const engineEnabled = Boolean(this.harnessStore && this.taskStore);
       const endCompress = prof.start("context_compress", { round: currentRound, path: engineEnabled ? "engine" : "legacy" });
       if (engineEnabled) {
+        const retryAt = this.compressRetryAfter.get(sessionId!) ?? 0;
+        const now = Date.now();
+        const allowTry = now >= retryAt;
         try {
-          const engine = new ContextEngine({
-            sessionId: sessionId!,
-            harnessStore: this.harnessStore!,
-            taskStore: this.taskStore!,
-            summarizer: runSummarizer,
-          });
-          engine.initFromSessionMessages(sessionMessages as unknown as Array<Record<string, unknown>>);
-          const tokens = estimateTokens(engine.getHistory());
-          if (tokens >= contextLimit * (CONTEXT_THRESHOLD_PERCENT / 100)) {
-            this.hooks?.preCompact();
-            if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
-              this.checkpointStore.createCheckpoint(
-                sessionId!, `auto_before_compression_round_${currentRound}`, true, "compression",
-              );
-            }
-            const report = await engine.compress(contextLimit);
-            if (report.stage !== "activeStage") {
-              compressedHistory = engine.toLLMHistory();
-              const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
-              const merged = existing && report.droppedSummary
-                ? `${existing}\n\n---\n\n${report.droppedSummary}`
-                : (report.droppedSummary || existing);
-              if (merged) {
-                this.sessionManager.setRollingSummary(sessionId!, merged);
-                this.sessionManager.saveState();
+          if (allowTry) {
+            const engine = new ContextEngine({
+              sessionId: sessionId!,
+              harnessStore: this.harnessStore!,
+              taskStore: this.taskStore!,
+              summarizer: runSummarizer,
+            });
+            engine.initFromSessionMessages(sessionMessages as unknown as Array<Record<string, unknown>>);
+            const tokens = estimateTokens(engine.getHistory());
+            if (tokens >= contextLimit * (CONTEXT_THRESHOLD_PERCENT / 100)) {
+              this.hooks?.preCompact();
+              if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
+                this.checkpointStore.createCheckpoint(
+                  sessionId!, `auto_before_compression_round_${currentRound}`, true, "compression",
+                );
               }
-              if (this.onCompress) {
-                try {
-                  this.onCompress(sessionId!, report.stage, report.droppedSummary, report.taskBlocks ?? []);
-                } catch { /* 落盘失败不影响主流程 */ }
+              const report = await engine.compress(contextLimit);
+              if (report.stage !== "activeStage") {
+                compressedHistory = engine.toLLMHistory();
+                this.compressRetryAfter.delete(sessionId!);
+                const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
+                const merged = existing && report.droppedSummary
+                  ? `${existing}\n\n---\n\n${report.droppedSummary}`
+                  : (report.droppedSummary || existing);
+                if (merged) {
+                  this.sessionManager.setRollingSummary(sessionId!, merged);
+                  this.sessionManager.saveState();
+                }
+                if (this.onCompress) {
+                  try {
+                    this.onCompress(sessionId!, report.stage, report.droppedSummary, report.taskBlocks ?? []);
+                  } catch { /* 落盘失败不影响主流程 */ }
+                }
+                // warning 级别：CLI 渲染为黄色系统事件
+                yield this.logEvent(
+                  "warning",
+                  `上下文已压缩 (stage=${report.stage}，token: ${report.originalTokens} → ${report.compressedTokens})`,
+                );
+                this.hooks?.postCompact(report.compressedTokens ?? 0);
               }
-              yield this.logEvent(
-                "info",
-                `上下文已压缩 (engine, stage=${report.stage}，token: ${report.originalTokens} → ${report.compressedTokens})`,
-              );
-              this.hooks?.postCompact(report.compressedTokens ?? 0);
             }
+          } else {
+            const waitSec = Math.ceil((retryAt - now) / 1000);
+            this.log("info", `[ContextEngine] 压缩退避中，${waitSec}s 后再试`);
           }
         } catch (err) {
-          const errMsg = `[ContextEngine] 压缩失败: ${err}`;
+          // 失败：本轮不压、不杀 loop；隔段时间再试，直到成功或用户 abort
+          const wait = AgentRuntime.COMPRESS_RETRY_MS;
+          this.compressRetryAfter.set(sessionId!, Date.now() + wait);
+          const errMsg = `[ContextEngine] 压缩失败，本轮跳过并在 ${wait / 1000}s 后重试: ${err}`;
           this.log("error", errMsg);
-          yield this.event("error", { message: errMsg, round: currentRound });
-          yield this.event("done", { sessionId, rounds: currentRound, error: errMsg });
-          this.currentPreset = null;
-          return;
+          yield this.logEvent("warning", errMsg);
+          // 不 return — 用未压缩上下文继续本轮
         }
       }
       endCompress();
@@ -1134,7 +1555,7 @@ export class AgentRuntime {
         roundCount,
         currentRound,
         userOpts: {
-          beforeUserContent: roundCount === 0 ? beforeUserContent : "",
+          beforeUserContent: effectiveBeforeUser,
           dynamicInjections: currentDynamicInjections,
           userMessage: roundCount === 0 ? userMessage : "",
           userName: options.userName ?? "user",
@@ -1199,7 +1620,17 @@ export class AgentRuntime {
         }
       }
 
-      yield this.event("agent_round", { round: currentRound, agentMode });
+      // 封印上一轮 prompt-cache 累计到分桶 samples（首轮 current 为空 → no-op）
+      const sealed = promptCacheLedger().sealRound(
+        agentName,
+        sessionId!,
+        String(preset.model ?? ""),
+      );
+      yield this.event("agent_round", {
+        round: currentRound,
+        agentMode,
+        cache: sealed,
+      });
       yield this.logEvent("info", `开始第 ${currentRound} 轮`);
       yield this.event("status", { text: "调用模型..." });
       yield this.logEvent("info", `调用模型: ${preset.model}`);
@@ -1295,24 +1726,55 @@ export class AgentRuntime {
 
       // 累计本次 run 的重试与 token（#16 可观测）
       totalRetries += modelAttempt;
-      // 记录 token 用量
+      // 记录 token 用量 + agent 层 prompt-cache 分桶（CLI 只读 snapshot）
       if (result.usage) {
         const tokenUsage = result.usage as unknown as TokenUsage;
         const tt = (result.usage as { total_tokens?: number; totalTokens?: number }).total_tokens
           ?? (result.usage as { totalTokens?: number }).totalTokens ?? 0;
         totalTokens += Number(tt) || 0;
-        yield { type: "model.usage", usage: tokenUsage } as unknown as StreamEvent;
+        const mainModel = String(preset.model ?? "");
+        const providerId = String(
+          (preset as { provider?: string; name?: string }).provider
+          ?? (preset as { name?: string }).name
+          ?? "",
+        );
+        // Agent 层权威写入：(agentName, sessionId, mainModel) 桶
+        const cacheSnap = promptCacheLedger().recordUsage({
+          agentName,
+          sessionId: sessionId!,
+          model: mainModel,
+          provider: providerId || undefined,
+          role: "main",
+          mainAgentName: agentName,
+          usage: result.usage as Record<string, unknown>,
+        });
+        yield {
+          type: "model.usage",
+          usage: tokenUsage,
+          model: mainModel,
+          agentName,
+          role: "main",
+          sessionId,
+          // 分桶快照：CLI 直接镜像，不自建跨会话 history
+          cache: cacheSnap ?? undefined,
+        } as unknown as StreamEvent;
         try {
           const tracker = this.createTokenTrackerFn(maouRoot, agentName, preset as unknown as Record<string, unknown>);
-          tracker.record(tokenUsage, preset.model ?? "");
+          tracker.record(tokenUsage, mainModel);
         } catch (err) {
           this.log("warning", `token tracking failed: ${err}`);
         }
       }
 
       // 存储 assistant 消息（不再用空格占位，空串即可；适配器会处理 tool_calls 配对）
+      // content = 展示/正文；reasoningContent 按 thinking_context_mode 决定是否进后续 LLM 上下文
       const contentToUse = result.content || "";
       lastAssistantContent = contentToUse;
+      const reasoningRaw =
+        typeof result.reasoningContent === "string" ? result.reasoningContent.trim() : "";
+      const storeThinking =
+        reasoningRaw.length > 0 &&
+        shouldStoreThinkingInContext(thinkingContextMode, roundCount);
       // 累计本次 run 所有轮的工具调用（loop_report 用：即使最后一轮空转，也能反映之前干了啥）
       if (result.nativeToolCalls.length > 0) {
         for (const tc of result.nativeToolCalls) {
@@ -1333,6 +1795,8 @@ export class AgentRuntime {
         toolCalls: result.nativeToolCalls,
         usage: result.usage,
         raw_request: result.rawRequest,
+        // 仅 mode 允许时写入；UI 仍走 thinking_delta，不把标签塞进 content
+        ...(storeThinking ? { reasoningContent: reasoningRaw } : {}),
       });
 
       // 模型调用失败时（content 为空且有 validationError）发送 error 事件
@@ -1385,12 +1849,14 @@ export class AgentRuntime {
             round: currentRound,
             author: { type: "system", id: "runtime", displayName: "runtime" },
           });
-          this.hooks?.agentStop(currentRound);
+          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
         }
         // 重试次数耗尽，真正退出（但仍会走到 loop 结束推送 loop_report，让 supervisor 知道主 agent 卡住）
         yield this.logEvent("warning", `[RUN] session=${sessionId} 空转重试 ${MAX_EMPTY_RETRIES} 次仍无工具调用，退出循环`);
+        try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
         this.hooks?.agentStop(currentRound);
         break;
       }
@@ -1440,7 +1906,8 @@ export class AgentRuntime {
         }
 
         if (shouldContinue) {
-          this.hooks?.agentStop(currentRound);
+          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
         }
@@ -1472,7 +1939,8 @@ export class AgentRuntime {
             author: { type: "system", id: "verify", displayName: "verify" },
           });
           yield this.event("verification", { ok: false, command: verifyCommand, attempt: verifyAttempts });
-          this.hooks?.agentStop(currentRound);
+          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
         }
@@ -1494,13 +1962,15 @@ export class AgentRuntime {
             yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败: ${r.reason}`);
           }
         }
+        try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
         this.hooks?.agentStop(currentRound);
         roundCount++;
         continue;
       }
 
       // 无队列消息 → 退出循环
-      this.hooks?.agentStop(currentRound);
+      try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        this.hooks?.agentStop(currentRound);
       break;
     }
 
@@ -1604,11 +2074,17 @@ export class AgentRuntime {
     // ── P1-4 生命周期：run 结束 → idle（arm TTL，TTL 后自动 park）──
     lifecycle.setStatus(sessionId, "idle");
 
+    // 封印最后一轮 cache 累计
+    const lastModel = String(
+      (this.currentPreset ?? initialPreset)?.model ?? "",
+    );
+    const doneCache = promptCacheLedger().sealRound(agentName, sessionId!, lastModel);
     yield this.event("done", {
       sessionId,
       rounds: roundCount,
       retries: totalRetries,
       totalTokens,
+      cache: doneCache,
     });
     this.log("info", `[STATS] rounds=${roundCount} retries=${totalRetries} tokens=${totalTokens}`);
     this.log("info", `[RUN] main loop finished, rounds=${roundCount}`);
@@ -1676,6 +2152,27 @@ export class AgentRuntime {
    */
   setSubagentExecutor(executor: SubagentExecutorLike): void {
     this.subagentExecutor = executor;
+  }
+
+  /**
+   * 设置/清除 session 路径沙箱（subagent project）。
+   * createDefaultSubagentRunFn 在子 run 前后调用。
+   */
+  setSessionPathGuard(
+    sessionId: string,
+    guard: { mode: "inherit" | "hard" | "audit"; roots: string[]; auditRoots?: string[] } | null,
+  ): void {
+    if (guard && guard.roots?.length) {
+      this._sessionPathGuards.set(sessionId, guard);
+    } else {
+      this._sessionPathGuards.delete(sessionId);
+    }
+  }
+
+  getSessionPathGuard(
+    sessionId: string,
+  ): { mode: "inherit" | "hard" | "audit"; roots: string[]; auditRoots?: string[] } | undefined {
+    return this._sessionPathGuards.get(sessionId);
   }
 
   /**
@@ -1764,6 +2261,8 @@ export class AgentRuntime {
       agentMode: "execute",
       pluginSettings: {},
       workingDir: workingDir ?? this.projectRoot,  // agent 工作目录（终端、文件读写）
+      // project/task subagent 路径沙箱（工具层 resolveToolPath 强制）
+      pathGuard: this.getSessionPathGuard(sessionId ?? ""),
       compressionLevel,
       // skill 扫描与 bake 同口径（use_skill / find_skill 读取）
       maouRoot: this.maouRoot,
@@ -2334,6 +2833,17 @@ export class AgentRuntime {
       events.push(this.event("tool_result", toolResultEvent));
       events.push(this.logEvent("info", `工具 ${toolCall.name} 完成: ok=${res.result.ok}${background ? " [后台]" : ""}`));
       this.hooks?.postToolUse(tcInfo, { toolCallId: toolCall.id, name: toolCall.name, output: toolResultContent, success: res.result.ok, error: "", elapsed: 0 });
+
+      // 文件 diff 监听：成功触碰 reader/edit/write 后入名单
+      if (res.result.ok && this.fileDiffWatch && sessionId) {
+        try {
+          this.fileDiffWatch.noteToolTouch(
+            sessionId,
+            toolCall.name,
+            (toolCall.parameters ?? {}) as Record<string, unknown>,
+          );
+        } catch { /* ignore */ }
+      }
 
       // background=true：跳过 appendMessage（占位已写入，再写会破坏 tool_call_id 一一对应）
       if (background) {

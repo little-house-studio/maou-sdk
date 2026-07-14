@@ -36,7 +36,7 @@ import { AgentRegistry } from "./registry.js";
 import { AgentFactory } from "./factory.js";
 import { createTeamFromTemplate, listTeamTemplates } from "./team-factory.js";
 import { SubagentExecutor } from "./subagent-executor.js";
-import type { SubagentRunFn } from "./subagent-executor.js";
+import { createDefaultSubagentRunFn } from "./default-subagent-run-fn.js";
 import { GitWatcher } from "../agent_factory/git-watcher.js";
 import { createAppLogger } from "./app-logger.js";
 import { join } from "node:path";
@@ -80,6 +80,15 @@ export interface AppRuntimeOptions {
    * Skill 扫描选项。includeSystemNpmSkills 默认 true（~/.agents/skills）。
    */
   skillOptions?: import("../bootstrap/skills.js").AgentSkillOptions;
+  /**
+   * 会话级文件 diff 监听（变更感知）。coding-agent 默认开启。
+   * @see agent_factory/file-diff-watch.ts
+   */
+  fileDiffWatch?: boolean | {
+    maxIdleRounds?: number;
+    maxChangeNoticesWithoutTouch?: number;
+    touchTools?: readonly string[];
+  };
 }
 
 /**
@@ -98,6 +107,7 @@ export class Runtime {
   private summarizer?: Summarizer;
   private callMainAgentFn?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
   private skillOptions?: import("../bootstrap/skills.js").AgentSkillOptions;
+  private fileDiffWatchOpt?: AppRuntimeOptions["fileDiffWatch"];
   private agentRuntime: AgentRuntime | null = null;
   private appLogger = createAppLogger();
   private customLog?: (level: string, message: string) => void;
@@ -119,6 +129,7 @@ export class Runtime {
     this.postLoggerEnabled = options.enablePostLogger ?? true;
     this.callMainAgentFn = options.callMainAgent;
     this.skillOptions = options.skillOptions;
+    this.fileDiffWatchOpt = options.fileDiffWatch;
     this.maouRoot = options.maouRoot ?? join(process.env.HOME ?? '', '.maou');
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.summarizer = options.summarizer;
@@ -301,7 +312,7 @@ export class Runtime {
       const auxCaller = new AuxModelCaller({ client: this.llmClient, maxRetries: 1 });
 
       // 辅助模型 preset 解析函数
-      // 优先级：agent.json helperModel > 全局 helperPreset > 主模型 preset
+      // 优先级：agent.json helperModel > roles.helper > helperPreset > roles.fast > 主模型
       // 每次 run 时由 runtime 调用，传入 agentName 和主 preset，返回辅助 preset
       const resolveHelperPresetFn = (agentName: string, mainPreset: APIPreset): APIPreset => {
         try {
@@ -309,6 +320,7 @@ export class Runtime {
           const cfg = this.configStore.get();
           const presets = cfg.api.presets ?? [];
           const globalHelperIdx = cfg.api.helperPreset;
+          const roles = cfg.api.roles;
           // 读 agent.json 的 helperModel（轻量：AgentRegistry 构造只设路径）
           const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
           const entry = registry.get(agentName);
@@ -318,6 +330,8 @@ export class Runtime {
             presets as unknown as APIPreset[],
             globalHelperIdx,
             mainPreset,
+            roles?.helper,
+            roles?.fast,
           );
         } catch {
           return mainPreset;
@@ -351,81 +365,30 @@ export class Runtime {
         resolveHelperPreset: resolveHelperPresetFn,
         callMainAgent: this.callMainAgentFn,
         skillOptions: this.skillOptions,
+        fileDiffWatch: this.fileDiffWatchOpt,
       });
 
-      // ── 装配默认 SubagentExecutor（让 subagent_delegate / agent_message 工具能 fork 子 Agent）──
-      // 纯 SDK 场景（无 harness 注入 runFn）时，提供默认 runFn：
-      //   1. 为子 Agent 创建/复用独立 session
-      //   2. 从 configStore 取主 preset（子 Agent 默认用主模型；未来可扩展读 agent.json model）
-      //   3. 调 this.agentRuntime.run() 跑子 session，消费流式事件取 finalOutput
-      // 注入后 AgentRuntime 的 subagent_delegate 工具调 ctx.subagentExecutor.fork() 即可真并行委托。
+      // ── 装配默认 SubagentExecutor（与 harness 共享 createDefaultSubagentRunFn）──
       const runtimeRef = this.agentRuntime;
       const configStore = this.configStore;
-      const runFn: SubagentRunFn = async function* (
-        subSessionId,
-        taskId,
-        taskDesc,
-        options,
-      ) {
-        // 1. 确保 sub session 存在（若已存在则复用，支持监督 Agent 持久化场景）
-        const existing = sessionStore.load(subSessionId);
-        if (!existing) {
-          sessionStore.create({
-            sessionId: subSessionId,
-            agentName: options?.agentName ?? "main",
-            title: `fork: ${taskId}`,
-          });
-        }
-
-        // 2. 从 configStore 获取 preset（子 Agent 默认用主 preset；
-        //    未来可扩展：forkMode='context_and_config' 时读 agent.json 的 model 字段）
-        let preset: APIPreset | undefined;
-        try {
-          const config = configStore.get();
-          const presets = config.api.presets ?? [];
-          const idx = config.api.defaultPreset ?? 0;
-          preset = (presets[idx] ?? presets[0]) as unknown as APIPreset | undefined;
-        } catch {
-          preset = undefined;
-        }
-        if (!preset) {
-          return { finalOutput: "", ok: false, error: "无可用 preset" };
-        }
-
-        // 3. 启动子 Agent（共享主 Runtime 的 toolRegistry/compiler 等）
-        //    P2-4：若 inheritMcp !== false，executor 会传 mcpProxyTools，
-        //    在此注册到子 Agent 的 ToolRegistry（runtimeRef.run 内会纳入白名单）。
-        if (options?.mcpProxyTools && options.mcpProxyTools.length > 0) {
+      const runFn = createDefaultSubagentRunFn({
+        sessionStore,
+        runtime: runtimeRef,
+        getPreset: () => {
           try {
-            runtimeRef.registerMcpProxyTools(options.mcpProxyTools);
-          } catch { /* 注册失败不阻塞子 Agent 运行 */ }
-        }
-        let finalOutput = "";
-        let ok = true;
-        let error: string | undefined;
-
-        try {
-          for await (const event of runtimeRef.run(subSessionId, taskDesc, {
-            preset,
-            initAgentName: options?.agentName,
-            stream: true,
-            abortSignal: options?.abortSignal,
-            // P2-4：把 proxy 工具名透传，run() 内会把它们加入工具白名单
-            mcpProxyToolNames: options?.mcpProxyTools?.map((t) => t.definition.name),
-          })) {
-            // 事件 yield 给 SubagentExecutor.fork（当前实现只消费 finalOutput，事件本身被丢弃）
-            yield event as StreamEvent;
-            if (event.type === "assistant" && typeof (event as { content?: unknown }).content === "string") {
-              finalOutput = (event as { content: string }).content;
-            }
+            const config = configStore.get();
+            const presets = config.api.presets ?? [];
+            const idx = config.api.defaultPreset ?? 0;
+            return (presets[idx] ?? presets[0]) as unknown as APIPreset | undefined;
+          } catch {
+            return undefined;
           }
-        } catch (err) {
-          ok = false;
-          error = err instanceof Error ? err.message : String(err);
-        }
-
-        return { finalOutput, ok, error };
-      };
+        },
+        log: (level, msg) => {
+          const log = this.customLog ?? ((l, m) => console[l === "error" ? "error" : "log"](`[Subagent] ${m}`));
+          log(level, msg);
+        },
+      });
 
       const executor = new SubagentExecutor({
         runFn,
@@ -433,10 +396,26 @@ export class Runtime {
           const log = this.customLog ?? ((l, m) => console[l === "error" ? "error" : "log"](`[Subagent] ${m}`));
           log(level, msg);
         },
-        // P2-1：注入 runtime 的 yield 回调注册函数，让 fork 能为子 Agent 注册 yieldResult 回调
-        // runtime.processToolCalls 会从该 map 读取并注入到子 Agent 的 ToolContext.yieldResult
         setYieldHandlerFn: (sessionId, handler) => runtimeRef.setYieldHandler(sessionId, handler),
-        // Todo 分身：若 taskId 对应当前 plan 的 fork lane，使用预分配的 sessionId
+        // helper 非持久 → AuxModelCaller
+        auxModelCaller: auxCaller,
+        resolveHelperPreset: () => {
+          try {
+            const config = configStore.get();
+            const presets = config.api.presets ?? [];
+            const idx = config.api.defaultPreset ?? 0;
+            const main = (presets[idx] ?? presets[0]) as unknown as APIPreset | undefined;
+            if (!main) return undefined;
+            return resolveHelperPresetFn("coding", main);
+          } catch {
+            return undefined;
+          }
+        },
+        // 持久化 kind 自动 materialize
+        maouRoot: this.maouRoot,
+        parentAgentName: "coding",
+        projectRoot: this.projectRoot,
+        // Todo 分身：预分配 sessionId
         subSessionIdFactory: (parentSessionId, taskId) => {
           try {
             const root = TODO_ORCHESTRATOR.resolveRootSession(parentSessionId);
@@ -495,6 +474,8 @@ export class Runtime {
           await executor.fork(node.id, taskDesc, {
             detached: false,
             forkMode: "context_only",
+            kind: "fork",
+            inheritFullContext: true,
           });
         } catch (err) {
           log(

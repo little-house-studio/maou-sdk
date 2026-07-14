@@ -6,5 +6,6 @@
   "round_limit": 50,
   "max_retries": 10,
   "terminal_mode": "normal",
+  "thinking_context_mode": "first_round",
   "tools": ["reader", "write_file", "edit_file", "glob", "grep", "find_code", "use_terminal", "use_skill", "find_skill", "todo_manage", "todo_finish"]
 }

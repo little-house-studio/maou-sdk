@@ -32,6 +32,16 @@ import type { Tool } from "@little-house-studio/tools";
 import { createMcpProxyTools } from "./mcp-proxy.js";
 import { IsolationRunner } from "./isolation-runner.js";
 import type { WorktreeHandle } from "./isolation-runner.js";
+import {
+  resolveForkKindPolicy,
+  type ForkKindPolicy,
+} from "./subagent-kinds.js";
+import {
+  resolveSubagentRunPlan,
+  materializeIfNeeded,
+  type SubagentRunPlan,
+} from "./subagent-policy.js";
+import type { AuxModelCallerLike } from "@little-house-studio/types";
 
 /** harness 注入的 run 函数类型 */
 export type SubagentRunFn = (
@@ -67,6 +77,23 @@ export type SubagentRunFn = (
      * 在此传入；runFn 应把子 Agent 的工作目录设为此路径（覆盖默认 projectRoot）。
      */
     projectRoot?: string;
+    /** 完整复制母 session 上下文（fork kind 默认 true） */
+    inheritFullContext?: boolean;
+    /** multi-round loop；false = 单轮（helper） */
+    agentMode?: boolean;
+    /**
+     * 工具白名单覆盖（kind 解析后）。
+     * - undefined：不改母/agent 白名单
+     * - []：无工具（helper 单轮强制）
+     * - string[]：仅这些工具
+     */
+    toolWhitelist?: string[];
+    /** 子工程驻扎路径（project） */
+    scopedPath?: string;
+    /** 路径外审核列表（project） */
+    auditPaths?: string[];
+    /** 解析后的 kind 运行计划（含 pathGuard） */
+    kindPolicy?: SubagentRunPlan | ForkKindPolicy;
   },
 ) => AsyncGenerator<StreamEvent, { finalOutput: string; ok: boolean; error?: string }>;
 
@@ -79,6 +106,17 @@ export interface SubagentExecutorOptions {
   maxConcurrency?: number;
   /** 日志函数 */
   log?: (level: string, message: string) => void;
+  /**
+   * 非持久化 helper 走 AuxModelCaller（单轮无 tool）。
+   * 未注入时 helper !persist 仍拒绝。
+   */
+  auxModelCaller?: AuxModelCallerLike;
+  /** 解析 helper 用的 preset（Aux 路径） */
+  resolveHelperPreset?: () => unknown | undefined;
+  /** 物化目录用 maouRoot；缺省不自动 materialize */
+  maouRoot?: string;
+  /** 母 agent 名（materialize nested 路径） */
+  parentAgentName?: string;
   /**
    * 默认最大递归深度（P1-1，默认 2）。
    * ForkOptions.maxRecursionDepth 未显式传时用此值。
@@ -169,6 +207,12 @@ export class SubagentExecutor implements SubagentExecutorLike {
   private _isolationRunner?: IsolationRunner;
   /** per-session yield 回调注册函数（P2-1，由 AgentRuntime 注入） */
   private _setYieldHandlerFn?: (sessionId: string, handler: ((result: string, summary?: string) => void) | null) => void;
+  /** 非持久 helper → AuxModelCaller */
+  private _auxModelCaller?: AuxModelCallerLike;
+  private _resolveHelperPreset?: () => unknown | undefined;
+  /** 自动 materialize 目录 */
+  private _maouRoot?: string;
+  private _parentAgentName?: string;
   /** 当前 parentSessionId（harness 注入；fork 时若未传 parentSessionId 用此值） */
   parentSessionId: string = "";
   /**
@@ -244,6 +288,100 @@ export class SubagentExecutor implements SubagentExecutorLike {
     this._projectRoot = opts.projectRoot;
     this._isolationRunner = opts.isolationRunner;
     this._setYieldHandlerFn = opts.setYieldHandlerFn;
+    this._auxModelCaller = opts.auxModelCaller;
+    this._resolveHelperPreset = opts.resolveHelperPreset;
+    this._maouRoot = opts.maouRoot;
+    this._parentAgentName = opts.parentAgentName;
+  }
+
+  /** 动态注入 AuxModelCaller（runtime-facade 装配后可补） */
+  setAuxModelCaller(
+    caller: AuxModelCallerLike | undefined,
+    resolvePreset?: () => unknown | undefined,
+  ): void {
+    this._auxModelCaller = caller;
+    if (resolvePreset) this._resolveHelperPreset = resolvePreset;
+  }
+
+  setMaterializeRoots(maouRoot?: string, parentAgentName?: string): void {
+    if (maouRoot !== undefined) this._maouRoot = maouRoot;
+    if (parentAgentName !== undefined) this._parentAgentName = parentAgentName;
+  }
+
+  /**
+   * 非持久 helper：单轮无 tool，走 AuxModelCaller（不进管理列表）。
+   */
+  private async _runHelperAux(
+    taskId: string,
+    taskDesc: string,
+    subSessionId: string,
+    start: number,
+    plan: SubagentRunPlan,
+    options?: ForkOptions,
+  ): Promise<SubagentResultLike> {
+    if (!this._auxModelCaller) {
+      this._log(
+        "warning",
+        `[FORK] task=${taskId} helper aux：未注入 AuxModelCaller，拒绝`,
+      );
+      return {
+        taskId,
+        subSessionId,
+        output: "",
+        ok: false,
+        error:
+          "非持久化 helper 需 AuxModelCaller。请在 SubagentExecutor 注入 auxModelCaller，或设置 persistContext=true。",
+        elapsedMs: Date.now() - start,
+        requests: 0,
+        tokens: 0,
+      };
+    }
+    const preset = this._resolveHelperPreset?.();
+    if (!preset) {
+      return {
+        taskId,
+        subSessionId,
+        output: "",
+        ok: false,
+        error: "helper aux：无可用 preset",
+        elapsedMs: Date.now() - start,
+      };
+    }
+    const systemPrompt =
+      typeof options?.configOverrides?.system_prompt === "string"
+        ? String(options.configOverrides.system_prompt)
+        : "你是辅助 agent：单轮、快速、无工具。直接给出结果，不要调用工具，不要展开多轮计划。";
+    this._log("info", `[FORK] task=${taskId} helper → AuxModelCaller（单轮无 tool）`);
+    try {
+      const result = await this._auxModelCaller.callText(
+        {
+          preset,
+          systemPrompt,
+          userPrompt: taskDesc,
+          abortSignal: options?.abortSignal,
+          context: { sessionId: subSessionId, tag: "helper_subagent" },
+        },
+      );
+      return {
+        taskId,
+        subSessionId,
+        output: result.content || "",
+        ok: result.ok,
+        error: result.error,
+        elapsedMs: Date.now() - start,
+        requests: 1,
+        tokens: 0,
+      };
+    } catch (err) {
+      return {
+        taskId,
+        subSessionId,
+        output: "",
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        elapsedMs: Date.now() - start,
+      };
+    }
   }
 
   /**
@@ -257,8 +395,105 @@ export class SubagentExecutor implements SubagentExecutorLike {
   async fork(taskId: string, taskDesc: string, options?: ForkOptions): Promise<SubagentResultLike> {
     const parentSessionId = this.parentSessionId;
     const subSessionId = this._idFactory(parentSessionId, taskId);
-    const forkMode = options?.forkMode ?? 'context_only';
     const start = Date.now();
+
+    // ── kind 策略解析（多态 SubagentPolicy → RunPlan）──
+    // helper 未持久化 → aux 通道（有 AuxModelCaller 则自动跑，否则拒绝）
+    // helper 单轮 → tools=[]、strip MCP、softBudget=1、agentMode=false
+    // fork → inheritFullContext 默认 true
+    // task/project → 预设白名单 + wrap-up；project 带 pathGuard
+    const kindInput = {
+      kind: options?.kind,
+      enableLoop: options?.enableLoop,
+      persistContext: options?.persistContext,
+      inheritFullContext: options?.inheritFullContext,
+      stripToolsIfSingleRound: options?.stripToolsIfSingleRound,
+      tools: options?.tools,
+      toolPreset: options?.toolPreset as import("./subagent-kinds.js").TaskToolPresetName | undefined,
+      permission: options?.permission as import("./subagent-kinds.js").SubagentPermission | undefined,
+      roundLimit: options?.roundLimit,
+      path: options?.path,
+      auditPaths: options?.auditPaths,
+      softRequestBudget: options?.softRequestBudget,
+      configOverrides: options?.configOverrides,
+      ephemeral: (options as { ephemeral?: boolean } | undefined)?.ephemeral,
+    };
+    const kindPolicy: SubagentRunPlan | null =
+      resolveSubagentRunPlan(kindInput) ??
+      (options?.kind
+        ? null
+        : null);
+
+    // 兼容：无 kind 时仍可用旧 resolveForkKindPolicy 路径（null）
+    const legacyPolicy = !kindPolicy && options?.kind
+      ? resolveForkKindPolicy(kindInput)
+      : null;
+    const policy: SubagentRunPlan | ForkKindPolicy | null = kindPolicy ?? legacyPolicy;
+
+    // 非持久 helper → Aux 单轮（不进 Executor 管理列表 / 不 materialize）
+    if (policy && "runChannel" in policy && policy.runChannel === "aux") {
+      return this._runHelperAux(taskId, taskDesc, subSessionId, start, policy as SubagentRunPlan, options);
+    }
+    if (policy && !("runChannel" in policy) && !policy.useExecutor) {
+      return this._runHelperAux(
+        taskId,
+        taskDesc,
+        subSessionId,
+        start,
+        { ...(policy as ForkKindPolicy), runChannel: "aux", shouldMaterialize: false } as SubagentRunPlan,
+        options,
+      );
+    }
+
+    // 持久化 kind：自动物化目录模板（可回档 / 进管理列表）
+    if (
+      policy &&
+      this._maouRoot &&
+      (("shouldMaterialize" in policy && policy.shouldMaterialize) ||
+        (policy.persistContext && policy.listInManager))
+    ) {
+      try {
+        const plan =
+          "shouldMaterialize" in policy
+            ? (policy as SubagentRunPlan)
+            : ({
+                ...(policy as ForkKindPolicy),
+                runChannel: "executor" as const,
+                shouldMaterialize: true,
+              } as SubagentRunPlan);
+        const mat = materializeIfNeeded(plan, {
+          maouRoot: this._maouRoot,
+          name: options?.agentName || taskId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48),
+          parentAgentName: this._parentAgentName,
+          systemPrompt:
+            typeof options?.configOverrides?.system_prompt === "string"
+              ? String(options.configOverrides.system_prompt)
+              : undefined,
+        });
+        if (mat?.created) {
+          this._log("info", `[FORK] materialize ${plan.kind} → ${mat.dir}`);
+        }
+      } catch (err) {
+        this._log(
+          "warning",
+          `[FORK] materialize 失败（继续执行）: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    // kind 驱动 forkMode 默认：有独立 tools/path/permission 时倾向 context_and_config
+    let forkMode = options?.forkMode;
+    if (!forkMode && policy) {
+      const needsOwnConfig =
+        policy.kind === "task" ||
+        policy.kind === "project" ||
+        policy.stripTools ||
+        (policy.tools.length > 0 && policy.kind !== "fork");
+      forkMode = needsOwnConfig && options?.agentName
+        ? "context_and_config"
+        : "context_only";
+    }
+    forkMode = forkMode ?? "context_only";
 
     // ── P1-1 递归深度控制 ──
     const currentDepth = options?.taskDepth ?? this.taskDepth;
@@ -283,7 +518,10 @@ export class SubagentExecutor implements SubagentExecutorLike {
       };
     }
 
-    this._log("info", `[FORK] task=${taskId} mode=${forkMode} depth=${currentDepth}/${maxDepth} agent=${options?.agentName ?? "(inherit)"} sub_session=${subSessionId} desc="${taskDesc.slice(0, 60)}"`);
+    this._log(
+      "info",
+      `[FORK] task=${taskId} kind=${policy?.kind ?? "-"} mode=${forkMode} depth=${currentDepth}/${maxDepth} agent=${options?.agentName ?? "(inherit)"} inherit_ctx=${policy?.inheritFullContext ?? options?.inheritFullContext ?? false} sub_session=${subSessionId} desc="${taskDesc.slice(0, 60)}"`,
+    );
 
     // forkMode='context_and_config' 必须传 agentName
     if (forkMode === 'context_and_config' && !options?.agentName) {
@@ -297,11 +535,52 @@ export class SubagentExecutor implements SubagentExecutorLike {
       };
     }
 
-    // ── P1-2 预算 + 超时配置（支持 per-call 覆盖 executor 默认值）──
-    const softBudget = options?.softRequestBudget ?? this._defaultSoftRequestBudget;
+    // ── P1-2 预算 + 超时配置（kind.roundLimit → softBudget；超限 wrap-up）──
+    const softBudget =
+      options?.softRequestBudget ??
+      policy?.softRequestBudget ??
+      this._defaultSoftRequestBudget;
     const maxRuntimeMs = options?.maxRuntimeMs ?? this._defaultMaxRuntimeMs;
     // agentName：context_and_config 用 options.agentName；context_only 继承父 agent（用 subSessionId 派生名）。
     const subAgentName = options?.agentName ?? `sub:${taskId}`;
+
+    // 合并 configOverrides
+    const mergedConfigOverrides: Record<string, unknown> = {
+      ...(policy?.configOverrides ?? {}),
+      ...(options?.configOverrides ?? {}),
+    };
+    if (policy?.stripTools) {
+      mergedConfigOverrides.tools = [];
+      mergedConfigOverrides.enable_loop = false;
+    }
+
+    // helper 单轮 / stripTools：不继承 MCP
+    const inheritMcpResolved =
+      policy?.stripTools ? false : options?.inheritMcp !== false;
+
+    // inheritFullContext：fork 默认 true
+    const inheritFullContext =
+      options?.inheritFullContext ??
+      policy?.inheritFullContext ??
+      false;
+
+    // agentMode：helper 单轮 false
+    const agentMode = policy ? policy.enableLoop : true;
+
+    // toolWhitelist：stripTools → []；有 kind tools 时传入
+    let toolWhitelist: string[] | undefined;
+    if (policy?.stripTools) {
+      toolWhitelist = [];
+    } else if (policy && Array.isArray(policy.tools) && policy.kind !== "fork") {
+      toolWhitelist = policy.tools.includes("*") ? undefined : policy.tools;
+    }
+
+    // pathGuard：project/task 多态策略
+    const pathGuard =
+      (policy && "pathGuard" in policy ? (policy as SubagentRunPlan).pathGuard : undefined) ??
+      undefined;
+    const scopedPath = policy?.path;
+    const auditPaths = policy?.auditPaths;
 
     // ── P2-2 worktree 隔离：isolated=true 时创建独立 worktree ──
     // worktree 路径作为子 Agent 的 projectRoot 传给 runFn（见下方 projectRoot: worktreeHandle?.path）
@@ -476,10 +755,9 @@ export class SubagentExecutor implements SubagentExecutorLike {
         });
       };
 
-      // ── P2-4 MCP 代理工具：inheritMcp !== false 时，把父 Agent 的 MCP 工具
-      //    包装成 proxy Tool 实例传给 runFn。runFn 负责注册到子 Agent 的 ToolRegistry。
-      //    proxy 工具调用时通过 _mcpInvoker 转发给父 Agent 的 MCP 连接（子 Agent 不建连）。
-      const inheritMcp = options?.inheritMcp !== false;
+      // ── P2-4 MCP 代理工具：inheritMcp !== false 且非 stripTools 时继承
+      //    helper 单轮强制不继承 MCP（等同无 tool）
+      const inheritMcp = inheritMcpResolved;
       let mcpProxyTools: Tool[] | undefined;
       if (inheritMcp && this._parentMcpTools.length > 0) {
         try {
@@ -525,12 +803,28 @@ export class SubagentExecutor implements SubagentExecutorLike {
           parentSessionId,
           agentName: options?.agentName,
           forkMode,
-          configOverrides: options?.configOverrides,
+          configOverrides: mergedConfigOverrides,
           abortSignal: abortController.signal,
           injectWrapUpHint,
           mcpProxyTools,
           // P2-2: isolated worktree 时把 worktree 路径作为子 Agent 的 projectRoot
-          projectRoot: worktreeHandle?.path,
+          // project kind：scopedPath 优先于 worktree（除非 isolated 明确要求隔离）
+          projectRoot: worktreeHandle?.path ?? scopedPath,
+          inheritFullContext,
+          agentMode,
+          toolWhitelist,
+          scopedPath,
+          auditPaths,
+          kindPolicy: policy
+            ? ({
+                ...policy,
+                pathGuard:
+                  pathGuard ??
+                  ("pathGuard" in policy
+                    ? (policy as SubagentRunPlan).pathGuard
+                    : undefined),
+              } as SubagentRunPlan)
+            : undefined,
         });
 
         // 消费流式事件，提取进度 + 取最终返回值

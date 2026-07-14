@@ -1,7 +1,7 @@
 /**
  * coding-agent 的 CLI 配置 —— 仅 coding 特化 + 通用 bootstrap。
  *
- * `maou`（无参数）默认加载此文件。
+ * 入口：`maou coding`（`maou` / `maou agent` 为同产品默认/别名）。
  * 装配 / preset / 审核器 / listAgents 均来自 @little-house-studio/agent。
  */
 

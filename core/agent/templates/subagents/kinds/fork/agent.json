@@ -1,0 +1,20 @@
+{
+  "name": "fork-template",
+  "display_name": "Fork Agent",
+  "role": "fork",
+  "scope": "subagent",
+  "subagent_kind": "fork",
+  "description": "从母 agent 完整 fork 的上下文分支。支持 loop。",
+  "status": "active",
+  "round_limit": 0,
+  "enable_loop": true,
+  "persist_context": true,
+  "inherit_full_context": true,
+  "permission": "inherit_parent",
+  "tools": null,
+  "list_in_manager": true,
+  "use_executor": true,
+  "over_round_policy": "wrap_up",
+  "ephemeral": false,
+  "storage_scope": "nested"
+}

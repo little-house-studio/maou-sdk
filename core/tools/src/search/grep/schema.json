@@ -1,6 +1,6 @@
 {
   "name": "grep",
-  "description": "在项目文件中用正则搜索文字内容。仅在需要查找代码、配置或文本内容时使用。",
+  "description": "在项目文件中用正则搜索文字内容。默认返回匹配行+行号；仅当只关心「有哪些文件」时用 output_mode=files_with_matches。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -10,7 +10,7 @@
       },
       "reason": {
         "type": "string",
-        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+        "description": "为什么必须调用此工具而不是直接回复用户？"
       },
       "path": {
         "type": "string",
@@ -18,17 +18,28 @@
       },
       "glob": {
         "type": "string",
-        "description": "只搜匹配此 glob 的文件。如 '*.py'。"
+        "description": "只搜匹配此 glob 的文件。如 '*.ts'。"
+      },
+      "output_mode": {
+        "type": "string",
+        "enum": ["content", "files_with_matches", "count"],
+        "description": "content(默认)=文件:行号:内容；files_with_matches=仅路径；count=计数。"
       },
       "ignore_case": {
         "type": "boolean",
         "description": "忽略大小写。默认 false。"
       },
+      "context": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 20,
+        "description": "匹配行前后各 N 行上下文（仅 content）。"
+      },
       "head_limit": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 200,
-        "description": "最多返回行数。默认 50。"
+        "maximum": 500,
+        "description": "最多返回行数。默认 250。"
       }
     },
     "required": [

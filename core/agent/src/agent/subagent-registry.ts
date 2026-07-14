@@ -32,6 +32,10 @@ export interface SubagentEntry {
   tools: string[];
   /** 子 Agent 技能列表 */
   skills: string[];
+  /** 四类之一：fork | helper | task | project（来自 agent.json.subagent_kind） */
+  kind?: string;
+  /** killed 永不进入 registry.list */
+  status?: string;
 }
 
 // ─── SubagentRegistry ──────────────────────────────────────────────────────
@@ -66,6 +70,28 @@ export class SubagentRegistry {
         } catch {
           continue;
         }
+
+        // .tmp 临时子 agent 也可被委托（未 kill 且 list_in_manager）
+        if (entry === ".tmp") {
+          try {
+            for (const t of readdirSync(dir).sort()) {
+              const tp = join(dir, t);
+              try {
+                if (!statSync(tp).isDirectory()) continue;
+              } catch {
+                continue;
+              }
+              const sub = this._scanSubagentDir(tp, t);
+              if (sub) {
+                this._subagents.set(t, sub);
+                count++;
+              }
+            }
+          } catch { /* ignore */ }
+          continue;
+        }
+        // 跳过其它点目录
+        if (entry.startsWith(".")) continue;
 
         const subagent = this._scanSubagentDir(dir, entry);
         if (subagent) {
@@ -133,20 +159,36 @@ export class SubagentRegistry {
     const hasAgentJson = existsSync(join(dir, "agent.json"));
     if (!hasAgentTs && !hasAgentJson) return null;
 
-    // 提取描述
+    // kill 的永不进注册表 / 管理列表
+    if (existsSync(join(dir, ".killed"))) return null;
+
+    // 提取描述 + kind + status
     let description = dirName;
+    let kind: string | undefined;
+    let status: string | undefined;
+    let listInManager = true;
+    let toolsFromJson: string[] | null = null;
     if (hasAgentJson) {
       try {
         const content = readFileSync(join(dir, "agent.json"), "utf-8");
         const data = JSON.parse(content);
+        if (data.status === "killed" || data.lifecycle === "killed") return null;
+        if (data.list_in_manager === false) return null;
+        // 未持久化 helper 不进列表
+        if (data.subagent_kind === "helper" && data.persist_context === false) return null;
         if (data.description) description = data.description;
         else if (data.display_name) description = data.display_name;
+        kind = data.subagent_kind ?? data.role;
+        status = data.status;
+        listInManager = data.list_in_manager !== false;
+        if (Array.isArray(data.tools)) toolsFromJson = data.tools.map(String);
       } catch { /* ignore */ }
     }
+    if (!listInManager) return null;
 
-    // 扫描工具
-    const tools: string[] = [];
-    if (existsSync(toolsDir)) {
+    // 扫描工具目录；若 agent.json 有 tools 字段优先用其作为声明
+    const tools: string[] = toolsFromJson ? [...toolsFromJson] : [];
+    if (!toolsFromJson && existsSync(toolsDir)) {
       try {
         for (const entry of readdirSync(toolsDir)) {
           if (entry.endsWith(".ts") || entry.endsWith(".mjs")) {
@@ -175,6 +217,8 @@ export class SubagentRegistry {
       hasAgentTs,
       tools,
       skills,
+      kind,
+      status,
     };
   }
 }

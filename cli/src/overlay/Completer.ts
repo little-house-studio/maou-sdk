@@ -39,6 +39,8 @@ export const UI_SLASH_COMMANDS: CompletionItem[] = [
   { value: "/help", label: "/help", description: "帮助" },
   { value: "/settings", label: "/settings", description: "设置" },
   { value: "/agents", label: "/agents", description: "Agent 管理" },
+  { value: "/screenshot", label: "/screenshot", description: "整屏文字截图→剪贴板（同 Ctrl+G）" },
+  { value: "/dump", label: "/dump", description: "同 /screenshot" },
   { value: "/quit", label: "/quit", description: "退出" },
   { value: "/thinking", label: "/thinking", description: "切换思考级别" },
 ];

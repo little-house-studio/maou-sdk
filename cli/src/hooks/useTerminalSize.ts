@@ -13,6 +13,7 @@ import {
   TERM_BREAKPOINTS,
   type TermBreakpointName,
 } from "../config/ui-constants.js";
+import { isLiteNoTermSizePoll } from "../config/lite-mode.js";
 
 export interface TermSize {
   cols: number;
@@ -96,7 +97,10 @@ function ensureInstalled() {
   process.stdout.on("resize", () => { syncTerminalSize(false); });
   process.on("SIGWINCH", () => { syncTerminalSize(false); });
   // 兜底：部分终端/进程组丢事件（1s 足够；250ms 是空闲 CPU 噪声源）
-  setInterval(() => { syncTerminalSize(false); }, 1000);
+  // LITE：关掉轮询，只靠 resize/SIGWINCH
+  if (!isLiteNoTermSizePoll()) {
+    setInterval(() => { syncTerminalSize(false); }, 1000);
+  }
 }
 
 /** 注册 Ink 的 fakeStdout，便于同步 columns/rows */

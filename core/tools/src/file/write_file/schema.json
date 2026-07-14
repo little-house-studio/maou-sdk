@@ -1,6 +1,6 @@
 {
   "name": "write_file",
-  "description": "创建或覆盖文件。仅在用户明确要求创建文件、或你需要生成代码/配置文件来完成任务时使用。不要为了「记录」而创建文件。自动建立父目录。",
+  "description": "创建或覆盖文件。仅在用户明确要求创建文件、或你需要生成代码/配置文件来完成任务时使用。不要为了「记录」而创建文件。自动建立父目录。已存在且本会话未读/未编的文件须先读；读后磁盘有 diff 须再读。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -15,6 +15,14 @@
       "content": {
         "type": "string",
         "description": "要写入的完整文件内容。"
+      },
+      "force": {
+        "type": "boolean",
+        "description": "故意整文件覆写且本会话未读过时传 true（脚手架/更新配置）。读后磁盘有 diff 时仍须先读，force 无效。"
+      },
+      "overwrite": {
+        "type": "boolean",
+        "description": "force 的别名。"
       }
     },
     "required": [

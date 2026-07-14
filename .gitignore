@@ -6,6 +6,7 @@
 
 # ─── 运行时数据 ───
 .maou/
+.sqry/
 
 # ─── 第三方必要二进制（ensure-dcg 下载，勿提交） ───
 vendor/bin/

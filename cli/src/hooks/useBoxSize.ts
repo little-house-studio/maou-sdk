@@ -50,16 +50,12 @@ export function useBoxSize(
     };
 
     apply();
-    // Ink 提交 layout 略晚于 React commit（Node 无 rAF，用 setTimeout）
-    const t0 = setTimeout(apply, 0);
-    const t1 = setTimeout(apply, 16);
-    const t2 = setTimeout(apply, 48);
+    // Ink layout 略晚于 React commit；2～3 拍足够，过多 setTimeout 会叠 CPU
+    const timers = [0, 32, 80].map((ms) => setTimeout(apply, ms));
 
     return () => {
       alive = false;
-      clearTimeout(t0);
-      clearTimeout(t1);
-      clearTimeout(t2);
+      for (const t of timers) clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- deps 由调用方控制
   }, deps);
@@ -70,4 +66,25 @@ export function useBoxSize(
 /** 单次读取（toggle 后 expandShift 用） */
 export function readBoxHeight(ref: React.RefObject<DOMElement | null>): number {
   return readSize(ref).height;
+}
+
+/**
+ * 内容区高度：优先父节点 Yoga height；若子节点 bottom 更大则取子节点包络
+ *（部分情况下父 height 未及时含折叠展开后的子树）。
+ */
+export function readContentHeight(ref: React.RefObject<DOMElement | null>): number {
+  const el = ref.current;
+  if (!el) return 0;
+  const self = Math.round(el.yogaNode?.getComputedLayout?.()?.height ?? 0);
+  let childBottom = 0;
+  const kids = el.childNodes;
+  if (kids?.length) {
+    for (let i = 0; i < kids.length; i++) {
+      const child = kids[i] as { yogaNode?: { getComputedLayout?: () => { top: number; height: number } } };
+      const lay = child?.yogaNode?.getComputedLayout?.();
+      if (!lay) continue;
+      childBottom = Math.max(childBottom, Math.round(lay.top + lay.height));
+    }
+  }
+  return Math.max(self, childBottom);
 }

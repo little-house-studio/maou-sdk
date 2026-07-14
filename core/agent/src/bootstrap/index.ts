@@ -17,9 +17,18 @@ export {
   getDefaultPresetFromMaouConfig,
   getDefaultPresetFromConfigStore,
   resolveMaouConfigPath,
+  isGlobalApiConfigured,
+  saveGlobalApiConfig,
+  getGlobalMaouRoot,
+  getRolePresetFromMaouConfig,
 } from "./presets.js";
+export type { GlobalApiWriteOptions } from "./presets.js";
 
-export { installTerminalReviewer } from "./terminal-reviewer.js";
+export {
+  installTerminalReviewer,
+  resolveTerminalReviewPreset,
+  TERMINAL_AUTO_REVIEW_HELPER,
+} from "./terminal-reviewer.js";
 export type { InstallTerminalReviewerOptions } from "./terminal-reviewer.js";
 
 export {

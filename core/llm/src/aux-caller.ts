@@ -260,20 +260,38 @@ export class AuxModelCaller {
  *
  * 优先级链：
  *   1. agent.json 的 helperModel（字符串，匹配 preset name）
- *   2. 全局 helperPreset（config.api.helperPreset 索引）
- *   3. 回退主模型 preset
+ *   2. 全局 api.roles.helper（name 或下标，经 helperRoleRef 传入）
+ *   3. 全局 helperPreset（config.api.helperPreset 索引）
+ *   4. 全局 api.roles.fast（helperFastRef）
+ *   5. 回退主模型 preset
  *
  * @param agentHelperModel - agent.json 中的 helperModel 字段（可选）
  * @param presets - 全局 presets 数组
  * @param helperPresetIdx - 全局 helperPreset 索引（可选）
  * @param mainPreset - 主模型 preset（必填，作为 fallback）
+ * @param helperRoleRef - api.roles.helper（可选）
+ * @param fastRoleRef - api.roles.fast（可选，helper 未设时）
  */
 export function resolveHelperPreset(
   agentHelperModel: string | undefined,
   presets: APIPreset[],
   helperPresetIdx: number | undefined,
   mainPreset: APIPreset,
+  helperRoleRef?: string | number,
+  fastRoleRef?: string | number,
 ): APIPreset {
+  const byRef = (ref: string | number | undefined): APIPreset | undefined => {
+    if (ref === undefined) return undefined;
+    if (typeof ref === "number") {
+      return ref >= 0 && ref < presets.length ? presets[ref] : undefined;
+    }
+    const name = String(ref).trim();
+    if (!name) return undefined;
+    return (
+      presets.find((p) => p.name === name || p.model === name)
+    );
+  };
+
   // 1. agent.json helperModel 优先
   if (agentHelperModel) {
     const found = presets.find(
@@ -282,11 +300,19 @@ export function resolveHelperPreset(
     if (found) return found;
   }
 
-  // 2. 全局 helperPreset 索引
+  // 2. api.roles.helper
+  const fromHelperRole = byRef(helperRoleRef);
+  if (fromHelperRole) return fromHelperRole;
+
+  // 3. 全局 helperPreset 索引
   if (typeof helperPresetIdx === "number" && helperPresetIdx >= 0 && helperPresetIdx < presets.length) {
     return presets[helperPresetIdx]!;
   }
 
-  // 3. 回退主模型
+  // 4. api.roles.fast 作为便宜辅助
+  const fromFast = byRef(fastRoleRef);
+  if (fromFast) return fromFast;
+
+  // 5. 回退主模型
   return mainPreset;
 }

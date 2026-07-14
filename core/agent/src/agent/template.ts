@@ -173,6 +173,7 @@ export function resolveAgentConfig(agentDir: string): Record<string, unknown> {
       // 只覆盖允许的字段
       const ALLOWED_KEYS = [
         "round_limit", "max_retries", "terminal_mode", "thinking_level",
+        "thinking_context_mode",
         "role", "display_name", "reviewer_role", "tools",
         "tool_compression", "verify_command", "working_dir",
         "system_append", "system_override",

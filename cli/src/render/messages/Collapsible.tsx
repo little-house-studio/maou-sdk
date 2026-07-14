@@ -89,7 +89,10 @@ export function CollapsibleText({
   const cid = useClickTarget(
     ref,
     () => {
-      if (need) setOpen((o) => !o);
+      if (!need) return;
+      setOpen((o) => !o);
+      // 通知 ScrollHistory 重测高度（否则贴底裁切、展开不改变最底）
+      useStore.getState().bumpContentLayout();
     },
     [need, open],
   );

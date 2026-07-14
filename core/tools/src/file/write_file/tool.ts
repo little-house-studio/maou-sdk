@@ -1,6 +1,5 @@
 /**
  * 写文件工具 — 创建或覆写文件
- * 对应 Python: core/tools/impls/write_file_tool.py
  */
 
 import { readFileSync, mkdirSync, existsSync } from "node:fs";
@@ -8,18 +7,53 @@ import { dirname } from "node:path";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
-import { safePath, errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { resolveToolPath } from "../../path-guard.js";
 import { verifyAfterWrite } from "../../code/lsp_verify.js";
 import { atomicWrite } from "../atomic-write.js";
-import { wasRead, isStaleSinceRead, markRead, refreshRead } from "../read-registry.js";
-import { record as recordEdit, readBefore } from "../file-edit-history.js";
+import {
+  wasRead,
+  isStaleSinceRead,
+  markRead,
+  refreshRead,
+} from "../read-registry.js";
+import {
+  record as recordEdit,
+  readBefore,
+  wasEditedInSession,
+} from "../file-edit-history.js";
+
+/**
+ * 先读后写策略：
+ * - 新建：直接写
+ * - 已存在且本 session 从未 read/edit：必须先读
+ * - 已 read/edit 且磁盘相对登记有变更（diff/mtime）：必须再读
+ * - 已 read/edit 且无外部变更：可直接写
+ */
+function needReadBeforeWrite(
+  sid: string | undefined,
+  fullPath: string,
+  isNew: boolean,
+): { block: boolean; reason?: "unread" | "stale" } {
+  if (isNew || !sid) return { block: false };
+  const touched = wasRead(sid, fullPath) || wasEditedInSession(sid, fullPath);
+  if (!touched) return { block: true, reason: "unread" };
+  // 读过/写过：仅当相对上次登记发生外部变更时再拦
+  if (wasRead(sid, fullPath) && isStaleSinceRead(sid, fullPath)) {
+    return { block: true, reason: "stale" };
+  }
+  return { block: false };
+}
 
 export class WriteFileTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "write_file",
     aliases: ["write_file"],
-    description: "Create or overwrite a file with the given content.",
+    description:
+      "Create or overwrite a file. " +
+      "Existing files: need prior read/edit in session, or force=true for intentional full replace; " +
+      "if disk changed after last read/edit (diff), re-read first.",
     parameters: {
       type: "object",
       properties: {
@@ -30,6 +64,16 @@ export class WriteFileTool extends Tool {
         content: {
           type: "string",
           description: "Full content to write to the file.",
+        },
+        force: {
+          type: "boolean",
+          description:
+            "Intentional full-file overwrite without prior read (scaffold/update config). " +
+            "Still blocked if file was read/edited and then changed externally (stale).",
+        },
+        overwrite: {
+          type: "boolean",
+          description: "Alias of force.",
         },
       },
       required: ["path", "content"],
@@ -44,42 +88,69 @@ export class WriteFileTool extends Tool {
   ): Promise<ToolResponse> {
     const userPath = String(params.path ?? params.file_path ?? "").trim();
     const content = String(params.content ?? params.text ?? "");
+    const force =
+      params.force === true ||
+      params.overwrite === true ||
+      String(params.force ?? "").toLowerCase() === "true" ||
+      String(params.overwrite ?? "").toLowerCase() === "true";
 
     if (!userPath) {
-      return createToolResponse(false, '❌ write_file 缺少必填参数 path（文件路径）。正确用法示例：\n{"tool": "write_file", "params": {"path": "src/index.ts", "content": "console.log(\\"hello\\")"}}\n请用正确的 path 参数重试。');
+      return createToolResponse(
+        false,
+        '❌ write_file 缺少必填参数 path。示例：{"tool":"write_file","params":{"path":"src/index.ts","content":"..."}}',
+      );
     }
 
     let fullPath: string;
     try {
-      fullPath = safePath(ctx.workingDir || ctx.projectRoot, userPath);
+      fullPath = resolveToolPath(ctx, userPath).path;
     } catch (err: unknown) {
       return createToolResponse(false, errToString(err));
     }
 
     try {
       const isNew = !existsSync(fullPath);
-
-      // 先读后改：覆写一个已存在但未读过的文件 → 返回当前内容并提示，防止盲目覆盖
       const sid = ctx.sessionId;
-      if (!isNew && sid && (!wasRead(sid, fullPath) || isStaleSinceRead(sid, fullPath))) {
-        const stale = wasRead(sid, fullPath);
-        markRead(sid, fullPath);
-        const existing = readFileSync(fullPath, "utf-8");
-        const numbered = existing.split("\n").map((l, i) => `${String(i + 1).padStart(4)}\t${l}`).join("\n");
-        const why = stale ? "该文件在你上次读取后被改动过" : "你尚未读取该文件就尝试覆写";
-        return createToolResponse(
-          false,
-          `${why}。覆写会丢弃现有内容——请先 read 确认后再 write。\n以下是该文件**当前**完整内容：\n\n${numbered}`,
-          { payload: { path: fullPath, reason: stale ? "stale" : "unread" } },
-        );
+      const gate = needReadBeforeWrite(sid, fullPath, isNew);
+
+      if (gate.block) {
+        // force：仅放行「从未读过」的故意整文件替换；stale（读后有 diff）仍须先读
+        if (force && gate.reason === "unread") {
+          // 放行
+        } else {
+          const existing = readFileSync(fullPath, "utf-8");
+          if (sid) markRead(sid, fullPath);
+          const numbered = existing
+            .split("\n")
+            .map((l, i) => `${String(i + 1).padStart(4)}\t${l}`)
+            .join("\n");
+          const why =
+            gate.reason === "stale"
+              ? "该文件在你上次读取/编辑后磁盘内容已变化（有 diff）"
+              : "该文件已存在，且本会话尚未阅读或编辑过";
+          const tip =
+            gate.reason === "unread"
+              ? `若**确认整文件替换**（更新配置/脚手架），请带 \`"force": true\` 再调用（不必先 read）。\n`
+              : `请根据下列内容确认后再 write。\n`;
+          return createToolResponse(
+            false,
+            `${why}。${tip}` +
+              `以下是**当前**完整内容（已记为已读）：\n\n${numbered}`,
+            {
+              payload: {
+                path: fullPath,
+                reason: gate.reason,
+                total_lines: existing.split("\n").length,
+                force_ok: gate.reason === "unread",
+              },
+            },
+          );
+        }
       }
 
-      // 确保父目录存在
       const dir = dirname(fullPath);
       mkdirSync(dir, { recursive: true });
 
-      // 登记编辑历史（diff 标记）—— 在 atomicWrite 之前，存下 before 内容供 undo
-      // 新建文件 before=null（undo 时删除文件）；覆写 before=原内容
       if (sid) {
         const beforeContent = isNew ? null : readBefore(fullPath);
         recordEdit(sid, fullPath, beforeContent, content, {
@@ -89,25 +160,26 @@ export class WriteFileTool extends Tool {
       }
 
       atomicWrite(fullPath, content);
-      if (sid) refreshRead(sid, fullPath); // 写后即视为已读最新
+      if (sid) refreshRead(sid, fullPath);
 
       const lines = content.split("\n").length;
       const actionLabel = isNew ? "已创建" : "已覆写";
       const meta = `[path=${fullPath} | lines=${lines} | chars=${content.length} | action=${isNew ? "created" : "overwritten"}]`;
 
-      // 自我验证闭环：写入后用 LSP 检查是否有错，结果拼回供模型自修
-      const lspNote = await verifyAfterWrite(fullPath);
+      const verifyNote = await verifyAfterWrite(fullPath, {
+        projectRoot: ctx.projectRoot || ctx.workingDir,
+      });
 
       return createToolResponse(
         true,
-        `文件${actionLabel}: ${userPath}（${lines} 行，${content.length} 字符）\n${meta}${lspNote ?? ""}`,
+        `文件${actionLabel}: ${userPath}（${lines} 行，${content.length} 字符）\n${meta}${verifyNote ?? ""}`,
         {
           payload: {
             path: fullPath,
             lines,
             chars: content.length,
             created: isNew,
-            lsp_verified: lspNote !== null,
+            verified: verifyNote !== null,
           },
         },
       );

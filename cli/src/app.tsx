@@ -28,8 +28,15 @@ import { loadSessionMessages } from "./state/session-loader.js";
 import { useAgent } from "./events/useAgent.js";
 import { useSupervisorState } from "./hooks/useSupervisorState.js";
 import { useMouseInput } from "./input/useMouseInput.js";
-import { extractSelection as vramExtract, clearSelection as vramClear, getSelection as vramGet, scheduleFullPaint, setThemeBg } from "./render/vram-layer.js";
+import {
+  extractSelection as vramExtract,
+  clearSelection as vramClear,
+  getSelection as vramGet,
+  scheduleFullPaint,
+  setThemeBg,
+} from "./render/vram-layer.js";
 import { copyToClipboard } from "./input/osc52.js";
+import { copyScreenDump, isScreenDumpHotkey } from "./lib/screen-dump.js";
 import type { LayoutRect } from "./input/hit-test.js";
 import type { AgentCliConfig } from "./types.js";
 import {
@@ -239,6 +246,22 @@ export function App({ config, themePath }: { config: AgentCliConfig; themePath?:
     // Esc 任何场景都走统一取消栈（含全屏编辑器）
     if (isEscapeKey(char, key)) {
       handleEscapeCancel();
+      return;
+    }
+
+    // 整屏文字截图 → 剪贴板（排查 UI 时一键发给 AI）
+    // macOS 经典终端几乎不传 Ctrl+Shift 的 shift 位，主绑定用 Ctrl+G
+    // 放在 fullEditor 短路之前，编辑器/弹层打开时也能 dump
+    if (isScreenDumpHotkey(char ?? "", key)) {
+      const r = copyScreenDump();
+      if (r.ok) {
+        useStore.getState().toastMsg(
+          `已复制整屏 ${r.chars} 字（${r.lines} 行）· 可粘贴发给 AI`,
+          "ok",
+        );
+      } else {
+        useStore.getState().toastMsg(r.message, "warn");
+      }
       return;
     }
 

@@ -5,6 +5,7 @@
 
 import type { SessionMessage } from "../session-store.js";
 import { resolveSessionEventKind, isHumanTurnKind } from "../session-event.js";
+import { contentWithThinkingForLlm } from "../thinking-context.js";
 
 /**
  * 内容块
@@ -370,9 +371,14 @@ export function sessionToMaouMessage(smsg: SessionMessage, seqId: number): MaouM
   }
 
   // content + microCompact（从 meta 恢复或构造默认）
+  // 思考回灌：session 上的 reasoningContent（由 thinking_context_mode 在写入时决定是否保留）
+  // 在进入 ContextEngine / LLM 历史前并入文本，保证压缩与 token 估算一致。
   const contents: MaouContent[] = [];
   const content: MaouContent = {
-    text: smsg.content ?? '',
+    text: contentWithThinkingForLlm(
+      smsg.content ?? "",
+      typeof smsg.reasoningContent === "string" ? smsg.reasoningContent : undefined,
+    ),
   };
   // 从 meta 恢复第一个内容块的微压缩配置
   if (meta?.contentsMicroCompact && meta.contentsMicroCompact.length > 0) {

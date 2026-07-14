@@ -55,6 +55,9 @@ ${formatProductList()}
   MAOU_NO_AUTO_INSTALL=1   禁止自动安装依赖
   MAOU_SKIP_DEPS=1         跳过依赖预检
   MAOU_SKIP_PROJECT_GATE=1 跳过新项目确认
+  MAOU_LITE=1              帧率试验：关动画/hover/闪烁/轮询，历史窗缩到 12
+  MAOU_LITE_HISTORY=N      LITE 下历史条数（默认 12）
+  MAOU_PERF_HUD=0          关闭右上角性能条
 `;
 
 function printHelp(): void {

@@ -8,6 +8,7 @@ import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { AgentTeamManager } from "../team-manager.js";
+import { loadSubagentKindOptionsFromCtx } from "../subagent-kind-options.js";
 
 const STATUS_EMOJI: Record<string, string> = {
   idle: "💤", busy: "🔵", working: "🟢", stopped: "🔴", error: "💥",
@@ -181,7 +182,8 @@ export class TeamManageTool extends Tool {
 
   /**
    * dispatch：派任务让队友真后台执行（复用 SubagentExecutor 的 detached fork）。
-   * 不重写执行逻辑——fork + detached 已实现，这里只做参数映射（DRY）。
+   * kind 策略：优先读 agents/<to>/agent.json 或 parent/subagents/<to>；
+   * 无配置时默认 kind=task（专业子任务 + loop + 白名单策略表）。
    */
   private async doDispatch(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
     const to = String(params.to ?? "").trim();
@@ -202,18 +204,26 @@ export class TeamManageTool extends Tool {
     // 标记队友忙碌
     member.status = "working";
 
+    // 从磁盘 agent.json 继承 kind / tools / path（与 subagent_delegate 同源）
+    const kindOpts = loadSubagentKindOptionsFromCtx(ctx, to, "task");
+    // 队友默认持久化、进管理列表语义（若 json 未写）
+    if (kindOpts.persistContext === undefined) {
+      kindOpts.persistContext = true;
+    }
+
     try {
-      // 复用 detached fork：队友用其 agent 配置后台跑，结果异步到达（lifecycle 事件 + mailbox）
       const result = await ctx.subagentExecutor.fork(to, task, {
         forkMode: "context_and_config",
         agentName: to,
         detached: true,
+        ...kindOpts,
       });
+      const kindLabel = kindOpts.kind ?? "task";
       return createToolResponse(
         result.ok,
-        `🚀 已派任务给「${to}」后台执行（detached fork）\ntaskId: ${result.taskId}\n` +
+        `🚀 已派任务给「${to}」后台执行（detached fork, kind=${kindLabel}）\ntaskId: ${result.taskId}\n` +
           `结果异步到达，可用 action=list 查状态、或通过 MessageBus 收队友汇报。`,
-        { payload: { to, taskId: result.taskId } },
+        { payload: { to, taskId: result.taskId, kind: kindLabel } },
       );
     } catch (err) {
       member.status = "error";

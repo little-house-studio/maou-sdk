@@ -11,6 +11,7 @@
 import { useEffect, useState, useRef } from "react";
 import { listTerminals } from "@little-house-studio/tools";
 import { useStore } from "../state/store.js";
+import { isLiteNoBgPoll } from "../config/lite-mode.js";
 
 export interface BgTerminalInfo {
   id: string;
@@ -23,7 +24,12 @@ export interface BgTerminalInfo {
   progressPct: number | null;
 }
 
-const POLL_MS = 700;
+/**
+ * 轮询间隔。
+ * 过短（如 300ms）会在有 listener 时反复 snapshot；过长则进度滞后。
+ * 700ms 对 LIVE 卡够用；EventBlock 仅看 state 变化，签名不变不 setState。
+ */
+const POLL_MS = 1500;
 
 /** 从命令输出/描述里抠 `12%` / `progress: 0.12` */
 export function extractProgressPct(...texts: string[]): number | null {
@@ -132,7 +138,8 @@ export function useBackgroundTerminals(opts?: {
   terminals: BgTerminalInfo[];
   running: BgTerminalInfo[];
 } {
-  const enabled = opts?.enabled !== false;
+  // LITE：彻底不订轮询，避免 1.5s 循环 + 偶发 setState
+  const enabled = opts?.enabled !== false && !isLiteNoBgPoll();
   const agentName = useStore((s) => s.agentName);
   const [terminals, setTerminals] = useState<BgTerminalInfo[]>(() =>
     enabled ? cached : [],

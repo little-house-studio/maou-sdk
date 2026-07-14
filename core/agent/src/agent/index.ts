@@ -49,6 +49,24 @@ export type {
   DailySummary,
 } from "./token-tracker.js";
 
+// ── Prompt-cache 分桶账本（agent+session+mainModel，CLI 只读）──────────────
+
+export {
+  PromptCacheLedger,
+  promptCacheLedger,
+  modelReportsPromptCache,
+  normalizeModelId,
+  isMainAgentMainModelUsage,
+  avgCacheHitPct,
+  formatCacheLabelFromSnapshot,
+} from "./prompt-cache-ledger.js";
+export type {
+  CacheSample,
+  CacheRoundAccum,
+  CacheBucket,
+  CacheSnapshot,
+} from "./prompt-cache-ledger.js";
+
 // ── Agent 运行时 ───────────────────────────────────────────────────────────
 
 export { AgentRuntime } from "./runtime.js";
@@ -78,6 +96,67 @@ export type {
   AgentCreateResult,
   AgentPreview,
 } from "./factory.js";
+
+// ── Subagent 四类模型（fork / helper / task / project）────────────────────
+
+export {
+  SUBAGENT_KIND_DEFAULTS,
+  TASK_TOOL_PRESETS,
+  resolveSubagentTools,
+  helperUsesExecutor,
+  mergeKindDefaults,
+  resolveForkKindPolicy,
+} from "./subagent-kinds.js";
+export type {
+  SubagentKind,
+  SubagentPermission,
+  SubagentStorageScope,
+  SubagentLifecycleStatus,
+  SubagentModelConfig,
+  SubagentKindDefaults,
+  TaskToolPresetName,
+  ForkKindPolicy,
+  ResolveForkKindInput,
+} from "./subagent-kinds.js";
+
+export { defineSubagent, isDefinedSubagent } from "./define-subagent.js";
+export type { DefineSubagentConfig, DefinedSubagent } from "./define-subagent.js";
+
+export {
+  resolveSubagentDir,
+  materializeSubagent,
+  listManagedSubagents,
+  killSubagent,
+  purgeKilledEphemeral,
+} from "./subagent-lifecycle.js";
+export type {
+  MaterializeResult,
+  SubagentListEntry,
+} from "./subagent-lifecycle.js";
+
+// 多态策略 + 共享 runFn
+export {
+  BaseSubagentPolicy,
+  ForkSubagentPolicy,
+  HelperSubagentPolicy,
+  TaskSubagentPolicy,
+  ProjectSubagentPolicy,
+  SUBAGENT_POLICIES,
+  getSubagentPolicy,
+  resolveSubagentRunPlan,
+  materializeIfNeeded,
+} from "./subagent-policy.js";
+export type {
+  SubagentRunChannel,
+  SubagentRunPlan,
+  PathGuardSpec,
+} from "./subagent-policy.js";
+
+export { createDefaultSubagentRunFn } from "./default-subagent-run-fn.js";
+export type {
+  CreateDefaultSubagentRunFnOpts,
+  SubagentRuntimeLike,
+} from "./default-subagent-run-fn.js";
 
 // ── 团队模板（多 Agent 协作开箱即用）──────────────────────────────────────
 

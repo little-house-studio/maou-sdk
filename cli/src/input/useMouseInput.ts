@@ -54,6 +54,7 @@ import {
   TERM_BREAKPOINTS,
   INPUT_TEXT_COL_OFFSET_DEFAULT,
 } from "../config/ui-constants.js";
+import { isLiteNoHover, isLiteNoPointerShape } from "../config/lite-mode.js";
 
 /** inputRect 高度异常（如全屏编辑器残留）时不当作输入区，防止整屏 I 形光标 */
 function isPlausibleInputRect(
@@ -237,22 +238,28 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
     const { rows } = termSize();
     const rect = rectRef.current;
 
-    // motion：轻量路径，不同步 chat metrics、不跑全量 hitTest（除非要 hover）
+    // motion：轻量路径，不同步 chat metrics；hover 需低延迟
     if (e.type === "motion") {
       perfInc("mouseMotion");
+      // LITE：跳过 hover setState + 指针形状（motion 仍极密，是滚动外的大头）
+      if (isLiteNoHover()) {
+        if (dragRef.current?.moved && !isLiteNoPointerShape()) {
+          setPointerShape("grabbing");
+        }
+        return;
+      }
       if (dragRef.current?.moved) {
-        setPointerShape("grabbing");
+        if (!isLiteNoPointerShape()) setPointerShape("grabbing");
         return;
       }
       const store = useStore.getState();
-      // 滚动中跳过 hover/hitTest，避免每帧扫 DOM
-      if (store.scrollActive) return;
       const now = Date.now();
-      // 流式时再拉大采样间隔
-      const hoverMin = store.streaming ? HOVER_MIN_MS * 2 : HOVER_MIN_MS;
+      // 滚动中略降采样；静止时 16ms 跟手（旧 80～160ms 会明显「指着不亮」）
+      const hoverMin = store.scrollActive
+        ? Math.max(HOVER_MIN_MS, 32)
+        : HOVER_MIN_MS;
       if (now - lastHoverRef.current < hoverMin) return;
       lastHoverRef.current = now;
-      // 真正做 hitTest / 手型更新的采样点 → HUD mse 阶段
       noteUiPhase("mouse");
 
       // 可点区域始终响应 hover/手型（含流式中）；流式仅在空白处显示 progress
@@ -262,6 +269,8 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
         store.setHoverId(id);
         perfInc("hoverSet");
       }
+
+      if (isLiteNoPointerShape()) return;
 
       if (store.streaming && !hit) {
         setPointerShape("progress");

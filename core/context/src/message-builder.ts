@@ -13,6 +13,7 @@
 import type { BuildMessagesParams, UserMessageOptions } from "./types.js";
 import type { LLMToolCall } from "./types/message.js";
 import { compileProjectContext } from "./project-context.js";
+import { contentWithThinkingForLlm } from "./thinking-context.js";
 
 /**
  * 从 session 历史构建发送给 LLM 的消息数组。
@@ -154,9 +155,17 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
         continue;
       }
 
+      // assistant 历史：若写入时按 thinking_context_mode 存了 reasoningContent，回灌到 LLM 文本
+      const historyContent =
+        msg.role === "assistant"
+          ? contentWithThinkingForLlm(
+              String(msg.content ?? ""),
+              typeof msg.reasoningContent === "string" ? msg.reasoningContent : undefined,
+            )
+          : msg.content;
       const entry: Record<string, unknown> = {
         role: msg.role,
-        content: msg.content,
+        content: historyContent,
       };
       const nativeToolCalls = msg.toolCalls as Array<Record<string, unknown>> | undefined;
       if (nativeToolCalls && nativeToolCalls.length > 0) {

@@ -90,6 +90,15 @@ export interface ToolContext {
   agentMode: string
   pluginSettings: Record<string, unknown>
   workingDir: string
+  /**
+   * 路径沙箱（project/task subagent 由 runtime 注入）。
+   * 文件工具走 resolveToolPath(ctx, path) 强制执行；无此字段时等同旧 single-root 行为。
+   */
+  pathGuard?: {
+    mode: "inherit" | "hard" | "audit"
+    roots: string[]
+    auditRoots?: string[]
+  }
   /** 工具输出压缩级别：off=不压；normal=保守(默认)；aggressive=更激进。由 AgentRuntime 从 agent.json 注入。 */
   compressionLevel?: "off" | "normal" | "aggressive"
   /**
@@ -322,6 +331,46 @@ export interface ForkOptions {
   forkMode?: 'context_only' | 'context_and_config'
   /** 独立配置的 agent 名（forkMode='context_and_config' 时必填） */
   agentName?: string
+  /**
+   * Subagent 类型（agent 层四类模型）。
+   * - fork：完整复制母 session 上下文
+   * - helper：单轮无 tool；仅 persist 时进 Executor/管理列表
+   * - task：专业子任务 + 独立/预设白名单
+   * - project：路径驻扎小型 coding agent
+   * 缺省：按既有 forkMode 行为（兼容旧调用）
+   */
+  kind?: 'fork' | 'helper' | 'task' | 'project'
+  /**
+   * 是否完整复制母 session 历史到子 session（fork 默认 true）。
+   * runtime-facade 的默认 runFn 在 inheritFullContext=true 时完整复制母 session。
+   */
+  inheritFullContext?: boolean
+  /**
+   * helper 单轮时即使配置了 tools 也不下发给 AI（默认 true for helper）。
+   */
+  stripToolsIfSingleRound?: boolean
+  /**
+   * 是否持久化上下文（helper 默认 false；仅 true 时进 SubagentExecutor 管理列表）。
+   * kind=helper 且 persistContext=false 时 fork 会拒绝（应走 AuxModelCaller）。
+   */
+  persistContext?: boolean
+  /** 是否 multi-round loop（helper 默认 false） */
+  enableLoop?: boolean
+  /** 显式工具白名单；null/不填时按 kind 预设或继承母 */
+  tools?: string[] | null
+  /**
+   * task/project 工具预设名：
+   * explore | web_search | report | file_search | coding_scoped | none
+   */
+  toolPreset?: string
+  /** 权限档位（见 agent 层 SubagentPermission） */
+  permission?: string
+  /** 轮次上限；>0 时映射 softRequestBudget；超限 wrap-up */
+  roundLimit?: number
+  /** 子工程驻扎路径（project 建议必填） */
+  path?: string
+  /** 路径外额外审核路径列表（project） */
+  auditPaths?: string[]
   /** 临时覆盖 agent.json 字段（创建临时 agent 文件，子 session 结束清理） */
   configOverrides?: Record<string, unknown>
   /** 中断信号 */
@@ -624,20 +673,51 @@ export interface PluginSettings {
   [key: string]: unknown
 }
 export interface SecurityConfig {
+  /**
+   * 终端/工具沙箱模式（与 CLI 审批 mode 相关，常见值）：
+   * - normal：危险命令可走审批
+   * - auto：策略自动放行部分命令
+   * - yolo：尽量不拦终端
+   * - sandbox / strict / isolated：命令落到隔离 sandboxRoot
+   */
   sandboxMode: string
+  /** 危险终端命令是否要求用户审批（normal 模式下尤甚） */
   dangerousCommandsRequireApproval: boolean
   allowedHosts?: string[]
   blockedCommands?: string[]
 }
+
+/**
+ * 按用途绑定 preset：值为 preset 的 name，或 presets 数组下标。
+ * 全系列产品共用；未配置的角色回退到 main / defaultPreset。
+ */
+export interface ApiModelRoles {
+  /** 主对话 / agent loop */
+  main?: string | number
+  /** 快速/便宜：压缩、分类、简单判定 */
+  fast?: string | number
+  /** 多模态看图 */
+  vision?: string | number
+  /** 辅助（loop 检测、llm_judge 等）；未设则用 helperPreset → fast → main */
+  helper?: string | number
+  /** 允许扩展自定义角色 */
+  [role: string]: string | number | undefined
+}
+
 export interface ApiConfig {
   presets: LLMPreset[]
   defaultPreset: number
   /**
-   * 全局辅助模型 preset 索引（可选）。
-   * 用于压缩/loop判定/路由等辅助调用，未配置时辅助调用回退主 preset。
-   * 优先级：agent.json helperModel > 全局 helperPreset > 主模型 preset
+   * 全局辅助模型 preset 索引（可选，兼容旧配置）。
+   * 优先使用 roles.helper；再 helperPreset；再 main。
+   * 优先级：agent.json helperModel > roles.helper > helperPreset > main
    */
   helperPreset?: number
+  /**
+   * 模型角色映射（推荐）。
+   * 例：{ "main": 0, "fast": "cheap-qwen", "vision": "gpt-4o" }
+   */
+  roles?: ApiModelRoles
   agentRoundLimit: number
   contextSettings: ContextSettings
   pluginSettings?: PluginSettings
@@ -679,6 +759,24 @@ export type EventHandler = (event: StreamEvent) => void
 
 // ─── 运行时：配置管理 / 项目管理 / 工具函数 / 表情检测（原 core 包）──────────
 export { ConfigStore } from './config-store.js'
+export {
+  MAOU_DIR_NAME,
+  MAOU_CONFIG_FILE,
+  resolveUserMaouRoot,
+  resolveUserConfigPath,
+  resolveUserThemesDir,
+  resolveUserAgentsDir,
+  resolveUserHistoryPath,
+  resolveUserLastSessionPath,
+  resolveProjectMaouRoot,
+  resolveProjectSessionsDir,
+} from './maou-paths.js'
+export {
+  findPresetByRef,
+  resolveApiRolePreset,
+  listConfiguredApiRoles,
+} from './api-roles.js'
+export type { ApiModelRole, PresetRef } from './api-roles.js'
 export { getProjectsList, addProject, removeProject, autoDiscover } from './project-manager.js'
 export type { ProjectEntry, ProjectListItem } from './project-manager.js'
 export {

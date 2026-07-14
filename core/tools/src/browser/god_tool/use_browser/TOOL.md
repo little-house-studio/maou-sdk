@@ -8,3 +8,9 @@
 - eval 执行的 JS 会被 IIFE 包裹，只读操作安全，写操作需谨慎。
 - 截图（screenshot）适合确认页面状态或向用户展示结果。
 - 不需要交互的静态网页用 read_web 即可，无需启动浏览器。
+
+### 前端 / Vite 运行时自检（重要）
+
+- `curl` 通、`tsc` 通过 **不等于** 浏览器能跑。
+- 推荐：`open url=http://localhost:5173` → `wait` → `console`（或 `runtime_errors`）读 JS 报错 → `screenshot` 看画面。
+- `open` 成功后会尝试安装控制台钩子；务必用返回的 **tab** 调用后续 action。

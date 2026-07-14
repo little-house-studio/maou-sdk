@@ -1,6 +1,6 @@
 {
   "name": "edit_file",
-  "description": "替换文件中首次出现的精确文本。仅在需要修改已有文件时使用。适用于定向修改。",
+  "description": "替换文件中的精确文本。old_text 默认须唯一匹配；传 replace_all=true 可替换全部相同文本（如重命名）。编辑后走 LSP→sqry→自检提示。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -10,15 +10,19 @@
       },
       "reason": {
         "type": "string",
-        "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
+        "description": "为什么必须调用此工具而不是直接回复用户？"
       },
       "old_text": {
         "type": "string",
-        "description": "要搜索的精确旧文本。"
+        "description": "要搜索的精确旧文本（含缩进）。默认须在文件中唯一出现。"
       },
       "new_text": {
         "type": "string",
         "description": "替换后的新文本。"
+      },
+      "replace_all": {
+        "type": "boolean",
+        "description": "为 true 时替换所有匹配（重命名变量等）；默认 false，要求唯一匹配。"
       }
     },
     "required": [

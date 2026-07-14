@@ -118,10 +118,104 @@ export class TerminalTool extends Tool {
     ctx: ToolContext,
   ): Promise<ToolResponse> {
     const action = String(params.action ?? "run").trim();
-    if (action === "run") return this._actionRun(params, ctx);
-    if (action === "manage") return this._actionManage(params, ctx);
-    if (action === "write") return this._actionWrite(params, ctx);
-    return createToolResponse(false, `未知 action: ${action}，可选: run, manage, write`);
+    let res: ToolResponse;
+    if (action === "run") res = await this._actionRun(params, ctx);
+    else if (action === "manage") res = await this._actionManage(params, ctx);
+    else if (action === "write") res = await this._actionWrite(params, ctx);
+    else {
+      return createToolResponse(false, `未知 action: ${action}，可选: run, manage, write`);
+    }
+    // 每次调用附带终端快照，避免后台任务「消失了也不知道」
+    return this._withTerminalFooter(res, ctx, action);
+  }
+
+  /**
+   * 在工具返回末尾附加本 agent 的终端状态（running 优先）。
+   * manage list 本身就是面板，只补 payload 快照，不重复贴正文。
+   */
+  private _withTerminalFooter(
+    res: ToolResponse,
+    ctx: ToolContext,
+    action: string,
+  ): ToolResponse {
+    const agent = ctx.agentName || "main";
+    let mine: engine.TerminalInfoNapi[] = [];
+    let others = 0;
+    try {
+      mine = engine.list(agent) ?? [];
+      const all = engine.list() ?? [];
+      others = Math.max(0, all.length - mine.length);
+    } catch {
+      return res;
+    }
+
+    const snapshot = mine.map((t) => ({
+      id: t.id,
+      state: t.state,
+      description: t.description,
+      exit_code: t.exitCode ?? null,
+    }));
+    const running = mine.filter((t) => t.state === "running");
+    const exited = mine.filter((t) => t.state !== "running");
+
+    const lines: string[] = [];
+    if (running.length > 0) {
+      lines.push(
+        `🟢 运行中 (${running.length}): ` +
+          running
+            .map((t) => `${t.id}${t.description ? `「${t.description}」` : ""}`)
+            .join("; "),
+      );
+    }
+    if (exited.length > 0) {
+      lines.push(
+        `💤 已结束 (${exited.length}): ` +
+          exited
+            .slice(0, 6)
+            .map(
+              (t) =>
+                `${t.id}${t.exitCode != null ? `(exit ${t.exitCode})` : ""}`,
+            )
+            .join("; ") +
+          (exited.length > 6 ? " …" : ""),
+      );
+    }
+    if (mine.length === 0) {
+      lines.push(
+        others > 0
+          ? `本 agent「${agent}」无终端；系统另有 ${others} 个其它 agent 终端（可能 agentName 不一致）。`
+          : `本 agent「${agent}」当前没有终端（后台进程若已退出会被移出列表；长驻请用 id + background=true）。`,
+      );
+    }
+    lines.push(
+      `提示: manage list 看全表 · manage logs id=… 看输出 · manage stop id=… 结束`,
+    );
+
+    const footer = lines.join("\n");
+    const payload = {
+      ...(res.payload && typeof res.payload === "object" ? res.payload : {}),
+      terminals_snapshot: snapshot,
+      terminals_running: running.length,
+      terminals_total: mine.length,
+      terminals_other_agents: others,
+    };
+
+    // list 已返回完整面板，只挂 payload，避免重复贴表
+    const isList =
+      action === "manage" &&
+      /终端列表|当前没有终端|Agent「|Agent .+ 当前没有终端|Agent .+ 的终端列表/.test(
+        res.message || "",
+      );
+
+    if (isList) {
+      return { ...res, payload };
+    }
+
+    return {
+      ...res,
+      message: `${res.message || ""}\n\n── 终端状态 ──\n${footer}`,
+      payload,
+    };
   }
 
   // ─── run ────────────────────────────────────────────────────────────────────
@@ -422,19 +516,67 @@ export class TerminalTool extends Tool {
   }
 
   private async _manageList(ctx: ToolContext): Promise<ToolResponse> {
-    const panel = engine.statusPanel(ctx.agentName);
-    const terminals = engine.list(ctx.agentName);
+    const agent = ctx.agentName || "main";
+    const panel = engine.statusPanel(agent);
+    const terminals = engine.list(agent) ?? [];
+    let all: engine.TerminalInfoNapi[] = [];
+    try {
+      all = engine.list() ?? [];
+    } catch {
+      all = terminals;
+    }
+
     if (terminals.length === 0) {
-      return createToolResponse(true, "当前没有终端。", {
-        payload: { count: 0 },
+      const others = all.filter((t) => t.agentName && t.agentName !== agent);
+      const hints: string[] = [
+        `📋 Agent「${agent}」当前没有终端。`,
+        "",
+        "说明：",
+        "- 未指定 id 的临时前台任务结束后会销毁，不会出现在列表里",
+        "- 后台任务请用 background=true，建议同时指定 id 便于复用",
+        "- 已退出且被 rm/cleanup 的终端不会保留",
+        "- 进程若崩溃退出，状态会变为 exited（manage logs 仍可看尾部）",
+      ];
+      if (others.length > 0) {
+        hints.push(
+          "",
+          `注意：系统中还有 ${others.length} 个其它 agent 的终端（agentName 过滤后不可见）：`,
+        );
+        for (const t of others.slice(0, 8)) {
+          hints.push(
+            `  - [${t.agentName}] ${t.id} ${t.state} ${t.description || ""}`.trim(),
+          );
+        }
+      }
+      hints.push(
+        "",
+        "启动示例: {\"action\":\"run\",\"command\":\"npm run dev\",\"background\":true,\"id\":\"vite\",\"description\":\"Vite 开发服\",\"reason\":\"…\"}",
+      );
+      return createToolResponse(true, hints.join("\n"), {
+        payload: {
+          count: 0,
+          agent,
+          other_agents_count: others.length,
+          other_terminals: others.slice(0, 12).map((t) => ({
+            id: t.id,
+            agent: t.agentName,
+            state: t.state,
+            description: t.description,
+          })),
+        },
       });
     }
+
     return createToolResponse(true, panel, {
       payload: {
         count: terminals.length,
+        agent,
         terminals: terminals.map((t) => ({
-          id: t.id, state: t.state, description: t.description,
+          id: t.id,
+          state: t.state,
+          description: t.description,
           exit_code: t.exitCode ?? null,
+          command: t.command,
         })),
       },
     });

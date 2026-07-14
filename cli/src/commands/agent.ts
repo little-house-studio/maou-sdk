@@ -164,6 +164,11 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
   const { autoEnablePerfFromEnv, perfInc } = await import("../hooks/perf.js");
   autoEnablePerfFromEnv();
   const { noteInkFrame } = await import("../hooks/process-stats.js");
+  // 帧率 A/B：MAOU_LITE=1 时关掉动画/hover/历史窗等（见 config/lite-mode.ts）
+  const { isLiteMode, liteModeBanner, liteModeToast } = await import("../config/lite-mode.js");
+  if (isLiteMode()) {
+    process.stderr.write(`${liteModeBanner()}\n`);
+  }
 
   const {
     initVramLayer,
@@ -203,6 +208,19 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
       ? process.stdin
       : createFilteredStdin(process.stdin);
 
+  // Ink 默认 maxFps=30。目标滚动 ~25fps：用 40 留余量即可。
+  // 过高（60）会导致 ink 堆积、paint 跟不上（见 dump: ink23/pnt15）。
+  // MAOU_INK_MAX_FPS 可覆盖；0 = Ink 默认 30。
+  const inkMaxFps = (() => {
+    const raw = process.env.MAOU_INK_MAX_FPS;
+    if (raw === "0" || raw === "default") return 30;
+    if (raw != null && raw !== "") {
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 0) return Math.min(120, Math.round(n));
+    }
+    return 40;
+  })();
+
   const { waitUntilExit } = render(
     React.createElement(App, { config, themePath }),
     {
@@ -211,9 +229,18 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
       stdout: fakeStdout as any,
       patchConsole: false,
       onRender: scheduleRender,
+      maxFps: inkMaxFps,
     },
   );
   setTimeout(() => scheduleFullPaint(), 200);
+  if (isLiteMode()) {
+    // 延迟 toast，等 store/App 挂上
+    setTimeout(() => {
+      void import("../state/store.js").then(({ useStore }) => {
+        useStore.getState().toastMsg(liteModeToast(), "warn");
+      });
+    }, 400);
+  }
 
   // 拉宽/拉窄：清屏 + 作废 diff 缓存 + 多帧强制重绘。
   // 仅 CSI 2J 而不 invalidate 时，行 diff 会认为「未变」跳过写出（拉宽尤其明显）。

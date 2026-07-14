@@ -34,7 +34,12 @@
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
     "postinstall": "node dist/commands/postinstall.js 2>/dev/null || true",
-    "gallery:bake": "node scripts/bake-gallery-ascii.mjs"
+    "gallery:bake": "node scripts/bake-gallery-ascii.mjs",
+    "bench:scroll": "tsx scripts/ink-scroll-bench.tsx --auto",
+    "bench:scroll:pure": "tsx scripts/ink-scroll-bench.tsx --mode pure --mount full --lines 86 --auto --auto-ms 6000",
+    "bench:scroll:vram": "tsx scripts/ink-scroll-bench.tsx --mode vram --mount full --lines 86 --auto --auto-ms 6000",
+    "bench:scroll:heavy": "tsx scripts/ink-scroll-bench.tsx --mode vram --heavy --mount full --lines 86 --auto --auto-ms 6000",
+    "bench:scroll:all": "npm run bench:scroll:pure && npm run bench:scroll:vram && npm run bench:scroll:heavy && echo && echo '=== 打开结果 ===' && cat scroll-bench-result.txt"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",

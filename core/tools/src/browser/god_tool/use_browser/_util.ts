@@ -5,8 +5,6 @@
  * 防止运行时只取 message 时丢失关键信息（exit_code / 行数 / 命中数等）。
  */
 
-import { resolve as resolvePath } from "node:path";
-
 /** 单字段最大字符数（默认 8000，约 2K~4K token） */
 export const DEFAULT_CHUNK_LIMIT = 8000;
 
@@ -42,15 +40,9 @@ export function formatMetadata(fields: Record<string, unknown>): string {
 /**
  * 安全路径解析，防止路径越界（../../etc/passwd 等）。
  * 统一 read / write-file / edit-file 共用。
+ * 实现委托 path-guard（与 PathGuard 多根沙箱同一套 isUnder 逻辑）。
  */
-export function safePath(projectRoot: string, userPath: string): string {
-  const root = resolvePath(projectRoot);
-  const candidate = resolvePath(projectRoot, userPath);
-  if (!candidate.startsWith(root + "/") && candidate !== root) {
-    throw new Error(`路径越过了项目根目录: ${userPath}`);
-  }
-  return candidate;
-}
+export { safePath } from "../../../path-guard.js";
 
 /**
  * 统一从 catch 的 unknown 值里提取可读错误字符串。

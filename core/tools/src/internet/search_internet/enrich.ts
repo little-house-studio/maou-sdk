@@ -66,10 +66,11 @@ function extractDefinitions(text: string, query: string): { definition?: string;
   const excerpts: string[] = [];
   const seen = new Set<string>();
 
-  const push = (raw: string) => {
+  const push = (raw: string, maxLen = 480) => {
     const t = raw.replace(/\s+/g, " ").trim();
-    if (t.length < 12 || t.length > 220) return;
-    const key = t.slice(0, 40);
+    // 允许更长摘要（README 段落）；过短的「a pseudo」级片段直接丢弃
+    if (t.length < 28 || t.length > maxLen) return;
+    const key = t.slice(0, 48);
     if (seen.has(key)) return;
     seen.add(key);
     excerpts.push(t);
@@ -111,7 +112,49 @@ function extractDefinitions(text: string, query: string): { definition?: string;
   }
   if (!definition && excerpts[0]) definition = excerpts[0];
 
+  // 释义抽不到时：取正文前几段（GitHub README / 文档常见），避免只剩 SERP 两词摘要
+  if (excerpts.length === 0 && text.length >= 40) {
+    const paras = text
+      .split(/\n{2,}|(?<=[.!?。！？])\s+/)
+      .map((s) => s.replace(/\s+/g, " ").trim())
+      .filter((s) => s.length >= 40 && s.length <= 500)
+      .slice(0, 4);
+    for (const p of paras) push(p, 500);
+    if (!definition && excerpts[0]) definition = excerpts[0];
+  }
+
   return { definition, excerpts: excerpts.slice(0, 6) };
+}
+
+/** GitHub 仓库页 → 尝试 raw README 正文（比 SERP 摘要有用得多） */
+async function tryGithubReadme(url: string): Promise<string | null> {
+  try {
+    const u = new URL(url);
+    if (!/(^|\.)github\.com$/i.test(u.hostname)) return null;
+    const parts = u.pathname.replace(/^\/+|\/+$/g, "").split("/");
+    if (parts.length < 2) return null;
+    const [owner, repo] = parts;
+    if (!owner || !repo || repo.includes(".")) {
+      // repo 名一般无扩展名；有扩展名可能是 blob 路径，仍试前两段
+    }
+    const o = owner!;
+    const r = repo!.replace(/\.git$/i, "");
+    const candidates = [
+      `https://raw.githubusercontent.com/${o}/${r}/HEAD/README.md`,
+      `https://raw.githubusercontent.com/${o}/${r}/main/README.md`,
+      `https://raw.githubusercontent.com/${o}/${r}/master/README.md`,
+      `https://raw.githubusercontent.com/${o}/${r}/HEAD/README.MD`,
+    ];
+    for (const rawUrl of candidates) {
+      const body = await curlGet(rawUrl, { timeoutSec: 8, lang: "en-US,en;q=0.9" });
+      if (body && body.length >= 80 && !/^404|not found/i.test(body.slice(0, 40))) {
+        return body.slice(0, 8000);
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -127,36 +170,67 @@ export async function enrichOne(
   }
 
   try {
-    const html = await curlGet(r.url, {
-      lang: "zh-CN,zh;q=0.9,en;q=0.8",
-      timeoutSec: 10,
-    });
-    if (!html || html.length < 400) {
-      return { ...r, enriched: false, excerpts: r.snippet ? [r.snippet] : [] };
-    }
-    // 简单反爬页
-    if (/验证码|captcha|access denied|安全验证|请开启JavaScript/i.test(html.slice(0, 2000))) {
-      return { ...r, enriched: false, excerpts: r.snippet ? [r.snippet] : [] };
+    // GitHub 仓库优先拉 README
+    const readme = await tryGithubReadme(r.url);
+    let text = "";
+    if (readme) {
+      text = readme.replace(/\s+/g, " ").trim().slice(0, 12000);
+    } else {
+      const html = await curlGet(r.url, {
+        lang: "zh-CN,zh;q=0.9,en;q=0.8",
+        timeoutSec: 10,
+      });
+      if (!html || html.length < 400) {
+        const snip = (r.snippet || "").trim();
+        return {
+          ...r,
+          enriched: false,
+          excerpts: snip.length >= 28 ? [snip.slice(0, 480)] : [],
+          snippet: snip.length >= 28 ? snip.slice(0, 480) : snip,
+        };
+      }
+      if (/验证码|captcha|access denied|安全验证|请开启JavaScript/i.test(html.slice(0, 2000))) {
+        const snip = (r.snippet || "").trim();
+        return {
+          ...r,
+          enriched: false,
+          excerpts: snip.length >= 28 ? [snip.slice(0, 480)] : [],
+        };
+      }
+      text = htmlToText(html).slice(0, 12000);
     }
 
-    const text = htmlToText(html).slice(0, 12000);
     const { definition, excerpts } = extractDefinitions(text, query);
+    const snip = (r.snippet || "").trim();
     const merged = excerpts.length
       ? excerpts
-      : r.snippet
-        ? [r.snippet]
-        : [];
+      : snip.length >= 28
+        ? [snip.slice(0, 480)]
+        : text.length >= 40
+          ? [text.slice(0, 400)]
+          : [];
+
+    const best =
+      (definition && definition.length >= 28 ? definition : null) ||
+      merged[0] ||
+      (snip.length >= 28 ? snip : "") ||
+      text.slice(0, 400);
 
     return {
       ...r,
       enriched: true,
-      definition,
-      excerpts: merged,
-      // 用更好的 snippet 覆盖空壳
-      snippet: definition || r.snippet || merged[0] || "",
+      definition: definition && definition.length >= 28 ? definition : best.slice(0, 480),
+      excerpts: merged.slice(0, 5),
+      snippet: best.slice(0, 480),
     };
   } catch {
-    return { ...r, enriched: false, excerpts: r.snippet ? [r.snippet] : [] };
+    const snip = (r.snippet || "").trim();
+    return {
+      ...r,
+      enriched: false,
+      excerpts: snip.length >= 28 ? [snip.slice(0, 480)] : [],
+      snippet: snip.slice(0, 480),
+    };
   }
 }
 

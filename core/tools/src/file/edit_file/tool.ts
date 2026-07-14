@@ -7,11 +7,12 @@ import { readFileSync, existsSync } from "node:fs";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
-import { safePath, errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { resolveToolPath } from "../../path-guard.js";
 import { verifyAfterWrite } from "../../code/lsp_verify.js";
 import { atomicWrite } from "../atomic-write.js";
 import { wasRead, isStaleSinceRead, markRead, refreshRead } from "../read-registry.js";
-import { record as recordEdit } from "../file-edit-history.js";
+import { record as recordEdit, wasEditedInSession } from "../file-edit-history.js";
 
 /** 统计 needle 在 haystack 中的出现次数（非重叠）。 */
 function countOccurrences(haystack: string, needle: string): number {
@@ -81,7 +82,7 @@ export class EditFileTool extends Tool {
 
     let fullPath: string;
     try {
-      fullPath = safePath(ctx.workingDir || ctx.projectRoot, userPath);
+      fullPath = resolveToolPath(ctx, userPath).path;
     } catch (err: unknown) {
       return createToolResponse(false, errToString(err));
     }
@@ -93,22 +94,36 @@ export class EditFileTool extends Tool {
     try {
       const content = readFileSync(fullPath, "utf-8");
 
-      // ── 先读后改（防盲改覆盖）──
-      // 未读过该文件 / 读后被外部改动 → 返回当前内容并提示，避免基于陈旧假设覆盖。
-      // 返回内容后登记为已读，模型据此重试即可（不浪费一轮单独 read）。
+      // ── 先读后改：
+      // - 本 session 从未 read/edit 过该已存在文件 → 必须先读
+      // - 读过/写过但磁盘相对登记已变（diff/mtime）→ 必须再读
+      // - 读过/写过且无外部变更 → 可直接 edit
       const sid = ctx.sessionId;
-      if (sid && (!wasRead(sid, fullPath) || isStaleSinceRead(sid, fullPath))) {
-        const stale = wasRead(sid, fullPath);
-        markRead(sid, fullPath);
-        const numbered = content.split("\n").map((l, i) => `${String(i + 1).padStart(4)}\t${l}`).join("\n");
-        const why = stale
-          ? "该文件在你上次读取后被改动过（磁盘 mtime 已变）"
-          : "你尚未读取该文件就尝试编辑";
-        return createToolResponse(
-          false,
-          `${why}。为避免覆盖未知改动，请先 read 再 edit。\n以下是该文件**当前**完整内容，请据此构造精确的 old_text 后重试：\n\n${numbered}`,
-          { payload: { path: fullPath, reason: stale ? "stale" : "unread", total_lines: content.split("\n").length } },
-        );
+      if (sid) {
+        const touched = wasRead(sid, fullPath) || wasEditedInSession(sid, fullPath);
+        const stale = wasRead(sid, fullPath) && isStaleSinceRead(sid, fullPath);
+        if (!touched || stale) {
+          markRead(sid, fullPath);
+          const numbered = content
+            .split("\n")
+            .map((l, i) => `${String(i + 1).padStart(4)}\t${l}`)
+            .join("\n");
+          const why = stale
+            ? "该文件在你上次读取/编辑后磁盘内容已变化（有 diff）"
+            : "该文件本会话尚未阅读或编辑过";
+          return createToolResponse(
+            false,
+            `${why}。为避免覆盖未知改动，请先确认内容再 edit。\n` +
+              `以下是**当前**完整内容（已记为已读，可据此构造 old_text 后重试）：\n\n${numbered}`,
+            {
+              payload: {
+                path: fullPath,
+                reason: stale ? "stale" : "unread",
+                total_lines: content.split("\n").length,
+              },
+            },
+          );
+        }
       }
 
       const occurrences = countOccurrences(content, oldText);
@@ -167,12 +182,14 @@ export class EditFileTool extends Tool {
       const totalLines = updated.split("\n").length;
       const meta = `[path=${fullPath} | replaced=${replacedCount} | old_len=${oldText.length} | new_len=${newText.length} | total_lines=${totalLines}]`;
 
-      // 自我验证闭环：编辑后用 LSP 检查是否引入错误，结果拼回供模型自修
-      const lspNote = await verifyAfterWrite(fullPath);
+      // 验证链：LSP → sqry → 提示词
+      const verifyNote = await verifyAfterWrite(fullPath, {
+        projectRoot: ctx.projectRoot || ctx.workingDir,
+      });
 
       return createToolResponse(
         true,
-        `文件已编辑: ${userPath}（替换 ${replacedCount} 处）\n${meta}${lspNote ?? ""}`,
+        `文件已编辑: ${userPath}（替换 ${replacedCount} 处）\n${meta}${verifyNote ?? ""}`,
         {
           payload: {
             path: fullPath,
@@ -180,7 +197,7 @@ export class EditFileTool extends Tool {
             old_text_length: oldText.length,
             new_text_length: newText.length,
             total_lines: totalLines,
-            lsp_verified: lspNote !== null,
+            verified: verifyNote !== null,
           },
         },
       );

@@ -11,7 +11,7 @@
  * 自动发现 subagents/，createSubagentDelegateTool 为每个子 Agent 生成 subagent_<name> 工具。
  */
 
-import { readFileSync, existsSync, mkdirSync, cpSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, cpSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAgentFromTemplate } from "./template.js";
@@ -131,12 +131,14 @@ export function createTeamFromTemplate(
     if (!existsSync(subSource)) {
       throw new Error(`子 Agent 模板不存在: ${sub.from_template}（路径: ${subSource}）`);
     }
-    // 幂等：已存在则跳过
+    // 幂等：已存在则跳过（仍尝试补齐 kind 字段，兼容旧物化目录）
     if (existsSync(join(subTarget, "agent.json"))) {
+      ensureSubagentKindFields(subTarget, sub);
       subagentDirs.push(subTarget);
       continue;
     }
     cpSync(subSource, subTarget, { recursive: true });
+    ensureSubagentKindFields(subTarget, sub);
     subagentDirs.push(subTarget);
   }
 
@@ -150,4 +152,75 @@ export function createTeamFromTemplate(
       ` + ${subagentDirs.length} 个子 Agent（${team.subagents.map((s) => s.name).join("/")})。\n` +
       `运行时 SubagentRegistry 会自动发现 subagents/ 并注册 subagent_<name> 委托工具。`,
   };
+}
+
+/**
+ * 保证 subagent agent.json 带齐四类 kind 字段（与 defineSubagent / 模板一致）。
+ * 旧模板缺 subagent_kind 时默认 task，避免 delegate/dispatch 无 kind 漏网。
+ */
+function ensureSubagentKindFields(subDir: string, spec: TeamSubagentSpec): void {
+  const jsonPath = join(subDir, "agent.json");
+  if (!existsSync(jsonPath)) return;
+  try {
+    const data = JSON.parse(readFileSync(jsonPath, "utf-8")) as Record<string, unknown>;
+    let dirty = false;
+    if (spec.name && data.name !== spec.name) {
+      data.name = spec.name;
+      dirty = true;
+    }
+    if (spec.display_name && data.display_name !== spec.display_name) {
+      data.display_name = spec.display_name;
+      dirty = true;
+    }
+    if (spec.role && data.role !== spec.role) {
+      data.role = spec.role;
+      dirty = true;
+    }
+    if (spec.description && data.description !== spec.description) {
+      data.description = spec.description;
+      dirty = true;
+    }
+    // kind 字段补齐
+    if (!data.subagent_kind) {
+      const role = String(data.role ?? "");
+      data.subagent_kind =
+        role === "fork" || role === "helper" || role === "task" || role === "project"
+          ? role
+          : "task";
+      dirty = true;
+    }
+    if (data.scope !== "subagent") {
+      data.scope = "subagent";
+      dirty = true;
+    }
+    if (data.list_in_manager === undefined) {
+      data.list_in_manager = true;
+      dirty = true;
+    }
+    if (data.use_executor === undefined) {
+      data.use_executor = true;
+      dirty = true;
+    }
+    if (data.persist_context === undefined) {
+      data.persist_context = true;
+      dirty = true;
+    }
+    if (data.enable_loop === undefined) {
+      data.enable_loop = true;
+      dirty = true;
+    }
+    if (data.over_round_policy === undefined) {
+      data.over_round_policy = "wrap_up";
+      dirty = true;
+    }
+    if (data.status === undefined) {
+      data.status = "active";
+      dirty = true;
+    }
+    if (dirty) {
+      writeFileSync(jsonPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+    }
+  } catch {
+    /* ignore */
+  }
 }

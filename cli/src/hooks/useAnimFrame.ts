@@ -5,11 +5,15 @@
  * 共享 tick。旧实现每个 ToolCard/Thinking/Status 各自 setInterval，
  * 流式中 4–8 个独立 timer → 4–8 次 React setState → 多次 Ink 全树布局
  * + 全屏 paint，是卡顿主因之一。
+ *
+ * 注意：只要有任意组件 useAnimFrame(true)，就会驱动 React commit → Ink
+ * onRender → 全屏 paint。空闲/仅后台任务时务必 active=false（用静态图标）。
  */
 
 import { useSyncExternalStore } from "react";
 import { perfInc } from "./perf.js";
 import { ANIM_INTERVAL_MS } from "../config/ui-constants.js";
+import { isLiteNoAnim } from "../config/lite-mode.js";
 
 const DEFAULT_INTERVAL_MS = ANIM_INTERVAL_MS;
 
@@ -25,6 +29,7 @@ function emit(): void {
 }
 
 function ensureClock(): void {
+  if (isLiteNoAnim()) return; // LITE：永不挂 spinner 时钟
   if (timer) return;
   timer = setInterval(emit, intervalMs);
   if (typeof timer === "object" && "unref" in timer) timer.unref();
@@ -55,15 +60,15 @@ function getFrame(): number {
  * @param _intervalMs 兼容旧 API；实际由全局时钟决定（避免每组件不同 interval 分裂）
  */
 export function useAnimFrame(active: boolean, _intervalMs = DEFAULT_INTERVAL_MS): number {
-  // 无 active 时返回 0 且不订阅，避免空闲泄漏
+  // LITE / 未 active：不订阅时钟
+  const on = active && !isLiteNoAnim();
   const frame = useSyncExternalStore(
-    active ? subscribe : () => () => {},
+    on ? subscribe : () => () => {},
     getFrame,
     getFrame,
   );
-  // 兼容：若有人仍用旧 interval 语义，忽略但保持 API
   void _intervalMs;
-  return active ? frame : 0;
+  return on ? frame : 0;
 }
 
 /** 测试 / 调试：当前全局帧 */

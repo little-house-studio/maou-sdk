@@ -111,6 +111,8 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     enableCompression: opts.enableCompression,
     agentName: name,
     summarizer: opts.summarizer,
+    // coding 产品默认开启会话文件 diff 监听（DESIGN.md 变更感知）
+    fileDiffWatch: true,
     log:
       opts.log ??
       ((level, msg) =>

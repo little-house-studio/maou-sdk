@@ -65,3 +65,35 @@ export function refreshRead(sessionId: string, absPath: string): void {
 export function clearReadRegistry(sessionId: string): void {
   registry.delete(sessionId);
 }
+
+// ── 覆写二次确认（避免「明确要覆盖」时死循环 read）────────────────
+
+/** 因未读被拦下的 path → 允许下一次 write 直接覆写 */
+const pendingOverwrite = new Map<string, Set<string>>();
+
+function pendingSet(sessionId: string): Set<string> {
+  let s = pendingOverwrite.get(sessionId);
+  if (!s) {
+    s = new Set();
+    pendingOverwrite.set(sessionId, s);
+  }
+  return s;
+}
+
+/** 登记：本 session 下次对 path 的 write 可跳过先读（force 或二次尝试） */
+export function markOverwritePending(sessionId: string, absPath: string): void {
+  if (!sessionId || !absPath) return;
+  pendingSet(sessionId).add(absPath);
+}
+
+export function consumeOverwritePending(sessionId: string, absPath: string): boolean {
+  if (!sessionId || !absPath) return false;
+  const s = pendingOverwrite.get(sessionId);
+  if (!s?.has(absPath)) return false;
+  s.delete(absPath);
+  return true;
+}
+
+export function clearOverwritePending(sessionId: string): void {
+  pendingOverwrite.delete(sessionId);
+}

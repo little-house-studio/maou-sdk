@@ -6,6 +6,18 @@
 export { Tool, createToolResponse, toolDir } from './base.js'
 export type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult } from './base.js'
 
+// 路径沙箱（subagent project / task scoped）
+export {
+  resolveToolPath,
+  safePath,
+  pathGuardFromPolicy,
+} from './path-guard.js'
+export type {
+  PathGuard,
+  PathGuardMode,
+  ResolvedToolPath,
+} from './path-guard.js'
+
 export { ToolRegistry } from './registry.js'
 export { ToolExecutor } from './executor.js'
 export { registerBuiltins } from './impls/index.js'
@@ -37,6 +49,7 @@ export {
 export {
   setTerminalPolicyRoot,
   setTerminalReviewer,
+  getTerminalReviewer,
   setTerminalApprover,
   getMode as getTerminalMode,
   setMode as setTerminalMode,
@@ -140,5 +153,12 @@ export type { FileEditRecord } from './file/file-edit-history.js'
 // 通过 createSubagentDelegateTool() 按发现的子 Agent 动态创建并注册为 subagent_<name>。
 // SubagentDelegateTool 类仅用于类型导出/文档化契约。
 export { SubagentDelegateTool, createSubagentDelegateTool } from './agent_team/subagent_delegate/tool.js'
+export {
+  loadSubagentKindOptions,
+  loadSubagentKindOptionsFromCtx,
+  forkOptionsFromAgentJson,
+  candidateAgentJsonPaths,
+} from './agent_team/subagent-kind-options.js'
+export type { LoadSubagentKindOptionsArgs } from './agent_team/subagent-kind-options.js'
 export { collectDiff, formatDiffForReport } from './agent_team/diff-collector.js'
 export type { DiffSummary, DiffEntry } from './agent_team/diff-collector.js'

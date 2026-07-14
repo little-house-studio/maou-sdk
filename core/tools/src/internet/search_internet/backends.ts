@@ -976,6 +976,49 @@ export async function tryDocsSiteSearch(
       snippet: "The open source coding agent on GitHub.",
     });
   }
+  if (/phaser/i.test(q)) {
+    candidates.push({
+      title: "Phaser - A fast, fun and free open source HTML5 game framework",
+      url: "https://phaser.io/",
+      snippet: "Official Phaser site: docs, examples, and downloads for 2D browser games.",
+    });
+    candidates.push({
+      title: "Phaser 3 Examples",
+      url: "https://phaser.io/examples",
+      snippet: "Official Phaser 3 code examples including racing and physics demos.",
+    });
+    candidates.push({
+      title: "Phaser 3 API Documentation",
+      url: "https://newdocs.phaser.io/",
+      snippet: "Phaser 3 official API documentation.",
+    });
+  }
+  if (/ebiten|ebitengine/i.test(q) || (/go\b/i.test(q) && /游戏|game\s*engine|2d\s*game/i.test(q))) {
+    candidates.push({
+      title: "Ebitengine - A dead simple 2D game engine for Go",
+      url: "https://ebitengine.org/",
+      snippet: "Official Ebitengine (Ebiten) documentation and guides for Go 2D games.",
+    });
+    candidates.push({
+      title: "hajimehoshi/ebiten",
+      url: "https://github.com/hajimehoshi/ebiten",
+      snippet: "Ebitengine source and examples on GitHub.",
+    });
+  }
+  if (/godot/i.test(q)) {
+    candidates.push({
+      title: "Godot Engine documentation",
+      url: "https://docs.godotengine.org/",
+      snippet: "Official Godot Engine documentation.",
+    });
+  }
+  if (/three\.?js|webgl/i.test(q)) {
+    candidates.push({
+      title: "three.js docs",
+      url: "https://threejs.org/docs/",
+      snippet: "Official three.js documentation.",
+    });
+  }
 
   if (candidates.length === 0) return null;
   // HEAD/GET 探测可达性，不可达则丢弃（避免死链）

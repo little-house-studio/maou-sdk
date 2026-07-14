@@ -58,17 +58,62 @@ export interface SearchOptions {
   limit?: number;
 }
 
-/** search: 按名搜符号 */
-export async function search(cwd: string, symbol: string, opts: SearchOptions = {}): Promise<SqrySearchResult> {
-  const args = ["search", "--json"];
+/**
+ * 语言别名 → sqry 正式 id（`sqry --list-languages`）。
+ * agent 常写 ts/js/py，sqry 19 只认 typescript/javascript/python。
+ */
+const LANG_ALIASES: Record<string, string> = {
+  ts: "typescript",
+  tsx: "typescript",
+  js: "javascript",
+  jsx: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  py: "python",
+  rs: "rust",
+  go: "go",
+  rb: "ruby",
+  cs: "csharp",
+  cpp: "cpp",
+  "c++": "cpp",
+  kt: "kotlin",
+  sh: "shell",
+  bash: "shell",
+};
+
+/** 归一化 lang 参数 */
+export function normalizeLang(lang?: string): string | undefined {
+  if (!lang) return undefined;
+  const key = lang.trim().toLowerCase();
+  return LANG_ALIASES[key] ?? key;
+}
+
+/**
+ * 组装 search 参数。
+ * sqry 19+：`--kind` / `--lang` / `--exact` / `--fuzzy` 是**全局**选项，
+ * 必须写在 `search` 子命令**之前**；写在 search 后会被拒绝。
+ */
+export function buildSearchArgs(symbol: string, opts: SearchOptions = {}): string[] {
+  const args: string[] = [];
   if (opts.kind) args.push("--kind", opts.kind);
-  if (opts.lang) args.push("--lang", opts.lang);
+  const lang = normalizeLang(opts.lang);
+  if (lang) args.push("--lang", lang);
   if (opts.exact) args.push("--exact");
   if (opts.fuzzy) args.push("--fuzzy");
-  args.push(symbol, ".");
+  args.push("search", "--json", symbol, ".");
+  return args;
+}
 
+/** search: 按名搜符号 */
+export async function search(cwd: string, symbol: string, opts: SearchOptions = {}): Promise<SqrySearchResult> {
+  const args = buildSearchArgs(symbol, opts);
   const result = await runSqry(args, cwd);
   if (result.code !== 0 && !result.stdout.trim()) {
+    // 参数错误等：把 stderr 暴露出去，避免被当成「未找到」
+    const errText = (result.stderr || "").trim();
+    if (errText) {
+      return { entries: [], totalMatches: 0, isJson: false, rawText: errText };
+    }
     return { entries: [], totalMatches: 0, isJson: true };
   }
   return parseSearch(result.stdout);
@@ -161,8 +206,11 @@ export interface UnusedOptions {
 /** unused: 死代码 */
 export async function unused(cwd: string, opts: UnusedOptions = {}): Promise<SqryTextResult | null> {
   const scope = opts.scope ?? "all";
-  const args = ["unused", "--scope", scope, "."];
-  if (opts.lang) args.push("--lang", opts.lang);
+  // lang 同样是全局选项（sqry 19+）
+  const args: string[] = [];
+  const lang = normalizeLang(opts.lang);
+  if (lang) args.push("--lang", lang);
+  args.push("unused", "--scope", scope, ".");
   const result = await runSqry(args, cwd);
   if (result.code !== 0 && !result.stdout.trim()) {
     return null;

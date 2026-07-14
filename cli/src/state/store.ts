@@ -32,7 +32,14 @@ import { dispatchDisplayEvent } from "../events/display-events.js";
 import { SUPERVISOR_MANAGER } from "@little-house-studio/agent";
 import { loadCacheHistoryFromLedger } from "../lib/prompt-cache.js";
 import { perfInc } from "../hooks/perf.js";
-import { noteUiPhase } from "../hooks/process-stats.js";
+import { noteUiPhase, setScrollBusy } from "../hooks/process-stats.js";
+import {
+  noteScrollWheel,
+  scrollCoalesceMs,
+  scrollCommitMinMs,
+  scrollWheelLines,
+} from "../hooks/scroll-pace.js";
+import { invalidateClickTargetCache } from "../input/click-target.js";
 import {
   userHistoryPath,
   projectLastSessionPath,
@@ -175,6 +182,8 @@ interface Store extends UIState {
   closeCompletion: () => void;
   // ToolCard 展开/折叠时调整滚动偏移（保持卡片头不动）
   expandShift: (delta: number) => void;
+  /** MD/折叠等改高后通知 ScrollHistory 重测 */
+  bumpContentLayout: () => void;
   // 鼠标选区（自画反色 + OSC52 复制）
   selection: { start: { row: number; col: number }; end: { row: number; col: number } } | null;
   setSelection: (s: { start: { row: number; col: number }; end: { row: number; col: number } } | null) => void;
@@ -234,6 +243,7 @@ const initialState: UIState = {
   autoFollow: true,
   chatHistoryStart: -1,
   scrollActive: false,
+  contentLayoutEpoch: 0,
 };
 
 // 输入历史 / 上次会话持久化（路径见 config/paths）
@@ -410,6 +420,9 @@ const LOCAL_COMMANDS = new Set([
   // 新会话 / 清空：本地处理，避免走 runtime 留下 "/new" 气泡挡住画廊
   "new",
   "clear",
+  // 整屏显存文字截图（不依赖快捷键是否到达）
+  "screenshot",
+  "dump",
 ]);
 
 /** toast 自动消失计时（模块级，避免连发 toast 时旧 timer 清掉新提示） */
@@ -639,6 +652,23 @@ export const useStore = create<Store>((set, get) => ({
         set({ overlay: null }); // 从命令面板进来时关掉面板
         break;
       }
+      case "screenshot":
+      case "dump": {
+        // 动态 import，避免 store ↔ vram 循环依赖在冷启动路径变重
+        void import("../lib/screen-dump.js").then(({ copyScreenDump }) => {
+          const r = copyScreenDump();
+          if (r.ok) {
+            get().toastMsg(
+              `已复制整屏 ${r.chars} 字（${r.lines} 行）· 可粘贴发给 AI`,
+              "ok",
+            );
+          } else {
+            get().toastMsg(r.message, "warn");
+          }
+        });
+        set({ overlay: null });
+        break;
+      }
       case "new":
         get().startNewSession({ clearScreen: true, toast: "新会话" });
         break;
@@ -668,7 +698,10 @@ export const useStore = create<Store>((set, get) => ({
   autoFollow: true,
   chatHistoryStart: -1,
   scrollActive: false,
+  contentLayoutEpoch: 0,
   setChatHistoryStart: (n) => set({ chatHistoryStart: n }),
+  bumpContentLayout: () =>
+    set((s) => ({ contentLayoutEpoch: (s.contentLayoutEpoch ?? 0) + 1 })),
   markScrollActive: () => {
     markScrollActiveNow();
   },
@@ -872,9 +905,20 @@ export const useStore = create<Store>((set, get) => ({
   // 预增 maxChatScroll 让随后 ScrollHistory 测量 effect 的 `max===s.maxChatScroll` 守卫命中跳过，
   // 避免与 setMaxChatScroll(followGrowth) 双重叠加 offset。
   expandShift: (delta) => set((s) => {
-    if (delta === 0) return s;
+    // 始终 bump 世代，让 ScrollHistory 用 Yoga 实测校正（预估 delta 可能不准）
+    const epoch = (s.contentLayoutEpoch ?? 0) + 1;
+    if (delta === 0) return { contentLayoutEpoch: epoch };
+    // 贴底跟随：只重测，保持 offset=0，不要因 expand 关掉 autoFollow
+    if (s.autoFollow || s.chatScrollOffset <= 0) {
+      return {
+        contentLayoutEpoch: epoch,
+        autoFollow: true,
+        chatScrollOffset: 0,
+      };
+    }
     const newMax = s.maxChatScroll + delta;
     return {
+      contentLayoutEpoch: epoch,
       maxChatScroll: Math.max(0, newMax),
       chatScrollOffset: Math.max(0, Math.min(newMax, s.chatScrollOffset + delta)),
       autoFollow: false,
@@ -938,24 +982,31 @@ export const useStore = create<Store>((set, get) => ({
   },
 }));
 
-// ── 滚轮：每事件 ±1 行，合并窗口内合成一次 store 更新（降 ink/paint）──
-const WHEEL_LINES = 1;
+// ── 滚轮：合帧攒 delta + 限频 commit（ink≈paint≈25/s）──
 let overscrollUp = 0;
 let scrollIdleTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingScrollDelta = 0;
 /** 合并窗内向上滚轮次数（顶缘过滚按「格」计，不是按合并后的行数） */
 let pendingUpNotches = 0;
 let scrollFlushTimer: ReturnType<typeof setTimeout> | null = null;
+/** 上次真正 apply（触发 React）的时间 */
+let lastScrollCommitAt = 0;
 
 function markScrollActiveNow(): void {
   const s = useStore.getState();
-  if (!s.scrollActive) useStore.setState({ scrollActive: true });
+  if (!s.scrollActive) {
+    useStore.setState({ scrollActive: true });
+    setScrollBusy(true);
+  }
   if (scrollIdleTimer) clearTimeout(scrollIdleTimer);
   scrollIdleTimer = setTimeout(() => {
     scrollIdleTimer = null;
     // 静止前冲刷残余 delta
     flushPendingScroll();
     useStore.setState({ scrollActive: false });
+    setScrollBusy(false);
+    // 滚动结束后矩形已变：立刻作废 click 缓存，否则 hover 用旧坐标会「指着不亮」
+    invalidateClickTargetCache();
   }, SCROLL_IDLE_MS);
 }
 
@@ -1015,26 +1066,44 @@ function flushPendingScroll(): void {
     clearTimeout(scrollFlushTimer);
     scrollFlushTimer = null;
   }
+  if (pendingScrollDelta === 0 && pendingUpNotches === 0) return;
+
+  // 限频：未到最小间隔则推迟（delta 继续在 pending 里累加）
+  const now = Date.now();
+  const minGap = scrollCommitMinMs();
+  const since = now - lastScrollCommitAt;
+  if (lastScrollCommitAt > 0 && since < minGap) {
+    scrollFlushTimer = setTimeout(() => {
+      scrollFlushTimer = null;
+      flushPendingScroll();
+    }, minGap - since);
+    return;
+  }
+
   const d = pendingScrollDelta;
   const up = pendingUpNotches;
   pendingScrollDelta = 0;
   pendingUpNotches = 0;
-  if (d === 0 && up === 0) return;
+  lastScrollCommitAt = now;
   applyChatScrollDelta(d, up);
 }
 
 function enqueueChatScroll(dir: "up" | "down", step: number): void {
+  // step 保留兼容；实际步长由 scroll-pace 自适应
   void step;
-  const line = dir === "up" ? WHEEL_LINES : -WHEEL_LINES;
+  noteScrollWheel();
+  const lines = scrollWheelLines();
+  const line = dir === "up" ? lines : -lines;
   pendingScrollDelta += line;
   if (dir === "up") pendingUpNotches += 1;
   markScrollActiveNow();
-  // 合并高频触控板事件：~30fps store 更新，视觉仍按累计行数跳
+  // 短窗合帧；真正 React commit 由 scrollCommitMinMs 限频
   if (!scrollFlushTimer) {
+    const wait = scrollCoalesceMs(SCROLL_COALESCE_MS);
     scrollFlushTimer = setTimeout(() => {
       scrollFlushTimer = null;
       flushPendingScroll();
-    }, SCROLL_COALESCE_MS);
+    }, wait);
   }
 }
 

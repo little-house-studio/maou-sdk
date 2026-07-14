@@ -46,6 +46,14 @@ function sessionList(sessionId: string): FileEditRecord[] {
   return list;
 }
 
+/** 本 session 是否对该 path 做过 edit/write（有 diff 历史）。 */
+export function wasEditedInSession(sessionId: string, absPath: string): boolean {
+  if (!sessionId || !absPath) return false;
+  const list = registry.get(sessionId);
+  if (!list?.length) return false;
+  return list.some((r) => r.path === absPath);
+}
+
 /**
  * 登记一次文件编辑（在 atomicWrite 之前调用）。
  *

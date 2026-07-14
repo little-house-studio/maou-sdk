@@ -3,8 +3,7 @@
  */
 
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { ConfigStore } from "@little-house-studio/types";
+import { ConfigStore, resolveUserMaouRoot } from "@little-house-studio/types";
 import { SessionStore } from "@little-house-studio/context";
 import {
   ToolRegistry,
@@ -15,7 +14,10 @@ import { LLMClient } from "@little-house-studio/llm";
 import type { APIPreset } from "@little-house-studio/llm";
 import { AgentRegistry } from "../agent/registry.js";
 import type { AgentEntry } from "../agent/registry.js";
-import { installTerminalReviewer } from "./terminal-reviewer.js";
+import {
+  installTerminalReviewer,
+  resolveTerminalReviewPreset,
+} from "./terminal-reviewer.js";
 import {
   getDefaultPresetFromConfigStore,
   loadPresetsFromMaouConfig,
@@ -71,6 +73,7 @@ export function createStandardAgentDeps(
   applyAgentSkillOptions(opts.skillOptions);
 
   if (opts.installReviewer !== false) {
+    // 审核模式 auto = helper 辅助 agent（单轮无 tool / AuxModelCaller）
     installTerminalReviewer({
       llmClient,
       policyRoot: maouRoot,
@@ -78,6 +81,23 @@ export function createStandardAgentDeps(
       getPreset: () =>
         getDefaultPresetFromConfigStore(configStore) ??
         (getDefaultPresetFromMaouConfig() as Record<string, unknown> | undefined),
+      getHelperPreset: () => {
+        try {
+          const cfg = configStore.get();
+          const presets = (cfg.api.presets ?? []) as unknown as APIPreset[];
+          const main =
+            (getDefaultPresetFromConfigStore(configStore) as APIPreset | undefined) ??
+            (getDefaultPresetFromMaouConfig() as APIPreset | undefined);
+          if (!main) return undefined;
+          return resolveTerminalReviewPreset(presets, main, {
+            helperPresetIdx: cfg.api.helperPreset,
+            helperRole: cfg.api.roles?.helper,
+            fastRole: cfg.api.roles?.fast,
+          }) as Record<string, unknown> | undefined;
+        } catch {
+          return undefined;
+        }
+      },
     });
   }
 
@@ -96,7 +116,7 @@ export function listAgentsForCli(
   maouRoot?: string,
   projectRoot?: string,
 ): AgentEntry[] {
-  const root = maouRoot ?? join(homedir(), ".maou");
+  const root = maouRoot ?? resolveUserMaouRoot();
   const proj = projectRoot ?? process.cwd();
   try {
     return new AgentRegistry(root, proj).list();
