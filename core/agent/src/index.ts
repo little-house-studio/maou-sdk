@@ -169,6 +169,7 @@ export {
   setDefaultSkillScanOptions,
   resolveSkillScanOptions,
   previewAgentSystemPrompt,
+  previewAgentRequestBundle,
 } from "./bootstrap/index.js";
 export type {
   CreateCallMainAgentOptions,
@@ -180,5 +181,7 @@ export type {
   SkillScanOptions,
   PreviewSystemPromptOptions,
   PreviewSystemPromptResult,
+  PreviewRequestBundleResult,
+  PreviewRequestSection,
   GlobalApiWriteOptions,
 } from "./bootstrap/index.js";

@@ -7,6 +7,8 @@
 # ─── 运行时数据 ───
 .maou/
 .sqry/
+.cache/
+**/.cache/
 
 # ─── 第三方必要二进制（ensure-dcg 下载，勿提交） ───
 vendor/bin/
@@ -14,21 +16,38 @@ vendor/bin/
 # ─── 编译产物 ───
 dist/
 build/
+**/dist/
+**/build/
 *.tsbuildinfo
 *.map
 
 # ─── Node.js ───
 node_modules/
+**/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 *.tgz
 
-# ─── Rust / napi-rs ───
-terminal-engine/target/
+# ─── Rust / Cargo（tui-ratatui、term-raster、terminal-engine 等）───
+**/target/
+# terminal-engine napi 生成物（源码外）
 terminal-engine/index.js
 terminal-engine/index.d.ts
 terminal-engine/*.node
+
+# ─── CLI 基准 / 压测输出（体积巨大）───
+cli/scroll-bench-result.txt
+**/scroll-bench-result.txt
+**/scroll-bench*.txt
+**/ink-scroll-bench*.json
+cli/bench-out/
+cli/bench-results/
+cli/scripts/*.out.txt
+
+# ─── MCP 本地配置（可能含路径/密钥）───
+.mcp.json
+**/.mcp.json
 
 # ─── IDE / 编辑器 ───
 .idea/
@@ -45,6 +64,7 @@ Thumbs.db
 .trae/
 .agents/
 .qoder/
+.grok/
 
 # ─── 临时文件 ───
 *.tmp
@@ -52,3 +72,6 @@ Thumbs.db
 *.orig
 *.log
 logs/
+*.log.*
+coverage/
+.nyc_output/

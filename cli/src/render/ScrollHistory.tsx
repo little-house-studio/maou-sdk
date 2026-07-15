@@ -53,6 +53,11 @@ import {
   VIRTUAL_BUFFER,
 } from "./scrollback-heights.js";
 import { MeasuredBlock } from "./MeasuredBlock.js";
+import {
+  ScrollStubMsg,
+  ScrollStubSys,
+  scrollStubEnabled,
+} from "./ScrollStub.js";
 
 type Item = ScrollItem;
 
@@ -412,7 +417,10 @@ export function ScrollHistory({ frame }: { frame: number }) {
   const reserveRail = maxS > 0 || (!autoFollow && fromBottomStore > 0);
   const chatWFixed = reserveRail ? Math.max(8, innerW - 1) : innerW;
 
-  const renderItem = (it: Item) => {
+  // 滚动中用固定高度 stub（无 MD/ToolCard），停稳再挂完整行 —— 对齐 Grok scrub
+  const useStub = virtOn && scrollStubEnabled() && scrollActive;
+
+  const renderItem = (it: Item, idxInWindow: number) => {
     if (!virtOn) {
       return it.type === "msg" ? (
         <MessageRow msg={it.data} frame={frame} />
@@ -420,6 +428,41 @@ export function ScrollHistory({ frame }: { frame: number }) {
         <SystemEventRow ev={it.data} />
       );
     }
+
+    const h = Math.max(1, heights[idxInWindow] ?? 2);
+
+    if (useStub) {
+      // 固定 height 盒：与 cache 一致，滚动中不 measure、不挂重组件
+      return (
+        <Box
+          flexDirection="column"
+          width={chatWFixed}
+          height={h}
+          overflow="hidden"
+          flexShrink={0}
+        >
+          {it.type === "msg" ? (
+            <ScrollStubMsg
+              msg={it.data}
+              height={h}
+              width={chatWFixed}
+              userColor={t.user}
+              userBg={t.userBg}
+              assistantColor={t.assistant ?? t.fg}
+              dim={t.dim}
+            />
+          ) : (
+            <ScrollStubSys
+              ev={it.data}
+              height={h}
+              width={chatWFixed}
+              color={t.dim}
+            />
+          )}
+        </Box>
+      );
+    }
+
     return (
       <MeasuredBlock
         id={it.id}
@@ -477,11 +520,14 @@ export function ScrollHistory({ frame }: { frame: number }) {
               </Box>
             ) : null}
 
-            {(virtOn ? visible : windowed).map((it) => (
-              <React.Fragment key={`${it.type}:${it.id}`}>
-                {renderItem(it)}
-              </React.Fragment>
-            ))}
+            {(virtOn ? visible : windowed).map((it, i) => {
+              const idx = virtOn ? vr.startIdx + i : i;
+              return (
+                <React.Fragment key={`${it.type}:${it.id}`}>
+                  {renderItem(it, idx)}
+                </React.Fragment>
+              );
+            })}
 
             {virtOn && vr.padBottom > 0 ? (
               <Box height={vr.padBottom} flexShrink={0} width={chatWFixed}>

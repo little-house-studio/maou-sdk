@@ -39,7 +39,10 @@
     "bench:scroll:pure": "tsx scripts/ink-scroll-bench.tsx --mode pure --mount full --lines 86 --auto --auto-ms 6000",
     "bench:scroll:vram": "tsx scripts/ink-scroll-bench.tsx --mode vram --mount full --lines 86 --auto --auto-ms 6000",
     "bench:scroll:heavy": "tsx scripts/ink-scroll-bench.tsx --mode vram --heavy --mount full --lines 86 --auto --auto-ms 6000",
-    "bench:scroll:all": "npm run bench:scroll:pure && npm run bench:scroll:vram && npm run bench:scroll:heavy && echo && echo '=== 打开结果 ===' && cat scroll-bench-result.txt"
+    "bench:scroll:all": "npm run bench:scroll:pure && npm run bench:scroll:vram && npm run bench:scroll:heavy && echo && echo '=== 打开结果 ===' && cat scroll-bench-result.txt",
+    "build:tui-ratatui": "cargo build --release --manifest-path tui-ratatui/Cargo.toml",
+    "build:tui-ratatui:debug": "cargo build --manifest-path tui-ratatui/Cargo.toml",
+    "dev:ratatui": "npm run build:tui-ratatui:debug && MAOU_TUI=ratatui tsx src/index.tsx coding"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",

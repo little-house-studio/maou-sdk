@@ -74,6 +74,13 @@ export interface AgentEntry {
   updated_at: string;
   /** 工具白名单（可选），["*"]或缺省=全部可用 */
   tools?: string[];
+  /**
+   * MCP 工具暴露策略：
+   * - flat：每个 MCP tool 一条 schema（mcp__server__tool）
+   * - gateway：仅一个元工具 `mcp`（list/search/schema/call）
+   * coding 模板默认 gateway。
+   */
+  mcp_tool_strategy?: "flat" | "gateway" | string;
   /** agent 轮次上限（可选），0=无限 */
   round_limit?: number;
   /** 模型配置（可选），覆盖 preset 中的 model */

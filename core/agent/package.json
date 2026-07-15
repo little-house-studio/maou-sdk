@@ -13,24 +13,33 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "templates", "README.md"],
+  "files": [
+    "dist",
+    "templates",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "smoke:mcp": "node scripts/mcp-coding-smoke.mjs",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@little-house-studio/types": "workspace:*",
-    "@little-house-studio/llm": "workspace:*",
-    "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/context": "workspace:*",
+    "@little-house-studio/llm": "workspace:*",
     "@little-house-studio/prompt": "workspace:*",
+    "@little-house-studio/tools": "workspace:*",
+    "@little-house-studio/types": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "pino": "^9.0.0",
-    "pino-pretty": "^11.0.0"
+    "pino-pretty": "^11.0.0",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.6"
   },
   "engines": {
     "node": ">=20"

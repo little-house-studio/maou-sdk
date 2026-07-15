@@ -10,7 +10,7 @@ const COMMANDS: SelectItem[] = [
   { value: "new", label: "新对话", description: "清屏 · 画廊 · /new" },
   { value: "model", label: "选择模型", description: "Ctrl+M" },
   { value: "sessions", label: "切换会话", description: "历史会话" },
-  { value: "prompt", label: "System Prompt", description: "/prompt 预览（不进上下文）" },
+  { value: "prompt", label: "Request Preview", description: "/prompt 调试 system·bake·tools·before_user（不进上下文）" },
   { value: "settings", label: "设置", description: "Ctrl+," },
   { value: "agents", label: "Agent 管理", description: "空输入框 ←" },
   { value: "help", label: "帮助", description: "快捷键" },

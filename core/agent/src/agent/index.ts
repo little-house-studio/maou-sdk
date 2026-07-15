@@ -214,17 +214,79 @@ export type {
 
 // ── defineConnection API + ConnectionRegistry ──────────────────────────────
 
-export { defineMcpConnection, defineOpenApiConnection, ConnectionRegistry } from "./define-connection.js";
+export {
+  defineMcpConnection,
+  defineOpenApiConnection,
+  ConnectionRegistry,
+  expandConnectionEnv,
+} from "./define-connection.js";
 export type {
   ConnectionAuth,
   TokenAuth,
   OAuthAuth,
   ApiKeyAuth,
   ConnectionType,
+  McpConnectionTransport,
   DefineMcpConnectionConfig,
   DefineOpenApiConnectionConfig,
   DefinedConnection,
 } from "./define-connection.js";
+
+// ── MCP host/client（session + manager + tool bridge）──────────────────────
+
+export {
+  McpSession,
+  McpConnectionManager,
+  McpToolExecutionError,
+  isMcpToolExecutionError,
+  createMcpBridgeTool,
+  invokerAsHandler,
+  registerMcpTools,
+  unregisterMcpTools,
+  MCP_TOOL_PREFIX,
+  sanitizeMcpSegment,
+  namespacedMcpToolName,
+  isNamespacedMcpToolName,
+  parseNamespacedMcpToolName,
+  mapMcpInputSchemaToJsonSchema,
+  mapListedToolToDescriptor,
+  flattenMcpContentToText,
+  extractMcpImages,
+  mapCallToolResultToToolResponse,
+  mapProtocolErrorToToolResponse,
+  listStandardMcpConfigPaths,
+  mapStandardTransport,
+  standardEntryToConnection,
+  parseMcpServersFile,
+  discoverStandardMcpConnections,
+  snapshotMcpCatalog,
+  enrichMcpCatalogWithProtocolLists,
+  formatMcpCatalogPrompt,
+  buildMcpCatalogPrompt,
+  MCP_GATEWAY_TOOL_NAME,
+  parseMcpToolExposureStrategy,
+  readMcpToolStrategyFromAgentConfig,
+  createMcpGatewayTool,
+} from "./mcp/index.js";
+export type {
+  McpSessionConfig,
+  McpSessionStatus,
+  McpTransportKind,
+  McpManagerOptions,
+  McpConnectionState,
+  McpToolCallHandler,
+  McpListedTool,
+  McpContentBlock,
+  McpCallToolResult,
+  McpToolExposureStrategy,
+  McpGatewayBackend,
+  StandardMcpServerEntry,
+  StandardMcpConfigFile,
+  DiscoverMcpConfigOptions,
+  DiscoveredMcpConfigSource,
+  McpCatalogServerBlock,
+  McpCatalogSnapshot,
+} from "./mcp/index.js";
 
 // ── 子 Agent 注册表 ────────────────────────────────────────────────────────
 

@@ -58,6 +58,9 @@ ${formatProductList()}
   MAOU_LITE=1              帧率试验：关动画/hover/闪烁/轮询，历史窗缩到 12
   MAOU_LITE_HISTORY=N      LITE 下历史条数（默认 12）
   MAOU_PERF_HUD=0          关闭右上角性能条
+  MAOU_TUI=ink|ratatui     TUI 后端（默认 ink；ratatui 需 cargo build）
+  MAOU_TUI_BIN=path        ratatui 二进制路径（可选）
+  maou coding --tui ratatui  同上（旗标优先于 env）
 `;
 
 function printHelp(): void {
@@ -90,6 +93,7 @@ async function main(): Promise<void> {
   let systemCmd: string | undefined;
   let productName: string | undefined;
   let configTarget: string | undefined;
+  let tuiBackend: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
@@ -99,6 +103,14 @@ async function main(): Promise<void> {
     }
     if (a === "--theme") {
       themePath = argv[++i];
+      continue;
+    }
+    if (a === "--tui") {
+      tuiBackend = argv[++i];
+      continue;
+    }
+    if (a.startsWith("--tui=")) {
+      tuiBackend = a.slice("--tui=".length);
       continue;
     }
     if (a === "--force") {
@@ -171,6 +183,7 @@ async function main(): Promise<void> {
     configTarget,
     themePath,
     yes,
+    tui: tuiBackend,
   });
   process.exit(0);
 }

@@ -9,11 +9,12 @@
  *   把调用转发给父 Agent 的 MCP 连接——子 Agent 不建连、不持有 MCP client。
  *
  * 解耦：
- *   - agent 包不依赖具体 MCP client 实现（@modelcontextprotocol/sdk 等）
  *   - McpToolDescriptor + McpToolInvoker 是最小契约（types 包定义）
- *   - harness/AgentRuntime 负责装配真实 invoker（调 McpClient.callTool）
- *   - mcp-proxy.ts 只负责把 descriptor → Tool 包装 + 转发调用
+ *   - 真实会话由 `./mcp`（McpSession / McpConnectionManager）基于官方 SDK 实现
+ *   - AgentRuntime / Runtime 门面装配 invoker（manager.createInvoker）
+ *   - mcp-proxy.ts 只负责把 descriptor → Tool 包装 + 转发调用（子 Agent 不建连）
  *
+ * @see ./mcp/index.ts 标准 MCP host/client
  * @see DESIGN.md P2-4「MCP 代理工具」
  */
 
@@ -22,6 +23,10 @@ import type { ToolContext, ToolResponse, ToolDefinition } from "@little-house-st
 import type { JsonSchema } from "@little-house-studio/types";
 import { createToolResponse } from "@little-house-studio/tools";
 import type { McpToolDescriptor, McpToolInvoker } from "@little-house-studio/types";
+import { isMcpToolExecutionError } from "./mcp/manager.js";
+
+/** invoker 文本契约的兼容前缀（旧路径）；优先使用 McpToolExecutionError */
+const IS_ERROR_PREFIX = "[isError]";
 
 /**
  * 包装后的 proxy 工具描述符（带 invoker，可执行）。
@@ -95,6 +100,25 @@ export function createMcpProxyTool(
           descriptor.originalName,
           params ?? {},
         );
+        // 兼容：旧 invoker 用 "[isError] …" 字符串标记工具失败
+        if (typeof result === "string" && result.startsWith(IS_ERROR_PREFIX)) {
+          const msg = result.slice(IS_ERROR_PREFIX.length).trim() || result;
+          return createToolResponse(false, msg, {
+            payload: {
+              mcp: true,
+              mcpConnection: descriptor.connectionName,
+              mcpTool: descriptor.originalName,
+              isError: true,
+            },
+            displayEvents: [
+              {
+                type: "terminal",
+                stream: "error",
+                text: `[MCP Proxy] ${descriptor.connectionName}.${descriptor.originalName} isError`,
+              },
+            ],
+          });
+        }
         return createToolResponse(true, result || "(MCP 工具无输出)", {
           payload: {
             mcpConnection: descriptor.connectionName,
@@ -109,10 +133,36 @@ export function createMcpProxyTool(
           ],
         });
       } catch (err) {
+        // 工具执行失败（CallToolResult.isError）→ ok:false，不是协议错误
+        if (isMcpToolExecutionError(err)) {
+          return createToolResponse(false, err.message || "(MCP tool isError)", {
+            payload: {
+              mcp: true,
+              mcpConnection: descriptor.connectionName,
+              mcpTool: descriptor.originalName,
+              isError: true,
+            },
+            displayEvents: [
+              {
+                type: "terminal",
+                stream: "error",
+                text: `[MCP Proxy] ${descriptor.connectionName}.${descriptor.originalName} isError`,
+              },
+            ],
+          });
+        }
         return createToolResponse(
           false,
           `MCP 工具「${descriptor.originalName}」（连接 ${descriptor.connectionName}）调用失败: ` +
             `${err instanceof Error ? err.message : String(err)}`,
+          {
+            payload: {
+              mcp: true,
+              mcpConnection: descriptor.connectionName,
+              mcpTool: descriptor.originalName,
+              protocolError: true,
+            },
+          },
         );
       }
     }

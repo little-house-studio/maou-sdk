@@ -35,7 +35,7 @@ export interface ApplyCompletionResult {
 export const UI_SLASH_COMMANDS: CompletionItem[] = [
   { value: "/model", label: "/model", description: "选择模型" },
   { value: "/sessions", label: "/sessions", description: "切换会话" },
-  { value: "/prompt", label: "/prompt", description: "预览 system 提示词" },
+  { value: "/prompt", label: "/prompt", description: "调试预览：system/bake/tools/before_user/schemas" },
   { value: "/help", label: "/help", description: "帮助" },
   { value: "/settings", label: "/settings", description: "设置" },
   { value: "/agents", label: "/agents", description: "Agent 管理" },

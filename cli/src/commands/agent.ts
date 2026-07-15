@@ -41,6 +41,11 @@ export interface AgentLaunchOptions {
   skipProjectGate?: boolean;
   /** 新项目非交互确认 */
   yes?: boolean;
+  /**
+   * TUI 后端：ink（默认，现网）| ratatui（可选）。
+   * 也可由 MAOU_TUI / config cli.tui 决定。
+   */
+  tui?: string;
 }
 
 async function loadConfigFromPath(target: string): Promise<AgentCliConfig> {
@@ -138,6 +143,23 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
   }
 
   const themePath = opts.themePath;
+
+  // ── TUI 后端分流：默认 ink；ratatui 不进入 Ink render ──
+  const { resolveTuiBackend } = await import("../tui-bridge/config.js");
+  const tui = resolveTuiBackend(opts.tui);
+  if (tui === "ratatui") {
+    process.stderr.write(
+      `[maou] tui=ratatui · Ink 版未删除，回退：MAOU_TUI=ink 或 --tui ink\n`,
+    );
+    const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
+    await runAgentWithRatatui({
+      config,
+      productName: product.name,
+      themePath,
+    });
+    return;
+  }
+  process.stderr.write(`[maou] tui=ink\n`);
 
   // 画廊：catalog / 源图变更时自动重烘焙 ASCII（用户自定义友好）
   try {

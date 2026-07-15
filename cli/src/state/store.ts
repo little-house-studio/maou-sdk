@@ -639,7 +639,7 @@ export const useStore = create<Store>((set, get) => ({
         set({ overlay: "agents" });
         break;
       case "prompt":
-        // 本地预览 system prompt，不进入 messages / LLM 上下文
+        // 本地调试预览请求材料（system/bake/tools/before_user…），不进入 messages
         set({ overlay: "prompt" });
         break;
       case "quit":

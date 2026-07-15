@@ -309,6 +309,16 @@ export class AgentRuntime {
   /** 已注册的子 Agent delegate 工具名（subagent_<name>），用于下次 run 前清理，
    * 避免上一次 run 注册的 subagent_<name> 在子 Agent 目录变更后残留。 */
   private _registeredSubagentTools: Set<string> = new Set();
+  /**
+   * MCP 连接管理器（可选）。
+   * Runtime 门面或 harness 注入后，run() 会在工具初始化阶段 ensureLoaded + sync 工具表，
+   * 并把 descriptors/invoker 同步到 SubagentExecutor（inheritMcp）。
+   */
+  private mcpManager?: import("./mcp/manager.js").McpConnectionManager;
+  /** 是否在 run 时自动加载 agent connections/（默认 true） */
+  private mcpAutoLoad = true;
+  /** 当前 agent 已同步到 registry 的 MCP host 工具名（非 proxy） */
+  private _registeredMcpHostTools: Set<string> = new Set();
   /** 调用主 Agent（监督模式专用）—— 由 harness 注入 */
   private callMainAgentFn?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
 
@@ -1124,6 +1134,89 @@ export class AgentRuntime {
       this.log("warning", `[SUBAGENT] 子 Agent 扫描/注册失败: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // ── MCP host：加载 connections/ 并注册 mcp__* 工具 ──
+    if (this.mcpManager) {
+      try {
+        if (this.mcpAutoLoad) {
+          const result = await this.mcpManager.ensureLoadedForAgent(maouRoot, agentName, {
+            projectRoot: effectiveProjectRoot,
+          });
+          if (result.discovered > 0 || result.ok > 0) {
+            this.log(
+              "info",
+              `[MCP] agent=${agentName} discovered=${result.discovered} connected=${result.ok} failed=${result.failed}`,
+            );
+            if (result.ok > 0) {
+              yield this.logEvent(
+                "info",
+                `MCP：已连接 ${result.ok} 个 server` +
+                  (result.failed > 0 ? `（${result.failed} 个失败）` : ""),
+              );
+            } else if (result.failed > 0) {
+              yield this.logEvent("warning", `MCP：${result.failed} 个连接失败（fail-closed）`);
+            }
+          }
+        }
+        // MCP 暴露策略：agent.json mcp_tool_strategy（coding 默认 gateway）
+        const { readMcpToolStrategyFromAgentConfig } = await import("./mcp/strategy.js");
+        const mcpStrategy = readMcpToolStrategyFromAgentConfig(
+          agentEntry as unknown as Record<string, unknown>,
+          // coding 主 agent 默认 gateway；其它 agent 默认 flat（兼容旧行为）
+          agentName === "coding" ? "gateway" : "flat",
+        );
+        this.mcpManager.setToolExposureStrategy(mcpStrategy);
+        this.log("info", `[MCP] tool exposure strategy=${mcpStrategy} (agent=${agentName})`);
+
+        // 同步工具表（即使未新连接，也刷新 registry 与 subagent 继承）
+        const names = this.mcpManager.syncToRegistry(this.tools, mcpStrategy);
+        this._registeredMcpHostTools = new Set(names);
+        this.syncMcpToSubagentExecutor();
+        if (names.length > 0) {
+          this.log(
+            "info",
+            `[MCP] registered ${names.length} LLM-visible tool(s): ${names.slice(0, 8).join(", ")}${names.length > 8 ? "…" : ""}` +
+              (mcpStrategy === "gateway"
+                ? ` [gateway; ${this.mcpManager.listDescriptors().length} underlying MCP tools]`
+                : ""),
+          );
+        }
+
+        // MCP catalog → system prompt（辅通道）
+        // gateway 模式：catalog 帮助模型知道有 MCP；真正调用走元工具 `mcp`
+        // flat 模式：catalog + 全量 tool schemas
+        try {
+          const catalog = await this.mcpManager.buildCatalogPrompt({ enrichLists: true });
+          if (catalog) {
+            let catalogBlock = catalog;
+            if (mcpStrategy === "gateway") {
+              catalogBlock =
+                catalog +
+                "\n\n<mcp_gateway_hint>\n" +
+                "MCP tools are NOT each listed in your tools array. Use the single tool `mcp`:\n" +
+                "  action=list | search | schema | call\n" +
+                "Example: mcp({ action: \"search\", query: \"env\" }) then mcp({ action: \"call\", name: \"mcp__server__tool\", arguments: {...} }).\n" +
+                "</mcp_gateway_hint>";
+            }
+            systemPrompt = `${systemPrompt}\n\n${catalogBlock}`;
+            yield this.logEvent(
+              "info",
+              `已注入 MCP catalog 到系统提示词（strategy=${mcpStrategy}, llm_tools=${names.length}, underlying=${this.mcpManager.listDescriptors().length}, servers=${this.mcpManager.sessionCount}）`,
+            );
+          }
+        } catch (catErr) {
+          this.log(
+            "warning",
+            `[MCP] catalog 注入失败: ${catErr instanceof Error ? catErr.message : String(catErr)}`,
+          );
+        }
+      } catch (err) {
+        this.log(
+          "warning",
+          `[MCP] 加载/同步失败: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     // 合并白名单：PERMISSION.jsonc ∩ agent.json tools
     // eve 结构：PERMISSION.jsonc 只在 agent 根目录下
     let toolWhitelist: Set<string> | undefined;
@@ -1199,6 +1292,15 @@ export class AgentRuntime {
     const stripAllTools = options.toolWhitelistOverride?.length === 0;
     if (toolWhitelist && mcpProxyNames.length > 0 && !stripAllTools) {
       for (const name of mcpProxyNames) {
+        toolWhitelist.add(name);
+      }
+    }
+
+    // ── MCP host 工具纳入白名单 ──
+    // flat：mcp__* 全量；gateway：仅元工具 `mcp`
+    // 与 subagent_* 相同：有白名单时必须显式加入，否则 nativeToolSchemas 过滤掉。
+    if (toolWhitelist && this._registeredMcpHostTools.size > 0 && !stripAllTools) {
+      for (const name of this._registeredMcpHostTools) {
         toolWhitelist.add(name);
       }
     }
@@ -2152,6 +2254,46 @@ export class AgentRuntime {
    */
   setSubagentExecutor(executor: SubagentExecutorLike): void {
     this.subagentExecutor = executor;
+  }
+
+  /**
+   * 注入 MCP 连接管理器（host/client）。
+   * 注入后 run() 会自动加载 `agents/<name>/connections/` 并注册 mcp__* 工具。
+   */
+  setMcpManager(manager: import("./mcp/manager.js").McpConnectionManager | undefined): void {
+    this.mcpManager = manager;
+  }
+
+  getMcpManager(): import("./mcp/manager.js").McpConnectionManager | undefined {
+    return this.mcpManager;
+  }
+
+  /** 控制 run 时是否自动 loadForAgent（测试可关） */
+  setMcpAutoLoad(enabled: boolean): void {
+    this.mcpAutoLoad = enabled;
+  }
+
+  /**
+   * 将当前 MCP descriptors 同步到 SubagentExecutor（parentMcpTools + invoker）。
+   */
+  private syncMcpToSubagentExecutor(): void {
+    const manager = this.mcpManager;
+    if (!manager || !this.subagentExecutor) return;
+    const exec = this.subagentExecutor as {
+      setParentMcpTools?: (tools: import("@little-house-studio/types").McpToolDescriptor[]) => void;
+      setMcpInvoker?: (invoker: import("@little-house-studio/types").McpToolInvoker | undefined) => void;
+    };
+    exec.setParentMcpTools?.(manager.listDescriptors());
+    exec.setMcpInvoker?.(manager.sessionCount > 0 ? manager.createInvoker() : undefined);
+  }
+
+  /**
+   * 供 Runtime 门面 / 冒烟：同步 host 工具名集合 + subagent 继承。
+   * 调用方应先 manager.syncToRegistry(this.tools)。
+   */
+  applyMcpHostToolNames(names: string[]): void {
+    this._registeredMcpHostTools = new Set(names);
+    this.syncMcpToSubagentExecutor();
   }
 
   /**

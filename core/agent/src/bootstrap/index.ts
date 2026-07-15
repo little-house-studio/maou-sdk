@@ -54,8 +54,13 @@ export {
 } from "./skills.js";
 export type { AgentSkillOptions, SkillScanOptions } from "./skills.js";
 
-export { previewAgentSystemPrompt } from "./preview-prompt.js";
+export {
+  previewAgentSystemPrompt,
+  previewAgentRequestBundle,
+} from "./preview-prompt.js";
 export type {
   PreviewSystemPromptOptions,
   PreviewSystemPromptResult,
+  PreviewRequestBundleResult,
+  PreviewRequestSection,
 } from "./preview-prompt.js";

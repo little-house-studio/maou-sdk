@@ -37,6 +37,7 @@ import { AgentFactory } from "./factory.js";
 import { createTeamFromTemplate, listTeamTemplates } from "./team-factory.js";
 import { SubagentExecutor } from "./subagent-executor.js";
 import { createDefaultSubagentRunFn } from "./default-subagent-run-fn.js";
+import { McpConnectionManager } from "./mcp/manager.js";
 import { GitWatcher } from "../agent_factory/git-watcher.js";
 import { createAppLogger } from "./app-logger.js";
 import { join } from "node:path";
@@ -436,6 +437,18 @@ export class Runtime {
       });
       this.agentRuntime.setSubagentExecutor(executor);
 
+      // ── MCP host/client：连接管理 + 工具桥（agents/<name>/connections/）──
+      const mcpManager = new McpConnectionManager({
+        log: (level, msg) => {
+          const log = this.customLog ?? ((l, m) => console[l === "error" ? "error" : "log"](`[MCP] ${m}`));
+          log(level, msg);
+        },
+        clientInfo: { name: "maou-agent", version: "0.1.0" },
+      });
+      this.agentRuntime.setMcpManager(mcpManager);
+      // 预置 invoker（工具列表在首次 run 时 load 后刷新）
+      executor.setMcpInvoker(mcpManager.createInvoker());
+
       // ── Todo 真 fork：并行层创建分身后异步拉起子 Agent ──
       TODO_ORCHESTRATOR.setRealForkEnabled(true);
       TODO_ORCHESTRATOR.setForkRunner(async ({ rootSessionId, lane, node, notices }) => {
@@ -559,6 +572,55 @@ export class Runtime {
         }
       }
     }
+  }
+
+  /**
+   * 显式加载 MCP 连接并注册 mcp__* 工具（Coding / harness 冒烟与预热用）。
+   *
+   * 与 run() 内自动加载同一路径：ensureLoadedForAgent → syncToRegistry → subagent invoker。
+   * 扫描目录：
+   * - `<maouRoot>/agents/<agentName>/connections/`
+   * - `<projectRoot>/.maou/agents/<agentName>/connections/`（同名覆盖）
+   */
+  async ensureMcpConnections(agentName: string): Promise<{
+    discovered: number;
+    ok: number;
+    failed: number;
+    toolNames: string[];
+    states: import("./mcp/manager.js").McpConnectionState[];
+    manager: import("./mcp/manager.js").McpConnectionManager | undefined;
+    /** MCP catalog system-prompt fragment (from tools/list + optional resources/prompts) */
+    catalogPrompt: string;
+  }> {
+    const rt = this.getRuntime();
+    const manager = rt.getMcpManager();
+    if (!manager) {
+      throw new Error("MCP manager not wired on AgentRuntime");
+    }
+    const result = await manager.ensureLoadedForAgent(this.maouRoot, agentName, {
+      projectRoot: this.projectRoot,
+    });
+    const toolNames = manager.syncToRegistry(this.toolRegistry);
+    rt.applyMcpHostToolNames(toolNames);
+    const catalogPrompt = await manager.buildCatalogPrompt({ enrichLists: true });
+
+    return {
+      ...result,
+      toolNames,
+      states: manager.listConnectionStates(),
+      manager,
+      /** system prompt 片段（MCP catalog）；run() 也会自动注入 */
+      catalogPrompt,
+    };
+  }
+
+  /** 当前 Runtime 的 MCP 管理器（若已初始化） */
+  getMcpManager(): import("./mcp/manager.js").McpConnectionManager | undefined {
+    if (!this.agentRuntime) {
+      // 触发装配
+      this.getRuntime();
+    }
+    return this.agentRuntime?.getMcpManager();
   }
 
   /** 刷新编译和缓存 */

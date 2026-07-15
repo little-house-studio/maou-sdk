@@ -1,0 +1,8 @@
+{
+  "type": "mcp",
+  "description": "Demo echo MCP (copy to echo.json and set absolute path to mcp-echo-fixture.mjs)",
+  "command": "node",
+  "args": ["${MAOU_MCP_ECHO_FIXTURE}"],
+  "transport": "stdio",
+  "enabled": false
+}

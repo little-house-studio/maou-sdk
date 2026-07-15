@@ -178,6 +178,8 @@ export function resolveAgentConfig(agentDir: string): Record<string, unknown> {
         "tool_compression", "verify_command", "working_dir",
         "system_append", "system_override",
         "tools_add", "tools_remove",
+        // MCP 暴露策略：flat | gateway（单工具 mcp）
+        "mcp_tool_strategy", "mcp",
       ];
       for (const key of ALLOWED_KEYS) {
         if (custom[key] !== undefined) {

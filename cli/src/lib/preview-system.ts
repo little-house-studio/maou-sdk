@@ -1,5 +1,6 @@
 /**
- * CLI 侧预览当前 agent system prompt（EventBlock ↑ 估算、/prompt 弹层共用）
+ * CLI 侧预览当前 agent 发给 AI 的请求材料
+ * （EventBlock ↑ 估算、/prompt 弹层、Ratatui overlay 共用）
  */
 
 import { join, dirname } from "node:path";
@@ -8,7 +9,10 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import {
   previewAgentSystemPrompt,
+  previewAgentRequestBundle,
   type PreviewSystemPromptResult,
+  type PreviewRequestBundleResult,
+  type PreviewRequestSection,
 } from "@little-house-studio/agent";
 import { userMaouRoot } from "../config/paths.js";
 import {
@@ -16,6 +20,12 @@ import {
   resolveAgentName,
   usesCodingTemplate,
 } from "../config/defaults.js";
+
+export type {
+  PreviewSystemPromptResult,
+  PreviewRequestBundleResult,
+  PreviewRequestSection,
+};
 
 const require = createRequire(import.meta.url);
 
@@ -46,18 +56,35 @@ function resolveCodingTemplatePromptRoot(): string | undefined {
   return undefined;
 }
 
-/** 渲染当前 agent system 提示词（只读，不进上下文） */
-export function previewCurrentSystemPrompt(
-  agentName: string,
-  projectRoot = process.cwd(),
-): PreviewSystemPromptResult {
+function previewOpts(agentName: string, projectRoot = process.cwd()) {
   const name = resolveAgentName(agentName, DEFAULT_AGENT_NAME);
   const codingTpl = resolveCodingTemplatePromptRoot();
-  return previewAgentSystemPrompt({
+  return {
     agentName: name,
     projectRoot,
     maouRoot: userMaouRoot(),
     fallbackPromptRoot: usesCodingTemplate(name) ? codingTpl : undefined,
-    fallbackEntrypoint: "system/system.md",
+    fallbackEntrypoint: "system/system.md" as const,
+  };
+}
+
+/** 渲染当前 agent system 提示词（只读，不进上下文）—— 兼容旧 API */
+export function previewCurrentSystemPrompt(
+  agentName: string,
+  projectRoot = process.cwd(),
+): PreviewSystemPromptResult {
+  return previewAgentSystemPrompt(previewOpts(agentName, projectRoot));
+}
+
+/**
+ * 完整请求材料调试包：system / workspace / bake / tools / before_user / schemas 等。
+ */
+export function previewCurrentRequestBundle(
+  agentName: string,
+  projectRoot = process.cwd(),
+): PreviewRequestBundleResult {
+  return previewAgentRequestBundle({
+    ...previewOpts(agentName, projectRoot),
+    includeTools: true,
   });
 }
