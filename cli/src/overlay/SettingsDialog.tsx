@@ -1,6 +1,6 @@
 /**
  * SettingsDialog —— 设置弹窗（Ctrl+, 触发）。
- * 一级菜单：API 配置 / 审批模式 / 思考级别 / 配色方案。
+ * 一级菜单：Debug 显示 / API 配置 / 审批模式 / 思考级别 / 配色方案。
  */
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -19,6 +19,7 @@ import {
   loadThemeById,
 } from "../theme/load-theme.js";
 import { setThemeBg } from "../render/vram-layer.js";
+import { settingsForSurface } from "../config/cli-settings.js";
 
 type View = "main" | "model" | "approval" | "thinking" | "theme";
 
@@ -26,7 +27,9 @@ export function SettingsDialog({ config }: { config: AgentCliConfig }) {
   const t = useTheme();
   const loaded = useLoadedTheme();
   const setLoadedTheme = useSetLoadedTheme();
-  const { setProviderModel, setThinking, toastMsg } = useStore();
+  const setProviderModel = useStore((s) => s.setProviderModel);
+  const setThinking = useStore((s) => s.setThinking);
+  const toastMsg = useStore((s) => s.toastMsg);
   const [view, setView] = useState<View>("main");
 
   // Esc：二级页先返回一级，一级再关面板（统一取消栈 nested_back）
@@ -45,14 +48,33 @@ export function SettingsDialog({ config }: { config: AgentCliConfig }) {
   const model = useStore((s) => s.model);
   const thinkingLevel = useStore((s) => s.thinkingLevel);
   const approvalMode = useStore((s) => s.approvalMode);
+  const perfHud = useStore((s) => s.perfHud);
+  const mouseCapture = useStore((s) => s.mouseCapture);
   const setApprovalMode = useStore((s) => s.setApprovalMode);
+  const setMouseCapture = useStore((s) => s.setMouseCapture);
 
-  const mainItems: SelectItem[] = useMemo(() => [
-    { value: "model", label: "API 配置", description: `${provider}/${model || "未选"}` },
-    { value: "approval", label: "审核模式", description: `${approvalMode} · Shift+Tab` },
-    { value: "thinking", label: "思考级别", description: `${thinkingLevel} (${["off", "minimal", "low", "medium", "high", "xhigh"][thinkingLevel]})` },
-    { value: "theme", label: "配色方案", description: loaded.name || loaded.id },
-  ], [provider, model, thinkingLevel, approvalMode, loaded.id, loaded.name]);
+  const mainItems: SelectItem[] = useMemo(
+    () =>
+      settingsForSurface("ink", {
+        provider,
+        model,
+        approvalMode,
+        thinkingLevel,
+        themeName: loaded.name || loaded.id,
+        perfHud,
+        mouseCapture,
+      }),
+    [
+      provider,
+      model,
+      thinkingLevel,
+      approvalMode,
+      loaded.id,
+      loaded.name,
+      perfHud,
+      mouseCapture,
+    ],
+  );
 
   const modelItems: SelectItem[] = useMemo(() => {
     const providers = config.getProviders?.() ?? [];
@@ -97,6 +119,22 @@ export function SettingsDialog({ config }: { config: AgentCliConfig }) {
     else if (value === "approval") setView("approval");
     else if (value === "thinking") setView("thinking");
     else if (value === "theme") setView("theme");
+    else if (value === "perf_hud") {
+      const st = useStore.getState();
+      const on =
+        typeof st.togglePerfHud === "function"
+          ? st.togglePerfHud()
+          : (() => {
+              const next = !st.perfHud;
+              st.setPerfHud?.(next);
+              return next;
+            })();
+      toastMsg(on ? "Debug 显示已开启（已保存）" : "Debug 显示已关闭（已保存）", "ok");
+    } else if (value === "mouse") {
+      const next = !mouseCapture;
+      setMouseCapture(next);
+      toastMsg(next ? "鼠标捕获已开启（已保存）" : "鼠标捕获已关闭（已保存）", "ok");
+    }
   };
 
   const handleModel = (value: string) => {

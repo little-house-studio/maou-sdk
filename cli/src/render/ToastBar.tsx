@@ -32,7 +32,7 @@ export function ToastBar() {
     : "· ";
 
   const raw = `${prefix}${toast.text}`;
-  // 铺满一行，居中更醒目
+  // 铺满终端宽（与底部 chrome 同宽）；左右都补空格，bg 才不会只剩左半截
   const w = Math.max(8, term.cols);
   let core = raw;
   if (stringWidth(core) > w) {
@@ -48,10 +48,11 @@ export function ToastBar() {
   }
   const pad = Math.max(0, w - stringWidth(core));
   const left = Math.floor(pad / 2);
-  const line = `${" ".repeat(left)}${core}${" ".repeat(pad - left)}`;
+  const right = pad - left;
+  const line = `${" ".repeat(left)}${core}${" ".repeat(right)}`;
 
   return (
-    <Box flexShrink={0} width="100%">
+    <Box flexShrink={0} width={w} backgroundColor={bg}>
       <Text backgroundColor={bg} color={fg} bold>
         {line}
       </Text>

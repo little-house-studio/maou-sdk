@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   applyItemHeightChange,
+  applyMaxScrollChange,
   applyScrollDelta,
   maxScrollOf,
   topYOf,
@@ -41,6 +42,26 @@ describe("chat-scroll model", () => {
     expect(r.totalH).toBe(115);
     expect(r.fromBottom).toBe(15);
     expect(topYOf(r.totalH, 20, r.fromBottom)).toBe(80); // 钉住
+  });
+
+  it("离开 tail 后流式增高：pin-content 不吸底（topY 不变）", () => {
+    // view=20, total 100→130 → max 80→110；用户 fromBottom=12
+    const topBefore = topYOf(100, 20, 12); // 68
+    const r = applyMaxScrollChange(12, 80, 110, { mode: "pin-content" });
+    expect(r.fromBottom).toBe(42); // 12 + 30
+    expect(topYOf(130, 20, r.fromBottom)).toBe(topBefore);
+  });
+
+  it("autoFollow 时 max 增大仍钉底", () => {
+    const r = applyMaxScrollChange(12, 80, 110, { autoFollow: true });
+    expect(r.fromBottom).toBe(0);
+  });
+
+  it("固定 offset 模式：fromBottom 不随 Δ 增加（会相对吸底）", () => {
+    const r = applyMaxScrollChange(12, 80, 110, { mode: "pin-offset" });
+    expect(r.fromBottom).toBe(12);
+    // topY 从 68 → 98：视口内容整体「更新」——正是我们要避免的吸底感
+    expect(topYOf(130, 20, 12)).toBe(98);
   });
 
   it("virtualRange 覆盖视口", () => {

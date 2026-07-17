@@ -24,6 +24,7 @@ import {
   pickGalleryWork,
   formatPlaque,
   GALLERY_ART_ROWS,
+  shouldShowGalleryArt,
   type GallerySize,
   type GalleryWork,
 } from "./catalog.js";
@@ -65,13 +66,35 @@ export function GallerySplash({
 
   /**
    * 选档 + 紧凑铭牌：
-   * logo 固定 5 行；画档降档；垂直不够时只压缩题签（不缩小 logo）。
+   * logo 固定 5 行；挂画区过矮则整幅油画+铭牌不展示；
+   * 否则画档降档，垂直不够时只压缩题签（不缩小 logo）。
    */
   const layout = useMemo(() => {
+    const logoH = logo.length;
+    const hangArea = Math.max(0, rows - logoH);
+
+    // 终端太矮：只留 logo，不挂油画
+    if (!shouldShowGalleryArt(hangArea)) {
+      return {
+        size: "sm" as GallerySize,
+        art: null as string[] | null,
+        artH: 0,
+        logo,
+        logoH,
+        plaque: [] as string[],
+        showSizeLine: false,
+        plaqueH: 0,
+        hangH: 0,
+        free: hangArea,
+        fits: true,
+        hasBreath: true,
+        showArt: false,
+      };
+    }
+
     const order: GallerySize[] = ["lg", "md", "sm"];
     let size: GallerySize = pickGallerySize(cols, rows);
     let idx = Math.max(0, order.indexOf(size));
-    const logoH = logo.length;
 
     const tryLayout = (s: GallerySize, compactPlaque: boolean) => {
       const art = loadFramedArt(work.id, s);
@@ -95,6 +118,7 @@ export function GallerySplash({
         free,
         fits: total <= rows,
         hasBreath: free >= 4,
+        showArt: true,
       };
     };
 
@@ -114,21 +138,25 @@ export function GallerySplash({
   }, [cols, rows, work.id, logo, plaqueFull]);
 
   const artLines = useMemo(
-    () => (layout.art ? centerBlock(layout.art, cols) : null),
-    [layout.art, cols],
+    () =>
+      layout.showArt && layout.art ? centerBlock(layout.art, cols) : null,
+    [layout.showArt, layout.art, cols],
   );
 
   // 挂画区 = 总高 − logo；在此区内光学分配上下留白
   const hangArea = Math.max(0, rows - layout.logoH);
-  const hangH = (artLines?.length ?? layout.artH) + layout.plaqueH;
+  const hangH = layout.showArt
+    ? (artLines?.length ?? layout.artH) + layout.plaqueH
+    : 0;
   // 画作起点固定再下移 2 格（光学 top +2，下方相应减）
   const { top: aboveHang, bottom: bottomPad } = useMemo(() => {
+    if (!layout.showArt) return { top: 0, bottom: 0 };
     const pads = galleryVerticalPads(hangArea, hangH);
     const free = pads.top + pads.bottom;
     if (free <= 0) return pads;
     const top = Math.min(free, pads.top + 2);
     return { top, bottom: free - top };
-  }, [hangArea, hangH]);
+  }, [layout.showArt, hangArea, hangH]);
 
   return (
     <Box flexDirection="column" width={cols} height={rows} overflow="hidden">
@@ -141,49 +169,53 @@ export function GallerySplash({
         ))}
       </Box>
 
-      {/* ② logo → 画：光学上留白（略紧） */}
-      {Array.from({ length: aboveHang }, (_, i) => (
-        <Text key={`tpad-${i}`}>{" "}</Text>
-      ))}
+      {layout.showArt && (
+        <>
+          {/* ② logo → 画：光学上留白（略紧） */}
+          {Array.from({ length: aboveHang }, (_, i) => (
+            <Text key={`tpad-${i}`}>{" "}</Text>
+          ))}
 
-      {/* ③ 画框：水平居中（centerBlock 已按显示宽补空格） */}
-      <Box flexDirection="column" width={cols} flexShrink={0}>
-        {artLines ? (
-          artLines.map((ln, i) => (
-            <Text key={`art-${i}`} color={artColor}>
-              {ln}
-            </Text>
-          ))
-        ) : (
-          <Text color={muted}>
-            {centerTextLine("〔画作 ASCII 未烘焙〕", cols)}
-          </Text>
-        )}
-      </Box>
+          {/* ③ 画框：水平居中（centerBlock 已按显示宽补空格） */}
+          <Box flexDirection="column" width={cols} flexShrink={0}>
+            {artLines ? (
+              artLines.map((ln, i) => (
+                <Text key={`art-${i}`} color={artColor}>
+                  {ln}
+                </Text>
+              ))
+            ) : (
+              <Text color={muted}>
+                {centerTextLine("〔画作 ASCII 未烘焙〕", cols)}
+              </Text>
+            )}
+          </Box>
 
-      {/* ④ 铭牌：与画 1 行呼吸，水平居中；标题白粗体，其余 muted */}
-      <Text>{" "}</Text>
-      <Box flexDirection="column" width={cols} flexShrink={0}>
-        {layout.plaque.map((ln, i) => (
-          <Text
-            key={`pl-${i}`}
-            color={i === 0 ? (t.fg ?? "white") : muted}
-            bold={i === 0}
-          >
-            {centerTextLine(ln, cols)}
-          </Text>
-        ))}
-        {layout.showSizeLine && (
-          <Text color={muted} dimColor>
-            {centerTextLine(`gallery · ${layout.size}`, cols)}
-          </Text>
-        )}
-      </Box>
+          {/* ④ 铭牌：与画 1 行呼吸，水平居中；标题白粗体，其余 muted */}
+          <Text>{" "}</Text>
+          <Box flexDirection="column" width={cols} flexShrink={0}>
+            {layout.plaque.map((ln, i) => (
+              <Text
+                key={`pl-${i}`}
+                color={i === 0 ? (t.fg ?? "white") : muted}
+                bold={i === 0}
+              >
+                {centerTextLine(ln, cols)}
+              </Text>
+            ))}
+            {layout.showSizeLine && (
+              <Text color={muted} dimColor>
+                {centerTextLine(`gallery · ${layout.size}`, cols)}
+              </Text>
+            )}
+          </Box>
 
-      {/* ⑤ 下方光学留白（略松 → 画视觉上略偏上） */}
-      {Array.from({ length: bottomPad }, (_, i) => (
-        <Text key={`bpad-${i}`}>{" "}</Text>
-      ))}
+          {/* ⑤ 下方光学留白（略松 → 画视觉上略偏上） */}
+          {Array.from({ length: bottomPad }, (_, i) => (
+            <Text key={`bpad-${i}`}>{" "}</Text>
+          ))}
+        </>
+      )}
     </Box>
   );
 }

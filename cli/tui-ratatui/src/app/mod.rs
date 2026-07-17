@@ -1,7 +1,7 @@
 //! App shell: state + event handlers + draw (split by concern).
 
 mod draw;
-mod input_paint;
+pub(crate) mod input_paint;
 mod keys;
 mod mouse_handlers;
 mod protocol_io;
@@ -50,18 +50,29 @@ pub struct App {
     pub(crate) overlay_list_from: usize,
     /// Number of item rows currently painted in the overlay window.
     pub(crate) overlay_list_count: usize,
+    /// Mouse hover row in overlay list (highlight only; Ink SelectList).
+    pub(crate) overlay_hover: Option<usize>,
+    /// Scroll offset for lines-only overlays (help / prompt dump).
+    pub(crate) overlay_scroll: usize,
     pub completions: Option<ProtoCompletions>,
     pub terminal_approval: Option<ProtoTerminalApproval>,
     pub gallery_lines: Vec<String>,
     pub input: String,
     pub cursor: usize,
+    /// Manual first-visible line of multi-line input (wheel / drag-scroll); None = pin to caret.
+    pub(crate) input_view_offset: Option<usize>,
     pub scroll_from_bottom: u16,
+    /// Ink `autoFollow`: pin to latest while true; leave on scroll-up, re-enter at bottom.
+    /// When false, stream growth uses pin-content (from_bottom += Δ) so the view is not sucked down.
+    pub(crate) auto_follow: bool,
     /// After send while following: keep a larger tail pad until stream settles
     /// (Ink BOTTOM_PAD + room for AI growth; Grok follow-at-bottom).
     pub(crate) follow_tail_boost: bool,
-    /// Recent wheel burst count (diagnostics only).
+    /// Recent wheel burst count（Grok 式步长 1/2/4 用）。
     pub(crate) wheel_burst: u8,
     pub(crate) wheel_last_at: Instant,
+    /// 触控板分数累加（不足 1 行先攒，对齐 Grok trackpad accumulation）
+    pub(crate) wheel_frac: f32,
     pub should_quit: bool,
     pub fps: f32,
     pub full_editor: bool,
@@ -97,7 +108,10 @@ pub struct App {
     pub(crate) approval_rect: Option<Rect>,
     /// Hovered approval chip: "y"|"a"|"n"|"b" (Ink TerminalApprovalBar hover).
     pub(crate) approval_hover: Option<String>,
-    pub(crate) nav_segs: Vec<(u16, u16, &'static str)>,
+    /// Paint-time chip hit boxes: (x0, x1 exclusive, choice) on approval row 0.
+    pub(crate) approval_chips: Vec<(u16, u16, String)>,
+    /// (x0, x1, id, action_kind, action_value)
+    pub(crate) nav_segs: Vec<(u16, u16, String, String, String)>,
     /// Ink EventBlockExpanded vertical scroll (0 = top of supervisor log).
     pub(crate) event_expand_scroll: u16,
     /// Tool result/diff fully expanded (Ink DiffCollapsible open).
@@ -106,10 +120,15 @@ pub struct App {
     pub(crate) chat_line_cache: Vec<(u16, String, u16)>,
     pub(crate) scroll_plain: Vec<String>,
     pub(crate) visible_start: usize,
+    /// Cache of full scroll document (lines + hits) to avoid re-markdown every frame.
+    pub(crate) scroll_render_cache:
+        Option<(String, usize, Vec<ratatui::text::Line<'static>>, messages::RenderHits)>,
     pub(crate) sel: SelController,
     pub(crate) hover_id: Option<String>,
     pub(crate) last_edge_tick: Instant,
     pub(crate) max_scroll_lines: usize,
+    /// InfoBar 右侧模型名 hit 区（点击打开 model overlay）
+    pub(crate) model_hit: Option<Rect>,
     pub vram: Vram,
     pub(crate) local_toast: Option<LocalToast>,
     pub(crate) rx: Receiver<InMsg>,
@@ -141,15 +160,20 @@ impl App {
             overlay_sel: 0,
             overlay_list_from: 0,
             overlay_list_count: 0,
+            overlay_hover: None,
+            overlay_scroll: 0,
             completions: None,
             terminal_approval: None,
             gallery_lines: vec![],
             input: String::new(),
             cursor: 0,
+            input_view_offset: None,
             scroll_from_bottom: 0,
+            auto_follow: true,
             follow_tail_boost: false,
             wheel_burst: 0,
             wheel_last_at: Instant::now(),
+            wheel_frac: 0.0,
             should_quit: false,
             fps: 0.0,
             full_editor: false,
@@ -180,6 +204,7 @@ impl App {
             overlay_rect: None,
             approval_rect: None,
             approval_hover: None,
+            approval_chips: vec![],
             nav_segs: vec![],
             event_expand_scroll: 0,
             expanded_tool_results: HashSet::new(),
@@ -187,10 +212,12 @@ impl App {
             chat_line_cache: vec![],
             scroll_plain: vec![],
             visible_start: 0,
+            scroll_render_cache: None,
             sel: SelController::default(),
             hover_id: None,
             last_edge_tick: Instant::now(),
             max_scroll_lines: 0,
+            model_hit: None,
             vram: Vram::empty(),
             local_toast: None,
             rx,
@@ -218,10 +245,36 @@ impl App {
         }
     }
 
+    /// 是否需要把本帧 buffer 拷进 VRAM（全局选区 / 拖选 / Ctrl+G 前）。
+    /// 滚动热路径跳过可省一整屏 cell 扫描。
+    pub fn needs_vram_capture(&self) -> bool {
+        self.sel.needs_vram()
+    }
+
+    /// Display columns available for input draft body (after prompt). Soft-wrap uses this.
+    pub(crate) fn input_body_width(&self) -> usize {
+        use crate::mouse;
+        let prompt_w = mouse::prompt_cols() as usize;
+        let w = if self.input_rect.width > 0 {
+            self.input_rect.width as usize
+        } else {
+            self.screen_cols.max(8) as usize
+        };
+        w.saturating_sub(prompt_w).max(4)
+    }
+
+    /// Display-row count of current draft (hard `\n` + soft wrap).
+    pub(crate) fn input_display_line_count(&self) -> usize {
+        use input_paint::input_display_rows;
+        input_display_rows(&self.input, self.input_body_width())
+            .len()
+            .max(1)
+    }
+
     /// 0-based (col, row) for hidden HW cursor pin after paint (I02).
     pub fn ime_pin_pos(&self) -> Option<(u16, u16)> {
         use crate::mouse;
-        use input_paint::input_view_start;
+        use input_paint::input_view_start_with_offset;
         use text_util::caret_screen_pos;
 
         if self.full_editor {
@@ -237,6 +290,7 @@ impl App {
                 0,
                 self.screen_cols,
                 self.screen_rows,
+                usize::MAX / 4,
             );
         }
         // Overlay / approval: still pin to input so IME does not wander
@@ -246,7 +300,13 @@ impl App {
         }
         let prompt_w = mouse::prompt_cols();
         let origin_x = r.x.saturating_add(prompt_w);
-        let vs = input_view_start(&self.input, self.cursor);
+        let body_w = self.input_body_width();
+        let vs = input_view_start_with_offset(
+            &self.input,
+            self.cursor,
+            self.input_view_offset,
+            body_w,
+        );
         caret_screen_pos(
             &self.input,
             self.cursor,
@@ -258,6 +318,7 @@ impl App {
             vs,
             self.screen_cols,
             self.screen_rows,
+            body_w,
         )
     }
 

@@ -1,25 +1,257 @@
 //! Ink InputBar multi-line paint + height/viewport math.
+//! Long logical lines soft-wrap to `body_width` display columns (no hard `\n` insert).
 
 use crate::mouse;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-pub fn input_height(input: &str) -> usize {
-    input.split('\n').count().max(1).min(4)
+/// Visible rows of the input draft (Ink viewportLines=5).
+pub const INPUT_VIEWPORT_LINES: usize = 5;
+
+/// One painted row after soft-wrap (may be a slice of a logical `\n` line).
+#[derive(Debug, Clone, Copy)]
+pub struct InputDisplayRow {
+    /// Absolute byte offset of this segment start in `input`.
+    pub abs_start: usize,
+    /// Absolute byte offset of segment end (exclusive; may equal next soft piece).
+    pub abs_end: usize,
+    /// True if this row is the first display row of its logical line (shows `❯ `).
+    pub is_first_of_logical: bool,
 }
 
-/// First logical line index shown when draft has more than 4 lines (Ink viewportLines=4).
-/// Window is pinned so the cursor line stays visible.
-pub fn input_view_start(input: &str, cursor: usize) -> usize {
-    let n = input.split('\n').count().max(1);
-    if n <= 4 {
+/// Soft-wrap a single logical line into display segments (relative offsets in `line`).
+pub fn soft_wrap_segments(line: &str, body_width: usize) -> Vec<(usize, usize)> {
+    let w = body_width.max(1);
+    if line.is_empty() {
+        return vec![(0, 0)];
+    }
+    let mut segs = Vec::new();
+    let mut start = 0usize;
+    let mut col = 0usize;
+    let mut i = 0usize;
+    while i < line.len() {
+        let Some(ch) = line[i..].chars().next() else {
+            break;
+        };
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+        let next = i + ch.len_utf8();
+        if col > 0 && col + cw > w {
+            segs.push((start, i));
+            start = i;
+            col = 0;
+        }
+        // single wide char wider than body: still take one row
+        if col == 0 && cw > w {
+            segs.push((start, next));
+            start = next;
+            col = 0;
+            i = next;
+            continue;
+        }
+        col += cw;
+        i = next;
+    }
+    if start < line.len() || segs.is_empty() {
+        segs.push((start, line.len()));
+    }
+    segs
+}
+
+/// Flatten whole draft into display rows (hard `\n` + soft wrap).
+pub fn input_display_rows(input: &str, body_width: usize) -> Vec<InputDisplayRow> {
+    let w = body_width.max(1);
+    let mut out = Vec::new();
+    if input.is_empty() {
+        out.push(InputDisplayRow {
+            abs_start: 0,
+            abs_end: 0,
+            is_first_of_logical: true,
+        });
+        return out;
+    }
+    let mut abs = 0usize;
+    let parts: Vec<&str> = input.split('\n').collect();
+    for (li, seg) in parts.iter().enumerate() {
+        let pieces = soft_wrap_segments(seg, w);
+        for (pi, (a, b)) in pieces.iter().enumerate() {
+            out.push(InputDisplayRow {
+                abs_start: abs + *a,
+                abs_end: abs + *b,
+                is_first_of_logical: pi == 0,
+            });
+        }
+        abs += seg.len();
+        if li + 1 < parts.len() {
+            abs += 1; // '\n'
+        }
+    }
+    if out.is_empty() {
+        out.push(InputDisplayRow {
+            abs_start: 0,
+            abs_end: 0,
+            is_first_of_logical: true,
+        });
+    }
+    out
+}
+
+/// Display-row index containing `cursor` (clamped).
+pub fn display_row_of_cursor(rows: &[InputDisplayRow], cursor: usize) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    for (i, r) in rows.iter().enumerate() {
+        // last row: include cursor at abs_end / past end
+        if cursor < r.abs_end || (cursor == r.abs_end && i + 1 == rows.len()) {
+            return i;
+        }
+        // cursor exactly at soft-wrap boundary → prefer next row start
+        if cursor == r.abs_end && i + 1 < rows.len() {
+            continue;
+        }
+        if cursor >= r.abs_start && cursor < r.abs_end {
+            return i;
+        }
+    }
+    // between rows (e.g. at soft boundary): find first with abs_start >= cursor
+    for (i, r) in rows.iter().enumerate() {
+        if r.abs_start >= cursor {
+            return i;
+        }
+    }
+    rows.len() - 1
+}
+
+/// Map (display_row, visual col in body) → absolute byte index.
+pub fn display_row_visual_to_byte(
+    input: &str,
+    rows: &[InputDisplayRow],
+    display_row: usize,
+    visual_col: usize,
+) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    let i = display_row.min(rows.len() - 1);
+    let r = rows[i];
+    let a = mouse::snap_char_boundary(input, r.abs_start.min(input.len()));
+    let b = mouse::snap_char_boundary(input, r.abs_end.min(input.len()));
+    if a >= b {
+        return a.min(input.len());
+    }
+    let slice = &input[a..b];
+    let off = mouse::visual_col_to_byte(slice, visual_col);
+    mouse::snap_char_boundary(input, a + off)
+}
+
+/// Visual column of `cursor` within its display row body.
+pub fn display_row_visual_col(input: &str, rows: &[InputDisplayRow], cursor: usize) -> usize {
+    if rows.is_empty() {
         return 0;
     }
     let cur = mouse::snap_char_boundary(input, cursor.min(input.len()));
-    let line_of = input[..cur].bytes().filter(|&b| b == b'\n').count();
-    // Prefer keeping cursor near bottom of 4-line window (natural typing)
-    line_of.saturating_sub(3).min(n.saturating_sub(4))
+    let i = display_row_of_cursor(rows, cur);
+    let r = rows[i];
+    let a = mouse::snap_char_boundary(input, r.abs_start.min(input.len()));
+    let b = mouse::snap_char_boundary(input, r.abs_end.min(input.len()));
+    if a >= b || cur <= a {
+        return 0;
+    }
+    let end = cur.min(b);
+    mouse::byte_to_visual_col(&input[a..b.min(input.len())], end.saturating_sub(a))
+}
+
+/// Move cursor ±1 **display** row (soft-wrap aware), preserving visual column.
+/// Returns new byte cursor. Unchanged if already on first/last display row.
+pub fn shift_cursor_display_row(
+    input: &str,
+    cursor: usize,
+    body_width: usize,
+    dir_up: bool,
+) -> usize {
+    let rows = input_display_rows(input, body_width.max(1));
+    if rows.is_empty() {
+        return 0;
+    }
+    let cur = mouse::snap_char_boundary(input, cursor.min(input.len()));
+    let i = display_row_of_cursor(&rows, cur);
+    let vcol = display_row_visual_col(input, &rows, cur);
+    if dir_up {
+        if i == 0 {
+            return cur;
+        }
+        display_row_visual_to_byte(input, &rows, i - 1, vcol)
+    } else if i + 1 >= rows.len() {
+        cur
+    } else {
+        display_row_visual_to_byte(input, &rows, i + 1, vcol)
+    }
+}
+
+/// Byte start of the display row containing `cursor`.
+pub fn display_row_home(input: &str, cursor: usize, body_width: usize) -> usize {
+    let rows = input_display_rows(input, body_width.max(1));
+    if rows.is_empty() {
+        return 0;
+    }
+    let cur = mouse::snap_char_boundary(input, cursor.min(input.len()));
+    let i = display_row_of_cursor(&rows, cur);
+    mouse::snap_char_boundary(input, rows[i].abs_start.min(input.len()))
+}
+
+/// Byte end of the display row containing `cursor` (before soft-wrap break / hard `\n`).
+pub fn display_row_end(input: &str, cursor: usize, body_width: usize) -> usize {
+    let rows = input_display_rows(input, body_width.max(1));
+    if rows.is_empty() {
+        return 0;
+    }
+    let cur = mouse::snap_char_boundary(input, cursor.min(input.len()));
+    let i = display_row_of_cursor(&rows, cur);
+    let r = rows[i];
+    // For last display piece of a logical line ending mid-wrap, abs_end is fine;
+    // if at true EOF, use len.
+    mouse::snap_char_boundary(input, r.abs_end.min(input.len()))
+}
+
+pub fn input_height(input: &str, body_width: usize) -> usize {
+    input_display_rows(input, body_width)
+        .len()
+        .max(1)
+        .min(INPUT_VIEWPORT_LINES)
+}
+
+/// First **display** row index when draft exceeds viewport (legacy: body width = huge → hard lines only).
+pub fn input_view_start(input: &str, cursor: usize) -> usize {
+    input_view_start_with_offset(input, cursor, None, usize::MAX / 4)
+}
+
+pub fn input_view_start_with_offset(
+    input: &str,
+    cursor: usize,
+    manual_offset: Option<usize>,
+    body_width: usize,
+) -> usize {
+    let rows = input_display_rows(input, body_width);
+    let n = rows.len().max(1);
+    let max_start = n.saturating_sub(INPUT_VIEWPORT_LINES);
+    if n <= INPUT_VIEWPORT_LINES {
+        return 0;
+    }
+    let cur = mouse::snap_char_boundary(input, cursor.min(input.len()));
+    let line_of = display_row_of_cursor(&rows, cur);
+    let preferred = manual_offset.unwrap_or_else(|| {
+        line_of
+            .saturating_sub(INPUT_VIEWPORT_LINES.saturating_sub(1))
+            .min(max_start)
+    });
+    let mut start = preferred.min(max_start);
+    if line_of < start {
+        start = line_of;
+    } else if line_of >= start + INPUT_VIEWPORT_LINES {
+        start = line_of + 1 - INPUT_VIEWPORT_LINES;
+    }
+    start.min(max_start)
 }
 
 /// Ink computer-blue for known `/command` tokens in the field.
@@ -67,41 +299,57 @@ fn paint_line_body(
             }
             let tok = &line_text[i..j];
             if is_slash_token(tok) {
-                // paint char by char for caret
+                // paint char by char for caret (reverse video, not ▌ glyph)
                 let mut k = i;
                 while k < j {
-                    let ch = line_text[k..].chars().next().unwrap();
+                    let Some(ch) = line_text[k..].chars().next() else {
+                        break;
+                    };
                     let len = ch.len_utf8();
                     let at = line_start + k;
-                    let s = if show_caret && cursor == at {
-                        format!("▌{ch}")
+                    if show_caret && cursor == at {
+                        spans.push(Span::styled(
+                            ch.to_string(),
+                            caret_style(slash_style),
+                        ));
                     } else {
-                        ch.to_string()
-                    };
-                    spans.push(Span::styled(s, slash_style));
+                        spans.push(Span::styled(ch.to_string(), slash_style));
+                    }
                     k += len;
                 }
                 i = j;
                 continue;
             }
         }
-        // normal char
-        let ch = line_text[i..].chars().next().unwrap();
+        // normal char — 若 i 不在码点边界则推进到下一边界，避免 panic
+        let Some(ch) = line_text[i..].chars().next() else {
+            break;
+        };
         let len = ch.len_utf8();
         let at = line_start + i;
-        let s = if show_caret && cursor == at {
-            format!("▌{ch}")
+        if show_caret && cursor == at {
+            spans.push(Span::styled(ch.to_string(), caret_style(body_style)));
         } else {
-            ch.to_string()
-        };
-        spans.push(Span::styled(s, body_style));
+            spans.push(Span::styled(ch.to_string(), body_style));
+        }
         i += len;
         let _ = abs;
     }
     if show_caret && cursor == line_end {
-        spans.push(Span::styled("▌".to_string(), body_style));
+        // end-of-line: reverse space (block caret without solid glyph icon)
+        spans.push(Span::styled(" ".to_string(), caret_style(body_style)));
     }
     spans
+}
+
+/// Bottom input caret: reverse fg/bg of the cell (not a solid ▌ icon).
+fn caret_style(base: Style) -> Style {
+    let fg = base.bg.unwrap_or(Color::Rgb(0xb0, 0xb0, 0xb0));
+    let bg = base.fg.unwrap_or(Color::Black);
+    Style::default()
+        .fg(fg)
+        .bg(bg)
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn paint_input_lines_ink(
@@ -111,10 +359,30 @@ pub fn paint_input_lines_ink(
     field_bg: Color,
     show_caret: bool,
 ) -> Vec<Line<'static>> {
+    paint_input_lines_ink_offset(
+        input,
+        cursor,
+        footer_bg,
+        field_bg,
+        show_caret,
+        None,
+        usize::MAX / 4,
+    )
+}
+
+pub fn paint_input_lines_ink_offset(
+    input: &str,
+    cursor: usize,
+    footer_bg: Color,
+    field_bg: Color,
+    show_caret: bool,
+    view_offset: Option<usize>,
+    body_width: usize,
+) -> Vec<Line<'static>> {
     let cursor = mouse::snap_char_boundary(input, cursor);
     let prompt = mouse::PROMPT_STR;
-    // Same display width as PROMPT (space + ❯ + space = 3) for continuation rows
-    const PROMPT_PAD: &str = "   ";
+    // Same display width as PROMPT (❯ + space = 2) for continuation rows
+    const PROMPT_PAD: &str = "  ";
 
     let prompt_style = Style::default()
         .fg(Color::Black)
@@ -127,30 +395,25 @@ pub fn paint_input_lines_ink(
         .bg(field_bg)
         .add_modifier(Modifier::BOLD);
 
-    let all: Vec<&str> = input.split('\n').collect();
-    let n = all.len().max(1);
-    let h = n.min(4);
-    let start = input_view_start(input, cursor);
+    let rows = input_display_rows(input, body_width);
+    let n = rows.len().max(1);
+    let h = n.min(INPUT_VIEWPORT_LINES);
+    let start = input_view_start_with_offset(input, cursor, view_offset, body_width);
     let end = (start + h).min(n);
-
-    // Byte offset of the start of each logical line
-    let mut line_starts: Vec<usize> = Vec::with_capacity(n);
-    let mut off = 0usize;
-    for (i, seg) in all.iter().enumerate() {
-        line_starts.push(off);
-        off += seg.len();
-        if i + 1 < n {
-            off += 1; // '\n'
-        }
-    }
 
     let mut out: Vec<Line<'static>> = Vec::with_capacity(h);
     for vis_i in 0..(end - start) {
-        let li = start + vis_i;
-        let line_text = all.get(li).copied().unwrap_or("");
-        let line_start = *line_starts.get(li).unwrap_or(&0);
+        let ri = start + vis_i;
+        let row = rows[ri];
+        let a = mouse::snap_char_boundary(input, row.abs_start.min(input.len()));
+        let b = mouse::snap_char_boundary(input, row.abs_end.min(input.len()));
+        let line_text = if a <= b && b <= input.len() {
+            &input[a..b]
+        } else {
+            ""
+        };
 
-        let mut spans: Vec<Span<'static>> = vec![if vis_i == 0 {
+        let mut spans: Vec<Span<'static>> = vec![if row.is_first_of_logical {
             Span::styled(prompt.to_string(), prompt_style)
         } else {
             Span::styled(PROMPT_PAD.to_string(), pad_style)
@@ -158,7 +421,7 @@ pub fn paint_input_lines_ink(
 
         spans.extend(paint_line_body(
             line_text,
-            line_start,
+            a,
             cursor,
             show_caret,
             body_style,
@@ -170,7 +433,7 @@ pub fn paint_input_lines_ink(
     if out.is_empty() {
         let mut spans = vec![Span::styled(prompt.to_string(), prompt_style)];
         if show_caret {
-            spans.push(Span::styled("▌".to_string(), body_style));
+            spans.push(Span::styled(" ".to_string(), caret_style(body_style)));
         }
         out.push(Line::from(spans));
     }
@@ -420,9 +683,19 @@ mod tests {
     use ratatui::style::Color;
 
     #[test]
-    fn height_caps_at_4() {
-        assert_eq!(input_height("a\nb\nc\nd\ne"), 4);
-        assert_eq!(input_height("a"), 1);
+    fn height_caps_at_viewport() {
+        assert_eq!(
+            input_height("a\nb\nc\nd\ne\nf", 80),
+            INPUT_VIEWPORT_LINES
+        );
+        assert_eq!(input_height("a", 80), 1);
+    }
+
+    #[test]
+    fn soft_wrap_long_line_raises_height() {
+        let long = "x".repeat(40);
+        assert_eq!(input_height(&long, 10), 4); // 40/10 = 4 rows
+        assert!(input_display_rows(&long, 10).len() == 4);
     }
 
     #[test]
@@ -432,5 +705,35 @@ mod tests {
         let lines = paint_input_lines_ink("hi", 2, footer, field, true);
         let plain = input_lines_plain(&lines).join("");
         assert!(plain.contains('❯') || plain.contains("hi"));
+    }
+
+    #[test]
+    fn soft_wrap_cursor_maps_to_second_row() {
+        let s = "abcdefghij"; // 10 chars, width 4 → 3 rows (4+4+2)
+        let rows = input_display_rows(s, 4);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(display_row_of_cursor(&rows, 0), 0);
+        // soft boundary at 4: prefer next row start
+        assert_eq!(display_row_of_cursor(&rows, 4), 1);
+        assert_eq!(display_row_of_cursor(&rows, 5), 1);
+        assert_eq!(display_row_of_cursor(&rows, 8), 2);
+        let b = display_row_visual_to_byte(s, &rows, 1, 1);
+        assert_eq!(&s[b..b + 1], "f"); // second row "efgh", col 1 → 'f'
+    }
+
+    #[test]
+    fn soft_wrap_arrow_up_down_and_home_end() {
+        let s = "abcdefghij"; // width 4 → rows abc d / efgh / ij
+        // cursor on 'f' (index 5) → display row 1
+        assert_eq!(display_row_of_cursor(&input_display_rows(s, 4), 5), 1);
+        // Down from 'b' (1) → same visual col on row1 → 'f' (5)
+        let down = shift_cursor_display_row(s, 1, 4, false);
+        assert_eq!(down, 5);
+        // Up from 'f' → back toward 'b'
+        let up = shift_cursor_display_row(s, 5, 4, true);
+        assert_eq!(up, 1);
+        // Home/End on middle display row "efgh"
+        assert_eq!(display_row_home(s, 5, 4), 4);
+        assert_eq!(display_row_end(s, 5, 4), 8);
     }
 }

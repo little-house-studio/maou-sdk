@@ -21,6 +21,7 @@ import type { SessionStore } from "@little-house-studio/context";
 import type { ToolRegistry } from "@little-house-studio/tools";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { ConfigStore } from "@little-house-studio/types";
+import { resolveUserMaouRoot } from "@little-house-studio/types";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -44,13 +45,21 @@ export const CODING_TOOL_WHITELIST = [
   "glob",
   "grep",
   "find_code",
+  "lsp",
   "use_terminal",
   "search_internet",
   "use_skill",
   "find_skill",
   "todo_manage",
   "todo_finish",
+  // subagent：创建/fork、团队管理、委派（subagent_* 由 runtime 扫描 subagents/ 动态注册）
+  "agent_message",
+  "agent_manage",
+  "yield",
 ] as const;
+
+/** coding 默认嵌套子 Agent（物化到 agents/coding/subagents/） */
+export const CODING_DEFAULT_SUBAGENTS = ["explore", "reviewer", "tester"] as const;
 
 /** coding agent 默认名称（即 agents/<name>/）。 */
 export const DEFAULT_CODING_AGENT_NAME = "coding";
@@ -84,7 +93,7 @@ export type CodingAgent = AgentHandle;
 export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
   const name = opts.name ?? DEFAULT_CODING_AGENT_NAME;
   const projectRoot = opts.projectRoot ?? process.cwd();
-  const maouRoot = opts.maouRoot ?? join(process.env.HOME ?? "", ".maou");
+  const maouRoot = opts.maouRoot ?? resolveUserMaouRoot();
   const toolWhitelist = opts.toolWhitelist ?? CODING_TOOL_WHITELIST;
 
   const targetDir = join(projectRoot, ".maou", "agents", name);

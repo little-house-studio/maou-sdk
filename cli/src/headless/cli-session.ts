@@ -16,9 +16,16 @@ import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
 import { userMaouRoot } from "../config/paths.js";
 import {
   setSlashCatalogProvider,
+  getSlashCommands,
   RUNTIME_SLASH_FALLBACK,
   type CompletionItem,
 } from "../overlay/Completer.js";
+import {
+  dispatchSlash,
+  syncRuntimeCommands,
+  syncSkillCommands,
+  registerBuiltinCliCommands,
+} from "../slash/index.js";
 import type { UIState } from "../state/types.js";
 
 export interface CliSessionOpts {
@@ -58,7 +65,10 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
   let abortCtrl: AbortController | null = null;
   const sound = new SoundManager(enableSound ? loadSoundConfig() : { enabled: false });
 
-  // 补全目录：与 useAgent 一致
+  registerBuiltinCliCommands();
+  syncSkillCommands();
+
+  // 补全目录：与 useAgent 一致；同时把 runtime 指令动态写入 CliCommandRegistry
   setSlashCatalogProvider(() => {
     const items: CompletionItem[] = [];
     try {
@@ -66,13 +76,19 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
         agent as {
           runtime?: {
             commandRegistry?: {
-              list: () => Array<{ name: string; description?: string }>;
+              list: () => Array<{
+                name: string;
+                description?: string;
+                usage?: string;
+              }>;
             };
           };
         } | null
       )?.runtime?.commandRegistry;
       if (reg) {
-        for (const c of reg.list()) {
+        const list = reg.list();
+        syncRuntimeCommands(list);
+        for (const c of list) {
           items.push({
             value: `/${c.name}`,
             label: `/${c.name}`,
@@ -146,31 +162,129 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
     restoreSessionIfAny();
   }
 
+  function applyProviderModel(provider: string, model: string): boolean {
+    const store = useStore.getState();
+    try {
+      const providers = config.getProviders?.() ?? [];
+      if (providers.length > 0) {
+        const pOk = providers.some((p) => p.id === provider);
+        if (!pOk) {
+          store.toastMsg(
+            `未知 provider「${provider}」· /model 打开列表`,
+            "warn",
+          );
+          return false;
+        }
+        const models = config.getModels?.(provider) ?? [];
+        if (models.length > 0 && !models.some((m) => m.id === model)) {
+          store.toastMsg(
+            `未知模型「${model}」· provider=${provider} · /model 打开列表`,
+            "warn",
+          );
+          return false;
+        }
+      }
+      const preset = config.getPreset(provider, model) as {
+        maxContext?: number;
+        maxTokens?: number;
+      } | null;
+      store.setProviderModel(provider, model);
+      store.setAgentMeta(
+        store.agentName || config.name,
+        provider,
+        model,
+        preset?.maxContext ?? preset?.maxTokens ?? 0,
+      );
+      store.toastMsg(`已切换 ${provider}/${model}`, "ok");
+      return true;
+    } catch (e) {
+      store.toastMsg(
+        `切换模型失败: ${e instanceof Error ? e.message : String(e)}`.slice(0, 80),
+        "err",
+      );
+      return false;
+    }
+  }
+
+  /**
+   * 斜杠系统指令：依据 CliCommandSpec 注册表自动识别。
+   * true = 已本地处理（绝不进 LLM）；false = 普通消息或 runtime 透传。
+   */
+  function tryHandleSystemSlash(text: string): boolean {
+    const store = useStore.getState();
+    // 补全/识别前尽量同步 skills + runtime
+    try {
+      syncSkillCommands();
+      getSlashCommands(); // 触发 provider → syncRuntimeCommands
+    } catch {
+      /* ignore */
+    }
+
+    const d = dispatchSlash(text);
+    switch (d.type) {
+      case "not_slash":
+        return false;
+      case "runtime":
+        // 交给 agent commandRegistry（作为用户消息）
+        return false;
+      case "unknown":
+        store.toastMsg(d.hint, "warn");
+        return true;
+      case "local": {
+        const a = d.action;
+        switch (a.kind) {
+          case "new_session": {
+            abortCtrl?.abort();
+            agent = null;
+            store.startNewSession({
+              clearScreen: true,
+              toast: a.clear ? "已清空" : "新会话",
+            });
+            return true;
+          }
+          case "switch_model":
+            applyProviderModel(a.provider, a.model);
+            return true;
+          case "open_model":
+            store.setOverlay("model");
+            return true;
+          case "overlay":
+            store.setOverlay(a.overlay as never);
+            return true;
+          case "thinking_cycle":
+            store.runCommand("thinking");
+            return true;
+          case "screenshot":
+            store.runCommand("screenshot");
+            return true;
+          case "quit":
+            store.runCommand("quit");
+            return true;
+          case "stop":
+            abort();
+            return true;
+          case "store_command":
+            store.runCommand(a.id);
+            return true;
+          case "usage_hint":
+            store.toastMsg(a.hint, "warn");
+            return true;
+          default:
+            return true;
+        }
+      }
+      default:
+        return false;
+    }
+  }
+
   async function send(text: string) {
     const store = useStore.getState();
     text = repairUtf8Mojibake(text);
     if (!text.trim()) return;
 
-    const cmd = text.trim().replace(/^\//, "").toLowerCase();
-    if (cmd === "new" || cmd === "clear") {
-      abortCtrl?.abort();
-      agent = null;
-      store.startNewSession({
-        clearScreen: true,
-        toast: cmd === "clear" ? "已清空" : "新会话",
-      });
-      return;
-    }
-
-    // 本地 UI 命令：/model /sessions … 不走 LLM
-    if (text.trim().startsWith("/")) {
-      const raw = text.trim().slice(1);
-      const id = raw.split(/\s+/)[0]?.toLowerCase() ?? "";
-      if (store.isLocalCommand(id)) {
-        store.runCommand(id);
-        return;
-      }
-    }
+    // 系统斜杠指令：/model /select /sessions … 本地执行，绝不发给 AI
+    if (tryHandleSystemSlash(text)) return;
 
     if (store.streaming) {
       store.enqueueMessage(text.trim());
@@ -299,24 +413,15 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
 
   function runCommand(id: string, _args?: string) {
     const store = useStore.getState();
-    if (id === "new" || id === "clear") {
-      resetAgent();
-      store.startNewSession({
-        clearScreen: true,
-        toast: id === "clear" ? "已清空" : "新会话",
-      });
-      return;
-    }
+    const slash = `/${id}${_args ? ` ${_args}` : ""}`;
+    // 优先走系统斜杠解析（含 /model p m · /select p\0m）
+    if (tryHandleSystemSlash(slash)) return;
     if (id === "stop") {
       abort();
       return;
     }
-    if (store.isLocalCommand(id)) {
-      store.runCommand(id);
-      return;
-    }
-    // 透传 runtime 命令：作为用户消息发送
-    void send(`/${id}${_args ? ` ${_args}` : ""}`);
+    // 透传 runtime 命令：作为用户消息发送（agent commandRegistry）
+    void send(slash);
   }
 
   function subscribe(fn: (state: UIState) => void): () => void {

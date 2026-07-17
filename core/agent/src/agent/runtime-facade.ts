@@ -31,6 +31,7 @@ import { appendSessionEvent, authorSystem } from "@little-house-studio/context";
 import type { ToolRegistry, Task } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { ConfigStore } from "@little-house-studio/types";
+import { resolveUserMaouRoot } from "@little-house-studio/types";
 import { AgentRuntime } from "./runtime.js";
 import { AgentRegistry } from "./registry.js";
 import { AgentFactory } from "./factory.js";
@@ -131,7 +132,7 @@ export class Runtime {
     this.callMainAgentFn = options.callMainAgent;
     this.skillOptions = options.skillOptions;
     this.fileDiffWatchOpt = options.fileDiffWatch;
-    this.maouRoot = options.maouRoot ?? join(process.env.HOME ?? '', '.maou');
+    this.maouRoot = options.maouRoot ?? resolveUserMaouRoot();
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.summarizer = options.summarizer;
     this.gitWatcher = new GitWatcher(this.maouRoot, this.projectRoot);

@@ -22,10 +22,18 @@ pub fn wrap_str(s: &str, width: usize) -> Vec<String> {
     let mut cur = String::new();
     let mut w = 0usize;
     for ch in s.chars() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+        // 单字宽 > width：仍独占一行，避免丢字
+        if cw > width {
+            if !cur.is_empty() {
+                rows.push(std::mem::take(&mut cur));
+                w = 0;
+            }
+            rows.push(ch.to_string());
+            continue;
+        }
         if w + cw > width && !cur.is_empty() {
-            rows.push(cur);
-            cur = String::new();
+            rows.push(std::mem::take(&mut cur));
             w = 0;
         }
         cur.push(ch);
@@ -33,6 +41,9 @@ pub fn wrap_str(s: &str, width: usize) -> Vec<String> {
     }
     if !cur.is_empty() {
         rows.push(cur);
+    }
+    if rows.is_empty() {
+        rows.push(String::new());
     }
     rows
 }
@@ -214,10 +225,8 @@ impl<'a> WalkCtx<'a> {
                 }
             }
             Event::Rule => {
-                out.push(Line::from(Span::styled(
-                    format!("  {}", "─".repeat(self.w.saturating_sub(4).min(48))),
-                    Style::default().fg(self.theme.md_hr),
-                )));
+                // 不画 ──── 实线：隔段用空行即可（用户要求别太密、别用线分割）
+                out.push(Line::from(Span::raw("  ")));
             }
             Event::TaskListMarker(checked) => {
                 self.item_task_done = true;
@@ -266,9 +275,15 @@ impl<'a> WalkCtx<'a> {
                     CodeBlockKind::Fenced(lang) => lang.into_string(),
                     CodeBlockKind::Indented => String::new(),
                 };
+                // 仅标签，不用整行高亮；框线色 = dim（与对话沟槽 │ 区分，避免「│ │」双色）
+                let label = if self.code_lang.is_empty() {
+                    "  ┌ code".to_string()
+                } else {
+                    format!("  ┌ {}", self.code_lang)
+                };
                 out.push(Line::from(Span::styled(
-                    format!("  ┌ code {}", self.code_lang),
-                    Style::default().fg(self.theme.md_code),
+                    label,
+                    Style::default().fg(self.theme.dim),
                 )));
             }
             Tag::List(start) => {
@@ -356,6 +371,10 @@ impl<'a> WalkCtx<'a> {
                     .map(|s| s.content.as_ref())
                     .collect();
                 self.spans.clear();
+                // 标题前空行（非首行）
+                if !out.is_empty() {
+                    out.push(Line::from(Span::raw("  ")));
+                }
                 push_wrapped(out, "  ", &body, color, true, self.w);
                 self.leaf_prefix.clear();
             }
@@ -363,22 +382,35 @@ impl<'a> WalkCtx<'a> {
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
             TagEnd::CodeBlock => {
-                // emit code body line-by-line (preserve internal newlines)
+                // 正文用空格缩进，不再画「  │ 」——助手区 pipe_md 已有沟槽 │，再画会变成「│ │」
+                // 颜色：中性亮灰（非屎黄）；框线 dim 统一
                 let body = std::mem::take(&mut self.code_buf);
+                let inner_w = self.w.saturating_sub(4).max(8);
+                let code_st = Style::default().fg(self.theme.md_code_block);
+                let chrome_st = Style::default().fg(self.theme.dim);
+                let mut any = false;
                 for line in body.split('\n') {
-                    // pulldown often leaves a trailing empty from final newline — still show blank code lines as empty chrome
-                    for chunk in wrap_str(line, self.w.saturating_sub(4)) {
-                        out.push(Line::from(Span::styled(
-                            format!("  │ {chunk}"),
-                            Style::default().fg(self.theme.md_code_block),
-                        )));
+                    any = true;
+                    let chunks = wrap_str(line, inner_w);
+                    if chunks.is_empty() {
+                        out.push(Line::from(Span::styled("  ".to_string(), chrome_st)));
+                        continue;
+                    }
+                    for chunk in chunks {
+                        out.push(Line::from(vec![
+                            Span::styled("  ".to_string(), chrome_st),
+                            Span::styled(chunk, code_st),
+                        ]));
                     }
                 }
-                // if body ended with newline, last split is empty and already emitted; if empty fence, emit nothing extra
+                if !any {
+                    out.push(Line::from(Span::styled("  ".to_string(), chrome_st)));
+                }
                 out.push(Line::from(Span::styled(
                     "  └────",
-                    Style::default().fg(self.theme.dim),
+                    chrome_st,
                 )));
+                out.push(Line::from(Span::raw("  ")));
                 self.in_code = false;
                 self.code_lang.clear();
             }
@@ -567,20 +599,19 @@ impl<'a> WalkCtx<'a> {
             self.flush_paragraph(out);
         }
         if self.in_code {
-            // unclosed fence — still close chrome
             let body = std::mem::take(&mut self.code_buf);
+            let inner_w = self.w.saturating_sub(4).max(8);
+            let code_st = Style::default().fg(self.theme.md_code_block);
+            let chrome_st = Style::default().fg(self.theme.dim);
             for line in body.split('\n') {
-                for chunk in wrap_str(line, self.w.saturating_sub(4)) {
-                    out.push(Line::from(Span::styled(
-                        format!("  │ {chunk}"),
-                        Style::default().fg(self.theme.md_code_block),
-                    )));
+                for chunk in wrap_str(line, inner_w) {
+                    out.push(Line::from(vec![
+                        Span::styled("  ".to_string(), chrome_st),
+                        Span::styled(chunk, code_st),
+                    ]));
                 }
             }
-            out.push(Line::from(Span::styled(
-                "  └────",
-                Style::default().fg(self.theme.dim),
-            )));
+            out.push(Line::from(Span::styled("  └────".to_string(), chrome_st)));
             self.in_code = false;
         }
         if let Some(t) = self.table.take() {
@@ -626,6 +657,7 @@ enum Align {
     Right,
 }
 
+/// 单行单元格填充；超长时截断（多行表体由 `wrap_cell_lines` 负责全量显示）
 fn pad_cell(s: &str, width: usize, align: Align) -> String {
     use unicode_width::UnicodeWidthStr;
     let mut t = s.to_string();
@@ -635,13 +667,12 @@ fn pad_cell(s: &str, width: usize, align: Align) -> String {
         let mut used = 0usize;
         for ch in t.chars() {
             let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
-            if used + cw > width.saturating_sub(1) {
+            if used + cw > width {
                 break;
             }
             out.push(ch);
             used += cw;
         }
-        out.push('…');
         t = out;
         tw = UnicodeWidthStr::width(t.as_str());
     }
@@ -656,7 +687,17 @@ fn pad_cell(s: &str, width: usize, align: Align) -> String {
     }
 }
 
+fn wrap_cell_lines(s: &str, width: usize) -> Vec<String> {
+    let w = width.max(1);
+    let mut lines = wrap_str(s.replace('\n', " ").trim(), w);
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 /// Ink MarkdownRenderer box table (┌─┬─┐ / │ │ / └─┴─┘).
+/// 格内自动换行：长文本拆成多终端行，不靠 … 藏字。
 fn render_box_table(
     header: &[String],
     rows: &[Vec<String>],
@@ -669,16 +710,21 @@ fn render_box_table(
         .len()
         .max(rows.iter().map(|r| r.len()).max().unwrap_or(0))
         .max(1);
-    let mut widths = vec![2usize; col_count];
+    // 列宽：优先可读，再按预算缩放；单列上限抬高以便少折
+    let mut widths = vec![4usize; col_count];
     for (i, h) in header.iter().enumerate() {
-        widths[i] = widths[i].max(UnicodeWidthStr::width(h.as_str()).max(1)).min(36);
+        widths[i] = widths[i]
+            .max(UnicodeWidthStr::width(h.as_str()).max(1))
+            .min(48);
     }
     for row in rows {
         for (i, c) in row.iter().enumerate() {
             if i < col_count {
+                // 用首行宽估计，完整内容靠 wrap 显示
+                let first = c.lines().next().unwrap_or(c.as_str());
                 widths[i] = widths[i]
-                    .max(UnicodeWidthStr::width(c.as_str()).max(1))
-                    .min(36);
+                    .max(UnicodeWidthStr::width(first).max(1))
+                    .min(48);
             }
         }
     }
@@ -687,11 +733,11 @@ fn render_box_table(
     let content_sum: usize = widths.iter().sum();
     let inner = content_sum + chrome;
     if inner > budget && content_sum > 0 {
-        let content_budget = budget.saturating_sub(chrome).max(col_count * 3);
+        let content_budget = budget.saturating_sub(chrome).max(col_count * 4);
         for w in widths.iter_mut() {
             *w = ((*w as f64) * (content_budget as f64 / content_sum as f64))
                 .floor()
-                .max(3.0) as usize;
+                .max(4.0) as usize;
         }
     }
 
@@ -702,55 +748,91 @@ fn render_box_table(
             .collect();
         format!("{left}{}{right}", segs.join(mid))
     };
-    let make_row = |cells: &[String], al: &[Align]| -> String {
-        let mut parts = Vec::with_capacity(col_count);
-        for i in 0..col_count {
-            let c = cells.get(i).map(|s| s.as_str()).unwrap_or("");
-            let a = al.get(i).copied().unwrap_or(Align::Left);
-            parts.push(format!(" {} ", pad_cell(c, widths[i], a)));
+    let make_row_lines = |cells: &[String], al: &[Align]| -> Vec<String> {
+        // 每列折成多行，再按行拼成表格行（同行高）
+        let col_lines: Vec<Vec<String>> = (0..col_count)
+            .map(|i| {
+                let c = cells.get(i).map(|s| s.as_str()).unwrap_or("");
+                wrap_cell_lines(c, widths[i])
+            })
+            .collect();
+        let h = col_lines.iter().map(|c| c.len()).max().unwrap_or(1).max(1);
+        let mut out = Vec::with_capacity(h);
+        for r in 0..h {
+            let mut parts = Vec::with_capacity(col_count);
+            for i in 0..col_count {
+                let piece = col_lines[i].get(r).map(|s| s.as_str()).unwrap_or("");
+                let a = al.get(i).copied().unwrap_or(Align::Left);
+                parts.push(format!(" {} ", pad_cell(piece, widths[i], a)));
+            }
+            out.push(format!("│{}│", parts.join("│")));
         }
-        format!("│{}│", parts.join("│"))
+        out
     };
 
     let top = make_border("┌", "┬", "┐", '─');
     let mid = make_border("├", "┼", "┤", '─');
     let bot = make_border("└", "┴", "┘", '─');
-    let head_row = make_row(header, align);
+    let border_st = Style::default().fg(theme.muted);
+    let head_text_st = Style::default()
+        .fg(theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let body_text_st = Style::default().fg(theme.fg);
+
+    // 表头/表体：竖线 muted，**只有单元格文字**上色（非整行）
+    let paint_data_row = |cells: &[String], al: &[Align], text_st: Style| -> Vec<Line<'static>> {
+        let col_lines: Vec<Vec<String>> = (0..col_count)
+            .map(|i| {
+                let c = cells.get(i).map(|s| s.as_str()).unwrap_or("");
+                wrap_cell_lines(c, widths[i])
+            })
+            .collect();
+        let h = col_lines.iter().map(|c| c.len()).max().unwrap_or(1).max(1);
+        let mut lines = Vec::with_capacity(h);
+        for r in 0..h {
+            let mut spans: Vec<Span<'static>> = vec![
+                Span::styled("  ".to_string(), border_st),
+                Span::styled("│".to_string(), border_st),
+            ];
+            for i in 0..col_count {
+                let piece = col_lines[i].get(r).map(|s| s.as_str()).unwrap_or("");
+                let a = al.get(i).copied().unwrap_or(Align::Left);
+                let cell = format!(" {} ", pad_cell(piece, widths[i], a));
+                spans.push(Span::styled(cell, text_st));
+                spans.push(Span::styled("│".to_string(), border_st));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines
+    };
 
     let mut out = Vec::new();
     out.push(Line::from(Span::styled(
         format!("  {top}"),
-        Style::default().fg(theme.muted),
+        border_st,
     )));
-    out.push(Line::from(Span::styled(
-        format!("  {head_row}"),
-        Style::default()
-            .fg(theme.accent)
-            .add_modifier(Modifier::BOLD),
-    )));
+    out.extend(paint_data_row(header, align, head_text_st));
     out.push(Line::from(Span::styled(
         format!("  {mid}"),
-        Style::default().fg(theme.muted),
+        border_st,
     )));
-    let max_data = 40usize;
+    let max_data = 80usize;
     let shown = rows.len().min(max_data);
     for row in rows.iter().take(shown) {
-        let r = make_row(row, align);
-        out.push(Line::from(Span::styled(
-            format!("  {r}"),
-            Style::default().fg(theme.fg),
-        )));
+        out.extend(paint_data_row(row, align, body_text_st));
     }
     if rows.len() > shown {
         out.push(Line::from(Span::styled(
-            format!("  …（表格已折叠，共 {} 行）", rows.len()),
+            format!("  …（表格其余 {} 行已省略）", rows.len() - shown),
             Style::default().fg(theme.dim),
         )));
     }
     out.push(Line::from(Span::styled(
         format!("  {bot}"),
-        Style::default().fg(theme.muted),
+        border_st,
     )));
+    out.push(Line::from(Span::raw("  ")));
+    let _ = make_row_lines; // kept for width logic / tests if needed
     out
 }
 
@@ -786,18 +868,22 @@ fn push_inline_styled(
     base: Style,
     width: usize,
 ) {
-    let max_w = width
-        .saturating_sub(UnicodeWidthChar::width(' ').unwrap_or(1) * prefix.chars().count().max(1))
-        .max(4);
+    use unicode_width::UnicodeWidthStr;
+    let pref_w = UnicodeWidthStr::width(prefix).max(1);
+    let max_w = width.saturating_sub(pref_w).max(8);
     let rows = wrap_styled_spans(spans, max_w, base);
     for (i, row) in rows.into_iter().enumerate() {
         let p = if i == 0 {
             prefix.to_string()
         } else {
-            " ".repeat(prefix.chars().count())
+            " ".repeat(pref_w)
         };
         let mut line_spans = vec![Span::styled(p, base)];
-        line_spans.extend(row);
+        if row.is_empty() {
+            line_spans.push(Span::styled(String::new(), base));
+        } else {
+            line_spans.extend(row);
+        }
         out.push(Line::from(line_spans));
     }
 }

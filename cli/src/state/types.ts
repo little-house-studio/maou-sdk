@@ -150,7 +150,18 @@ export interface TerminalApprovalState {
   command: string;
   agentName: string;
   cwd?: string;
+  /** @deprecated 用 summary；兼容旧字段 */
   hint?: string;
+  /** low=普通确认(黄) high=危险确认(红底) */
+  risk?: "low" | "high";
+  /** 一句人话：这条命令在干什么 */
+  summary?: string;
+  /** 短标签：安装依赖 / 删除文件 … */
+  label?: string;
+  /** 安全规则 id */
+  ruleId?: string;
+  /** 安全层原因 */
+  reason?: string;
 }
 
 /** 补全菜单状态（提升到 store，供 InputBar 与 app.tsx 全局按键共享） */
@@ -225,6 +236,18 @@ export interface UIState {
   chatScrollOffset: number;       // 对话区滚动偏移（fromBottom）
   maxChatScroll: number;          // 可滚最大 fromBottom
   autoFollow: boolean;            // 贴底跟随新消息
+  /**
+   * 右上角 Debug 性能条（PerfHud）。
+   * 默认开；`MAOU_PERF_HUD=0` 关；设置里切换会写入 ~/.maou/cli-ui.json 持久化。
+   */
+  perfHud: boolean;
+  /** SGR 鼠标捕获；持久化见 ~/.maou/cli-ui.json mouseCapture */
+  mouseCapture: boolean;
+  /**
+   * 屏幕世代：/new 清屏、强制刷新时递增。
+   * Ratatui bridge 检测变化后发 full_paint，避免 Node CSI 清屏打乱双缓冲。
+   */
+  screenEpoch: number;
   /** 历史窗口起点；-1=请求收成贴底 200 条 */
   chatHistoryStart: number;
   /** 滚轮滚动中（降 paint / hover） */

@@ -4,13 +4,13 @@
  * 目录约定（与画廊 assets/gallery 分离）：
  *   包内：  cli/assets/themes/<name>.json
  *   用户：  ~/.maou/themes/<name>.json
- *   偏好：  ~/.maou/cli-ui.json  → { "theme": "tau-ceti" }
+ *   偏好：  ~/.maou/cli-ui.json（见 config/cli-ui-prefs.ts 统一读写）
  *
  * 颜色项可为纯字符串，或 { "base", "hover?" }。
  * 未写 hover 时用 defaults.hover（lighten / fallback）。
  *
- * CLI：maou coding --theme tau-ceti | --theme /path/to.json
- * 设置：Ctrl+, → 配色方案
+ * CLI：maou coding --theme tau-ceti | --theme polar-indigo | --theme /path/to.json
+ * 默认：tau-ceti。设置：Ctrl+, → 配色方案
  */
 
 import {
@@ -24,6 +24,10 @@ import { dirname, join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import type { ThemeTokens } from "./tokens.js";
+import {
+  getPreferredThemeId,
+  setPreferredThemeId,
+} from "../config/cli-ui-prefs.js";
 
 // ── 类型 ──────────────────────────────────────────────────
 
@@ -99,14 +103,15 @@ export interface LoadedTheme {
 
 // ── 内置兜底 ──────────────────────────────────────────────
 
+/** 兜底色 = tau-ceti（无主题文件时；与 assets/themes/tau-ceti.json 对齐） */
 export const BUILTIN_THEME_COLORS: ThemeTokens = {
-  bg: "#101010",
-  panelBg: "#242424",
-  fg: "#C5C5C5",
-  muted: "#808080",
-  dim: "#808080",
-  border: "#242424",
-  borderMuted: "#242424",
+  bg: "#1A1A1A",
+  panelBg: "#26241F",
+  fg: "#C8C4B6",
+  muted: "#858070",
+  dim: "#858070",
+  border: "#26241F",
+  borderMuted: "#26241F",
   borderAccent: "#C7FF20",
   accent: "#C7FF20",
   accent2: "#3BFFA7",
@@ -147,17 +152,17 @@ export const BUILTIN_THEME_COLORS: ThemeTokens = {
   mdListBullet: "#C7FF20",
   toolDiffAdded: "#3BFFA7",
   toolDiffRemoved: "#FF741D",
-  toolDiffContext: "#808080",
-  selectedBg: "#242424",
-  userBg: "#242424",
-  systemBg: "#242424",
-  toolPendingBg: "#242424",
-  toolSuccessBg: "#101010",
-  toolErrorBg: "#242424",
-  footerBg: "#C5C5C5",
-  inputFieldBg: "#B0B0B0",
-  assistantMdBg: "#1A1A1A",
-  mdPaperBorder: "#242424",
+  toolDiffContext: "#858070",
+  selectedBg: "#26241F",
+  userBg: "#26241F",
+  systemBg: "#26241F",
+  toolPendingBg: "#26241F",
+  toolSuccessBg: "#1A1A1A",
+  toolErrorBg: "#26241F",
+  footerBg: "#C8C4B6",
+  inputFieldBg: "#B3AD9E",
+  assistantMdBg: "#22201A",
+  mdPaperBorder: "#26241F",
   bashMode: "#3BFFA7",
 };
 
@@ -250,9 +255,15 @@ export function userThemesDir(): string {
   return join(homedir(), ".maou", "themes");
 }
 
-export function cliUiConfigPath(): string {
-  return join(homedir(), ".maou", "cli-ui.json");
-}
+// 偏好路径 / 读写：统一走 config/cli-ui-prefs（此处 re-export 兼容旧 import）
+export {
+  cliUiConfigPath,
+  getPreferredThemeId,
+  setPreferredThemeId,
+  getPreferredPerfHud,
+  setPreferredPerfHud,
+  resolvePerfHudDefault,
+} from "../config/cli-ui-prefs.js";
 
 // ── 色值解析 ──────────────────────────────────────────────
 
@@ -342,7 +353,10 @@ export function listThemeIds(): string[] {
   const ids = new Set<string>();
   for (const id of listJsonNames(packageThemesDir())) ids.add(id);
   for (const id of listJsonNames(userThemesDir())) ids.add(id);
-  if (ids.size === 0) ids.add("tau-ceti");
+  if (ids.size === 0) {
+    ids.add("tau-ceti");
+    ids.add("polar-indigo");
+  }
   return [...ids].sort();
 }
 
@@ -362,35 +376,9 @@ export function listThemesMeta(): { id: string; name: string; source: "package" 
   }
   if (out.length === 0) {
     out.push({ id: "tau-ceti", name: "Tau Ceti", source: "builtin" });
+    out.push({ id: "polar-indigo", name: "Polar Indigo", source: "builtin" });
   }
   return out.sort((a, b) => a.id.localeCompare(b.id));
-}
-
-// ── 偏好 ──────────────────────────────────────────────────
-
-export function getPreferredThemeId(): string {
-  try {
-    const p = cliUiConfigPath();
-    if (!existsSync(p)) return "tau-ceti";
-    const raw = JSON.parse(readFileSync(p, "utf-8")) as { theme?: string };
-    const id = (raw.theme ?? "").trim();
-    return id || "tau-ceti";
-  } catch {
-    return "tau-ceti";
-  }
-}
-
-export function setPreferredThemeId(id: string): void {
-  const p = cliUiConfigPath();
-  mkdirSync(dirname(p), { recursive: true });
-  let prev: Record<string, unknown> = {};
-  try {
-    if (existsSync(p)) prev = JSON.parse(readFileSync(p, "utf-8")) as Record<string, unknown>;
-  } catch {
-    /* ignore */
-  }
-  prev.theme = id;
-  writeFileSync(p, JSON.stringify(prev, null, 2) + "\n", "utf-8");
 }
 
 // ── 解析主题文件 ──────────────────────────────────────────
@@ -567,6 +555,7 @@ export function loadPreferredTheme(): LoadedTheme {
   return (
     loadThemeById(id) ??
     loadThemeById("tau-ceti") ??
+    loadThemeById("polar-indigo") ??
     {
       id: "tau-ceti",
       name: "Tau Ceti",

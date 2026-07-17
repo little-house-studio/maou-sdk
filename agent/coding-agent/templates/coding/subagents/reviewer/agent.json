@@ -1,0 +1,23 @@
+{
+  "name": "reviewer",
+  "display_name": "Code Reviewer",
+  "role": "reviewer",
+  "scope": "subagent",
+  "subagent_kind": "task",
+  "description": "代码审查员子 Agent：审查代码质量、发现 bug、提出改进建议。只读工具 + llm_judge 辅助判断。适合「审查这段代码」「找潜在问题」等质量把关任务。",
+  "status": "active",
+  "round_limit": 15,
+  "max_retries": 5,
+  "terminal_mode": "normal",
+  "enable_loop": true,
+  "persist_context": true,
+  "inherit_full_context": false,
+  "permission": "readonly",
+  "tool_preset": "explore",
+  "tools": ["reader", "glob", "grep", "find_code", "llm_judge", "todo_finish"],
+  "list_in_manager": true,
+  "use_executor": true,
+  "over_round_policy": "wrap_up",
+  "ephemeral": false,
+  "storage_scope": "nested"
+}

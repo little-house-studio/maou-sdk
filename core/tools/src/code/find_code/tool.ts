@@ -95,14 +95,19 @@ export class CodeSearchTool extends Tool {
         kind: {
           type: "string",
           enum: ["function", "class", "method", "struct", "enum", "interface", "trait", "variable", "constant", "type", "module", "namespace"],
-          description: "符号类型过滤。search 时只返回该类型的符号；unused 时只检测该类型的死代码。默认不过滤。",
+          description:
+            "符号类型过滤。search/unused/impact/explain/path 等均可用于消歧（同文件内 interface 与 type 同名时尤其有用）。",
         },
         lang: {
           type: "string",
           description:
             "语言过滤。search/unused 时有效。可用正式 id（typescript/javascript/python/rust/go）或别名（ts/js/py/rs）。",
         },
-        in_file: { type: "string", description: "符号所在文件路径。当符号名有歧义（多个定义）时用于消歧。impact/callers 时有效。" },
+        in_file: {
+          type: "string",
+          description:
+            "符号所在文件路径（相对项目根）。歧义消歧用；impact/explain/search/path/hierarchy/subgraph 有效。",
+        },
         exact: { type: "boolean", description: "精确匹配符号名（关闭正则）。默认 false（正则匹配）。" },
         fuzzy: { type: "boolean", description: "模糊匹配符号名。适合不确定确切名称时使用。默认 false。" },
         depth: { type: "integer", minimum: 1, maximum: 10, description: "调用关系搜索深度。impact 默认 3，subgraph 默认 2。值越大分析越深但越慢。" },
@@ -144,16 +149,6 @@ export class CodeSearchTool extends Tool {
 
     try {
       switch (action) {
-        case "search": {
-          if (!sym()) return createToolResponse(false, '❌ find_code search 缺少必填参数 symbol（符号名）。正确用法示例：\n{"tool": "find_code", "params": {"action": "search", "symbol": "MyClass", "reason": "查找类定义"}}\n请用正确的 symbol 参数重试。');
-          const r = await sqry.search(cwd, sym(), {
-            kind: params.kind ? String(params.kind) : undefined,
-            lang: params.lang ? String(params.lang) : undefined,
-            exact: Boolean(params.exact),
-            fuzzy: Boolean(params.fuzzy),
-          });
-          return formatSearch(r, sym(), limit, params.kind ? String(params.kind) : undefined, params.lang ? String(params.lang) : undefined);
-        }
         case "callers": {
           if (!sym()) return createToolResponse(false, '❌ find_code callers 缺少必填参数 symbol（符号名）。正确用法示例：\n{"tool": "find_code", "params": {"action": "callers", "symbol": "myFunction", "reason": "查找谁调用了该函数"}}\n请用正确的 symbol 参数重试。');
           return formatGraph(await sqry.callers(cwd, sym()), "callers", sym(), limit);
@@ -165,23 +160,47 @@ export class CodeSearchTool extends Tool {
         case "path": {
           const target = String(params.target ?? "").trim();
           if (!sym() || !target) return createToolResponse(false, '❌ find_code path 缺少必填参数 symbol（起点）和 target（终点）。正确用法示例：\n{"tool": "find_code", "params": {"action": "path", "symbol": "funcA", "target": "funcB", "reason": "查找两函数间调用链"}}\n请用正确的 symbol 和 target 参数重试。');
-          const r = await sqry.tracePath(cwd, sym(), target);
-          if (!r) return createToolResponse(true, `未找到从 "${sym()}" 到 "${target}" 的调用路径。`, { payload: { action: "path", symbol: sym(), target, found: false } });
+          const r = await sqry.tracePath(cwd, sym(), target, {
+            kind: params.kind ? String(params.kind) : undefined,
+            inFile: params.in_file ? String(params.in_file) : undefined,
+          });
+          if (!r) return createToolResponse(true, `未找到从 "${sym()}" 到 "${target}" 的调用路径。可改用 callers/callees 手工追溯。`, { payload: { action: "path", symbol: sym(), target, found: false } });
           return formatGraph(r, "path", `${sym()} → ${target}`, 50);
         }
         case "hierarchy": {
           if (!sym()) return createToolResponse(false, '❌ find_code hierarchy 缺少必填参数 symbol（符号名）。正确用法示例：\n{"tool": "find_code", "params": {"action": "hierarchy", "symbol": "MyClass", "reason": "查看调用层级"}}\n请用正确的 symbol 参数重试。');
-          return formatGraph(await sqry.hierarchy(cwd, sym()), "hierarchy", sym(), 50);
+          return formatGraph(
+            await sqry.hierarchy(cwd, sym(), {
+              kind: params.kind ? String(params.kind) : undefined,
+              inFile: params.in_file ? String(params.in_file) : undefined,
+              depth: Number(params.depth ?? 2),
+            }),
+            "hierarchy",
+            sym(),
+            50,
+          );
         }
         case "subgraph": {
           if (!sym()) return createToolResponse(false, '❌ find_code subgraph 缺少必填参数 symbol（符号名）。正确用法示例：\n{"tool": "find_code", "params": {"action": "subgraph", "symbol": "MyClass", "reason": "查看局部代码图"}}\n请用正确的 symbol 参数重试。');
           const depth = Math.max(1, Math.min(5, Number(params.depth ?? 2)));
-          return formatGraph(await sqry.subgraph(cwd, sym(), depth), "subgraph", sym(), 80);
+          return formatGraph(
+            await sqry.subgraph(cwd, sym(), depth, {
+              kind: params.kind ? String(params.kind) : undefined,
+              inFile: params.in_file ? String(params.in_file) : undefined,
+              maxNodes: Math.max(1, Math.min(200, Number(params.limit ?? 80))),
+            }),
+            "subgraph",
+            sym(),
+            80,
+          );
         }
         case "explain": {
           if (!sym()) return createToolResponse(false, '❌ find_code explain 缺少必填参数 symbol（符号名）。正确用法示例：\n{"tool": "find_code", "params": {"action": "explain", "symbol": "MyClass", "reason": "查看符号上下文解释"}}\n请用正确的 symbol 参数重试。');
-          const r = await sqry.explain(cwd, sym());
-          if (!r) return createToolResponse(true, `未找到符号 "${sym()}" 的解释信息。`, { payload: { action: "explain", symbol: sym(), found: false } });
+          const r = await sqry.explain(cwd, sym(), {
+            inFile: params.in_file ? String(params.in_file) : undefined,
+            kind: params.kind ? String(params.kind) : undefined,
+          });
+          if (!r) return createToolResponse(true, `未找到符号 "${sym()}" 的解释信息。可先 search 再带 in_file 重试。`, { payload: { action: "explain", symbol: sym(), found: false } });
           if ("text" in r) return createToolResponse(true, `[action=explain | symbol=${sym()}]\n${trim(r.text, 50)}`, { payload: { action: "explain", symbol: sym() } });
           return formatGraph(r, "explain", sym(), 50);
         }
@@ -192,22 +211,41 @@ export class CodeSearchTool extends Tool {
           return formatText(r.text, "cycles", `type=${type}`, 100, { action: "cycles", type });
         }
         case "unused": {
-          const scope = (params.scope as string) || "all";
+          // 默认 public，减少导出符号/HTML 噪声；可显式 scope=all
+          const scope = (params.scope as string) || "public";
           const lang = params.lang ? String(params.lang) : undefined;
-          const r = await sqry.unused(cwd, { scope, lang });
+          const kind = params.kind ? String(params.kind) : undefined;
+          const r = await sqry.unused(cwd, {
+            scope,
+            lang,
+            kind,
+            maxResults: Math.max(1, Math.min(200, Number(params.limit ?? 50))),
+          });
           if (!r) return createToolResponse(true, "未发现死代码。", { payload: { action: "unused", count: 0 } });
-          return formatText(r.text, "unused", `scope=${scope}${lang ? ` | lang=${lang}` : ""}`, Math.max(1, Math.min(200, Number(params.limit ?? 50))), { action: "unused", scope, lang });
+          return formatText(r.text, "unused", `scope=${scope}${lang ? ` | lang=${lang}` : ""}${kind ? ` | kind=${kind}` : ""}`, Math.max(1, Math.min(200, Number(params.limit ?? 50))), { action: "unused", scope, lang, kind });
         }
         case "impact": {
           if (!sym()) return createToolResponse(false, '❌ find_code impact 缺少必填参数 symbol（符号名）。正确用法示例：\n{"tool": "find_code", "params": {"action": "impact", "symbol": "myFunction", "reason": "查看修改影响范围"}}\n请用正确的 symbol 参数重试。');
           const r = await sqry.impact(cwd, sym(), {
             inFile: params.in_file ? String(params.in_file) : undefined,
+            kind: params.kind ? String(params.kind) : undefined,
             depth: Number(params.depth ?? 3),
             directOnly: Boolean(params.direct_only),
             limit: Math.max(1, Math.min(200, Number(params.limit ?? 100))),
           });
           if (!r) return createToolResponse(true, `未找到 "${sym()}" 的影响范围。`, { payload: { action: "impact", symbol: sym(), count: 0 } });
           return formatText(r.text, "impact", `symbol=${sym()}`, Math.max(1, Math.min(200, Number(params.limit ?? 100))), { action: "impact", symbol: sym() });
+        }
+        case "search": {
+          if (!sym()) return createToolResponse(false, '❌ find_code search 缺少必填参数 symbol（符号名）。正确用法示例：\n{"tool": "find_code", "params": {"action": "search", "symbol": "MyClass", "reason": "查找类定义"}}\n请用正确的 symbol 参数重试。');
+          const r = await sqry.search(cwd, sym(), {
+            kind: params.kind ? String(params.kind) : undefined,
+            lang: params.lang ? String(params.lang) : undefined,
+            exact: Boolean(params.exact),
+            fuzzy: Boolean(params.fuzzy),
+            inFile: params.in_file ? String(params.in_file) : undefined,
+          });
+          return formatSearch(r, sym(), limit, params.kind ? String(params.kind) : undefined, params.lang ? String(params.lang) : undefined);
         }
         case "duplicates": {
           const r = await sqry.duplicates(cwd);
@@ -219,7 +257,11 @@ export class CodeSearchTool extends Tool {
       }
     } catch (e) {
       if (e instanceof sqry.SqryAmbiguousError) {
-        return createToolResponse(false, `符号 "${e.symbol}" 存在多个定义，请用 in_file 参数指定文件路径。\n${e.stderr}`, { payload: { action, symbol: e.symbol, ambiguous: true } });
+        return createToolResponse(
+          false,
+          `符号 "${e.symbol}" 存在多个定义，请用 kind（interface/class/type/…）和/或 in_file 消歧。\n${e.stderr}`,
+          { payload: { action, symbol: e.symbol, ambiguous: true } },
+        );
       }
       return createToolResponse(false, `code-search 执行失败: ${errToString(e)}`);
     }

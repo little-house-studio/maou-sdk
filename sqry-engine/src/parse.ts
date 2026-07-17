@@ -39,6 +39,26 @@ export function parseGraph(raw: string): SqryGraphResult {
     } else if (obj.callees) {
       entries = obj.callees;
       totalFound = obj.total ?? entries.length;
+    } else if (obj.hierarchy || obj.levels || obj.children) {
+      // call-hierarchy 多种形状
+      const h = obj.hierarchy ?? obj.levels ?? obj.children;
+      if (Array.isArray(h)) {
+        entries = h.flatMap((x: unknown) => {
+          if (Array.isArray(x)) return x;
+          if (x && typeof x === "object") {
+            const o = x as Record<string, unknown>;
+            if (Array.isArray(o.symbols)) return o.symbols;
+            if (Array.isArray(o.nodes)) return o.nodes;
+            return [o];
+          }
+          return [];
+        });
+      }
+      totalFound = entries.length;
+    } else if (obj.path || obj.nodes) {
+      const p = obj.path ?? obj.nodes;
+      if (Array.isArray(p)) entries = p as Record<string, unknown>[];
+      totalFound = entries.length;
     } else if (obj.incoming || obj.outgoing) {
       const incoming = Array.isArray(obj.incoming) ? obj.incoming : [];
       const outgoing = Array.isArray(obj.outgoing) ? obj.outgoing : [];

@@ -14,6 +14,7 @@ import {
   renameSync,
 } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import type { MaouMessage } from "./types/message.js";
 import type { CompressionStage } from "./types/compression.js";
 
@@ -53,7 +54,10 @@ export class HarnessSessionStore {
   private maouRoot: string;
 
   constructor(options?: HarnessSessionStoreOptions) {
-    this.maouRoot = options?.maouRoot ?? join(process.env.HOME ?? "", ".maou");
+    // MAOU_HOME 即用户态根（已含 .maou）；未设时用 ~/ .maou
+    const envHome = process.env.MAOU_HOME?.trim();
+    this.maouRoot =
+      options?.maouRoot ?? (envHome ? envHome : join(homedir(), ".maou"));
   }
 
   // ── 路径计算 ──

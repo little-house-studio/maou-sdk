@@ -16,42 +16,56 @@ fn key(code: KeyCode) -> KeyEvent {
 
 #[test]
 fn follow_tail_pad_reserves_room_when_pinned() {
+    use crate::protocol::UiMessage;
     let mut app = test_app();
+    app.messages.push(UiMessage {
+        id: "u1".into(),
+        role: "user".into(),
+        content: "hi".into(),
+        ..Default::default()
+    });
     app.scroll_from_bottom = 0;
     app.follow_tail_boost = false;
     app.streaming = false;
-    assert_eq!(app.follow_tail_pad_lines(20), 1, "idle follow = Ink BOTTOM_PAD");
+    // idle + unknown tail → 1-line pad
+    assert_eq!(app.follow_tail_pad_lines(20, 0), 1, "idle follow pad");
     app.pin_follow_for_send();
     assert_eq!(app.scroll_from_bottom, 0);
     assert!(app.follow_tail_boost);
-    let pad = app.follow_tail_pad_lines(20);
-    // Modest boost (≤3): enough for stream growth, not a half-pane blank that
-    // shoves history off-screen.
-    assert!(pad >= 2 && pad <= 3, "send/stream pad modest, got {pad}");
-    assert!(pad < 20 / 2, "must leave ≥ half viewport for content");
-    app.scroll_from_bottom = 5;
-    assert_eq!(app.follow_tail_pad_lines(20), 0, "scrolled away → no pad");
+    let pad = app.follow_tail_pad_lines(20, 0);
+    // boost / stream with unknown tail: near-full viewport pad
+    assert!(pad >= 3, "send/stream pad room for AI, got {pad}");
+    // known tail: pad = viewH - tail
+    assert_eq!(app.follow_tail_pad_lines(20, 12), 8);
+    // empty messages: no pad
+    app.messages.clear();
+    assert_eq!(app.follow_tail_pad_lines(20, 0), 0);
 }
 
 #[test]
-fn wheel_chat_one_line_per_event_no_amp_no_coast() {
+fn wheel_chat_slow_is_one_line_fast_accelerates() {
     let mut app = test_app();
-    app.max_scroll_lines = 100;
+    app.max_scroll_lines = 200;
     app.scroll_from_bottom = 10;
-    app.note_wheel_chat(true); // older → +1 only
-    assert_eq!(app.scroll_from_bottom, 11, "one event = one line");
-    // No synthetic coast without more events
+    // 冷启动 / 慢拨：首事件 1 行
+    app.note_wheel_chat(true);
+    assert_eq!(app.scroll_from_bottom, 11, "slow first notch = 1 line");
+    // 间隔拉大再拨：仍 1 行
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    app.note_wheel_chat(true);
+    assert_eq!(app.scroll_from_bottom, 12, "slow second notch = 1 line");
+    // 无新事件不伪造惯性
     std::thread::sleep(std::time::Duration::from_millis(50));
     app.tick_input();
-    assert_eq!(app.scroll_from_bottom, 11, "must not coast after OS events stop");
-    // Dense burst must NOT 2×/4× amplify (unlike Ink's coalesce-compensated steps)
+    assert_eq!(app.scroll_from_bottom, 12, "no coast without OS events");
+    // 密集连发（模拟 fling）：每事件 >1 行
+    let before = app.scroll_from_bottom;
     for _ in 0..10 {
         app.note_wheel_chat(true);
     }
-    assert_eq!(
-        app.scroll_from_bottom, 21,
-        "10 more events = +10 lines, not +20/+40"
-    );
+    let delta = app.scroll_from_bottom - before;
+    assert!(delta > 10, "dense fling must accelerate, delta={delta}");
+    assert!(delta <= 60, "fling not unbounded, delta={delta}");
 }
 
 #[test]

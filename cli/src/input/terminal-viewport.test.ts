@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   noteInputContentWidth,
   maxLineVisualWidth,
+  countInputVisualLines,
+  inputContentCols,
   markViewportOverflow,
   restoreTerminalViewport,
   bindViewportFullPaint,
@@ -42,6 +44,25 @@ describe("terminal-viewport overflow restore", () => {
     expect(maxLineVisualWidth("ab")).toBe(2);
     expect(maxLineVisualWidth("你好")).toBe(4);
     expect(maxLineVisualWidth("a\n你好呀")).toBe(6);
+  });
+
+  it("countInputVisualLines：超长单行按列宽软折", () => {
+    expect(countInputVisualLines("", 40)).toBe(1);
+    expect(countInputVisualLines("hi", 40)).toBe(1);
+    // 80 个 ASCII 在 40 列 → 2 视觉行
+    expect(countInputVisualLines("a".repeat(80), 40)).toBe(2);
+    // 200 个 ASCII 在 40 列 → 5 视觉行
+    expect(countInputVisualLines("a".repeat(200), 40)).toBe(5);
+    // 中文宽 2：40 列塞 21 个汉字 → 2 行
+    expect(countInputVisualLines("你".repeat(21), 40)).toBe(2);
+    // 硬换行 + 软折行叠加
+    expect(countInputVisualLines("a".repeat(40) + "\n" + "b".repeat(40), 40)).toBe(2);
+    expect(countInputVisualLines("a".repeat(41) + "\n" + "b", 40)).toBe(3);
+  });
+
+  it("inputContentCols 预留前缀与滚动条", () => {
+    expect(inputContentCols(80)).toBe(77);
+    expect(inputContentCols(10)).toBe(8); // 下限
   });
 
   it("超宽后回落 → 触发 restore + fullPaint", () => {

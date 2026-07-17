@@ -45,8 +45,9 @@ export function hitTest(col: number, row: number, rows: number, rect: LayoutRect
     }
   } else if (!rect.inputRect || rect.inputRect.height > 10) {
     // fallback：命名常量行号（inputRect 未就绪时）
+    // inputLineCount 可能是「视觉总行」（含软折行、可 >5）；外壳最高 5 行
     const inputBottom = rows - rect.inputRowFromBottom;
-    const lineCount = Math.max(1, rect.inputLineCount ?? 1);
+    const lineCount = Math.min(5, Math.max(1, rect.inputLineCount ?? 1));
     const inputTop = inputBottom - lineCount + 1;
     if (row >= inputTop && row <= inputBottom) {
       const clickLine = row - inputTop;

@@ -42,9 +42,9 @@ export function StatusBar() {
     return () => clearInterval(id);
   }, [streaming]);
 
-  const currentTokens = currentRoundUsage.input + currentRoundUsage.output;
+  // 上下文占用只计 prompt/input（压缩阈值同源）；勿把 output 算进窗口
   const lastRound = rounds[rounds.length - 1];
-  const ctxTokens = lastRound ? (lastRound.total ?? (lastRound.input + lastRound.output)) : currentTokens;
+  const ctxTokens = lastRound ? lastRound.input : currentRoundUsage.input;
   const ctxPct = maxContext > 0 ? Math.min(1, ctxTokens / maxContext) : 0;
   const barColor = ctxPct > 0.8 ? t.err : ctxPct > 0.5 ? t.warn : t.accent;
   // 仅当前主 agent 主模型的合并缓存率；无 cache 能力模型 → c—
@@ -92,7 +92,7 @@ export function StatusBar() {
         <Text color={t.dim}>{compact(ctxTokens)}/{compact(maxContext)} </Text>
         <Text color={barColor}>{bar(ctxPct, barWidth)} </Text>
         <Text color={t.dim}> {Math.round(ctxPct * 100)}% </Text>
-        {showSparkline && <Sparkline values={rounds.map(r => r.total ?? (r.input + r.output))} width={8} />}
+        {showSparkline && <Sparkline values={rounds.map(r => r.input)} width={8} />}
         {showCache && cacheAvg !== null && (
           <Text>
             {" "}

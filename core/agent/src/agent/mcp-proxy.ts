@@ -24,6 +24,7 @@ import type { JsonSchema } from "@little-house-studio/types";
 import { createToolResponse } from "@little-house-studio/tools";
 import type { McpToolDescriptor, McpToolInvoker } from "@little-house-studio/types";
 import { isMcpToolExecutionError } from "./mcp/manager.js";
+import { rejectIfMcpArgsInvalid } from "./mcp/validate-args.js";
 
 /** invoker 文本契约的兼容前缀（旧路径）；优先使用 McpToolExecutionError */
 const IS_ERROR_PREFIX = "[isError]";
@@ -95,10 +96,20 @@ export function createMcpProxyTool(
         );
       }
       try {
+        const args = params ?? {};
+        const rejected = rejectIfMcpArgsInvalid({
+          toolLabel: toolName,
+          connectionName: descriptor.connectionName,
+          originalName: descriptor.originalName,
+          schema: descriptor.parameters as JsonSchema,
+          args,
+        });
+        if (rejected) return rejected;
+
         const result = await invoker(
           descriptor.connectionName,
           descriptor.originalName,
-          params ?? {},
+          args,
         );
         // 兼容：旧 invoker 用 "[isError] …" 字符串标记工具失败
         if (typeof result === "string" && result.startsWith(IS_ERROR_PREFIX)) {

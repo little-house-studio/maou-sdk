@@ -40,7 +40,7 @@ impl Measure for ShellMeasure<'_> {
     fn content_size(&self, slot: Slot, _max_w: u16, _max_h: u16) -> (u16, u16) {
         let h = match slot {
             Slot::Goal => self.m.goal_h,
-            Slot::Approval => 2,
+            Slot::Approval => 3,
             Slot::BackToBottom => 1,
             Slot::Toast => 1,
             Slot::EmptyHint => 2,
@@ -86,7 +86,16 @@ pub fn build_shell_tree(m: &ShellMetrics) -> Tree {
 
     let root = t.root(Style::column());
 
-    // Chat (border = padding 1) flexGrow 1 min 3
+    // 「↑ 上一条」仅上滚时占顶行；贴底时不占位，避免对话/HUD 被挤到第二行
+    if m.show_jump {
+        t.child(
+            root,
+            Some(Slot::JumpPrev),
+            Style::column().height(Length::Fixed(1)),
+        );
+    }
+
+    // Chat body flexGrow 1 min 3 — 无外框
     let chat = t.child(
         root,
         Some(Slot::Chat),
@@ -96,16 +105,7 @@ pub fn build_shell_tree(m: &ShellMetrics) -> Tree {
                 shrink: 0,
                 basis: 0,
             })
-            .min_height(3)
-            .padding(Edges::all(1)),
-    );
-    // Jump prev bar inside chat content
-    t.child(
-        chat,
-        Some(Slot::JumpPrev),
-        Style::column()
-            .height(Length::Fixed(1))
-            .visible_if(m.show_jump),
+            .min_height(3),
     );
     t.child(
         chat,
@@ -130,7 +130,7 @@ pub fn build_shell_tree(m: &ShellMetrics) -> Tree {
         root,
         Some(Slot::Approval),
         Style::column()
-            .height(Length::Fixed(2))
+            .height(Length::Fixed(3))
             .visible_if(m.has_approval),
     );
     // Always 1 row (Ink BackToBottomSlot)

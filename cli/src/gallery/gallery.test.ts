@@ -6,6 +6,8 @@ import {
   fitGallerySize,
   GALLERY_ART_ROWS,
   GALLERY_LAYOUT_OVERHEAD,
+  GALLERY_MIN_HANG_ROWS_FOR_ART,
+  shouldShowGalleryArt,
   GALLERY_WORKS,
 } from "./catalog.js";
 import {
@@ -32,6 +34,14 @@ describe("gallery", () => {
     expect(fitGallerySize("lg", 36, 30)).toBe("sm");
     expect(fitGallerySize("md", 28, 40)).toBe("md");
     expect(fitGallerySize("lg", 36, 50)).toBe("lg");
+  });
+
+  it("挂画区过矮则不展示油画", () => {
+    // sm(17) + 紧凑铭牌(3) + 呼吸(2) = 22
+    expect(GALLERY_MIN_HANG_ROWS_FOR_ART).toBe(22);
+    expect(shouldShowGalleryArt(21)).toBe(false);
+    expect(shouldShowGalleryArt(22)).toBe(true);
+    expect(shouldShowGalleryArt(40)).toBe(true);
   });
 
   it("同 seed 稳定选画", () => {
@@ -142,21 +152,25 @@ describe("gallery", () => {
     expect(pl.join(" ")).toContain("1847");
   });
 
-  it("MAOU logo 固定样式（位图 + 标题贴顶 + 隔一行版本）", () => {
+  it("MAOU logo 固定样式（方印 + 右侧边框文案）", () => {
     const a = maouLogoLines(20);
     const b = maouLogoLines(200);
     expect(a).toEqual(b);
     expect(a.length).toBe(5);
-    // 顶行：方印 + MAOU-AGENT（不隔行）
+    // 顶行：方印 + 框顶
     expect(a[0]!.startsWith("█".repeat(14))).toBe(true);
-    expect(a[0]).toContain("MAOU-AGENT");
-    // 第二行：仅方印（隔一行）
-    expect(a[1]).toBe("██  ██████  ██");
-    expect(a[1]).not.toContain("MAOU");
-    // 第三行：方印 + v <package.json version>
+    expect(a[0]).toMatch(/┌─+┐$/);
+    // 第二行：方印 + │ MAOU-AGENT │
+    expect(a[1]!.startsWith("██  ██████  ██")).toBe(true);
+    expect(a[1]).toContain("MAOU-AGENT");
+    expect(a[1]).toMatch(/│ .+│$/);
+    // 第三行：方印 + 空框行
     expect(a[2]!.startsWith("████  ██  ████")).toBe(true);
-    expect(a[2]).toMatch(/v\s*\S+/);
-    // 与 package.json 一致（当前 0.1a）
-    expect(a[2]).toContain("0.1a");
+    expect(a[2]).toMatch(/│\s+│$/);
+    // 第四行：方印 + │ v <version> │
+    expect(a[3]).toMatch(/v\s*\S+/);
+    expect(a[3]).toContain("0.1a");
+    // 底行：方印 + 框底
+    expect(a[4]).toMatch(/└─+┘$/);
   });
 });

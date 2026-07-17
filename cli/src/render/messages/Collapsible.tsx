@@ -3,7 +3,7 @@
  * 用于用户气泡正文、assistant 正文、工具结果。流式中不折叠。
  */
 
-import React, { useState, useRef, useMemo } from "react";
+import React, { useState, useRef, useMemo, useEffect } from "react";
 import { Box, Text } from "ink";
 import type { DOMElement } from "ink";
 import { useTheme } from "../../theme/theme-context.js";
@@ -84,19 +84,34 @@ export function CollapsibleText({
   const colW = Math.max(12, term.cols - 2 - 2 - 4);
   const total = useMemo(() => estimateLines(text, colW), [text, colW]);
   const need = !streaming && total > maxLines;
+  // 手点后不再被 defaultOpen 强行改回（否则最新轮无法收纳）
+  const userTouched = useRef(false);
   const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    if (!defaultOpen) {
+      // 进入历史轮：强制收纳并允许再同步
+      userTouched.current = false;
+      setOpen(false);
+    } else if (!userTouched.current) {
+      setOpen(true);
+    }
+  }, [defaultOpen]);
   const ref = useRef<DOMElement | null>(null);
+  // 仅「展开/收起」功能行可点、可 hover；正文不再整块挂热区
   const cid = useClickTarget(
     ref,
     () => {
       if (!need) return;
+      userTouched.current = true;
       setOpen((o) => !o);
       // 通知 ScrollHistory 重测高度（否则贴底裁切、展开不改变最底）
       useStore.getState().bumpContentLayout();
     },
-    [need, open],
+    [need],
   );
   const isHover = useStore((s) => s.hoverId) === cid;
+  // 收纳态悬停才高亮；展开后不黄
+  const foldHot = isHover && !open;
 
   if (!text) return null;
 
@@ -104,7 +119,7 @@ export function CollapsibleText({
   const lines = show.split("\n");
 
   return (
-    <Box ref={ref} flexDirection="column">
+    <Box flexDirection="column">
       {label ? (
         <Text color={t.dim} backgroundColor={bg}>
           {label}
@@ -116,11 +131,17 @@ export function CollapsibleText({
         </Text>
       ))}
       {need && (
-        <Text color={isHover ? t.accent : t.dim} backgroundColor={bg}>
-          {open
-            ? ` ▲ 收起（共 ${total} 行 · 点击收起）`
-            : ` ▼ 展开全文（已折叠 ${total} 行 · 点击展开）`}
-        </Text>
+        <Box ref={ref}>
+          <Text
+            color={foldHot ? "#101010" : t.dim}
+            backgroundColor={foldHot ? t.warn : bg}
+            bold={foldHot}
+          >
+            {open
+              ? ` ▲ 收起（共 ${total} 行 · 再点此行收起）`
+              : ` ▼ 展开全文（已折叠 ${total} 行 · 点击展开）`}
+          </Text>
+        </Box>
       )}
     </Box>
   );

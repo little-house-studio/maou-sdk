@@ -1,7 +1,9 @@
 //! Mouse / wheel / hover handlers (Ink useMouseInput parity).
 
 use super::App;
-use super::input_paint::input_view_start;
+use super::input_paint::{
+    display_row_visual_to_byte, input_display_rows, input_view_start_with_offset,
+};
 use crate::mouse::{
     self, input_visual_to_byte, osc52_copy, pin_chat_edge_abs_y, plain_line_visual_cols,
     plain_word_visual_cols, point_in_rect, resolve_sel_mode, screen_to_abs_y, set_pointer_shape,
@@ -281,54 +283,40 @@ impl App {
             }
         }
 
-        // Terminal approval bar: hover highlight + click Y/A/N/B (Ink TerminalApprovalBar)
+        // Terminal approval bar: hit-test paint-time chip rects (not rebuilt string)
         if let (Some(ar), Some(ta)) = (self.approval_rect, self.terminal_approval.as_ref()) {
             if point_in_rect(col, row, ar) {
-                let line = format!(
-                    " 审批 · {}  [Y]一次 [A]总是 [N]拒绝 [B]拉黑  ",
-                    ta.command
-                );
-                let choice = if let Some(rel) = col.checked_sub(ar.x) {
-                    let s = line.as_str();
-                    let markers = ["[Y]一次", "[A]总是", "[N]拒绝", "[B]拉黑"];
-                    let choices = ["y", "a", "n", "b"];
-                    let mut best = None;
-                    let mut picked: Option<&str> = None;
-                    for (mi, mstr) in markers.iter().enumerate() {
-                        if let Some(byte_i) = s.find(mstr) {
-                            let prefix_w = UnicodeWidthStr::width(&s[..byte_i]) as u16;
-                            let mark_w = UnicodeWidthStr::width(*mstr) as u16;
-                            if rel >= prefix_w && rel < prefix_w.saturating_add(mark_w) {
-                                best = Some(choices[mi]);
-                                break;
-                            }
-                            if rel >= prefix_w {
-                                picked = Some(choices[mi]);
-                            }
-                        }
-                    }
-                    best.or(picked).or_else(|| {
-                        let w = ar.width.max(4);
-                        let slot = (rel as u32 * 4 / w as u32).min(3) as usize;
-                        Some(choices[slot])
-                    })
+                // chips only on first row of the 3-line bar
+                let on_chip_row = row == ar.y;
+                let choice = if on_chip_row {
+                    self.approval_chips
+                        .iter()
+                        .find(|(x0, x1, _)| col >= *x0 && col < *x1)
+                        .map(|(_, _, c)| c.as_str())
                 } else {
                     None
                 };
                 match m.kind {
                     MouseEventKind::Moved => {
                         self.approval_hover = choice.map(|c| c.to_string());
-                        set_pointer_shape("pointer");
+                        set_pointer_shape(if choice.is_some() {
+                            "pointer"
+                        } else {
+                            "default"
+                        });
                         return;
                     }
                     MouseEventKind::Down(MouseButton::Left) => {
-                        let c = choice.unwrap_or("n");
-                        emit(&OutMsg::Approval {
-                            id: ta.id.clone(),
-                            choice: c.into(),
-                        });
-                        self.approval_hover = None;
-                        set_pointer_shape("pointer");
+                        if let Some(c) = choice {
+                            emit(&OutMsg::Approval {
+                                id: ta.id.clone(),
+                                choice: c.into(),
+                            });
+                            self.approval_hover = None;
+                            set_pointer_shape("pointer");
+                            return;
+                        }
+                        // 点在非 chip 区域不误触拒绝
                         return;
                     }
                     _ => {}
@@ -486,9 +474,25 @@ impl App {
                     }
                 }
                 if point_in_rect(col, row, self.nav_rect) {
-                    for (x0, x1, id) in &self.nav_segs {
-                        if col >= *x0 && col < *x1 {
-                            match *id {
+                    let hit = self.nav_segs.iter().find(|(x0, x1, ..)| col >= *x0 && col < *x1);
+                    if let Some((_, _, id, action_kind, action_value)) = hit {
+                        let kind = action_kind.clone();
+                        let val = action_value.clone();
+                        let id = id.clone();
+                        match kind.as_str() {
+                            "hotkey" if !val.is_empty() => {
+                                emit(&OutMsg::Hotkey { key: val });
+                            }
+                            "command" if !val.is_empty() => {
+                                emit(&OutMsg::Command {
+                                    id: val,
+                                    args: None,
+                                });
+                            }
+                            "toast" if !val.is_empty() => {
+                                self.toast_now(val, "info", 1800);
+                            }
+                            _ => match id.as_str() {
                                 "agent" => emit(&OutMsg::Hotkey {
                                     key: "open_agents".into(),
                                 }),
@@ -503,9 +507,9 @@ impl App {
                                     key: "ctrl+k".into(),
                                 }),
                                 _ => {}
-                            }
-                            return;
+                            },
                         }
+                        return;
                     }
                 }
                 if let Some(cr) = self.completion_rect {
@@ -668,10 +672,19 @@ impl App {
                 match mode {
                     SelMode::Input => {
                         let text_x0 = self.input_text_x0();
+                        let body_w = self.input_body_width();
                         let vcol = col.saturating_sub(text_x0) as usize;
                         let vis_row = row.saturating_sub(self.input_rect.y) as usize;
-                        let line_off = input_view_start(&self.input, self.cursor) + vis_row;
-                        let byte = input_visual_to_byte(&self.input, line_off, vcol);
+                        let rows = input_display_rows(&self.input, body_w);
+                        let view0 = input_view_start_with_offset(
+                            &self.input,
+                            self.cursor,
+                            self.input_view_offset,
+                            body_w,
+                        );
+                        let disp = view0 + vis_row;
+                        let byte =
+                            display_row_visual_to_byte(&self.input, &rows, disp, vcol);
                         self.cursor = byte;
                         if n == 2 {
                             let (a, z) = word_bounds(&self.input, byte);
@@ -959,9 +972,18 @@ impl App {
                             ir.x.saturating_add(ir.width.saturating_sub(1)).max(text_x0),
                         );
                         let vis_row = clamp_row.saturating_sub(ir.y) as usize;
-                        let line_off = input_view_start(&self.input, self.cursor) + vis_row;
+                        let body_w = self.input_body_width();
+                        let rows = input_display_rows(&self.input, body_w);
+                        let view0 = input_view_start_with_offset(
+                            &self.input,
+                            self.cursor,
+                            self.input_view_offset,
+                            body_w,
+                        );
+                        let disp = view0 + vis_row;
                         let vcol = clamp_col.saturating_sub(text_x0) as usize;
-                        let end_b = input_visual_to_byte(&self.input, line_off, vcol);
+                        let end_b =
+                            display_row_visual_to_byte(&self.input, &rows, disp, vcol);
                         self.sel.update_input_end(end_b);
                         self.cursor = end_b;
                         set_pointer_shape("text");
@@ -1071,7 +1093,7 @@ impl App {
             set_pointer_shape("text");
         } else if point_in_rect(col, row, self.nav_rect) {
             // Ink NavBar: hoverId = segment id for recolor
-            for (x0, x1, nid) in &self.nav_segs {
+            for (x0, x1, nid, _ak, _av) in &self.nav_segs {
                 if col >= *x0 && col < *x1 {
                     id = Some(format!("nav:{nid}"));
                     break;

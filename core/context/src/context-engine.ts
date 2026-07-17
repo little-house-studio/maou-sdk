@@ -85,7 +85,10 @@ export class ContextEngine {
    * 执行压缩。
    * 备份 → compress → 落盘任务块原文 → 保存压缩后上下文 → 写 compressed_zone。
    */
-  async compress(maxTokens: number): Promise<CompressReport> {
+  async compress(
+    maxTokens: number,
+    opts?: { knownTokens?: number; force?: boolean },
+  ): Promise<CompressReport> {
     // 1. 备份
     this.harnessStore.backupBeforeCompress(this.sessionId);
 
@@ -107,6 +110,8 @@ export class ContextEngine {
       summarizer: this.summarizer,
       sessionId: this.sessionId,
       activeTaskIds: activeTaskIds.length > 0 ? activeTaskIds : undefined,
+      knownTokens: opts?.knownTokens,
+      force: opts?.force,
     });
 
     // 3. 将被折叠的任务块原文写入 TaskSessionStore

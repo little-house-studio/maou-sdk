@@ -57,10 +57,11 @@ ${formatProductList()}
   MAOU_SKIP_PROJECT_GATE=1 跳过新项目确认
   MAOU_LITE=1              帧率试验：关动画/hover/闪烁/轮询，历史窗缩到 12
   MAOU_LITE_HISTORY=N      LITE 下历史条数（默认 12）
-  MAOU_PERF_HUD=0          关闭右上角性能条
-  MAOU_TUI=ink|ratatui     TUI 后端（默认 ink；ratatui 需 cargo build）
+  MAOU_PERF_HUD=0          关闭右上角 Debug 性能条（设置 → Debug 显示 会写入 ~/.maou/cli-ui.json）
+  MAOU_TUI=ink|ratatui     TUI 后端（Win 默认 ink；mac/Linux 默认 ratatui）
   MAOU_TUI_BIN=path        ratatui 二进制路径（可选）
   maou coding --tui ratatui  同上（旗标优先于 env）
+  MAOU_DCG_PATH            dcg 二进制绝对路径
 `;
 
 function printHelp(): void {

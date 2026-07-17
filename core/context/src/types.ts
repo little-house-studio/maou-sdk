@@ -59,7 +59,7 @@ export interface BuildMessagesParams {
   rollingSummary?: string;
   /** 结构化记忆上下文（从 MemoryStore recall 生成） */
   structuredMemory?: string;
-  /** 项目根目录（用于加载 .maou/context/） */
+  /** 项目根目录（用于加载 .maou/project/） */
   projectRoot?: string;
   /**
    * 压缩后的历史段（来自 ContextEngine.toLLMHistory）。

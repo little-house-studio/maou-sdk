@@ -38,6 +38,7 @@ import {
   recordReviewReject,
   getMode,
   gateTerminalCommand,
+  describeCommandForApproval,
 } from "../../security/index.js";
 
 // Rust 终端引擎
@@ -232,11 +233,17 @@ export class TerminalTool extends Tool {
     );
 
     // ── 终端审批策略（normal / auto / yolo + 黑白名单 + 重复放行）──
-    const gate = await this._approve(command, ctx);
+    // 审批 UI 优先展示模型在 tool_call 里写的 description / reason（不是另一套 AI 生成）
+    const aiDescription = String(params.description ?? "").trim();
+    const aiReason = String(params.reason ?? "").trim();
+    const gate = await this._approve(command, ctx, {
+      description: aiDescription,
+      reason: aiReason,
+    });
     if (gate) return gate; // 非空 = 被拦截，返回审批提示/拒绝
 
     // description 缺失时用命令兜底（而非报错），减少模型多花一轮补参数。
-    const description = String(params.description ?? "").trim() || `执行命令: ${command.slice(0, 60)}`;
+    const description = aiDescription || `执行命令: ${command.slice(0, 60)}`;
 
     const id = params.id ? String(params.id) : undefined;
     const background = Boolean(params.background);
@@ -264,8 +271,13 @@ export class TerminalTool extends Tool {
   /**
    * 终端审批门：返回 null 放行；返回 ToolResponse 表示被拦截。
    * 三层：fatal / dangerous / safe（见 gateTerminalCommand）。
+   * @param aiMeta 模型 tool_call 自带的 description/reason，用于审批条展示
    */
-  private async _approve(command: string, ctx: ToolContext): Promise<ToolResponse | null> {
+  private async _approve(
+    command: string,
+    ctx: ToolContext,
+    aiMeta: { description?: string; reason?: string } = {},
+  ): Promise<ToolResponse | null> {
     const agent = ctx.agentName || "main";
     // sandboxMode 可覆盖 agent 持久化 mode（HTTP yolo 场景）
     const mode =
@@ -283,15 +295,34 @@ export class TerminalTool extends Tool {
       });
     }
 
+    /** 审批条文案：优先 AI 写的 description，其次 reason；没有再弱回退到命令启发式 */
+    const buildApproverCtx = (risk: "low" | "high") => {
+      const aiSummary = (aiMeta.description || aiMeta.reason || "").trim();
+      const fallback = describeCommandForApproval(command, risk);
+      return {
+        agentName: agent,
+        cwd: ctx.workingDir || ctx.projectRoot,
+        risk,
+        // 展示给用户的主文案 = 模型调用工具时写的简介
+        summary: aiSummary || fallback.summary,
+        // 标签：有 AI 简介时标明来源，避免被当成另一段「生成文案」
+        label: aiSummary
+          ? risk === "high"
+            ? "高风险·AI说明"
+            : "需确认·AI说明"
+          : fallback.label,
+        ruleId: gate.assessment?.ruleId,
+        // 安全层原因与 AI reason 分开：reason 字段仍给安全/规则；AI 的 reason 已并入 summary
+        reason: gate.assessment?.reason || gate.message,
+      };
+    };
+
     if (gate.action === "deny_dangerous_pending") {
       // 危险级：优先尝试交互审批 / 审核 Agent，否则靠二次相同命令
       const approver = getTerminalApprover();
       if (approver && mode === "normal") {
         try {
-          const verdict = await approver(command, {
-            agentName: agent,
-            cwd: ctx.workingDir || ctx.projectRoot,
-          });
+          const verdict = await approver(command, buildApproverCtx("high"));
           if (verdict.approve) {
             if (verdict.persist === "whitelist") addToWhitelist(agent, commandPrefix(command));
             return null;
@@ -337,10 +368,7 @@ export class TerminalTool extends Tool {
       const approver = getTerminalApprover();
       if (approver) {
         try {
-          const verdict = await approver(command, {
-            agentName: agent,
-            cwd: ctx.workingDir || ctx.projectRoot,
-          });
+          const verdict = await approver(command, buildApproverCtx("low"));
           if (verdict.approve) {
             if (verdict.persist === "whitelist") addToWhitelist(agent, commandPrefix(command));
             return null;

@@ -39,12 +39,23 @@ export function resolveRatatuiBinary(explicit?: string): string | null {
   // cli/src/tui-bridge → cli/tui-ratatui/target/release|debug
   // dist/tui-bridge → 同上 ../.. = cli
   const cliRoot = resolve(__dirname, "../..");
-  const candidates = [
-    join(cliRoot, "tui-ratatui/target/release/maou-tui-ratatui"),
-    join(cliRoot, "tui-ratatui/target/debug/maou-tui-ratatui"),
-    join(process.cwd(), "tui-ratatui/target/release/maou-tui-ratatui"),
-    join(process.cwd(), "tui-ratatui/target/debug/maou-tui-ratatui"),
+  const exe = process.platform === "win32" ? ".exe" : "";
+  const names = [
+    `maou-tui-ratatui${exe}`,
+    "maou-tui-ratatui.exe", // cross-build leftover
+    "maou-tui-ratatui",
   ];
+  const dirs = [
+    join(cliRoot, "tui-ratatui/target/release"),
+    join(cliRoot, "tui-ratatui/target/debug"),
+    join(process.cwd(), "tui-ratatui/target/release"),
+    join(process.cwd(), "tui-ratatui/target/debug"),
+    join(process.env.USERPROFILE || process.env.HOME || "", ".maou", "bin"),
+  ];
+  const candidates: string[] = [];
+  for (const d of dirs) {
+    for (const n of names) candidates.push(join(d, n));
+  }
   for (const c of candidates) {
     if (existsSync(c)) return c;
   }
@@ -58,6 +69,8 @@ export interface RatatuiSession {
   send: (msg: Record<string, unknown>) => void;
   wait: () => Promise<number>;
   kill: () => void;
+  /** 子进程/IPC 已死（勿再 pushState） */
+  isDead?: () => boolean;
 }
 
 /**
@@ -123,9 +136,51 @@ export function spawnRatatui(
 
   const ipc = child.stdio[IPC_FD] as Writable | null | undefined;
 
+  /** 子进程/管道已死后禁止再写，否则 Node 对 closed pipe 的 write 会抛 uncaught EPIPE */
+  let dead = false;
+  const markDead = (why?: string) => {
+    if (dead) return;
+    dead = true;
+    if (why) {
+      try {
+        process.stderr.write(`[maou] ratatui ipc closed (${why})\n`);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  child.on("exit", (code, signal) => {
+    markDead(
+      signal
+        ? `signal ${signal}`
+        : `exit ${code ?? "?"}`,
+    );
+  });
+  child.on("error", (err) => {
+    markDead(`child error: ${err?.message ?? err}`);
+  });
+  if (ipc && typeof (ipc as NodeJS.EventEmitter).on === "function") {
+    // 关键：无 error 监听时 write 到已断管道 → uncaughtException(EPIPE) → 整进程闪退
+    ipc.on("error", (err: NodeJS.ErrnoException) => {
+      markDead(err?.code === "EPIPE" ? "EPIPE" : err?.message ?? "ipc error");
+    });
+  }
+
   const send = (msg: Record<string, unknown>) => {
-    if (!ipc?.writable) return;
-    ipc.write(`${JSON.stringify(msg)}\n`);
+    if (dead) return;
+    if (!ipc || ipc.destroyed || !ipc.writable) {
+      markDead("not writable");
+      return;
+    }
+    try {
+      const line = `${JSON.stringify(msg)}\n`;
+      // 回调错误已由 ipc.on('error') 吞；同步 throw 也兜底
+      ipc.write(line, (err) => {
+        if (err) markDead(err.message);
+      });
+    } catch (err) {
+      markDead(err instanceof Error ? err.message : String(err));
+    }
   };
 
   send({
@@ -142,17 +197,32 @@ export function spawnRatatui(
     });
 
   const kill = () => {
+    // 尽量先送 quit；再标死并 SIGTERM
     try {
-      send({ type: "quit" });
+      if (!dead && ipc && !ipc.destroyed && ipc.writable) {
+        try {
+          ipc.write(`${JSON.stringify({ type: "quit" })}\n`);
+        } catch {
+          /* ignore */
+        }
+      }
     } catch {
       /* ignore */
     }
+    markDead("kill");
     try {
-      child.kill("SIGTERM");
+      if (!child.killed) child.kill("SIGTERM");
     } catch {
       /* ignore */
     }
   };
 
-  return { child, send, wait, kill };
+  return {
+    child,
+    send,
+    wait,
+    kill,
+    /** 供 bridge 在子进程死后立刻停 push */
+    isDead: () => dead,
+  };
 }

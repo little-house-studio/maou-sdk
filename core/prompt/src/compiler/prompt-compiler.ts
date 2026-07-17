@@ -31,6 +31,24 @@ const SCRIPT_CACHE_TTL_MS = 30 * 60 * 1000;
 const SCRIPT_CACHE_DIR = join(os.homedir(), ".maou", "cache", "scripts");
 const scriptMemCache = new Map<string, { value: string | null; expiresAt: number }>();
 
+/** 跨平台 Python 可执行文件（Windows 常见 py / python） */
+function resolvePythonBin(): string {
+  const candidates =
+    process.platform === "win32"
+      ? ["py", "python", "python3"]
+      : ["python3", "python"];
+  for (const c of candidates) {
+    try {
+      const args = c === "py" ? ["-3", "--version"] : ["--version"];
+      execFileSync(c, args, { stdio: "ignore", timeout: 3000 });
+      return c === "py" ? "py" : c;
+    } catch {
+      /* next */
+    }
+  }
+  return process.platform === "win32" ? "python" : "python3";
+}
+
 function scriptCacheKey(scriptPath: string): string {
   return createHash("sha1").update(scriptPath).digest("hex");
 }
@@ -262,7 +280,9 @@ export class PromptCompiler {
       return cached;
     }
     try {
-      const stdout = execFileSync("python3", [scriptPath], {
+      const py = resolvePythonBin();
+      const args = py === "py" ? ["-3", scriptPath] : [scriptPath];
+      const stdout = execFileSync(py, args, {
         timeout: 10_000,
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "ignore"],

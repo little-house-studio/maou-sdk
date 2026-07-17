@@ -1,8 +1,12 @@
 /**
- * MCP Gateway 元工具 —— 单工具搞定 list / search / schema / call。
+ * MCP Gateway 元工具 —— 单一 `mcp` 门面（宿主自定义，非 MCP 协议字段）。
  *
- * 行业 progressive discovery 简化版：不把上百个 mcp__* 塞进 tools[]，
- * 只暴露 `mcp`，由模型按需查名单再执行。
+ * 两个 action：
+ *   - list：返回匹配范围内每个 tool 的完整信息（name/description/parameters），一次拿齐
+ *   - call：执行
+ *
+ * 可选 server / query 过滤；name 可只查单工具。无 brief/full 分裂。
+ * 旧 action search/schema 兼容映射到 list。
  */
 
 import { Tool, createToolResponse } from "@little-house-studio/tools";
@@ -14,6 +18,8 @@ import {
 } from "./names.js";
 import { MCP_GATEWAY_TOOL_NAME } from "./strategy.js";
 import type { McpToolCallHandler } from "./tool-bridge.js";
+import { describeMcpConfigLocations } from "./config-discover.js";
+import { rejectIfMcpArgsInvalid } from "./validate-args.js";
 
 export interface McpGatewayBackend {
   listDescriptors(): McpToolDescriptor[];
@@ -47,44 +53,86 @@ function matchScore(d: McpToolDescriptor, query: string): number {
   return score;
 }
 
+function resolveDescriptor(
+  name: string,
+  pool: McpToolDescriptor[],
+  all: McpToolDescriptor[],
+): McpToolDescriptor | null {
+  const direct =
+    pool.find((x) => x.name === name) ?? all.find((x) => x.name === name);
+  if (direct) return direct;
+  if (!isNamespacedMcpToolName(name)) return null;
+  const parsed = parseNamespacedMcpToolName(name);
+  if (!parsed) return null;
+  const byConn = all.filter((x) => x.connectionName === parsed.connectionName);
+  return (
+    byConn.find((x) => x.name.endsWith(`__${parsed.originalName}`)) ??
+    byConn.find(
+      (x) =>
+        x.originalName.replace(/[^a-zA-Z0-9_-]+/g, "_") === parsed.originalName,
+    ) ??
+    null
+  );
+}
+
+/** 单工具完整信息（list 默认输出单元） */
+function toolEntry(d: McpToolDescriptor): Record<string, unknown> {
+  return {
+    name: d.name,
+    connection: d.connectionName,
+    originalName: d.originalName,
+    description: d.description ?? "",
+    parameters: d.parameters ?? { type: "object", properties: {} },
+  };
+}
+
 /**
  * 创建唯一 LLM 可见的 MCP 门面工具。
  */
 export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
+  const configHelp = describeMcpConfigLocations({ agentName: "coding" });
+
   class McpGatewayTool extends Tool {
     readonly definition: ToolDefinition = {
       name: MCP_GATEWAY_TOOL_NAME,
       aliases: ["mcp_gateway", "mcp_call"],
       description:
-        "MCP (Model Context Protocol) gateway. Use this single tool for all MCP servers. " +
-        "Workflow: action=list or search → (optional) action=schema → action=call. " +
-        "Tool names look like mcp__<server>__<tool>. Do NOT invent raw server tool names without listing first.",
+        "MCP gateway (host facade for all connected MCP servers). " +
+        "Actions: list | call. " +
+        "list returns FULL tool info (description + parameters schema) for every matching tool in one shot. " +
+        "Optional filters: server, query, name (single tool). " +
+        "call executes mcp__<server>__<tool> with arguments. " +
+        "MCP is NOT auto-installed; only config-listed servers load. Next user message reloads after config edits. " +
+        "Config:\n" +
+        configHelp,
       parameters: {
         type: "object",
         properties: {
           action: {
             type: "string",
-            enum: ["list", "search", "schema", "call"],
+            enum: ["list", "call", "search", "schema"],
             description:
-              "list: catalog all tools; search: filter by query; schema: full JSON schema for one tool; call: execute a tool",
+              "list: return full catalog (all tools with complete schemas; filter with server/query/name). " +
+              "call: execute a tool. " +
+              "search/schema: legacy aliases of list.",
           },
           query: {
             type: "string",
-            description: "For search: keywords (server name, tool name, or natural language)",
+            description: "Optional: filter list by keywords (server/tool/description)",
           },
           name: {
             type: "string",
             description:
-              "For schema/call: namespaced tool name, e.g. mcp__echo__echo (from list/search)",
+              "For list: only this tool (mcp__server__tool). For call: tool to execute.",
           },
           arguments: {
             type: "object",
-            description: "For call: JSON arguments object passed to the MCP tool",
+            description: "For call: JSON arguments for the MCP tool",
             additionalProperties: true,
           },
           server: {
             type: "string",
-            description: "Optional: filter list/search to one connection/server name",
+            description: "Optional: only tools from this MCP connection/server",
           },
         },
         required: ["action"],
@@ -98,13 +146,24 @@ export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
       params: Record<string, unknown>,
       _ctx: ToolContext,
     ): Promise<ToolResponse> {
-      const action = String(params.action ?? "").toLowerCase();
+      let action = String(params.action ?? "").toLowerCase();
+      if (action === "search" || action === "schema") action = "list";
+
       const serverFilter =
         typeof params.server === "string" && params.server.trim()
           ? params.server.trim()
           : undefined;
+      const query =
+        typeof params.query === "string" && params.query.trim()
+          ? params.query.trim()
+          : "";
+      const nameParam =
+        typeof params.name === "string" && params.name.trim()
+          ? params.name.trim()
+          : "";
 
-      let descriptors = backend.listDescriptors();
+      const allDescriptors = backend.listDescriptors();
+      let descriptors = allDescriptors;
       if (serverFilter) {
         const sf = serverFilter.toLowerCase();
         descriptors = descriptors.filter(
@@ -117,159 +176,133 @@ export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
       try {
         switch (action) {
           case "list": {
-            const states = backend.listConnectionStates();
-            const lines: string[] = [
-              `# MCP catalog (${descriptors.length} tools, ${states.length} servers)`,
-              "",
-            ];
-            for (const s of states) {
-              lines.push(
-                `## server: ${s.name} [${s.status}] tools=${s.toolCount}` +
-                  (s.description ? ` — ${s.description}` : "") +
-                  (s.lastError ? ` error=${s.lastError}` : ""),
-              );
-            }
-            lines.push("", "## tools");
-            for (const d of descriptors) {
-              const desc = (d.description ?? "").replace(/\s+/g, " ").slice(0, 120);
-              lines.push(`- ${d.name}${desc ? ` — ${desc}` : ""}`);
-            }
-            if (descriptors.length === 0) {
-              lines.push("(no MCP tools connected)");
-            }
-            return createToolResponse(true, lines.join("\n"), {
-              payload: {
-                mcp: true,
-                gateway: true,
-                action: "list",
-                count: descriptors.length,
-              },
-            });
-          }
-
-          case "search": {
-            const query = String(params.query ?? "").trim();
-            if (!query) {
-              return createToolResponse(false, "search requires non-empty query", {
-                payload: { mcp: true, gateway: true, action: "search" },
-              });
-            }
-            const ranked = descriptors
-              .map((d) => ({ d, score: matchScore(d, query) }))
-              .filter((x) => x.score > 0)
-              .sort((a, b) => b.score - a.score)
-              .slice(0, 30);
-            const lines = [
-              `# MCP search "${query}" → ${ranked.length} match(es)`,
-              "",
-            ];
-            for (const { d, score } of ranked) {
-              const desc = (d.description ?? "").replace(/\s+/g, " ").slice(0, 160);
-              lines.push(`- ${d.name} (score=${score})${desc ? ` — ${desc}` : ""}`);
-            }
-            if (ranked.length === 0) {
-              lines.push("No matches. Try action=list.");
-            }
-            return createToolResponse(true, lines.join("\n"), {
-              payload: {
-                mcp: true,
-                gateway: true,
-                action: "search",
-                count: ranked.length,
-              },
-            });
-          }
-
-          case "schema": {
-            const name = String(params.name ?? "").trim();
-            if (!name) {
-              return createToolResponse(false, "schema requires name (mcp__server__tool)", {
-                payload: { mcp: true, gateway: true, action: "schema" },
-              });
-            }
-            const d =
-              descriptors.find((x) => x.name === name) ??
-              backend.listDescriptors().find((x) => x.name === name);
-            if (!d) {
+            // 单工具
+            if (nameParam) {
+              const d = resolveDescriptor(nameParam, descriptors, allDescriptors);
+              if (!d) {
+                return createToolResponse(
+                  false,
+                  `Unknown MCP tool "${nameParam}". Try action=list without name.`,
+                  { payload: { mcp: true, gateway: true, action: "list" } },
+                );
+              }
               return createToolResponse(
-                false,
-                `Unknown MCP tool "${name}". Use action=list or search first.`,
-                { payload: { mcp: true, gateway: true, action: "schema" } },
+                true,
+                JSON.stringify(toolEntry(d), null, 2),
+                {
+                  payload: {
+                    mcp: true,
+                    gateway: true,
+                    action: "list",
+                    name: d.name,
+                    count: 1,
+                  },
+                },
               );
             }
-            const body = {
-              name: d.name,
-              connection: d.connectionName,
-              originalName: d.originalName,
-              description: d.description,
-              parameters: d.parameters ?? { type: "object", properties: {} },
+
+            // 可选关键词过滤（仍返回完整 schema，不截断条数）
+            let rows: McpToolDescriptor[];
+            if (query) {
+              rows = descriptors
+                .map((d) => ({ d, score: matchScore(d, query) }))
+                .filter((x) => x.score > 0)
+                .sort((a, b) => b.score - a.score)
+                .map((x) => x.d);
+            } else {
+              rows = descriptors;
+            }
+
+            const states = backend.listConnectionStates().filter((s) => {
+              if (!serverFilter) return true;
+              const sf = serverFilter.toLowerCase();
+              return (
+                s.name.toLowerCase() === sf || s.name.toLowerCase().includes(sf)
+              );
+            });
+
+            const catalog = {
+              servers: states.map((s) => ({
+                name: s.name,
+                status: s.status,
+                toolCount: s.toolCount,
+                description: s.description,
+                lastError: s.lastError ?? undefined,
+              })),
+              tools: rows.map(toolEntry),
+              count: rows.length,
+              filter: {
+                server: serverFilter,
+                query: query || undefined,
+              },
             };
+
+            const header =
+              `# MCP catalog: ${rows.length} tool(s), ${states.length} server(s)` +
+              (serverFilter ? `, server~${serverFilter}` : "") +
+              (query ? `, query="${query}"` : "") +
+              "\n# Each tool includes full description + parameters (JSON Schema).\n" +
+              "# Execute: mcp({ action: \"call\", name: \"mcp__server__tool\", arguments: {...} })\n";
+
+            if (rows.length === 0) {
+              return createToolResponse(
+                true,
+                header +
+                  (query || serverFilter
+                    ? "\n(no matches)\n"
+                    : "\n(no MCP tools connected)\n"),
+                {
+                  payload: {
+                    mcp: true,
+                    gateway: true,
+                    action: "list",
+                    count: 0,
+                    catalog,
+                  },
+                },
+              );
+            }
+
             return createToolResponse(
               true,
-              JSON.stringify(body, null, 2),
+              header + "\n" + JSON.stringify(catalog, null, 2),
               {
                 payload: {
                   mcp: true,
                   gateway: true,
-                  action: "schema",
-                  name: d.name,
+                  action: "list",
+                  count: rows.length,
+                  query: query || undefined,
+                  server: serverFilter,
                 },
               },
             );
           }
 
           case "call": {
-            const name = String(params.name ?? "").trim();
+            const name = nameParam;
             if (!name) {
               return createToolResponse(false, "call requires name (mcp__server__tool)", {
                 payload: { mcp: true, gateway: true, action: "call" },
               });
             }
-            let connectionName: string;
-            let originalName: string;
-            if (isNamespacedMcpToolName(name)) {
-              const parsed = parseNamespacedMcpToolName(name);
-              if (!parsed) {
-                return createToolResponse(false, `Invalid MCP name "${name}"`, {
-                  payload: { mcp: true, gateway: true, action: "call" },
-                });
-              }
-              // Prefer descriptor match (sanitized segments may differ slightly)
-              const d =
-                descriptors.find((x) => x.name === name) ??
-                backend.listDescriptors().find((x) => x.name === name);
-              if (d) {
-                connectionName = d.connectionName;
-                originalName = d.originalName;
-              } else {
-                // Fall back to parse; originalName is sanitized — try find by connection+sanitized
-                const byConn = backend
-                  .listDescriptors()
-                  .filter((x) => x.connectionName === parsed.connectionName);
-                const hit =
-                  byConn.find((x) => x.name.endsWith(`__${parsed.originalName}`)) ??
-                  byConn.find(
-                    (x) =>
-                      x.originalName.replace(/[^a-zA-Z0-9_-]+/g, "_") ===
-                      parsed.originalName,
-                  );
-                if (!hit) {
-                  return createToolResponse(
-                    false,
-                    `Unknown MCP tool "${name}". Use action=list or search.`,
-                    { payload: { mcp: true, gateway: true, action: "call" } },
-                  );
-                }
-                connectionName = hit.connectionName;
-                originalName = hit.originalName;
-              }
-            } else {
+            if (!isNamespacedMcpToolName(name)) {
               return createToolResponse(
                 false,
                 `name must be namespaced mcp__<server>__<tool>, got "${name}"`,
                 { payload: { mcp: true, gateway: true, action: "call" } },
               );
             }
+            const d = resolveDescriptor(name, descriptors, allDescriptors);
+            if (!d) {
+              return createToolResponse(
+                false,
+                `Unknown MCP tool "${name}". Use action=list first.`,
+                { payload: { mcp: true, gateway: true, action: "call" } },
+              );
+            }
+            const connectionName = d.connectionName;
+            const originalName = d.originalName;
 
             const args =
               params.arguments &&
@@ -277,6 +310,18 @@ export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
               !Array.isArray(params.arguments)
                 ? (params.arguments as Record<string, unknown>)
                 : {};
+
+            if (d.parameters) {
+              const rejected = rejectIfMcpArgsInvalid({
+                toolLabel: name,
+                connectionName,
+                originalName,
+                schema: d.parameters,
+                args,
+                viaGateway: true,
+              });
+              if (rejected) return rejected;
+            }
 
             const out = await backend.callHandler(connectionName, originalName, args);
             if (typeof out === "string") {
@@ -306,7 +351,7 @@ export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
           default:
             return createToolResponse(
               false,
-              `Unknown action "${action}". Use list | search | schema | call.`,
+              `Unknown action "${action}". Use list | call.`,
               { payload: { mcp: true, gateway: true } },
             );
         }

@@ -7,7 +7,7 @@
  * 行4：loopLag · load · gridHit · scroll% · msg
  * 行5：判定短句
  *
- * 关闭：MAOU_PERF_HUD=0
+ * 关闭：设置 → Debug 显示，或 MAOU_PERF_HUD=0
  */
 
 import React, { useEffect, useSyncExternalStore } from "react";
@@ -59,6 +59,7 @@ const VERDICT_TAG: Record<PerfVerdict, string> = {
 
 export function PerfHud() {
   const t = useTheme();
+  const perfHud = useStore((s) => s.perfHud);
   const streaming = useStore((s) => s.streaming);
   const aborting = useStore((s) => s.aborting);
   const mode = useStore((s) => s.eventBlock.mode);
@@ -72,8 +73,8 @@ export function PerfHud() {
     mode === "retrying";
 
   useEffect(() => {
-    setAgentBusy(agentBusy);
-  }, [agentBusy]);
+    if (perfHud) setAgentBusy(agentBusy);
+  }, [agentBusy, perfHud]);
 
   useEffect(() => {
     void isNativeRasterLoaded();
@@ -81,7 +82,8 @@ export function PerfHud() {
 
   const s = useProcessStats();
 
-  if (!processStatsHudEnabled()) return null;
+  // Store flag (settings) + env gate
+  if (!perfHud || !processStatsHudEnabled()) return null;
 
   const winSec = Math.max(1, Math.round((s.windowMs || processStatsSampleMs()) / 1000));
   const rollSec = Math.max(1, Math.round((s.avg10s.windowMs || processStatsRollSec() * 1000) / 1000));

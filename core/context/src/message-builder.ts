@@ -3,7 +3,7 @@
  *
  * 消息顺序：
  *   system(SYSTEM.md)
- *   → system(项目上下文: USER.md/PROJECT.md/RULE.md)
+ *   → system(项目上下文: .maou/project/ USER/PROJECT/RULE/DESIGN/EXPERIENCE)
  *   → system(平台上下文)
  *   → system(滚动摘要，若存在)
  *   → 历史(user/assistant/tool)
@@ -59,7 +59,7 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
     messages.push({ role: "user", content: userOptsSafe.bakedContext.trim() });
   }
 
-  // 5. 项目上下文注入（USER.md/PROJECT.md/RULE.md）—— 烘焙区的动态部分
+  // 5. 项目上下文注入（.maou/project/*.md）—— 烘焙区的动态部分
   if (projectRoot) {
     const projectContext = compileProjectContext(projectRoot);
     if (projectContext) {

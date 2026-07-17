@@ -41,6 +41,8 @@ impl App {
         if let Some(t) = &self.local_toast {
             if Instant::now() >= t.until {
                 self.local_toast = None;
+                // Toast row disappears → shell geometry shifts; wipe ghosts
+                self.request_full_redraw();
             }
         }
     }
@@ -59,55 +61,108 @@ impl App {
     }
 
     /// Integer line scroll, clamped to [0, max_scroll_lines].
-    /// Scrolling up leaves follow; overscroll past bottom re-enters follow.
+    /// Scrolling up leaves follow (stream will not re-attach until you return to bottom).
+    /// Overscroll past bottom re-enters follow.
     pub(crate) fn apply_scroll_lines(&mut self, delta: i32) {
         if delta == 0 {
             return;
         }
         if delta > 0 {
+            // older / up
             let next = (self.scroll_from_bottom as u32)
                 .saturating_add(delta as u32)
                 .min(self.max_scroll_lines as u32) as u16;
             self.scroll_from_bottom = next;
             if next > 0 {
+                // Leave sticky-bottom: stream deltas must not drag the viewport
+                self.auto_follow = false;
                 self.follow_tail_boost = false;
             }
         } else {
+            // newer / down
             self.scroll_from_bottom = self
                 .scroll_from_bottom
                 .saturating_sub((-delta) as u16);
-            // Grok follow_by_overscroll: past bottom → follow again
+            // Re-enter follow only when user explicitly reaches the latest edge
             if self.scroll_from_bottom == 0 {
-                self.follow_tail_boost = self.streaming;
+                self.auto_follow = true;
+                // 回底即恢复 Grok 预留空白（不要只绑 streaming）
+                self.follow_tail_boost = true;
             }
         }
     }
 
-    /// Chat wheel: **event-driven, 1 line per tick** (macOS / Grok-aligned).
+    /// When content grows at the tail and the user is not following, increase
+    /// `from_bottom` by the growth so the absolute viewport stays put
+    /// (Ink `setMaxChatScroll(..., "pin-content")`).
+    pub(crate) fn pin_scroll_on_max_change(from_bottom: usize, prev_max: usize, max_scroll: usize, auto_follow: bool) -> usize {
+        if auto_follow || from_bottom == 0 {
+            return 0;
+        }
+        if max_scroll > prev_max {
+            from_bottom
+                .saturating_add(max_scroll - prev_max)
+                .min(max_scroll)
+        } else {
+            from_bottom.min(max_scroll)
+        }
+    }
+
+    /// Chat wheel — 跟随系统触控板/滚轮事件节奏（macOS 惯性 = 连发 Scroll 事件）。
     ///
-    /// Why not Ink/Grok `scrollWheelLines` 1→2→4 here?
-    /// - Ink pairs big steps with **coalesce + ~25fps commit** (React is expensive):
-    ///   many ticks merge into one apply, so step×N compensates dropped frames.
-    /// - Grok pager similarly budgets paint (~30fps), not synthetic coast.
-    /// - Ratatui paints every frame cheaply and applies **every** Scroll* event.
-    ///   Using 2/4× on each OS tick **amplifies** macOS trackpad inertia
-    ///   (system already streams decelerating events after lift).
+    /// - 慢/机械齿：事件间隔大 → **1 行/事件**（精准）
+    /// - 用力甩：OS 高频连发 → 按间隔略增每事件行数，并靠更多事件叠加速度
+    /// - 松手后惯性：仍由 OS 继续发事件驱动，应用层不伪造 coast
     ///
-    /// Standard: one terminal wheel report → one line; OS owns fling curve.
-    /// `up` = older messages (from_bottom increases).
+    /// `up` = older messages（from_bottom 增加）。
     pub(crate) fn note_wheel_chat(&mut self, up: bool) {
         let now = Instant::now();
-        // Track burst for diagnostics / future coalesce only (no step amp).
-        if now.duration_since(self.wheel_last_at).as_millis() > 140 {
+        let dt_ms = now.duration_since(self.wheel_last_at).as_millis();
+        if dt_ms > 160 {
             self.wheel_burst = 0;
+            self.wheel_frac = 0.0;
         }
+        // 本 burst 的第一下永远 1 行（冷启动 / 停顿后再拨）
+        let first_in_burst = self.wheel_burst == 0;
         self.wheel_last_at = now;
-        self.wheel_burst = self.wheel_burst.saturating_add(1).min(40);
-        self.apply_scroll_lines(if up { 1 } else { -1 });
+        self.wheel_burst = self.wheel_burst.saturating_add(1).min(48);
+
+        // 事件间隔 ≈ 系统瞬时速度；越密（甩）越大步，慢拨保持 1
+        let lines: i32 = if first_in_burst || dt_ms >= 90 {
+            1
+        } else if dt_ms >= 48 {
+            2
+        } else if dt_ms >= 28 {
+            3
+        } else if dt_ms >= 16 {
+            if self.wheel_burst >= 12 {
+                5
+            } else if self.wheel_burst >= 6 {
+                4
+            } else {
+                3
+            }
+        } else if self.wheel_burst >= 16 {
+            6
+        } else {
+            4
+        };
+        self.wheel_frac = 0.0;
+        self.apply_scroll_lines(if up { lines } else { -lines });
     }
 
     pub(crate) fn apply_chrome(&mut self, chrome: ProtoChrome) {
         let was_streaming = self.streaming;
+        let had_toast = self.chrome.toast.is_some();
+        let had_goal = self
+            .chrome
+            .supervisor
+            .as_ref()
+            .map(|s| s.active)
+            .unwrap_or(false);
+        let had_ev_exp = self.chrome.event_block_expanded;
+        let was_lite = self.chrome.lite;
+
         self.chrome = chrome.clone();
         self.streaming = chrome.streaming;
         // Stream ended → drop extra tail boost (keep 1-line pad while following)
@@ -130,34 +185,62 @@ impl App {
         if let Some(t) = &self.chrome.toast {
             self.status = format!("[{}] {}", t.kind, t.text);
         }
+
+        // 仅几何变化需要 full redraw；toast 文案变化不必 clear（差量画即可）
+        let now_goal = self
+            .chrome
+            .supervisor
+            .as_ref()
+            .map(|s| s.active)
+            .unwrap_or(false);
+        if was_streaming != self.streaming
+            || had_goal != now_goal
+            || had_ev_exp != self.chrome.event_block_expanded
+            || was_lite != self.chrome.lite
+        {
+            self.request_full_redraw();
+        }
+        let _ = had_toast;
     }
 
-    /// Ink `BOTTOM_PAD` when pinned to latest (`scroll_from_bottom==0`).
-    /// Keep this **small**: a large pad makes `from_bottom=0` show mostly empty
-    /// rows and shoves prior messages off-screen (feels like “content vanished”).
-    pub(crate) fn follow_tail_pad_lines(&self, viewport_h: usize) -> usize {
-        if self.scroll_from_bottom != 0 {
+    /// Grok-style tail pad when pinned to latest (`auto_follow` && from_bottom==0).
+    ///
+    /// Pad so that **the last user message sits at the top of the viewport** while
+    /// empty space below fills with AI output. As the tail grows, pad shrinks to 0
+    /// and the view naturally scrolls down (still from_bottom=0).
+    ///
+    /// `tail_lines` = rendered lines from last user-head through end of content
+    /// (before pad). If unknown, pass 0 → generous pad while streaming/boost.
+    pub(crate) fn follow_tail_pad_lines(&self, viewport_h: usize, tail_lines: usize) -> usize {
+        // Grok 式：只要有消息就预留尾部空白（文档高度稳定）。
+        // 上滚时 pad 仍在文档末尾，滚回底部可再次吸附到预留空白；
+        // 勿在 from_bottom!=0 时去掉 pad，否则 max_scroll 收缩、再也回不到「大空白」态。
+        if self.messages.is_empty() {
             return 0;
         }
         let h = viewport_h.max(1);
-        // Always leave ≥ half the viewport for real content.
-        let max_pad = (h / 2).saturating_sub(1).max(1);
-        if self.streaming || self.follow_tail_boost {
-            // Modest room for stream growth (not 40% of the pane).
-            3.min(max_pad).min(h.saturating_sub(4).max(1))
-        } else {
-            // Ink BOTTOM_PAD = 1
-            1.min(max_pad).min(h.saturating_sub(1).max(1))
+        // pad = viewH − tail，使 last user 可顶到视口顶；AI 变长则 pad 缩小。
+        if tail_lines > 0 {
+            return h.saturating_sub(tail_lines).max(1);
         }
+        // 尚无 tail 度量：发送瞬间用近满屏空白
+        if self.streaming || self.follow_tail_boost {
+            return h.saturating_sub(3).max(3);
+        }
+        1.min(h.saturating_sub(1).max(1))
     }
 
-    /// Snap to latest + enable tail boost (call on send while user is following).
+    /// Snap to latest + enable Grok tail pad (only when user was already following).
     pub(crate) fn pin_follow_for_send(&mut self) {
+        // 前提：本来就在最下面；上滚阅读中发送不抢滚动
+        if !(self.auto_follow || self.scroll_from_bottom == 0) {
+            return;
+        }
         self.scroll_from_bottom = 0;
+        self.auto_follow = true;
         self.follow_tail_boost = true;
-        // Send/stream layout shift often desyncs ratatui's diff buffer → blank holes
-        // until resize. Force one full frame (user can also shrink window as workaround).
-        self.request_full_redraw();
+        // 发送后只清 scroll cache；full redraw 留给真正布局变化（overlay/审批条）
+        self.scroll_render_cache = None;
     }
 
     pub(crate) fn apply_in(&mut self, msg: InMsg) {
@@ -193,21 +276,40 @@ impl App {
                 terminal_approval,
                 input,
                 gallery_lines,
+                full_paint,
             } => {
                 // Never blank the transcript on a glitchy empty snapshot while we already
                 // have history (except intentional clear: caller should send empty when idle
                 // after /new). Empty+streaming mid-flight is treated as stale — keep local.
+                let was_empty = self.messages.is_empty();
+                let prev_msg_n = self.messages.len();
+                let had_toast = self.local_toast.is_some() || self.chrome.toast.is_some();
+                let had_approval = self.terminal_approval.is_some();
                 let replace_msgs = !messages.is_empty()
                     || self.messages.is_empty()
                     || (!streaming && !self.streaming);
                 if replace_msgs {
                     self.messages = messages;
+                    // 消息内容变了：清选区，避免压缩/替换后蓝框残留在旧屏幕坐标
+                    self.sel.clear();
+                    // 消息增减只废缓存；empty↔非空（画廊）才 full redraw
+                    if was_empty != self.messages.is_empty() {
+                        self.scroll_render_cache = None;
+                        self.request_full_redraw();
+                    } else if prev_msg_n != self.messages.len() {
+                        self.scroll_render_cache = None;
+                    } else {
+                        self.scroll_render_cache = None; // 流式 delta 也废缓存（内容变）
+                    }
                 }
                 self.system_events = system_events;
+                let was_streaming = self.streaming;
                 self.streaming = streaming;
                 if !streaming {
                     self.follow_tail_boost = false;
                 }
+                // stream 起停：差量画 chrome 即可，避免每轮双 clear
+                let _ = was_streaming;
                 if let Some(c) = chrome {
                     self.apply_chrome(c);
                 } else if !status.is_empty() {
@@ -218,16 +320,35 @@ impl App {
                 }
                 let had_overlay = self.overlay.is_some();
                 if let Some(o) = overlay {
-                    self.overlay_sel = o.selected.unwrap_or(0).min(o.items.len().saturating_sub(1));
+                    let kind_changed = self
+                        .overlay
+                        .as_ref()
+                        .map(|prev| prev.kind != o.kind)
+                        .unwrap_or(true);
+                    let section_changed = self.overlay.as_ref().map(|prev| {
+                        prev.section_index != o.section_index
+                            || prev.title != o.title
+                    }).unwrap_or(false);
+                    if kind_changed || !had_overlay {
+                        self.overlay_sel =
+                            o.selected.unwrap_or(0).min(o.items.len().saturating_sub(1));
+                        self.overlay_scroll = 0;
+                        self.overlay_hover = None;
+                    } else if section_changed {
+                        // prompt 切段：回到顶部
+                        self.overlay_scroll = 0;
+                    }
                     self.overlay = Some(o);
                     // Ink: open overlay clears input selection
                     self.sel.clear();
                     set_pointer_shape("default");
-                    if !had_overlay {
+                    if !had_overlay || kind_changed {
                         self.request_full_redraw();
                     }
                 } else if had_overlay {
                     self.overlay = None;
+                    self.overlay_hover = None;
+                    self.overlay_scroll = 0;
                     self.request_full_redraw();
                 } else {
                     self.overlay = None;
@@ -239,6 +360,17 @@ impl App {
                     self.request_full_redraw();
                 }
                 self.completions = completions;
+                let now_approval = terminal_approval.is_some();
+                if had_approval != now_approval {
+                    self.request_full_redraw();
+                    // 新审批出现：默认高亮 [Y] 一次，方便 Enter 确认
+                    if now_approval {
+                        self.approval_hover = Some("y".into());
+                    } else {
+                        self.approval_hover = None;
+                        self.approval_chips.clear();
+                    }
+                }
                 self.terminal_approval = terminal_approval;
                 if let Some(i) = input {
                     // don't clobber if user is typing mid-flight unless empty local
@@ -249,19 +381,38 @@ impl App {
                     let _ = i;
                 }
                 if let Some(g) = gallery_lines {
-                    self.gallery_lines = g;
+                    if g != self.gallery_lines {
+                        self.gallery_lines = g;
+                        self.scroll_render_cache = None;
+                        self.request_full_redraw();
+                    }
                 }
-                // Ink autoFollow: stay pinned to latest while following
-                if self.scroll_from_bottom == 0 {
+                let _ = had_toast;
+                // Explicit hard paint from Node (/new, clear-screen epoch, …)
+                if full_paint {
+                    self.scroll_render_cache = None;
                     self.scroll_from_bottom = 0;
+                    self.auto_follow = true;
+                    self.request_full_redraw();
                 }
+                // Stream/state paint does not force follow — only user scroll-to-bottom /
+                // pin_follow_for_send re-enters auto_follow. Growth pin happens in draw.
+            }
+            InMsg::FullPaint => {
+                self.scroll_render_cache = None;
+                self.request_full_redraw();
             }
             InMsg::MessagesSnapshot {
                 messages,
                 system_events,
             } => {
+                let was_empty = self.messages.is_empty();
                 self.messages = messages;
                 self.system_events = system_events;
+                if was_empty != self.messages.is_empty() {
+                    self.scroll_render_cache = None;
+                    self.request_full_redraw();
+                }
             }
             InMsg::Chrome { chrome } => self.apply_chrome(chrome),
             InMsg::Completions { completions } => self.completions = completions,
@@ -269,6 +420,8 @@ impl App {
                 self.input = text;
                 let c = cursor.unwrap_or(self.input.len()).min(self.input.len());
                 self.cursor = mouse::snap_char_boundary(&self.input, c);
+                // 历史回写：重置粘性视口，由光标位置决定起点（↑ 置顶 / ↓ 文末）
+                self.input_view_offset = None;
             }
             InMsg::FullEditor { text } => {
                 self.full_editor = true;
@@ -345,6 +498,8 @@ impl App {
                 } else {
                     format!("[{level}] {text}")
                 };
+                // Toast bar changes shell geometry — force full paint to avoid chrome ghosts
+                self.request_full_redraw();
             }
             InMsg::Quit => self.should_quit = true,
         }
@@ -389,6 +544,8 @@ impl App {
     }
 
     pub(crate) fn insert_str(&mut self, s: &str) {
+        // typing re-pins input viewport to caret
+        self.input_view_offset = None;
         // Ink scrubInput: strip mouse/CSI garbage before draft
         let s = scrub_input(s);
         if s.is_empty() {
@@ -483,8 +640,10 @@ impl App {
             self.emit_input();
             return;
         }
+        use super::input_paint::display_row_home;
         self.cursor = mouse::snap_char_boundary(&self.input, self.cursor);
-        self.cursor = line_start(&self.input, self.cursor);
+        // Soft-wrap 显示行首（非仅 hard `\n`）
+        self.cursor = display_row_home(&self.input, self.cursor, self.input_body_width());
         self.emit_input();
     }
 
@@ -493,8 +652,9 @@ impl App {
             self.emit_input();
             return;
         }
+        use super::input_paint::display_row_end;
         self.cursor = mouse::snap_char_boundary(&self.input, self.cursor);
-        self.cursor = line_end(&self.input, self.cursor);
+        self.cursor = display_row_end(&self.input, self.cursor, self.input_body_width());
         self.emit_input();
     }
 
@@ -618,13 +778,21 @@ impl App {
     }
 
     pub(crate) fn screen_dump_text(&self) -> String {
-        // 与 Ink Ctrl+G 一致：从显存整屏文字
-        let mut out = self.vram.dump_all();
-        if out.trim().is_empty() {
-            // 回退逻辑行
-            out = self.scroll_plain.join("\n");
-        }
-        out
+        // Ctrl+G：从显存整屏文字；头注明 ratatui，避免与 Ink dump 的 `· ink` 混淆
+        let body = {
+            let mut out = self.vram.dump_all();
+            if out.trim().is_empty() {
+                out = self.scroll_plain.join("\n");
+            }
+            out
+        };
+        let cols = self.vram.cols.max(self.screen_cols);
+        let rows = self.vram.rows.max(self.screen_rows);
+        let lines = body.lines().count();
+        let chars = body.len();
+        format!(
+            "── maou screen dump · tty {cols}×{rows} · ratatui {cols}×{rows} ──\n{body}\n── end dump ({lines} lines, {chars} chars) ──"
+        )
     }
 
     /// True if scroll line looks like a user bubble head (Ink user message).
@@ -716,6 +884,8 @@ impl App {
                 let end = (ti + body_h).min(total);
                 let from_bottom = total.saturating_sub(end);
                 self.scroll_from_bottom = from_bottom as u16;
+                self.auto_follow = from_bottom == 0;
+                self.follow_tail_boost = false;
                 emit(&OutMsg::JumpPrevUser);
                 return;
             }
@@ -724,6 +894,8 @@ impl App {
         self.scroll_from_bottom = self
             .scroll_from_bottom
             .saturating_add((self.chat_inner.height / 2).max(3));
+        self.auto_follow = false;
+        self.follow_tail_boost = false;
         emit(&OutMsg::JumpPrevUser);
     }
 
@@ -774,9 +946,50 @@ impl App {
         false
     }
 
+    /// Hard `\n` line index（兼容旧逻辑）。
     pub(crate) fn cursor_line(&self) -> usize {
         let c = mouse::snap_char_boundary(&self.input, self.cursor);
         self.input[..c].bytes().filter(|&b| b == b'\n').count()
+    }
+
+    /// Soft-wrap 后的显示行下标（0-based）。
+    pub(crate) fn cursor_display_row(&self) -> usize {
+        use super::input_paint::{display_row_of_cursor, input_display_rows};
+        let rows = input_display_rows(&self.input, self.input_body_width());
+        let c = mouse::snap_char_boundary(&self.input, self.cursor);
+        display_row_of_cursor(&rows, c)
+    }
+
+    /// 显示行总数（hard `\n` + soft wrap）。
+    pub(crate) fn input_display_row_count(&self) -> usize {
+        self.input_display_line_count()
+    }
+
+    /// ↑↓ 按显示行移动，保留视觉列。
+    pub(crate) fn shift_input_display_row(&mut self, dir_up: bool) -> bool {
+        use super::input_paint::shift_cursor_display_row;
+        let before = self.cursor;
+        let next = shift_cursor_display_row(
+            &self.input,
+            self.cursor,
+            self.input_body_width(),
+            dir_up,
+        );
+        if next != before {
+            self.cursor = next;
+            // 粘性视口跟随光标显示行
+            if self.input_view_offset.is_some() {
+                self.input_view_offset = Some(super::input_paint::input_view_start_with_offset(
+                    &self.input,
+                    self.cursor,
+                    self.input_view_offset,
+                    self.input_body_width(),
+                ));
+            }
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn clear_selection(&mut self) {

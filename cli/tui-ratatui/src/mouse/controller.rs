@@ -2,7 +2,7 @@
 
 use super::helpers::{
     extract_chat, input_visual_to_byte, normalize_abs, normalize_cell, safe_str_slice,
-    sel_style_colors,
+    sel_cell_style, sel_style_colors,
 };
 use super::types::*;
 use crate::vram::Vram;
@@ -41,6 +41,17 @@ impl Default for SelController {
 }
 
 impl SelController {
+    /// True when global/chat drag needs the screen cell buffer (skip capture while idle/scroll).
+    pub fn needs_vram(&self) -> bool {
+        if self.drag.is_some() {
+            return true;
+        }
+        matches!(
+            self.active,
+            Some(ActiveSel::Global(_)) | Some(ActiveSel::Chat(_))
+        ) && self.phase != SelPhase::None
+    }
+
     pub fn clear(&mut self) {
         self.active = None;
         self.phase = SelPhase::None;
@@ -352,10 +363,10 @@ impl SelController {
         if self.phase == SelPhase::None || self.active.is_none() {
             return;
         }
-        let style = self.sel_style();
         let area = buf.area();
         let max_w = area.width;
         let max_h = area.height;
+        let cell_style = sel_cell_style(self.phase);
 
         match &self.active {
             Some(ActiveSel::Chat(_)) => {
@@ -375,7 +386,7 @@ impl SelController {
                                 if cell.symbol().is_empty() {
                                     continue;
                                 }
-                                cell.set_style(style);
+                                cell.set_style(cell_style);
                             }
                         }
                     }
@@ -404,7 +415,7 @@ impl SelController {
                             if cell.symbol().is_empty() {
                                 continue;
                             }
-                            cell.set_style(style);
+                            cell.set_style(cell_style);
                         }
                     }
                 }
@@ -414,27 +425,36 @@ impl SelController {
                     i.start_byte.min(i.end_byte),
                     i.start_byte.max(i.end_byte),
                 );
-                // 无顶边框：文本从 input_rect.y 起；视口行 → 逻辑行 = view_start + dy
+                // 视口行 = soft-wrap display rows（与 paint / hit-test 一致）
+                use crate::app::input_paint::{
+                    display_row_visual_to_byte, input_display_rows,
+                };
+                let prompt_w = input_text_x0.saturating_sub(input_rect.x) as usize;
+                let body_w = (input_rect.width as usize)
+                    .saturating_sub(prompt_w)
+                    .max(4);
+                let rows = input_display_rows(input, body_w);
                 let text_rows = input_rect.height.max(1);
                 for dy in 0..text_rows {
                     let y = input_rect.y.saturating_add(dy);
                     if y >= max_h {
                         break;
                     }
-                    let logical_line = input_view_start + dy as usize;
+                    let disp = input_view_start + dy as usize;
                     let x_end = input_rect.x.saturating_add(input_rect.width);
                     for x in input_text_x0..x_end {
                         if x >= max_w {
                             break;
                         }
                         let vcol = x.saturating_sub(input_text_x0) as usize;
-                        let byte = input_visual_to_byte(input, logical_line, vcol);
+                        let byte =
+                            display_row_visual_to_byte(input, &rows, disp, vcol);
                         if byte >= b0 && byte < b1 {
                             if let Some(cell) = buf.cell_mut((x, y)) {
                                 if cell.symbol().is_empty() {
                                     continue;
                                 }
-                                cell.set_style(style);
+                                cell.set_style(cell_style);
                             }
                         }
                     }

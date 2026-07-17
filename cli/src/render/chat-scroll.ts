@@ -56,6 +56,33 @@ export function applyScrollDelta(
 }
 
 /**
+ * maxScroll 变化时的 offset 锚定（对齐 store.setMaxChatScroll）。
+ *
+ * - autoFollow：永远钉底 (fromBottom=0)
+ * - pin-content：底部追加时 fromBottom += Δ，保持 contentTopY（离开 tail 时流式增高不吸底）
+ * - pin-offset：fromBottom 不动，只 clamp（测高修正 / 上方变高）
+ */
+export function applyMaxScrollChange(
+  fromBottom: number,
+  prevMax: number,
+  nextMax: number,
+  opts: { autoFollow?: boolean; mode?: "pin-content" | "pin-offset" } = {},
+): { maxScroll: number; fromBottom: number } {
+  const max = Math.max(0, Math.round(nextMax));
+  const prev = Math.max(0, Math.round(prevMax));
+  const fb0 = Math.max(0, Math.round(fromBottom));
+  if (opts.autoFollow) {
+    return { maxScroll: max, fromBottom: 0 };
+  }
+  const delta = max - prev;
+  const mode = opts.mode ?? "pin-content";
+  if (mode === "pin-offset" || delta <= 0) {
+    return { maxScroll: max, fromBottom: clamp(fb0, 0, max) };
+  }
+  return { maxScroll: max, fromBottom: clamp(fb0 + delta, 0, max) };
+}
+
+/**
  * 某条目高度 oldH→newH，起点 startY（旧坐标系）。
  * 返回新的 totalH 与 fromBottom。
  */

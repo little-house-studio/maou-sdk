@@ -91,3 +91,13 @@ node scripts/mcp-coding-smoke.mjs
 | `env` / `cwd` | 可选，stdio 环境 |
 
 `command` / `args` 支持 `${ENV_VAR}` 展开。
+
+## 热加载（配置文件）
+
+- **不会**自动安装/启用未写在配置里的 MCP。
+- 编辑 `mcp.json` 或 `connections/*.json`（含 `enabled: false`）后，**下一条用户消息**进入 agent `run` 时会按配置指纹热重载：
+  - 新增/启用 → 连接新 server
+  - 删除/禁用 → 断开
+  - 未改动的 server → **保持进程**，不强制重启
+- 无需退出整个 CLI；同一会话内改配置后发一句新消息即可。
+- 若本轮 `run` 已开始后才改文件，需再发一条消息才会加载。

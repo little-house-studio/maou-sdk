@@ -16,9 +16,91 @@ impl App {
             return;
         }
 
-        // terminal approval first
+        // terminal approval first — trap focus: arrows cycle chips, 1-4 / YANB / Enter confirm
         if self.terminal_approval.is_some() {
+            let order = ["y", "a", "n", "b"];
+            let cycle = |cur: Option<&str>, dir: i32| -> &'static str {
+                let i = cur
+                    .and_then(|c| order.iter().position(|&x| x == c))
+                    .unwrap_or(0) as i32;
+                let n = order.len() as i32;
+                let j = ((i + dir) % n + n) % n;
+                order[j as usize]
+            };
             match key.code {
+                KeyCode::Left | KeyCode::Up => {
+                    self.approval_hover =
+                        Some(cycle(self.approval_hover.as_deref(), -1).into());
+                    return;
+                }
+                KeyCode::Right | KeyCode::Down | KeyCode::Tab => {
+                    self.approval_hover =
+                        Some(cycle(self.approval_hover.as_deref(), 1).into());
+                    return;
+                }
+                KeyCode::Enter => {
+                    let c = self
+                        .approval_hover
+                        .clone()
+                        .unwrap_or_else(|| "y".into());
+                    let id = self
+                        .terminal_approval
+                        .as_ref()
+                        .map(|t| t.id.clone())
+                        .unwrap_or_default();
+                    emit(&OutMsg::Approval { id, choice: c });
+                    self.approval_hover = None;
+                    return;
+                }
+                KeyCode::Char('1') => {
+                    self.approval_hover = Some("y".into());
+                    let id = self
+                        .terminal_approval
+                        .as_ref()
+                        .map(|t| t.id.clone())
+                        .unwrap_or_default();
+                    emit(&OutMsg::Approval {
+                        id,
+                        choice: "y".into(),
+                    });
+                    return;
+                }
+                KeyCode::Char('2') => {
+                    let id = self
+                        .terminal_approval
+                        .as_ref()
+                        .map(|t| t.id.clone())
+                        .unwrap_or_default();
+                    emit(&OutMsg::Approval {
+                        id,
+                        choice: "a".into(),
+                    });
+                    return;
+                }
+                KeyCode::Char('3') | KeyCode::Esc => {
+                    let id = self
+                        .terminal_approval
+                        .as_ref()
+                        .map(|t| t.id.clone())
+                        .unwrap_or_default();
+                    emit(&OutMsg::Approval {
+                        id,
+                        choice: "n".into(),
+                    });
+                    return;
+                }
+                KeyCode::Char('4') => {
+                    let id = self
+                        .terminal_approval
+                        .as_ref()
+                        .map(|t| t.id.clone())
+                        .unwrap_or_default();
+                    emit(&OutMsg::Approval {
+                        id,
+                        choice: "b".into(),
+                    });
+                    return;
+                }
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     let id = self
                         .terminal_approval
@@ -43,7 +125,7 @@ impl App {
                     });
                     return;
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                KeyCode::Char('n') | KeyCode::Char('N') => {
                     let id = self
                         .terminal_approval
                         .as_ref()
@@ -67,7 +149,8 @@ impl App {
                     });
                     return;
                 }
-                _ => {}
+                // 审批中吞掉其它键，避免误发消息
+                _ => return,
             }
         }
 
@@ -305,12 +388,41 @@ impl App {
                 if text.trim().is_empty() {
                     return;
                 }
-                // Grok/Ink: send while following → pin latest + reserve tail for AI stream
-                // (even if scrolled slightly, send jumps to bottom like chat apps)
+                // 乐观插入 user 气泡：不必等 Node 往返才更新对话区
+                let id = format!(
+                    "local-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                );
+                self.messages.push(crate::protocol::UiMessage {
+                    id,
+                    role: "user".into(),
+                    content: text.clone(),
+                    ts: Some(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0),
+                    ),
+                    streaming: false,
+                    tools: vec![],
+                    tool_cards: vec![],
+                    thinking_blocks: vec![],
+                    duration_ms: None,
+                    round: None,
+                    kind: Some("human_user".into()),
+                    author_label: None,
+                    usage_input: None,
+                    usage_output: None,
+                });
+                self.scroll_render_cache = None;
                 self.pin_follow_for_send();
                 emit(&OutMsg::Submit { text });
                 self.input.clear();
                 self.cursor = 0;
+                self.input_view_offset = None;
                 self.completions = None;
                 self.sel.clear();
             }
@@ -353,11 +465,10 @@ impl App {
                     self.emit_input();
                     return;
                 }
-                // history if single line or first line
-                if !self.input.contains('\n') || self.cursor_line() == 0 {
+                // 显示行（含 soft-wrap）第一行再 ↑ → 历史
+                if self.cursor_display_row() == 0 {
                     emit(&OutMsg::History { dir: "up".into() });
-                } else {
-                    self.cursor = mouse::shift_cursor_line(&self.input, self.cursor, true);
+                } else if self.shift_input_display_row(true) {
                     self.emit_input();
                 }
             }
@@ -366,22 +477,13 @@ impl App {
                     self.emit_input();
                     return;
                 }
-                // Ink: last-line Down → history; mid multi-line moves caret
-                if !self.input.contains('\n') {
+                // 显示行末行再 ↓ → 历史；中间按 soft-wrap 行移动
+                if self.shift_input_display_row(false) {
+                    self.emit_input();
+                } else {
                     emit(&OutMsg::History {
                         dir: "down".into(),
                     });
-                } else {
-                    let before = self.cursor;
-                    self.cursor = mouse::shift_cursor_line(&self.input, self.cursor, false);
-                    // if already last line (cursor unchanged), try history
-                    if self.cursor == before {
-                        emit(&OutMsg::History {
-                            dir: "down".into(),
-                        });
-                    } else {
-                        self.emit_input();
-                    }
                 }
             }
             KeyCode::PageUp => {

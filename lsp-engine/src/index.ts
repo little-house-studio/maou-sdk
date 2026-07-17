@@ -5,8 +5,8 @@
  * 诊断（是否无错）、语义跳转/引用、类型/悬停、重命名/补全，多语言可扩展。
  */
 
-import { readdirSync, statSync } from "node:fs";
-import { join, extname } from "node:path";
+import { readdirSync, statSync, existsSync } from "node:fs";
+import { join, extname, dirname } from "node:path";
 import {
   DefinitionRequest,
   TypeDefinitionRequest,
@@ -90,18 +90,38 @@ export async function diagnosticsWorkspace(
   dir: string,
   opts?: { globs?: string[]; settleMs?: number; hardTimeoutMs?: number; maxFiles?: number },
 ): Promise<WorkspaceDiagsResult> {
-  // 用第一个文件确定语言服务器
-  const exts = serverExtensions(dir, opts?.globs);
-  const files = enumerateFiles(dir, exts, opts?.maxFiles ?? 1000);
-  if (files.length === 0) {
-    return { files: [], errorCount: 0, warningCount: 0, settle: { settled: true, reason: "quiet-timeout", waitedMs: 0 } };
+  const seed = pickWorkspaceSeedFile(dir, opts?.globs);
+  if (!seed) {
+    return {
+      files: [],
+      errorCount: 0,
+      warningCount: 0,
+      settle: { settled: true, reason: "quiet-timeout", waitedMs: 0 },
+    };
   }
 
-  const server = await getServerForFile(files[0]);
+  // 用 seed 的语言扩展扫全工程，避免混进 markdown 服务器
+  const seedExt = extname(seed).toLowerCase();
+  const sameFamily = familyExts(seedExt);
+  const files = enumerateFiles(dir, sameFamily, opts?.maxFiles ?? 1000);
+  if (files.length === 0) {
+    return {
+      files: [],
+      errorCount: 0,
+      warningCount: 0,
+      settle: { settled: true, reason: "quiet-timeout", waitedMs: 0 },
+    };
+  }
+
+  const server = await getServerForFile(seed);
   const started = Date.now();
   // 批量 didOpen 触发分析
   for (const f of files) {
-    try { await server.syncDoc(f); } catch { /* 跳过无法读取的文件 */ }
+    try {
+      await server.syncDoc(f);
+    } catch {
+      /* 跳过无法读取的文件 */
+    }
   }
 
   const settle = await waitSettle(server, started, {
@@ -190,44 +210,183 @@ export async function documentSymbols(file: string): Promise<SymbolLite[]> {
 }
 
 export async function workspaceSymbols(query: string, root: string): Promise<SymbolLite[]> {
-  // 用 root 下任意源文件确定服务器
-  const exts = serverExtensions(root);
-  const files = enumerateFiles(root, exts, 1);
-  if (files.length === 0) return [];
-  const server = await getServerForFile(files[0]);
-  const r = await server.connection().sendRequest(WorkspaceSymbolRequest.type, { query });
-  return toSymbols(r as never, "");
+  // 用项目主源码语言服务器，避免 README.md / .maou 把 seed 绑到 marksman/json
+  const seed = pickWorkspaceSeedFile(root);
+  if (!seed) return [];
+  try {
+    const server = await getServerForFile(seed);
+    // 先同步 seed，帮助 tsserver 绑定到含 tsconfig 的工程
+    try { await server.syncDoc(seed); } catch { /* ignore */ }
+    const r = await server.connection().sendRequest(WorkspaceSymbolRequest.type, { query });
+    return toSymbols(r as never, "");
+  } catch (e) {
+    // tsserver "No Project" 等：返回空而非抛死
+    return [];
+  }
+}
+
+/** 与 seed 扩展同族的扩展列表（TS 服务器同时管 .ts/.tsx/.js…） */
+function familyExts(ext: string): string[] {
+  const e = ext.toLowerCase();
+  if ([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].includes(e)) {
+    return [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+  }
+  if ([".py", ".pyi"].includes(e)) return [".py", ".pyi"];
+  if ([".c", ".h", ".cpp", ".hpp", ".cc", ".cxx"].includes(e)) {
+    return [".c", ".h", ".cpp", ".hpp", ".cc", ".cxx"];
+  }
+  return [e];
 }
 
 // ─── 内部 ────────────────────────────────────────────────────────────────
+
+/** 全工程操作时优先的源码扩展名（避免先踩到 markdown 文件 → marksman） */
+const PREFERRED_SOURCE_EXTS = [
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".vue",
+  ".svelte",
+  ".py",
+  ".pyi",
+  ".rs",
+  ".go",
+  ".java",
+  ".kt",
+  ".cs",
+  ".cpp",
+  ".c",
+  ".h",
+  ".hpp",
+  ".rb",
+  ".php",
+  ".swift",
+];
+
+const DOC_EXTS = new Set([".md", ".markdown", ".txt", ".rst", ".adoc"]);
 
 function serverExtensions(dir: string, globs?: string[]): string[] {
   if (globs && globs.length > 0) {
     return globs.map((g) => extname(g)).filter(Boolean);
   }
-  // 探测目录里第一个有 server 的扩展名集合
-  const sample = enumerateFiles(dir, null, 50);
-  const exts = new Set<string>();
-  for (const f of sample) {
-    if (resolveSpec(f)) exts.add(extname(f).toLowerCase());
+  // 按优先扩展探测是否存在（不要依赖「前 80 个文件」——会先踩 .maou md/json）
+  const exts: string[] = [];
+  for (const ext of PREFERRED_SOURCE_EXTS) {
+    const hit = enumerateFiles(dir, [ext], 1);
+    if (hit.length > 0) exts.push(ext);
   }
-  return [...exts];
+  if (exts.length > 0) return exts;
+  const sample = enumerateFiles(dir, null, 80);
+  const set = new Set<string>();
+  for (const f of sample) {
+    const e = extname(f).toLowerCase();
+    if (DOC_EXTS.has(e) || e === ".json" || e === ".jsonc") continue;
+    if (resolveSpec(f)) set.add(e);
+  }
+  return [...set];
 }
 
-const SKIP_DIRS = new Set([".git", "node_modules", "dist", "build", ".sqry", "target", "__pycache__", ".venv", "venv"]);
+/**
+ * 为「无 file」的全工程操作挑选代表性源文件，用于绑定语言服务器。
+ * 不能先枚举前 N 个文件（会先踩到 .maou 下的 md/json → 只发现 markdown/json）。
+ * 策略：按优先扩展名分别扫，找到第一个有 server 的源文件即返回。
+ */
+function pickWorkspaceSeedFile(dir: string, globs?: string[]): string | null {
+  if (globs && globs.length > 0) {
+    const exts = globs.map((g) => extname(g)).filter(Boolean);
+    const files = enumerateFiles(dir, exts.length ? exts : null, 1);
+    return files[0] ?? null;
+  }
+  // 优先：靠近 tsconfig/package.json 的 TS/JS 源文件（monorepo 根常见无 tsconfig）
+  const tsFamily = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+  const tsHits = enumerateFiles(dir, tsFamily, 30);
+  if (tsHits.length > 0) {
+    const ranked = [...tsHits].sort((a, b) => scoreTsSeed(dir, b) - scoreTsSeed(dir, a));
+    for (const f of ranked) {
+      if (resolveSpec(f)) return f;
+    }
+  }
+  for (const ext of PREFERRED_SOURCE_EXTS) {
+    const files = enumerateFiles(dir, [ext], 1);
+    if (files.length > 0 && resolveSpec(files[0]!)) return files[0]!;
+  }
+  const sample = enumerateFiles(dir, null, 100);
+  for (const f of sample) {
+    const ext = extname(f).toLowerCase();
+    if (DOC_EXTS.has(ext) || ext === ".json" || ext === ".jsonc") continue;
+    if (resolveSpec(f)) return f;
+  }
+  for (const f of sample) {
+    if (resolveSpec(f)) return f;
+  }
+  return null;
+}
+
+/** 越高越优先：祖先目录有 tsconfig/jsconfig/package.json */
+function scoreTsSeed(root: string, file: string): number {
+  let score = 0;
+  let d = dirname(file);
+  const rootN = root.replace(/\\/g, "/");
+  for (let i = 0; i < 8; i++) {
+    const dn = d.replace(/\\/g, "/");
+    if (existsSync(join(d, "tsconfig.json"))) score += 50 - i;
+    if (existsSync(join(d, "jsconfig.json"))) score += 40 - i;
+    if (existsSync(join(d, "package.json"))) score += 20 - i;
+    if (dn === rootN || dn.length <= rootN.length) break;
+    const parent = dirname(d);
+    if (parent === d) break;
+    d = parent;
+  }
+  score -= file.split("/").length * 0.01;
+  return score;
+}
+
+const SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "build",
+  ".sqry",
+  "target",
+  "__pycache__",
+  ".venv",
+  "venv",
+  "coverage",
+  ".next",
+  "out",
+  ".turbo",
+  ".cache",
+  ".maou", // runtime / PREVIEW.md / sessions — 绝不能当语言 seed
+  "vendor",
+  "Pods",
+]);
 
 function enumerateFiles(dir: string, exts: string[] | null, max: number): string[] {
   const out: string[] = [];
   const walk = (d: string) => {
     if (out.length >= max) return;
     let entries: string[];
-    try { entries = readdirSync(d); } catch { return; }
+    try {
+      entries = readdirSync(d);
+    } catch {
+      return;
+    }
+    entries.sort();
     for (const e of entries) {
       if (out.length >= max) return;
       if (SKIP_DIRS.has(e)) continue;
       const full = join(d, e);
       let st;
-      try { st = statSync(full); } catch { continue; }
+      try {
+        st = statSync(full);
+      } catch {
+        continue;
+      }
       if (st.isDirectory()) {
         walk(full);
       } else {

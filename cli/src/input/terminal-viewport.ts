@@ -58,6 +58,18 @@ export function getImePinTarget(): ImePinTarget | null {
  */
 export function restoreTerminalViewport(): void {
   if (!process.stdout.isTTY) return;
+  // Ratatui owns alternate screen — Node CSI viewport reset desyncs Rust buffers (花屏)
+  const tui = (
+    process.env.MAOU_TUI_ACTIVE ||
+    process.env.MAOU_TUI ||
+    ""
+  ).toLowerCase();
+  if (tui === "ratatui" || tui === "rust" || tui === "rt") {
+    void import("../state/store.js")
+      .then(({ useStore }) => useStore.getState().bumpScreenEpoch())
+      .catch(() => {});
+    return;
+  }
   const cols = process.stdout.columns || 80;
   const rows = process.stdout.rows || 24;
   try {
@@ -84,6 +96,13 @@ export function restoreTerminalViewport(): void {
 /** 每帧 paint 结束后调用：把硬件光标（隐藏）放到输入位置，供 IME 跟随 */
 export function pinHardwareCursorForIme(): void {
   if (!process.stdout.isTTY) return;
+  // Ratatui pins HW caret itself after each frame — Node must not fight it
+  const tui = (
+    process.env.MAOU_TUI_ACTIVE ||
+    process.env.MAOU_TUI ||
+    ""
+  ).toLowerCase();
+  if (tui === "ratatui" || tui === "rust" || tui === "rt") return;
   const p = pin;
   if (!p?.focused) {
     try {
@@ -167,4 +186,32 @@ export function maxLineVisualWidth(value: string): number {
     if (w > maxW) maxW = w;
   }
   return maxW;
+}
+
+/**
+ * 按终端列宽估算输入框「视觉行数」（含软折行）。
+ *
+ * InputBar 外壳高度、鼠标 hit、滚动条都依赖它。
+ * 仅按 `\n` 计数会把超长单行当成 1 行 → 外壳 1 行高、右侧被裁切。
+ *
+ * 规则与 react-ink-textarea 的 buildVisualRows 一致：
+ * 空逻辑行占 1 视觉行；非空行 ceil(visualWidth / contentCols)。
+ */
+export function countInputVisualLines(value: string, contentCols: number): number {
+  const cols = Math.max(1, contentCols);
+  if (!value) return 1;
+  let total = 0;
+  for (const line of value.split("\n")) {
+    const w = stringWidth(line);
+    total += w <= 0 ? 1 : Math.ceil(w / cols);
+  }
+  return Math.max(1, total);
+}
+
+/**
+ * 输入区可用内容列宽（整屏 cols 减去 ❯ 前缀与右侧滚动条槽）。
+ * prompt "❯ " = 2，右侧 1 列指示条 → 默认减 3。
+ */
+export function inputContentCols(termCols: number, reserved = 3): number {
+  return Math.max(8, termCols - reserved);
 }

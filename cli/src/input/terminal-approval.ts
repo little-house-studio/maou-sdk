@@ -30,8 +30,13 @@ export interface TerminalApprovalRequest {
   command: string;
   agentName: string;
   cwd?: string;
-  /** 展示用提示（危险 / 普通） */
+  /** @deprecated 用 summary */
   hint?: string;
+  risk?: "low" | "high";
+  summary?: string;
+  label?: string;
+  ruleId?: string;
+  reason?: string;
 }
 
 type Pending = {
@@ -115,13 +120,35 @@ export function installCliTerminalApprover(): void {
 
       pending.set(id, { resolve, reject, timer });
 
+      const risk = ctx.risk === "high" ? "high" : "low";
+      const summary =
+        ctx.summary ||
+        (risk === "high"
+          ? "高风险命令：请确认你理解影响后再授权。"
+          : "终端命令待确认。");
+      const label = ctx.label || (risk === "high" ? "高风险" : "需确认");
+
       useStore.getState().setTerminalApproval({
         id,
         command,
         agentName: resolveAgentName(ctx.agentName, APPROVAL_AGENT_FALLBACK),
         cwd: ctx.cwd,
+        risk,
+        summary,
+        label,
+        ruleId: ctx.ruleId,
+        reason: ctx.reason,
+        // 兼容旧 UI 字段
+        hint: summary,
       });
-      useStore.getState().toastMsg("终端命令待你确认（Y 允许 / N 拒绝）", "warn");
+      useStore
+        .getState()
+        .toastMsg(
+          risk === "high"
+            ? "高风险终端命令待确认（红条 · Y/N）"
+            : "终端命令待你确认（黄条 · Y 允许 / N 拒绝）",
+          risk === "high" ? "err" : "warn",
+        );
     });
 
   setTerminalApprover(approver);

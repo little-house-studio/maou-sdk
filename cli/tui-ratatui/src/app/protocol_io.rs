@@ -51,15 +51,56 @@ fn open_protocol_reader() -> Box<dyn BufRead + Send> {
 pub fn poll_events(app: &mut App, timeout: Duration) -> anyhow::Result<()> {
     // edge auto-scroll while dragging near chat edges
     app.tick_mouse_edge();
-    if !event::poll(timeout)? {
+    // 鼠标/终端偶发 IO 错误不应整进程退出（会导致 Node 侧 EPIPE 闪退）
+    let ready = match event::poll(timeout) {
+        Ok(v) => v,
+        Err(e) => {
+            emit(&OutMsg::Log {
+                text: format!("event poll: {e}"),
+            });
+            return Ok(());
+        }
+    };
+    if !ready {
         return Ok(());
     }
-    match event::read()? {
-        Event::Key(k) => app.on_key(k),
-        Event::Mouse(m) => app.on_mouse(m),
-        Event::Paste(text) => app.on_paste(text),
-        Event::Resize(_, _) => {}
-        _ => {}
+    // 触控板惯性会连发大量 Scroll：每帧多 drain 一些，否则 fling 被“掐平”
+    const MAX_BATCH: usize = 48;
+    for n in 0..MAX_BATCH {
+        if n > 0 {
+            match event::poll(Duration::from_millis(0)) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(e) => {
+                    emit(&OutMsg::Log {
+                        text: format!("event poll: {e}"),
+                    });
+                    break;
+                }
+            }
+        }
+        match event::read() {
+            Ok(Event::Key(k)) => {
+                // Enhanced keyboard: ignore Release so Ctrl+C is not double-counted
+                use crossterm::event::KeyEventKind;
+                if k.kind == KeyEventKind::Release {
+                    continue;
+                }
+                app.on_key(k);
+            }
+            Ok(Event::Mouse(m)) => app.on_mouse(m),
+            Ok(Event::Paste(text)) => app.on_paste(text),
+            Ok(Event::Resize(_, _)) => {
+                app.request_full_redraw();
+            }
+            Ok(_) => {}
+            Err(e) => {
+                emit(&OutMsg::Log {
+                    text: format!("event read: {e}"),
+                });
+                break;
+            }
+        }
     }
     Ok(())
 }

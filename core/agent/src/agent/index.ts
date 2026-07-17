@@ -259,6 +259,7 @@ export {
   standardEntryToConnection,
   parseMcpServersFile,
   discoverStandardMcpConnections,
+  describeMcpConfigLocations,
   snapshotMcpCatalog,
   enrichMcpCatalogWithProtocolLists,
   formatMcpCatalogPrompt,

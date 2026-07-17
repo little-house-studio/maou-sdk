@@ -71,7 +71,29 @@ export interface ProtoTerminalApproval {
   id: string;
   command: string;
   agent_name?: string;
+  /** @deprecated 用 summary */
   hint?: string;
+  /** low | high */
+  risk?: string;
+  /** 人话简介 */
+  summary?: string;
+  label?: string;
+  rule_id?: string;
+  reason?: string;
+}
+
+/** 底栏一段：主题 label/色 + nav-actions 动作（Rust 勿硬编码） */
+export interface ProtoNavItem {
+  id: string;
+  label: string;
+  short: string;
+  bg?: string;
+  bg_hover?: string;
+  fg?: string;
+  fg_hover?: string;
+  /** command | hotkey | toast | noop */
+  action_kind?: string;
+  action_value?: string;
 }
 
 export interface ProtoTheme {
@@ -111,6 +133,7 @@ export interface ProtoTheme {
   tool_diff_added?: string;
   tool_diff_removed?: string;
   tool_diff_context?: string;
+  /** @deprecated 用 nav_items；保留兼容旧 Rust */
   nav_agent?: string;
   nav_sessions?: string;
   nav_terminal?: string;
@@ -118,6 +141,15 @@ export interface ProtoTheme {
   nav_inbox?: string;
   nav_notice?: string;
   nav_settings?: string;
+  nav_agent_hover?: string;
+  nav_sessions_hover?: string;
+  nav_terminal_hover?: string;
+  nav_todo_hover?: string;
+  nav_inbox_hover?: string;
+  nav_notice_hover?: string;
+  nav_settings_hover?: string;
+  /** 主题 nav.order + items + nav-actions（动态段数） */
+  nav_items?: ProtoNavItem[];
   sel_bg?: string;
   sel_fg?: string;
 }
@@ -178,6 +210,10 @@ export interface ProtoOverlay {
   /** help / prompt 纯文本行 */
   lines?: string[];
   selected?: number;
+  /** prompt 等：分段目录（value=id, label=title） */
+  sections?: ProtoSelectItem[];
+  /** 当前分段下标（0-based） */
+  section_index?: number;
 }
 
 /** Node → TUI */

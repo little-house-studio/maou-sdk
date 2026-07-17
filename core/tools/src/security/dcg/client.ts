@@ -128,6 +128,8 @@ export function resolveDcgBinary(explicit?: string): string | null {
   const roots: string[] = [];
   const repo = guessRepoRoot();
   if (repo) roots.push(join(repo, "vendor", "bin", name));
+  // 用户安装器默认路径（跨平台）
+  roots.push(join(homedir(), ".maou", "bin", name));
   roots.push(join(homedir(), ".local", "bin", name));
   roots.push(join(homedir(), "bin", name));
 

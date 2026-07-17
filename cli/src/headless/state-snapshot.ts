@@ -15,6 +15,9 @@ import type {
   ProtoSupervisor,
 } from "./protocol-types.js";
 import type { ThemeTokens } from "../theme/tokens.js";
+import { getActiveTheme } from "../theme/load-theme.js";
+import { getNavAction } from "../config/nav-actions.js";
+import type { ProtoNavItem } from "./protocol-types.js";
 import { isLiteMode, LITE_HISTORY_BASE } from "../config/lite-mode.js";
 import { HISTORY_BASE_ROUNDS } from "../config/ui-constants.js";
 import { estimateTokens, estimateContextTokens } from "@little-house-studio/llm";
@@ -42,8 +45,7 @@ export function toProtoTool(
   t: NonNullable<ChatMessage["toolCalls"]>[number],
   expandedIds: Set<string>,
 ): ProtoToolCard {
-  // Ink ToolCard: auto-open while waiting (!done); user toggle still via expandedIds when done
-  const waiting = !t.done;
+  // 默认折叠：仅用户点开 expandedIds 才展开（执行中也不自动撑开）
   return {
     id: t.id,
     name: t.name,
@@ -52,7 +54,7 @@ export function toProtoTool(
     is_error: t.isError,
     done: t.done,
     duration_ms: t.callDuration,
-    expanded: expandedIds.has(t.id) || waiting,
+    expanded: expandedIds.has(t.id),
   };
 }
 
@@ -60,7 +62,8 @@ export function toProtoThinking(
   t: NonNullable<ChatMessage["thinkingBlocks"]>[number],
   expandedIds: Set<string>,
 ): ProtoThinking {
-  const collapsed = !expandedIds.has(t.id) && !t.streaming && (t.content?.length ?? 0) > 120;
+  // 流式中展开看过程；结束后默认收成一行标识（仅用户点开才 expandedIds）
+  const collapsed = !t.streaming && !expandedIds.has(t.id);
   return {
     id: t.id,
     content: t.content,
@@ -92,8 +95,19 @@ export function toProtoMessage(
   expandedTools: Set<string>,
   expandedThinking: Set<string>,
   expandedMsgs: Set<string>,
+  /** 用户强制收纳（最新轮默认开时点一下） */
+  collapsedMsgs?: Set<string>,
+  /** 是否在最新一轮（默认开） */
+  inLatestRound?: boolean,
 ): ProtoMessage {
   const toolCards = (m.toolCalls ?? []).map((t) => toProtoTool(t, expandedTools));
+  // 展开态：强制开 > 强制关 > 最新轮默认开 > 历史默认关
+  let open = false;
+  if (m.streaming) open = true;
+  else if (collapsedMsgs?.has(m.id)) open = false;
+  else if (expandedMsgs.has(m.id)) open = true;
+  else open = inLatestRound === true;
+  const baseKind = (m.kind ?? "").replace(/\|expanded/g, "");
   return {
     id: m.id,
     role: m.role,
@@ -105,12 +119,10 @@ export function toProtoMessage(
     thinking: (m.thinkingBlocks ?? []).map((t) => toProtoThinking(t, expandedThinking)),
     duration_ms: m.duration,
     round: m.round,
-    kind: m.kind,
+    kind: open ? `${baseKind}|expanded` : baseKind || undefined,
     author_label: authorLabel(m.author, m.role),
     usage_input: m.usage?.input,
     usage_output: m.usage?.output,
-    // piggyback expand of long content via thinking-style flag in content path handled by Rust length
-    ...(expandedMsgs.has(m.id) ? { kind: (m.kind ?? "") + "|expanded" } : {}),
   };
 }
 
@@ -125,14 +137,17 @@ export function toProtoSystemEvent(e: SystemEvent): ProtoSystemEvent {
 }
 
 export function toProtoChrome(s: UIState): ProtoChrome {
+  // 会话累计 token；InfoBar 优先用最近一轮上下文窗口占用（input/total），否则累计
   const used =
     s.rounds.reduce((a, r) => a + (r.input ?? 0) + (r.output ?? 0), 0) +
     (s.currentRoundUsage?.input ?? 0) +
     (s.currentRoundUsage?.output ?? 0);
   const lastRound = s.rounds[s.rounds.length - 1];
-  const ctxTokens = lastRound
-    ? (lastRound.total ?? lastRound.input + lastRound.output)
-    : s.currentRoundUsage.input + s.currentRoundUsage.output;
+  // 最近一轮 prompt/input；0 时回退累计 used（避免恢复会话后显示 0/max）
+  const lastCtx = lastRound
+    ? (lastRound.total ?? lastRound.input ?? 0)
+    : (s.currentRoundUsage?.input ?? 0);
+  const ctxTokens = lastCtx > 0 ? lastCtx : used;
   const {
     label: cacheLabel,
     pct: cachePct,
@@ -234,8 +249,14 @@ export function toProtoChrome(s: UIState): ProtoChrome {
       : "输入文字…（/ 命令 · Ctrl+E 全屏）",
     lite,
     history_base: lite ? LITE_HISTORY_BASE : HISTORY_BASE_ROUNDS,
-    perf_hud: process.env.MAOU_PERF_HUD !== "0",
+    perf_hud: s.perfHud !== false,
     ...(() => {
+      if (s.perfHud === false) {
+        return {
+          perf_lines: undefined as string[] | undefined,
+          perf_heat: undefined as string | undefined,
+        };
+      }
       const agentBusy =
         s.streaming ||
         s.eventBlock.mode === "tool_pending" ||
@@ -257,7 +278,41 @@ export function toProtoChrome(s: UIState): ProtoChrome {
   };
 }
 
+/**
+ * ThemeTokens → ProtoTheme。
+ * Nav 段：主题 order/items 色+文案 + nav-actions 动作；无写死配色/标签。
+ */
 export function toProtoTheme(t: ThemeTokens): ProtoTheme {
+  const loaded = getActiveTheme();
+  const navCfg = loaded.nav;
+  const itemsMap = navCfg?.items ?? {};
+  const order =
+    navCfg?.order?.length > 0
+      ? navCfg.order
+      : Object.keys(itemsMap);
+
+  const nav_items: ProtoNavItem[] = [];
+  for (const id of order) {
+    const it = itemsMap[id];
+    if (!it) continue;
+    const act = getNavAction(id);
+    nav_items.push({
+      id,
+      label: it.label || id,
+      short: it.short || it.label || id,
+      bg: it.bg,
+      bg_hover: it.bgHover,
+      fg: it.fg,
+      fg_hover: it.fgHover,
+      action_kind: act?.kind ?? "noop",
+      action_value: act?.value,
+    });
+  }
+
+  // 兼容旧字段：按 id 填 legacy nav_*（若 Rust 未升级仍能上色）
+  const byId = Object.fromEntries(nav_items.map((n) => [n.id, n]));
+  const leg = (id: string) => byId[id];
+
   return {
     bg: t.bg,
     panel_bg: t.panelBg,
@@ -295,17 +350,24 @@ export function toProtoTheme(t: ThemeTokens): ProtoTheme {
     tool_diff_added: t.toolDiffAdded,
     tool_diff_removed: t.toolDiffRemoved,
     tool_diff_context: t.toolDiffContext,
-    // tau-ceti nav (Ink assets/themes/tau-ceti.json)
-    nav_agent: "#FF741D",
-    nav_sessions: "#F5F0D8",
-    nav_terminal: "#4A4A4A",
-    nav_todo: "#3A3A3A",
-    nav_inbox: "#2A2A2A",
-    nav_notice: "#1A1A1A",
-    nav_settings: "#C7FF20",
-    // Ink sel-fx
-    sel_bg: "#2121FF",
-    sel_fg: "#EBEBEB",
+    nav_agent: leg("agent")?.bg,
+    nav_sessions: leg("sessions")?.bg,
+    nav_terminal: leg("terminal")?.bg,
+    nav_todo: leg("todo")?.bg,
+    nav_inbox: leg("inbox")?.bg,
+    nav_notice: leg("notice")?.bg,
+    nav_settings: leg("settings")?.bg,
+    nav_agent_hover: leg("agent")?.bg_hover,
+    nav_sessions_hover: leg("sessions")?.bg_hover,
+    nav_terminal_hover: leg("terminal")?.bg_hover,
+    nav_todo_hover: leg("todo")?.bg_hover,
+    nav_inbox_hover: leg("inbox")?.bg_hover,
+    nav_notice_hover: leg("notice")?.bg_hover,
+    nav_settings_hover: leg("settings")?.bg_hover,
+    nav_items,
+    // 选区：跟主题 info / frost 协调
+    sel_bg: t.info ?? t.accent,
+    sel_fg: t.fg ?? t.user,
   };
 }
 
@@ -313,6 +375,8 @@ export interface SnapshotOpts {
   expandedTools?: Set<string>;
   expandedThinking?: Set<string>;
   expandedMsgs?: Set<string>;
+  /** 用户强制收纳的消息 id（最新轮默认开时点收） */
+  collapsedMsgs?: Set<string>;
   theme?: ThemeTokens | null;
   overlay?: {
     kind: string;
@@ -336,6 +400,8 @@ export interface SnapshotOpts {
   } | null;
   input?: string;
   gallery_lines?: string[];
+  /** Force Ratatui hard full paint (after /new, clear, layout blow-up) */
+  full_paint?: boolean;
 }
 
 /** 统一 state 推送（Rust 主入口） */
@@ -343,9 +409,30 @@ export function buildFullState(s: UIState, opts: SnapshotOpts = {}): Record<stri
   const et = opts.expandedTools ?? new Set<string>();
   const eth = opts.expandedThinking ?? new Set<string>();
   const em = opts.expandedMsgs ?? new Set<string>();
+  const cm = opts.collapsedMsgs ?? new Set<string>();
+  // 最后一条真人 user 及其后 = 最新一轮
+  let lastHuman = -1;
+  for (let i = s.messages.length - 1; i >= 0; i--) {
+    const m = s.messages[i]!;
+    if (m.role !== "user") continue;
+    const kind = m.kind ?? "human_user";
+    if (
+      kind === "system_notice" ||
+      kind === "runtime_control" ||
+      kind === "agent_message" ||
+      kind === "compact" ||
+      kind === "unknown"
+    ) {
+      continue;
+    }
+    lastHuman = i;
+    break;
+  }
   return {
     type: "state",
-    messages: s.messages.map((m) => toProtoMessage(m, et, eth, em)),
+    messages: s.messages.map((m, idx) =>
+      toProtoMessage(m, et, eth, em, cm, lastHuman < 0 || idx >= lastHuman),
+    ),
     system_events: s.systemEvents.map(toProtoSystemEvent),
     streaming: s.streaming,
     status: toProtoChrome(s).status,
@@ -359,11 +446,17 @@ export function buildFullState(s: UIState, opts: SnapshotOpts = {}): Record<stri
             id: s.terminalApproval.id,
             command: s.terminalApproval.command,
             agent_name: s.terminalApproval.agentName,
-            hint: s.terminalApproval.hint,
+            hint: s.terminalApproval.summary || s.terminalApproval.hint,
+            risk: s.terminalApproval.risk,
+            summary: s.terminalApproval.summary,
+            label: s.terminalApproval.label,
+            rule_id: s.terminalApproval.ruleId,
+            reason: s.terminalApproval.reason,
           }
         : null),
     input: opts.input,
     gallery_lines: opts.gallery_lines,
+    full_paint: opts.full_paint === true ? true : undefined,
   };
 }
 

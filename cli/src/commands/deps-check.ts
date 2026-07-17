@@ -1,17 +1,17 @@
 /**
- * 依赖预检 / 自动补齐 —— 安装时与启动前共用。
+ * 依赖预检 / doctor —— 分档：Core / Terminal / Optional。
  *
- * 1. 检查 Node 版本
- * 2. 检查核心包是否可 import
- * 3. 缺失时尝试在 CLI 包目录 npm/pnpm install
- * 4. 可选原生模块（terminal-engine）失败只警告不阻断
+ * - Core 失败 → 不可启动（exit 1）
+ * - Terminal 缺失 → 可启动但终端能力降级（exit 0，报告标 △）
+ * - Optional 缺失 → 提示即可
  */
 
 import { createRequire } from "node:module";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { platform, homedir } from "node:os";
 
 const require = createRequire(import.meta.url);
 
@@ -33,6 +33,17 @@ export const OPTIONAL_PACKAGES = [
   "@little-house-studio/lsp-engine",
 ] as const;
 
+export type CapabilityTier = {
+  /** Node + 核心 JS 包 + cli dist */
+  core: boolean;
+  /** terminal-engine .node 和/或 node-pty 可用 */
+  terminal: boolean;
+  /** dcg 二进制 */
+  dcg: boolean;
+  /** sqry（find_code） */
+  sqry: boolean;
+};
+
 export interface DepCheckResult {
   ok: boolean;
   nodeOk: boolean;
@@ -42,6 +53,9 @@ export interface DepCheckResult {
   repaired: string[];
   errors: string[];
   cliRoot: string;
+  /** cli/dist/index.js 是否存在 */
+  distOk: boolean;
+  tiers: CapabilityTier;
 }
 
 function log(msg: string): void {
@@ -51,12 +65,7 @@ function log(msg: string): void {
 /** CLI 包根目录（含 package.json） */
 export function resolveCliPackageRoot(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  // dist/commands → dist → package root；tsx src/commands → src → package root
-  const candidates = [
-    join(here, "..", ".."),
-    join(here, ".."),
-    process.cwd(),
-  ];
+  const candidates = [join(here, "..", ".."), join(here, ".."), process.cwd()];
   for (const c of candidates) {
     const pkg = join(c, "package.json");
     if (!existsSync(pkg)) continue;
@@ -75,7 +84,6 @@ function canResolve(pkg: string): boolean {
     require.resolve(pkg);
     return true;
   } catch {
-    // ESM-only packages may only expose export map
     try {
       require.resolve(`${pkg}/package.json`);
       return true;
@@ -101,6 +109,80 @@ function checkNodeVersion(): { ok: boolean; version: string } {
   return { ok: major >= 20, version };
 }
 
+function commandOnPath(name: string): boolean {
+  const cmd = platform() === "win32" ? "where" : "which";
+  const r = spawnSync(cmd, [name], { encoding: "utf-8", windowsHide: true });
+  return r.status === 0 && Boolean(r.stdout?.trim());
+}
+
+function findMonorepoRoot(from: string): string | null {
+  let d = from;
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(d, "pnpm-workspace.yaml"))) return d;
+    const parent = dirname(d);
+    if (parent === d) break;
+    d = parent;
+  }
+  return null;
+}
+
+function detectTerminalEngine(cliRoot: string): { ok: boolean; detail: string } {
+  const mono = findMonorepoRoot(cliRoot);
+  const teDir = mono ? join(mono, "terminal-engine") : null;
+  if (teDir && existsSync(join(teDir, "package.json"))) {
+    try {
+      const nodes = readdirSync(teDir).filter((f) => f.endsWith(".node"));
+      if (nodes.length) return { ok: true, detail: nodes.join(", ") };
+      return { ok: false, detail: "源码在但无 .node — 运行 scripts/build-native" };
+    } catch {
+      return { ok: false, detail: "无法读取 terminal-engine" };
+    }
+  }
+  // 尝试 require 包
+  try {
+    require.resolve("@little-house-studio/terminal-engine");
+    return { ok: true, detail: "package resolvable" };
+  } catch {
+    return { ok: false, detail: "未构建 / 未安装" };
+  }
+}
+
+function detectDcg(): { ok: boolean; detail: string } {
+  const name = platform() === "win32" ? "dcg.exe" : "dcg";
+  const candidates = [
+    process.env.MAOU_DCG_PATH,
+    process.env.DCG_PATH,
+    join(homedir(), ".maou", "bin", name),
+    join(homedir(), ".local", "bin", name),
+  ].filter(Boolean) as string[];
+  for (const p of candidates) {
+    if (existsSync(p)) return { ok: true, detail: p };
+  }
+  if (commandOnPath("dcg") || commandOnPath("dcg.exe")) {
+    return { ok: true, detail: "on PATH" };
+  }
+  return { ok: false, detail: "缺失 — node scripts/ensure-dcg.mjs --user" };
+}
+
+function detectSqry(): { ok: boolean; detail: string } {
+  const names = platform() === "win32" ? ["sqry.exe", "sqry"] : ["sqry"];
+  const dirs = [
+    join(homedir(), ".cargo", "bin"),
+    join(homedir(), ".maou", "bin"),
+    join(homedir(), ".local", "bin"),
+  ];
+  for (const n of names) {
+    for (const d of dirs) {
+      const p = join(d, n);
+      if (existsSync(p)) return { ok: true, detail: p };
+    }
+  }
+  if (commandOnPath("sqry") || commandOnPath("sqry.exe")) {
+    return { ok: true, detail: "on PATH" };
+  }
+  return { ok: false, detail: "未安装（find_code 将不可用）" };
+}
+
 function detectInstaller(cwd: string): { cmd: string; argsPrefix: string[] } {
   if (existsSync(join(cwd, "pnpm-lock.yaml")) || existsSync(join(cwd, "node_modules", ".pnpm"))) {
     return { cmd: "pnpm", argsPrefix: ["add"] };
@@ -113,28 +195,26 @@ function detectInstaller(cwd: string): { cmd: string; argsPrefix: string[] } {
 
 function tryInstall(packages: string[], cwd: string): { ok: boolean; error?: string } {
   if (packages.length === 0) return { ok: true };
-  // workspace 开发态：包已在 monorepo，install 可能无意义且易破坏
-  if (existsSync(join(cwd, "..", "pnpm-workspace.yaml")) || existsSync(join(cwd, "..", "..", "pnpm-workspace.yaml"))) {
+  if (
+    existsSync(join(cwd, "..", "pnpm-workspace.yaml")) ||
+    existsSync(join(cwd, "..", "..", "pnpm-workspace.yaml"))
+  ) {
     return {
       ok: false,
-      error: "检测到 monorepo workspace，请在仓库根执行 pnpm install / pnpm -r build",
+      error: "检测到 monorepo workspace，请在仓库根执行: pnpm install && pnpm -r build（或 scripts/build-native）",
     };
   }
   const { cmd, argsPrefix } = detectInstaller(cwd);
   const which = spawnSync(cmd, ["--version"], { encoding: "utf-8" });
   if (which.status !== 0) {
-    return { ok: false, error: `未找到 ${cmd}，请手动安装: ${packages.join(" ")}` };
+    return { ok: false, error: `未找到 ${cmd}` };
   }
   try {
     log(`[maou] 正在安装缺失依赖: ${packages.join(", ")}`);
     const args = [...argsPrefix, ...packages];
-    const r = spawnSync(cmd, args, {
-      cwd,
-      stdio: "inherit",
-      env: process.env,
-    });
+    const r = spawnSync(cmd, args, { cwd, stdio: "inherit", env: process.env });
     if (r.status !== 0) {
-      return { ok: false, error: `${cmd} ${args.join(" ")} 退出码 ${r.status}` };
+      return { ok: false, error: `${cmd} 退出码 ${r.status}` };
     }
     return { ok: true };
   } catch (e) {
@@ -144,13 +224,10 @@ function tryInstall(packages: string[], cwd: string): { ok: boolean; error?: str
 
 /**
  * 检查（并可选自动安装）依赖。
- * @param opts.autoInstall 默认 true；MAOU_NO_AUTO_INSTALL=1 时强制关闭
- * @param opts.quiet 少打日志
  */
-export async function ensureDependencies(opts: {
-  autoInstall?: boolean;
-  quiet?: boolean;
-} = {}): Promise<DepCheckResult> {
+export async function ensureDependencies(
+  opts: { autoInstall?: boolean; quiet?: boolean } = {},
+): Promise<DepCheckResult> {
   const autoInstall =
     opts.autoInstall !== false && process.env.MAOU_NO_AUTO_INSTALL !== "1";
   const quiet = !!opts.quiet;
@@ -159,9 +236,7 @@ export async function ensureDependencies(opts: {
   const repaired: string[] = [];
 
   const node = checkNodeVersion();
-  if (!node.ok) {
-    errors.push(`需要 Node.js >= 20，当前 ${node.version}`);
-  }
+  if (!node.ok) errors.push(`需要 Node.js >= 20，当前 ${node.version}`);
 
   const missingCritical: string[] = [];
   for (const pkg of CRITICAL_PACKAGES) {
@@ -178,7 +253,6 @@ export async function ensureDependencies(opts: {
     const r = tryInstall(missingCritical, cliRoot);
     if (r.ok) {
       repaired.push(...missingCritical);
-      // re-check
       missingCritical.length = 0;
       for (const pkg of CRITICAL_PACKAGES) {
         if (!(await canImport(pkg))) missingCritical.push(pkg);
@@ -190,7 +264,7 @@ export async function ensureDependencies(opts: {
 
   if (missingOptional.length > 0 && autoInstall) {
     if (!quiet) {
-      log(`[maou] 可选依赖缺失（部分功能可能不可用）: ${missingOptional.join(", ")}`);
+      log(`[maou] 可选依赖缺失: ${missingOptional.join(", ")}`);
     }
     const r = tryInstall(missingOptional, cliRoot);
     if (r.ok) {
@@ -200,13 +274,34 @@ export async function ensureDependencies(opts: {
         if (!(await canImport(pkg))) missingOptional.push(pkg);
       }
     }
-    // optional 安装失败不进 errors
   }
 
-  const ok = node.ok && missingCritical.length === 0;
+  const distOk = existsSync(join(cliRoot, "dist", "index.js"));
+  if (!distOk) {
+    errors.push("cli/dist/index.js 不存在 — 请在 monorepo 根执行 pnpm -r build 或 scripts/build-native");
+  }
+
+  const te = detectTerminalEngine(cliRoot);
+  const dcg = detectDcg();
+  const sqry = detectSqry();
+
+  const tiers: CapabilityTier = {
+    core: node.ok && missingCritical.length === 0 && distOk,
+    terminal: te.ok,
+    dcg: dcg.ok,
+    sqry: sqry.ok,
+  };
+
+  const ok = tiers.core;
   if (!ok && missingCritical.length > 0) {
     errors.push(`核心依赖仍不可用: ${missingCritical.join(", ")}`);
   }
+
+  // attach details for doctor via errors only for core; terminal stored in log path
+  (ensureDependencies as unknown as { _lastTe?: typeof te; _lastDcg?: typeof dcg; _lastSqry?: typeof sqry })._lastTe =
+    te;
+  (ensureDependencies as unknown as { _lastDcg?: typeof dcg })._lastDcg = dcg;
+  (ensureDependencies as unknown as { _lastSqry?: typeof sqry })._lastSqry = sqry;
 
   return {
     ok,
@@ -217,47 +312,110 @@ export async function ensureDependencies(opts: {
     repaired,
     errors,
     cliRoot,
+    distOk,
+    tiers,
   };
 }
 
-/** 打印 doctor 报告 */
-export async function runDoctor(): Promise<boolean> {
-  log("══════════════════════════════════════");
-  log("  Maou Doctor · 依赖与环境检查");
-  log("══════════════════════════════════════");
-  const r = await ensureDependencies({ autoInstall: true, quiet: false });
-  log(`Node: ${r.nodeVersion} ${r.nodeOk ? "✓" : "✗ 需要 >= 20"}`);
-  log(`CLI 包目录: ${r.cliRoot}`);
-  log(`核心依赖: ${r.missingCritical.length === 0 ? "✓ 齐全" : "✗ " + r.missingCritical.join(", ")}`);
-  log(
-    `可选依赖: ${
-      r.missingOptional.length === 0 ? "✓ 齐全" : "△ 缺失 " + r.missingOptional.join(", ")
-    }`,
-  );
-  if (r.repaired.length) log(`已尝试安装: ${r.repaired.join(", ")}`);
-  for (const e of r.errors) log(`⚠ ${e}`);
-  log(r.ok ? "✓ 可以启动 maou coding" : "❌ 请先修复核心依赖后再启动");
-  log("");
-  return r.ok;
+/** 启动前：仅要求 Core；失败抛错或返回 false */
+export async function assertCoreReady(): Promise<{ ok: boolean; message?: string }> {
+  const r = await ensureDependencies({ autoInstall: false, quiet: true });
+  if (r.tiers.core) return { ok: true };
+  return {
+    ok: false,
+    message:
+      `Core 未就绪（无法启动）。\n` +
+      `  Node: ${r.nodeVersion} ${r.nodeOk ? "ok" : "需要 >=20"}\n` +
+      `  dist: ${r.distOk ? "ok" : "缺失"}\n` +
+      `  缺失包: ${r.missingCritical.join(", ") || "—"}\n` +
+      `  请在 maou-sdk 根目录: pnpm install && pnpm -r build\n` +
+      `  或: bash scripts/build-native.sh  /  .\\scripts\\build-native.ps1\n` +
+      `  然后: maou doctor`,
+  };
 }
 
-/**
- * 安装后钩子：检查依赖，尽量补齐，失败只警告（不让 npm install 失败）。
- */
+/** 打印 doctor 报告（分档） */
+export async function runDoctor(): Promise<boolean> {
+  log("══════════════════════════════════════");
+  log("  Maou Doctor · 能力分档检查");
+  log("══════════════════════════════════════");
+  const r = await ensureDependencies({ autoInstall: true, quiet: false });
+  const te = detectTerminalEngine(r.cliRoot);
+  const dcg = detectDcg();
+  const sqry = detectSqry();
+
+  log(`平台: ${process.platform}/${process.arch}`);
+  log("");
+  log("── Core（必须，否则不能启动）──");
+  log(`  Node >=20:     ${r.nodeOk ? "✓" : "✗"} ${r.nodeVersion}`);
+  log(`  CLI dist:      ${r.distOk ? "✓" : "✗"} ${join(r.cliRoot, "dist/index.js")}`);
+  log(
+    `  核心包:        ${r.missingCritical.length === 0 ? "✓" : "✗ " + r.missingCritical.join(", ")}`,
+  );
+  log(`  Core 合计:     ${r.tiers.core ? "✓ 可启动" : "✗ 不可启动"}`);
+
+  log("");
+  log("── Terminal（建议；缺失则终端能力降级）──");
+  log(`  terminal-engine: ${te.ok ? "✓" : "△"} ${te.detail}`);
+  log(`  dcg:             ${dcg.ok ? "✓" : "△"} ${dcg.detail}`);
+  if (!te.ok) {
+    log("  兜底: 使用 child_process 降级 PTY（无完整 ConPTY/交互）");
+    log("  修复: scripts/build-native（需 Rust + Win 上 VS Build Tools）");
+  }
+  if (!dcg.ok) {
+    log("  兜底: 危险命令门可能 fail-closed 或跳过 — 勿当生产安全基线");
+    log("  修复: node scripts/ensure-dcg.mjs --user");
+  }
+
+  log("");
+  log("── Optional ──");
+  log(`  sqry/find_code:  ${sqry.ok ? "✓" : "△"} ${sqry.detail}`);
+  log(
+    `  其它包:          ${
+      r.missingOptional.length === 0 ? "✓" : "△ " + r.missingOptional.join(", ")
+    }`,
+  );
+  if (!sqry.ok) log("  兜底: find_code 不可用；可用 grep/glob（Node 降级）");
+
+  try {
+    const { resolveUserMaouRoot } = await import("@little-house-studio/types");
+    log("");
+    log(`MAOU_HOME: ${resolveUserMaouRoot()}`);
+  } catch {
+    /* ignore */
+  }
+  const tuiDefault = process.platform === "win32" ? "ink" : "ratatui";
+  log(`TUI 默认: ${process.env.MAOU_TUI || tuiDefault}（Win=ink；完整 UI 需自建 ratatui）`);
+  log("原生件: 用户本机构建（build-native），我们不提供环境相关预编译。");
+
+  if (r.repaired.length) log(`已尝试安装: ${r.repaired.join(", ")}`);
+  for (const e of r.errors) log(`⚠ ${e}`);
+
+  log("");
+  if (r.tiers.core && te.ok && dcg.ok) {
+    log("✓ Core+Terminal 就绪 — 可按「全主功能」使用（仍建议真机验收）");
+  } else if (r.tiers.core) {
+    log("△ Core 就绪，Terminal/可选 有缺口 — 可启动，但有功能降级");
+    log("  详见 INSTALL.md「支持矩阵」");
+  } else {
+    log("❌ Core 未就绪 — 不要宣称安装成功；先修构建再 doctor");
+  }
+  log("");
+  return r.tiers.core;
+}
+
 export async function runPostinstallCheck(): Promise<void> {
   try {
     log("[maou] postinstall: 检查依赖…");
     const r = await ensureDependencies({ autoInstall: true, quiet: false });
-    if (r.ok) {
-      log("[maou] postinstall: 核心依赖就绪");
+    if (r.tiers.core) {
+      log("[maou] postinstall: Core 就绪");
     } else {
-      log("[maou] postinstall: 核心依赖不完整，请运行: maou doctor");
+      log("[maou] postinstall: Core 不完整，请运行: maou doctor");
       for (const e of r.errors) log(`  - ${e}`);
     }
-    if (r.missingOptional.length > 0) {
-      log(
-        `[maou] postinstall: 可选依赖未装全（终端/LSP 等功能可能受限）: ${r.missingOptional.join(", ")}`,
-      );
+    if (!r.tiers.terminal) {
+      log("[maou] postinstall: Terminal 未就绪（可稍后 build-native）");
     }
   } catch (e) {
     log(`[maou] postinstall 检查跳过: ${e}`);

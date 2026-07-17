@@ -114,29 +114,68 @@ export async function enrichMcpCatalogWithProtocolLists(
   return snapshot;
 }
 
+/** full=列出每条 tool；servers_only=仅服务名；auto=工具数≤阈值 full 否则 servers_only */
+export type McpCatalogDetail = "full" | "servers_only" | "auto";
+
+/** 默认：指令总数 ≤ 此值时注入完整 tool 列表，否则仅注入 MCP 服务索引 */
+export const MCP_CATALOG_FULL_INJECT_THRESHOLD = 25;
+
 /**
  * 渲染为 system prompt 片段（与 skill bake 类似的可缓存说明区）。
  *
  * 内容严格来自 MCP 协商结果：server 实现名/版本、tools/list 描述、
  * 可选 resources/prompts 名。调用约定指向标准 tool-calling（mcp__ 前缀仅为 host 命名空间）。
+ *
+ * `detail` / `fullInjectThreshold`：控制是否把每条指令写进提示词。
+ * 超过阈值时只列服务，让模型用 MCP 元工具（list/search）再查指令。
  */
-export function formatMcpCatalogPrompt(snapshot: McpCatalogSnapshot): string {
+export function formatMcpCatalogPrompt(
+  snapshot: McpCatalogSnapshot,
+  opts?: {
+    detail?: McpCatalogDetail;
+    fullInjectThreshold?: number;
+  },
+): string {
   if (snapshot.servers.length === 0) return "";
+
+  const threshold = opts?.fullInjectThreshold ?? MCP_CATALOG_FULL_INJECT_THRESHOLD;
+  let detail: "full" | "servers_only" = "full";
+  const mode = opts?.detail ?? "auto";
+  if (mode === "servers_only") {
+    detail = "servers_only";
+  } else if (mode === "auto") {
+    detail = snapshot.toolCount <= threshold ? "full" : "servers_only";
+  }
 
   const lines: string[] = [];
   lines.push("<mcp_servers>");
   lines.push(
-    "MCP (Model Context Protocol) servers are connected. Their tools are registered in your normal tool-calling interface.",
+    "MCP (Model Context Protocol) servers are connected from config files only (not auto-installed).",
   );
   lines.push(
-    "Tool names use the host namespace: mcp__<server>__<tool> (server and tool segments are sanitized).",
+    "Config (write to enable; enabled:false or delete to disable; next user message reloads): " +
+      "~/.maou/mcp.json · ~/.maou/agents/<agent>/mcp.json · <project>/.mcp.json · <project>/.maou/mcp.json · " +
+      "<project>/.maou/agents/<agent>/mcp.json · connections/*.json under those agent dirs. " +
+      "Also: ~/.cursor/mcp.json, Claude Desktop, ~/.claude.json mcpServers.",
   );
-  lines.push(
-    "Invoke them like any other tool using the exact names below (also present in your tool schema).",
-  );
-  lines.push(
-    "Protocol notes: tool execution failures may return isError; resources/prompts are read-only context when listed.",
-  );
+  if (detail === "full") {
+    lines.push(
+      "Tool names use the host namespace: mcp__<server>__<tool> (also present in your tool schema).",
+    );
+    lines.push(
+      "Invoke them like any other tool using the exact names below.",
+    );
+  } else {
+    lines.push(
+      `There are ${snapshot.toolCount} MCP tools across servers (above the full-catalog threshold of ${threshold}).`,
+    );
+    lines.push(
+      "Only server names are listed here. To discover tools/schemas, use the MCP meta-tool (`mcp` with action=list or call).",
+    );
+    lines.push(
+      "Do not invent tool names; look them up before calling.",
+    );
+  }
   lines.push("");
 
   for (const s of snapshot.servers) {
@@ -145,7 +184,7 @@ export function formatMcpCatalogPrompt(snapshot: McpCatalogSnapshot): string {
         ? ` implementation="${escapeXml(s.serverName)}${s.serverVersion ? `@${escapeXml(s.serverVersion)}` : ""}"`
         : "";
     lines.push(
-      `<mcp_server name="${escapeXml(s.name)}" status="${escapeXml(s.status)}"${impl}>`,
+      `<mcp_server name="${escapeXml(s.name)}" status="${escapeXml(s.status)}" tools="${s.tools.length}"${impl}>`,
     );
     if (s.description) {
       lines.push(`  <description>${escapeXml(s.description)}</description>`);
@@ -153,40 +192,46 @@ export function formatMcpCatalogPrompt(snapshot: McpCatalogSnapshot): string {
     if (s.lastError) {
       lines.push(`  <error>${escapeXml(s.lastError)}</error>`);
     }
-    if (s.tools.length === 0) {
-      lines.push("  <tools none=\"true\" />");
+    if (detail === "full") {
+      if (s.tools.length === 0) {
+        lines.push("  <tools none=\"true\" />");
+      } else {
+        lines.push("  <tools>");
+        for (const t of s.tools) {
+          const desc = t.description
+            ? escapeXml(truncate(t.description, 200))
+            : escapeXml(t.originalName);
+          lines.push(
+            `    <tool name="${escapeXml(t.name)}" original="${escapeXml(t.originalName)}">${desc}</tool>`,
+          );
+        }
+        lines.push("  </tools>");
+      }
+      if (s.resourceUris && s.resourceUris.length > 0) {
+        lines.push("  <resources>");
+        for (const uri of s.resourceUris) {
+          lines.push(`    <resource uri="${escapeXml(uri)}" />`);
+        }
+        lines.push("  </resources>");
+      }
+      if (s.promptNames && s.promptNames.length > 0) {
+        lines.push("  <prompts>");
+        for (const n of s.promptNames) {
+          lines.push(`    <prompt name="${escapeXml(n)}" />`);
+        }
+        lines.push("  </prompts>");
+      }
     } else {
-      lines.push("  <tools>");
-      for (const t of s.tools) {
-        const desc = t.description
-          ? escapeXml(truncate(t.description, 200))
-          : escapeXml(t.originalName);
-        lines.push(
-          `    <tool name="${escapeXml(t.name)}" original="${escapeXml(t.originalName)}">${desc}</tool>`,
-        );
-      }
-      lines.push("  </tools>");
-    }
-    if (s.resourceUris && s.resourceUris.length > 0) {
-      lines.push("  <resources>");
-      for (const uri of s.resourceUris) {
-        lines.push(`    <resource uri="${escapeXml(uri)}" />`);
-      }
-      lines.push("  </resources>");
-    }
-    if (s.promptNames && s.promptNames.length > 0) {
-      lines.push("  <prompts>");
-      for (const n of s.promptNames) {
-        lines.push(`    <prompt name="${escapeXml(n)}" />`);
-      }
-      lines.push("  </prompts>");
+      lines.push(
+        `  <tools count="${s.tools.length}" listed="false" hint="use mcp list/search for this server" />`,
+      );
     }
     lines.push("</mcp_server>");
     lines.push("");
   }
 
   lines.push(
-    `Total MCP tools available via tool-calling: ${snapshot.toolCount}.`,
+    `Total MCP tools: ${snapshot.toolCount}. Catalog detail: ${detail}.`,
   );
   lines.push("</mcp_servers>");
   return lines.join("\n");
@@ -201,13 +246,24 @@ export async function buildMcpCatalogPrompt(
     enrichLists?: boolean;
     maxResourcesPerServer?: number;
     maxPromptsPerServer?: number;
+    detail?: McpCatalogDetail;
+    fullInjectThreshold?: number;
   },
 ): Promise<string> {
   let snap = snapshotMcpCatalog(manager);
-  if (opts?.enrichLists !== false) {
+  const detail = opts?.detail ?? "auto";
+  const threshold = opts?.fullInjectThreshold ?? MCP_CATALOG_FULL_INJECT_THRESHOLD;
+  const willListTools =
+    detail === "full" ||
+    (detail === "auto" && snap.toolCount <= threshold);
+  // servers_only 时不必 enrich resources/prompts（省往返）
+  if (opts?.enrichLists !== false && willListTools) {
     snap = await enrichMcpCatalogWithProtocolLists(manager, snap, opts);
   }
-  return formatMcpCatalogPrompt(snap);
+  return formatMcpCatalogPrompt(snap, {
+    detail,
+    fullInjectThreshold: threshold,
+  });
 }
 
 function truncate(s: string, n: number): string {

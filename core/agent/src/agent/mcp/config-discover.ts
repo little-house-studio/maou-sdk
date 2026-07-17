@@ -121,6 +121,47 @@ export function listStandardMcpConfigPaths(opts: DiscoverMcpConfigOptions): stri
 }
 
 /**
+ * 给工具 description / catalog 用的配置路径说明（仅文档，不启动任何进程）。
+ * 不自动启用 MCP：必须写入下列文件之一，且 `enabled` 不为 false。
+ * 配置变更后，下一次 agent run 会按文件指纹热加载（同名覆盖，项目/agent 优先）。
+ */
+export function describeMcpConfigLocations(opts?: {
+  agentName?: string;
+  projectRoot?: string;
+  maouRoot?: string;
+}): string {
+  const home = homedir();
+  const maou = opts?.maouRoot ?? join(home, ".maou");
+  const agent = opts?.agentName ?? "coding";
+  const proj = opts?.projectRoot;
+  const lines = [
+    "MCP is file-configured only (no auto-install registry). Enable a server by writing config; disable with enabled:false or delete the entry.",
+    "Standard mcpServers JSON (same shape as Cursor/Claude Desktop), later paths override same server name:",
+    `  - ${join(maou, "mcp.json")}`,
+    `  - ${join(maou, "agents", agent, "mcp.json")}`,
+    ...(proj
+      ? [
+          `  - ${join(proj, ".mcp.json")}`,
+          `  - ${join(proj, ".maou", "mcp.json")}`,
+          `  - ${join(proj, ".maou", "agents", agent, "mcp.json")}`,
+        ]
+      : [
+          "  - <project>/.mcp.json",
+          "  - <project>/.maou/mcp.json",
+          "  - <project>/.maou/agents/<agent>/mcp.json",
+        ]),
+    "Also scanned if present: ~/.cursor/mcp.json, Claude Desktop config, ~/.claude.json (mcpServers).",
+    "Legacy one-file-per-server (type:mcp, command/args or url, enabled):",
+    `  - ${join(maou, "agents", agent, "connections")}/*.json`,
+    proj
+      ? `  - ${join(proj, ".maou", "agents", agent, "connections")}/*.json (overrides global same name)`
+      : "  - <project>/.maou/agents/<agent>/connections/*.json (overrides global same name)",
+    "After editing these files, the next user message / agent run reloads MCP (hot-reload by config fingerprint; unchanged servers keep their process).",
+  ];
+  return lines.join("\n");
+}
+
+/**
  * 将标准 type 字段映射为 maou transport。
  * 规范：streamable-http / http → streamable-http；sse → sse；stdio → stdio。
  */

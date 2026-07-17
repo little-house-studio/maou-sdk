@@ -89,8 +89,15 @@ export class McpConnectionManager {
   private log: NonNullable<McpManagerOptions["log"]>;
   private clientInfo?: { name?: string; version?: string };
   private autoResync: boolean;
-  /** 当前已 load 的 agent 名（避免重复扫 connections） */
+  /** 当前已 load 的 agent 名 */
   private loadedAgent: string | null = null;
+  /**
+   * 上次成功 load 的「启用中 MCP 连接集合」指纹。
+   * 配置文件变更 → 指纹变 → ensureLoaded 走热重载；未变则跳过。
+   */
+  private lastConfigFingerprint: string | null = null;
+  /** 每个已连接 server 的配置指纹（未变且仍 connected 则不重连） */
+  private connectionFingerprints = new Map<string, string>();
   /** Host→LLM 工具暴露策略（flat=全量 mcp__*，gateway=单工具 mcp） */
   private exposureStrategy: McpToolExposureStrategy = "flat";
 
@@ -98,6 +105,33 @@ export class McpConnectionManager {
     this.log = opts.log ?? (() => {});
     this.clientInfo = opts.clientInfo;
     this.autoResync = opts.autoResyncOnListChanged !== false;
+  }
+
+  /** 单连接配置指纹（命令/参数/url/env/enabled 等） */
+  static fingerprintConnection(conn: DefinedConnection): string {
+    const payload = {
+      name: conn.name,
+      enabled: conn.enabled !== false,
+      connectionType: conn.connectionType,
+      command: conn.command ?? null,
+      args: conn.args ?? null,
+      url: conn.url ?? null,
+      cwd: conn.cwd ?? null,
+      transport: conn.transport ?? null,
+      env: conn.env ?? null,
+      config: conn.config ?? null,
+      description: conn.description ?? null,
+    };
+    return JSON.stringify(payload);
+  }
+
+  /** 启用中连接集合指纹（排序后） */
+  static fingerprintConnectionSet(connections: DefinedConnection[]): string {
+    const enabled = connections
+      .filter((c) => c.connectionType === "mcp" && c.enabled !== false)
+      .map((c) => McpConnectionManager.fingerprintConnection(c))
+      .sort();
+    return enabled.join("\n");
   }
 
   /** 当前 MCP 工具暴露策略 */
@@ -243,13 +277,27 @@ export class McpConnectionManager {
       if (conn.connectionType !== "mcp") continue;
       if (!conn.enabled) {
         this.log("info", `[MCP] skip disabled connection: ${conn.name}`);
+        this.connectionFingerprints.delete(conn.name);
+        continue;
+      }
+      const fp = McpConnectionManager.fingerprintConnection(conn);
+      const existing = this.sessions.get(conn.name);
+      if (
+        existing &&
+        existing.status === "connected" &&
+        this.connectionFingerprints.get(conn.name) === fp
+      ) {
+        // 配置未变且进程仍在：热重载时复用
+        ok++;
         continue;
       }
       try {
         await this.connect(conn);
+        this.connectionFingerprints.set(conn.name, fp);
         ok++;
       } catch (err) {
         failed++;
+        this.connectionFingerprints.delete(conn.name);
         this.log(
           "error",
           `[MCP] connect failed ${conn.name}: ${err instanceof Error ? err.message : String(err)}`,
@@ -331,6 +379,11 @@ export class McpConnectionManager {
 
     const result = await this.connectAll(all);
     this.loadedAgent = agentName;
+    this.lastConfigFingerprint = McpConnectionManager.fingerprintConnectionSet(all);
+    // 清理已 prune 连接的指纹
+    for (const name of [...this.connectionFingerprints.keys()]) {
+      if (!this.sessions.has(name)) this.connectionFingerprints.delete(name);
+    }
     const sourcePaths = standard.sources.map((s) => s.path);
     this.log(
       "info",
@@ -351,24 +404,77 @@ export class McpConnectionManager {
    */
   async buildCatalogPrompt(opts?: {
     enrichLists?: boolean;
+    /** full | servers_only | auto（默认 auto：工具数≤25 全量，否则仅服务名） */
+    detail?: "full" | "servers_only" | "auto";
+    fullInjectThreshold?: number;
   }): Promise<string> {
     return buildMcpCatalogPrompt(this, {
       enrichLists: opts?.enrichLists,
+      detail: opts?.detail,
+      fullInjectThreshold: opts?.fullInjectThreshold,
     });
   }
 
   /**
-   * 若当前已是该 agent 且仍有 session，则跳过；否则 loadForAgent。
-   * agent 切换一定会走 loadForAgent（由 loadedAgent 比较触发 disconnectAll）。
+   * 确保 agent 的 MCP 已按**当前配置文件**加载。
+   *
+   * - agent 切换 → 必 loadForAgent
+   * - 同 agent：先轻量发现配置并算指纹；与上次相同且仍有连接 → 跳过
+   * - 配置有增删改（含 enabled）→ 热重载 loadForAgent（未变 server 复用进程）
+   *
+   * 仍是「只认文件配置」，不会自动安装 MCP；只是改文件后无需整进程重启。
    */
   async ensureLoadedForAgent(
     maouRoot: string,
     agentName: string,
-    opts?: { projectRoot?: string },
-  ): Promise<{ ok: number; failed: number; discovered: number }> {
-    if (this.loadedAgent === agentName && this.sessions.size > 0) {
-      return { ok: this.sessions.size, failed: 0, discovered: this.sessions.size };
+    opts?: {
+      projectRoot?: string;
+      includeIndustryPaths?: boolean;
+      extraConfigPaths?: string[];
+    },
+  ): Promise<{ ok: number; failed: number; discovered: number; sources?: string[] }> {
+    // 未 load 过 / 换 agent：直接完整加载
+    if (this.loadedAgent !== agentName) {
+      return this.loadForAgent(maouRoot, agentName, opts);
     }
+
+    // 同 agent：发现当前配置指纹
+    const standard = discoverStandardMcpConnections({
+      maouRoot,
+      projectRoot: opts?.projectRoot,
+      agentName,
+      includeIndustryPaths: opts?.includeIndustryPaths,
+      extraConfigPaths: opts?.extraConfigPaths,
+    });
+    const registry = new ConnectionRegistry(maouRoot);
+    await registry.loadForAgent(agentName, { projectRoot: opts?.projectRoot });
+    const byName = new Map<string, DefinedConnection>();
+    for (const c of standard.connections) {
+      if (c.connectionType === "mcp") byName.set(c.name, c);
+    }
+    for (const c of registry.listAll()) {
+      if (c.connectionType === "mcp") byName.set(c.name, c);
+    }
+    const all = [...byName.values()];
+    const fp = McpConnectionManager.fingerprintConnectionSet(all);
+    const enabledCount = all.filter((c) => c.enabled !== false).length;
+
+    if (
+      this.lastConfigFingerprint === fp &&
+      (this.sessions.size > 0 || enabledCount === 0)
+    ) {
+      return {
+        ok: this.sessions.size,
+        failed: 0,
+        discovered: enabledCount,
+        sources: standard.sources.map((s) => s.path),
+      };
+    }
+
+    this.log(
+      "info",
+      `[MCP] config fingerprint changed for agent=${agentName} (was ${this.lastConfigFingerprint ? "set" : "none"} → reload); enabled=${enabledCount}`,
+    );
     return this.loadForAgent(maouRoot, agentName, opts);
   }
 
@@ -377,6 +483,7 @@ export class McpConnectionManager {
     if (!session) return;
     await session.disconnect();
     this.sessions.delete(name);
+    this.connectionFingerprints.delete(name);
     await this.rebuildDescriptors();
     if (this.boundRegistry) {
       this.syncToRegistry(this.boundRegistry);
@@ -395,6 +502,8 @@ export class McpConnectionManager {
     this.sessions.clear();
     this.descriptors = [];
     this.loadedAgent = null;
+    this.lastConfigFingerprint = null;
+    this.connectionFingerprints.clear();
     if (this.boundRegistry) {
       unregisterMcpTools(this.boundRegistry, this.registeredNames);
       this.registeredNames.clear();

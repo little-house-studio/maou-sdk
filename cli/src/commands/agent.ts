@@ -42,7 +42,7 @@ export interface AgentLaunchOptions {
   /** 新项目非交互确认 */
   yes?: boolean;
   /**
-   * TUI 后端：ink（默认，现网）| ratatui（可选）。
+   * TUI 后端：ratatui（默认）| ink（回退）。
    * 也可由 MAOU_TUI / config cli.tui 决定。
    */
   tui?: string;
@@ -98,21 +98,33 @@ async function resolveLaunchConfig(
 
 /** 启动 Ink TUI（需先装好 exit guard / console 重定向） */
 export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> {
-  // 0) 依赖
+  // 0) 依赖分档：Core 必须；Terminal/Optional 仅警告
   if (!opts.skipDeps && process.env.MAOU_SKIP_DEPS !== "1") {
     const dep = await ensureDependencies({ autoInstall: true });
-    if (!dep.ok) {
+    if (!dep.tiers?.core && !dep.ok) {
       process.stderr.write(
-        "❌ 核心依赖未就绪，无法启动。请运行：maou doctor\n" +
+        "❌ Core 未就绪，无法启动。请运行：maou doctor\n" +
           dep.errors.map((e) => `   - ${e}`).join("\n") +
           "\n",
       );
       process.exit(1);
     }
+    if (dep.tiers && !dep.tiers.terminal) {
+      process.stderr.write(
+        "△ Terminal 能力未完整（terminal-engine 未构建）。\n" +
+          "  兜底: 降级 PTY；完整终端请运行 scripts/build-native\n" +
+          "  详情: maou doctor\n",
+      );
+    }
+    if (dep.tiers && !dep.tiers.dcg) {
+      process.stderr.write(
+        "△ dcg 未安装 — 危险命令门可能异常。可: node scripts/ensure-dcg.mjs --user\n",
+      );
+    }
     if (dep.missingOptional.length > 0) {
       process.stderr.write(
-        `△ 可选依赖缺失（部分功能可能不可用）: ${dep.missingOptional.join(", ")}\n` +
-          `  运行 maou doctor 可尝试自动安装。\n`,
+        `△ 可选依赖缺失: ${dep.missingOptional.join(", ")}\n` +
+          `  运行 maou doctor 查看与修复建议。\n`,
       );
     }
   }
@@ -144,12 +156,14 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
 
   const themePath = opts.themePath;
 
-  // ── TUI 后端分流：默认 ink；ratatui 不进入 Ink render ──
-  const { resolveTuiBackend } = await import("../tui-bridge/config.js");
+  // ── TUI 后端分流：默认 ratatui；ink 仍可 --tui ink ──
+  const { resolveTuiBackend, markRatatuiActive } = await import("../tui-bridge/config.js");
   const tui = resolveTuiBackend(opts.tui);
   if (tui === "ratatui") {
+    // Before any shared module can write CSI to stdout
+    markRatatuiActive();
     process.stderr.write(
-      `[maou] tui=ratatui · Ink 版未删除，回退：MAOU_TUI=ink 或 --tui ink\n`,
+      `[maou] tui=ratatui · 回退 Ink：MAOU_TUI=ink 或 --tui ink\n`,
     );
     const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
     await runAgentWithRatatui({

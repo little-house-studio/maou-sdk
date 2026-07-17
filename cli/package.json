@@ -33,7 +33,7 @@
     "dev:watch": "node scripts/dev-watch.mjs",
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
-    "postinstall": "node dist/commands/postinstall.js 2>/dev/null || true",
+    "postinstall": "node dist/commands/postinstall.js || exit 0",
     "gallery:bake": "node scripts/bake-gallery-ascii.mjs",
     "bench:scroll": "tsx scripts/ink-scroll-bench.tsx --auto",
     "bench:scroll:pure": "tsx scripts/ink-scroll-bench.tsx --mode pure --mount full --lines 86 --auto --auto-ms 6000",

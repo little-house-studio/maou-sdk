@@ -3,9 +3,10 @@
  * 优先使用 ripgrep (rg --files)，降级到 Node.js 原生实现
  */
 
-import { exec } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { resolve, relative, join, sep } from "node:path";
+import { platform } from "node:os";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
@@ -27,13 +28,17 @@ const SKIP_DIRS = new Set([
   "coverage",
 ]);
 
+function commandOnPath(name: string): boolean {
+  const cmd = platform() === "win32" ? "where" : "which";
+  const r = spawnSync(cmd, [name], { encoding: "utf-8", windowsHide: true });
+  return r.status === 0 && Boolean(r.stdout?.trim());
+}
+
 /**
  * 检查 ripgrep 是否可用
  */
 function hasRg(): Promise<boolean> {
-  return new Promise((resolve) => {
-    exec("which rg", (err) => resolve(!err));
-  });
+  return Promise.resolve(commandOnPath("rg") || commandOnPath("rg.exe"));
 }
 
 /**
@@ -47,8 +52,7 @@ function globWithRg(pattern: string, searchDir: string, headLimit: number): Prom
       "--glob", pattern,
       searchDir,
     ];
-    const cmd = `rg ${args.map((a) => `'${a}'`).join(" ")}`;
-    exec(cmd, { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
+    execFile("rg", args, { maxBuffer: 5 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
       if (err && !stdout) {
         resolve([]);
         return;

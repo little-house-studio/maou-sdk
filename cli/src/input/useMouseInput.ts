@@ -302,25 +302,42 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
     if (e.type === "wheelUp" || e.type === "wheelDown") {
       const dir = e.type === "wheelUp" ? "up" : "down";
       const store = useStore.getState();
-      const dragging = !!(dragRef.current?.moved && dragRef.current.mode === "chat");
+      const dragMoved = !!dragRef.current?.moved;
+      const dragMode = dragRef.current?.mode;
+      const chatDragging = dragMoved && dragMode === "chat";
+      const inputDragging = dragMoved && dragMode === "input";
 
-      if (store.fullEditorInitial !== null && !dragging) cbRef.current.onInputScroll?.(dir);
-      else if (store.overlay && !dragging) cbRef.current.onOverlayScroll?.(dir);
-      else if (store.eventBlockExpanded && !dragging) {
+      const overInput =
+        target.kind === "input" && isPlausibleInputRect(rect.inputRect);
+      const inputLines = Math.max(1, (store.inputLineCount as number) || 1);
+
+      if (store.fullEditorInitial !== null && !chatDragging) {
+        cbRef.current.onInputScroll?.(dir);
+      } else if (store.overlay && !chatDragging) {
+        cbRef.current.onOverlayScroll?.(dir);
+      } else if (store.eventBlockExpanded && !chatDragging) {
         const hit = hitTestClick(e.col, e.row);
         if (hit) store.scrollSupervisor(dir);
         else cbRef.current.onChatScroll?.(dir);
-      } else if (dragging) {
-        // 拖选中滚轮：等同边缘方向滚动，保持 end 钉边
+      } else if (inputDragging) {
+        // 输入框内拖选时滚轮：滚输入视口（移光标行）
+        if (inputLines > 5) cbRef.current.onInputScroll?.(dir);
+      } else if (chatDragging) {
+        // 对话拖选中滚轮：等同边缘方向滚动，保持 end 钉边
         scrollChatLogical(dir, rect);
         pinChatEndToEdge(dir, e.col);
+      } else if (overInput && inputLines > 5) {
+        // 鼠标在输入框且内容超 5 行：滚输入窗口（不滚上下文）
+        cbRef.current.onInputScroll?.(dir);
+      } else if (overInput) {
+        // ≤5 行：不吞滚轮给历史；交给对话区
+        cbRef.current.onChatScroll?.(dir);
       } else {
-        // 普通滚轮：若有 sticky chat 锚点则预热 lineCache（Shift 跨视口）
+        // 上下文窗口滚轮
         if (getStickyAnchor()?.kind === "chat") {
           captureChatVisibleLines({ alsoSticky: true });
         }
         cbRef.current.onChatScroll?.(dir);
-        // 滚后 logical 可能变；若仅 sticky 无 active，仍只改 store，Output.get 时 alsoSticky 采集
         if (getStickyAnchor()?.kind === "chat") {
           const s = useStore.getState();
           const offset = s.autoFollow ? 0 : Math.min(s.chatScrollOffset, s.maxChatScroll);
@@ -335,7 +352,7 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
         }
       }
 
-      if (dragging) {
+      if (chatDragging) {
         // 等帧；不双刷
       } else if (getActiveSel() && getSelMode() === "chat") {
         // 非拖选时滚轮清 chat 蓝底（保留 sticky 供 Shift）
@@ -483,9 +500,18 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
         if (d.moved) {
           const cur = hitTest(e.col, e.row, rows, rect);
           const snap = snapToCell(e.row, e.col);
+          const ir = rect.inputRect;
+          // 超 5 行且拖出输入框上下边：滚动内部视口（移光标行）
+          const nLines = Math.max(1, useStore.getState().inputLineCount || 1);
+          if (ir && nLines > 5) {
+            if (e.row < ir.top) {
+              cbRef.current.onInputScroll?.("up");
+            } else if (e.row > ir.top + ir.height - 1) {
+              cbRef.current.onInputScroll?.("down");
+            }
+          }
           if (!useStore.getState().inputTextSel) {
             // start 锚点：用 drag 起点的屏幕列/行反推字符列
-            const ir = rect.inputRect;
             if (ir) {
               const startLine = Math.max(0, d.startRow - ir.top);
               const startCharCol = Math.max(
@@ -500,14 +526,14 @@ export function useMouseInput(enabled: boolean, rect: LayoutRect, cb: MouseCallb
             useStore.getState().dispatchInputSelect(cur.col, cur.line, "extend");
             updateInputSelEnd(snap.row, snap.col);
           } else if (rect.inputRect) {
-            const ir = rect.inputRect;
-            const clampRow = Math.max(ir.top, Math.min(ir.top + ir.height - 1, e.row));
+            const ir2 = rect.inputRect;
+            const clampRow = Math.max(ir2.top, Math.min(ir2.top + ir2.height - 1, e.row));
             const clampCol = Math.max(
-              ir.left + (rect.inputTextColOffset ?? INPUT_TEXT_COL_OFFSET_DEFAULT),
-              Math.min(ir.left + ir.width - 1, e.col),
+              ir2.left + (rect.inputTextColOffset ?? INPUT_TEXT_COL_OFFSET_DEFAULT),
+              Math.min(ir2.left + ir2.width - 1, e.col),
             );
-            const line = clampRow - ir.top;
-            const charCol = Math.max(0, clampCol - ir.left - (rect.inputTextColOffset ?? INPUT_TEXT_COL_OFFSET_DEFAULT));
+            const line = clampRow - ir2.top;
+            const charCol = Math.max(0, clampCol - ir2.left - (rect.inputTextColOffset ?? INPUT_TEXT_COL_OFFSET_DEFAULT));
             useStore.getState().dispatchInputSelect(charCol, line, "extend");
             updateInputSelEnd(clampRow, clampCol);
           }

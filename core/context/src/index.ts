@@ -121,6 +121,9 @@ export {
   estimateTokensFromStrings,
   contextUsageRatio,
   contextRemainingRatio,
+  parsePromptTokensFromUsage,
+  estimateFullPromptTokens,
+  resolveContextUsedTokens,
 } from "./token-estimate.js";
 
 // ContextEngine（编排压缩 + 持久化闭环）

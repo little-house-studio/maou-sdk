@@ -139,7 +139,38 @@ export class LspTool extends Tool {
         case "workspace_symbols": {
           const query = String(params.query ?? "").trim();
           if (!query) return createToolResponse(false, '❌ lsp workspace_symbols 缺少必填参数 query（搜索词）。正确用法示例：\n{"tool": "lsp", "params": {"action": "workspace_symbols", "query": "MyClass", "reason": "全工程搜符号"}}\n请用正确的 query 参数重试。');
-          const syms = await lsp.workspaceSymbols(query, root);
+          let syms = await lsp.workspaceSymbols(query, root);
+          // monorepo 根无 tsconfig 时 tsserver 常返回空：回退 find_code/search（sqry）
+          if (syms.length === 0) {
+            try {
+              const { search, isAvailable, ensureIndex } = await import("@little-house-studio/sqry-engine");
+              if (isAvailable()) {
+                await ensureIndex(root);
+                const r = await search(root, query, { exact: false, limit });
+                if (r.entries.length > 0) {
+                  const lines = r.entries.slice(0, limit).map(
+                    (e) =>
+                      `${e.kind ?? "symbol"} ${e.qualifiedName ?? e.name} → ${relFile(e.file, root)}:${e.line ?? "?"}`,
+                  );
+                  return createToolResponse(
+                    true,
+                    `[workspace_symbols via find_code/search | ${r.entries.length} 项]\n` +
+                      `（LSP 全工程符号为空，通常因工作区根无 tsconfig；已自动回退 sqry 搜索）\n` +
+                      lines.join("\n"),
+                    {
+                      payload: {
+                        action: "workspace_symbols",
+                        via: "find_code",
+                        count: r.entries.length,
+                      },
+                    },
+                  );
+                }
+              }
+            } catch {
+              /* keep empty lsp result */
+            }
+          }
           return this.fmtSymbols(syms, "workspace_symbols", root, limit);
         }
         default:

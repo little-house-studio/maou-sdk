@@ -18,7 +18,12 @@ import {
   cancelAllTerminalApprovals,
   answerTerminalApproval,
 } from "../input/terminal-approval.js";
-import { pickGalleryWork, pickGallerySize, formatPlaque } from "../gallery/catalog.js";
+import {
+  pickGalleryWork,
+  pickGallerySize,
+  formatPlaque,
+  shouldShowGalleryArt,
+} from "../gallery/catalog.js";
 import { loadFramedArt } from "../gallery/load-art.js";
 import { SUPERVISOR_MANAGER } from "@little-house-studio/agent";
 import type { SupervisorState } from "../state/types.js";
@@ -26,9 +31,10 @@ import {
   handleEscapeCancel,
   registerAbortStream,
 } from "../hooks/escape-cancel.js";
-import { restoreTerminalViewport } from "../input/terminal-viewport.js";
 import { ensurePerfHudSampler } from "../headless/perf-hud-lines.js";
 import { notePaintFrame } from "../hooks/process-stats.js";
+import { resolveKeyBinding } from "../config/keybindings.js";
+import { commandOpensOverlay } from "../config/cli-commands.js";
 
 export interface RunRatatuiOpts {
   config: AgentCliConfig;
@@ -95,6 +101,10 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   });
   await cli.boot();
 
+  // Mark active backend ASAP so any Node CSI path (clear/viewport/exit) no-ops
+  const { markRatatuiActive } = await import("./config.js");
+  markRatatuiActive();
+
   installCliTerminalApprover();
   refreshSupervisor();
   registerAbortStream(() => cli.abort());
@@ -102,7 +112,10 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   // 展开状态（工具卡 / thinking / 长消息）—— 与 Ink 本地 useState 对等
   const expandedTools = new Set<string>();
   const expandedThinking = new Set<string>();
+  /** 历史轮：用户点开全文 */
   const expandedMsgs = new Set<string>();
+  /** 最新轮：用户点收纳（默认开） */
+  const collapsedMsgs = new Set<string>();
 
   // PerfHud: keep process-stats sampler alive; refresh chrome every ~2s
   let unsubPerf: (() => void) | null = null;
@@ -112,9 +125,15 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   let lastCursor = 0;
   /** 历史浏览前暂存的草稿（Ink savedInputRef） */
   let historyDraft: string | null = null;
+  /** 模型二级菜单：当前 provider；null=provider 列表 */
+  let modelProvider: string | null = null;
+  /** prompt 阅读框当前分段 */
+  let promptSectionIndex = 0;
+  let lastOverlayKind: string | null = null;
 
   let session: RatatuiSession | null = null;
   let lastSig = "";
+  let lastScreenEpoch = useStore.getState().screenEpoch ?? 0;
   let pushTimer: ReturnType<typeof setTimeout> | null = null;
 
   function galleryLines(seed: string): string[] {
@@ -122,11 +141,16 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       // Logo 由 Ratatui 左上自绘（Ink GallerySplash ①）；此处只送画 + 铭牌
       const work = pickGalleryWork(seed);
       const cols = Math.max(40, process.stdout.columns || 100);
-      const rows = Math.max(16, process.stdout.rows || 30);
-      // 扣 logo≈5 + 底栏≈8，与 Ink contentRows 预算接近
-      const size = pickGallerySize(cols, Math.min(rows - 10, 28));
+      const termRows = Math.max(16, process.stdout.rows || 30);
+      // 与 Ink contentRows 接近：底栏 ≈8；logo 固定 5 行不进 hang
+      const contentRows = Math.max(0, termRows - 8);
+      const logoH = 5;
+      const hangArea = Math.max(0, contentRows - logoH);
+      // 太矮：不送油画（Ratatui 只画 logo）
+      if (!shouldShowGalleryArt(hangArea)) return [];
+      const size = pickGallerySize(cols, Math.min(contentRows, 28));
       const art = loadFramedArt(work.id, size) ?? [];
-      const maxArt = Math.min(art.length, Math.max(12, rows - 14));
+      const maxArt = Math.min(art.length, Math.max(12, hangArea - 4));
       const plaque = formatPlaque(work);
       return [
         ...art.slice(0, maxArt),
@@ -135,7 +159,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         `gallery · ${size}`,
       ];
     } catch {
-      return ["", "输入消息开始对话"];
+      return [];
     }
   }
 
@@ -159,8 +183,11 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     }
   }
 
-  function snapshotOpts(s: UIState, input?: string) {
-    const overlay = buildOverlay(s.overlay, opts.config, s.agentName);
+  function snapshotOpts(s: UIState, input?: string, fullPaint = false) {
+    const overlay = buildOverlay(s.overlay, opts.config, s.agentName, {
+      modelProvider,
+      promptSectionIndex,
+    });
     const comps =
       input != null
         ? completionsFor(input, lastCursor)
@@ -171,18 +198,43 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       expandedTools,
       expandedThinking,
       expandedMsgs,
+      collapsedMsgs,
       theme: loadedTheme.tokens,
       overlay,
       completions: comps,
       input: input ?? lastInput,
       gallery_lines:
         s.messages.length === 0 ? galleryLines(s.gallerySeed || "boot") : undefined,
+      full_paint: fullPaint || undefined,
     };
   }
 
   const pushState = (state?: UIState, force = false) => {
+    if (session?.isDead?.()) return;
     const s = state ?? cli.getState();
-    const msg = buildFullState(s, snapshotOpts(s));
+    // 新打开 model/prompt 时重置多级状态；关闭时清理
+    const ov = (s.overlay as string | null) ?? null;
+    if (ov === "model" && lastOverlayKind !== "model") {
+      modelProvider = null;
+    } else if (ov === "prompt" && lastOverlayKind !== "prompt") {
+      promptSectionIndex = 0;
+    } else if (ov == null && lastOverlayKind != null) {
+      modelProvider = null;
+      promptSectionIndex = 0;
+    }
+    lastOverlayKind = ov;
+    const epoch = s.screenEpoch ?? 0;
+    const epochBump = epoch !== lastScreenEpoch;
+    if (epochBump) lastScreenEpoch = epoch;
+    // Only epoch bump (/new · clear-screen) requests hard full_paint — not every force push
+    // (settings toggle / overlay refresh would flash the whole screen otherwise).
+    const fullPaint = epochBump;
+    const msg = buildFullState(s, snapshotOpts(s, undefined, fullPaint));
+    // 含 token/rounds：否则会话恢复或轮次结束后 InfoBar 会一直 0/假值（不热更）
+    const lastRound = s.rounds?.[s.rounds.length - 1];
+    const ctxTok = lastRound
+      ? (lastRound.total ?? lastRound.input + lastRound.output)
+      : (s.currentRoundUsage?.input ?? 0) + (s.currentRoundUsage?.output ?? 0);
     const sig = [
       s.lastStreamNonce,
       s.messages.length,
@@ -196,8 +248,17 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       lastInput.length,
       (s as UIState & { pendingMessages?: string[] }).pendingMessages?.length ?? 0,
       s.eventBlockExpanded ? 1 : 0,
+      epoch,
+      s.gallerySeed ?? "",
+      s.perfHud ? 1 : 0,
+      s.rounds?.length ?? 0,
+      s.maxContext ?? 0,
+      ctxTok,
+      s.eventBlock?.upTokens ?? 0,
+      s.eventBlock?.downTokens ?? 0,
+      s.systemEvents?.length ?? 0,
     ].join("|");
-    if (!force && sig === lastSig) return;
+    if (!force && !epochBump && sig === lastSig) return;
     lastSig = sig;
     // Approx paint ticks for process-stats fps (Ink notes real paint frames)
     notePaintFrame();
@@ -205,29 +266,45 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   };
 
   // PerfHud sampler (~2s) → force chrome refresh with cpu/mem/verdict
+  // 注意：session 尚未 spawn，采样回调里的 push 要等 ready 后才生效
+  try {
+    const { setProcessStatsHudEnabled } = await import("../hooks/process-stats.js");
+    setProcessStatsHudEnabled(useStore.getState().perfHud !== false);
+  } catch {
+    /* ignore */
+  }
   unsubPerf = ensurePerfHudSampler(() => {
+    if (!session || session.isDead?.()) return;
     lastSig = "";
     pushState(undefined, true);
   });
 
-  const schedulePush = (state: UIState) => {
+  // 永远读最新 store，禁止闭包冻旧 state（否则 Submit 后 24ms 旧快照会抹掉刚 push 的 user 消息）
+  const schedulePush = () => {
     if (pushTimer) return;
     pushTimer = setTimeout(() => {
       pushTimer = null;
-      pushState(state);
+      pushState(undefined);
     }, 24);
+  };
+  const cancelScheduledPush = () => {
+    if (pushTimer) {
+      clearTimeout(pushTimer);
+      pushTimer = null;
+    }
   };
 
   // 只在 nonce 递增时查 SDK（对齐 useSupervisorState 的 checkNonce 依赖）
   let lastSupervisorCheckNonce = useStore.getState().supervisorCheckNonce ?? 0;
-  const unsub = cli.subscribe((state) => {
+  const unsub = cli.subscribe((_state) => {
     // tool_result/done 后同步监督状态（对齐 useSupervisorState）
+    const state = cli.getState();
     const nonce = state.supervisorCheckNonce ?? 0;
     if (nonce !== lastSupervisorCheckNonce) {
       lastSupervisorCheckNonce = nonce;
       refreshSupervisor();
     }
-    schedulePush(state);
+    schedulePush();
   });
 
   // GoalPanel requestSend / pendingSubmit
@@ -259,12 +336,33 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       const type = String(msg.type ?? "");
 
       if (type === "ready") {
+        // 子进程就绪：立刻推含 perf_lines 的完整 state（采样器已在 boot 时 tick）
         lastSig = "";
         pushState(undefined, true);
+        // 再短延迟推一次，覆盖首个 2s 窗后的 mem/cpu
+        setTimeout(() => {
+          if (!session || session.isDead?.()) return;
+          lastSig = "";
+          pushState(undefined, true);
+        }, 100);
         return;
       }
       if (type === "quit") {
+        // Ink: requestExit + process.exit — 仅 kill 子进程会卡在 wait/finally 后仍挂着
+        try {
+          useStore.getState().requestExit();
+          useStore.getState().toastMsg("正在退出…", "ok");
+        } catch {
+          /* ignore */
+        }
         session?.kill();
+        setTimeout(() => {
+          try {
+            process.exit(0);
+          } catch {
+            /* ignore */
+          }
+        }, 80);
         return;
       }
       if (type === "abort") {
@@ -272,11 +370,23 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         return;
       }
       if (type === "escape") {
+        // 模型二级：Esc 先回 provider 列表
+        if (useStore.getState().overlay === "model" && modelProvider) {
+          modelProvider = null;
+          lastSig = "";
+          pushState(undefined, true);
+          return;
+        }
         // 与 Ink 同一套 Esc 分层栈（escape-cancel.ts）
         const r = handleEscapeCancel();
         if (r.handled) {
           if (r.action === "abort_stream") {
             // abortStreamHandler already called cli.abort via registerAbortStream
+          }
+          // 关 overlay 时清多级状态
+          if (useStore.getState().overlay == null) {
+            modelProvider = null;
+            promptSectionIndex = 0;
           }
           lastSig = "";
           pushState(undefined, true);
@@ -284,25 +394,41 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         return;
       }
       if (type === "submit") {
-        // Ink doSubmit: restore terminal viewport after IME lateral scroll (Q08)
-        restoreTerminalViewport();
+        // 勿 bumpScreenEpoch：full_paint 会让发送后卡顿数秒；Ratatui 自行管理 viewport
         const text = String(msg.text ?? "");
         lastInput = "";
         lastCursor = 0;
         if (!text.trim()) return;
-        await cli.send(text);
+        // 发送即写入历史（浏览历史时不再 push）
+        useStore.getState().pushInputHistory(text);
+        useStore.getState().resetHistoryIndex();
+        historyDraft = null;
+        // 取消 pending 旧快照，避免覆盖刚 append 的 user 消息
+        cancelScheduledPush();
+        // send() 同步段会 pushUserMessage；勿 await 整轮 agent，先推 UI
+        const sendP = cli.send(text);
         lastSig = "";
         pushState(undefined, true);
+        void sendP.finally(() => {
+          lastSig = "";
+          pushState(undefined, true);
+        });
         return;
       }
       if (type === "input_update") {
-        lastInput = String(msg.text ?? "");
-        lastCursor = Number(msg.cursor ?? lastInput.length) || 0;
-        // 浏览历史时手动编辑 → 退出历史模式（Ink resetHistoryIndex）
-        if (useStore.getState().historyIndex >= 0) {
-          useStore.getState().resetHistoryIndex();
-          historyDraft = null;
+        const nextText = String(msg.text ?? "");
+        const nextCursor = Number(msg.cursor ?? nextText.length) || 0;
+        // 浏览历史时：仅文本相对历史条目真正变化才退出；光标移动不 reset（对齐 Ink applyingHistory）
+        const stHist = useStore.getState();
+        if (stHist.historyIndex >= 0) {
+          const histEntry = stHist.inputHistory[stHist.historyIndex];
+          if (histEntry !== undefined && nextText !== histEntry) {
+            stHist.resetHistoryIndex();
+            historyDraft = null;
+          }
         }
+        lastInput = nextText;
+        lastCursor = nextCursor;
         useStore.getState().setInputDraft(lastInput);
         // Ink InputBar: report multi-line height for hit-test (M04)
         useStore.getState().setInputLineCount(
@@ -373,31 +499,52 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       if (type === "history") {
         const dir = String(msg.dir ?? "up") === "down" ? "down" : "up";
         const st = useStore.getState();
-        if (dir === "up") {
-          // 首次进入历史：暂存当前草稿
-          if (st.historyIndex < 0) {
-            historyDraft = lastInput;
-          }
-          if (lastInput.trim()) {
-            st.pushInputHistory(lastInput);
-          }
+        // 仅首次 ↑ 进入历史时暂存草稿；浏览过程中绝不 push（否则会把草稿顶进历史末尾导致死循环）
+        if (dir === "up" && st.historyIndex < 0) {
+          historyDraft = lastInput;
+        }
+        // 已在最早一条再 ↑：不动（避免同文反复 input_set 像死循环）
+        if (dir === "up" && st.historyIndex === 0) {
+          return;
         }
         const h = useStore.getState().navigateHistory(dir);
         if (h != null) {
           // 下键超出历史末尾 → 恢复草稿（Ink savedInputRef）
-          if (h === "" && dir === "down" && historyDraft != null) {
-            lastInput = historyDraft;
+          if (h === "" && dir === "down") {
+            lastInput = historyDraft ?? "";
             historyDraft = null;
           } else {
             lastInput = h;
           }
-          lastCursor = lastInput.length;
+          // ↑ 进历史：光标置最前；↓ 下一条：光标到文末
+          lastCursor = dir === "up" ? 0 : lastInput.length;
           session?.send({ type: "input_set", text: lastInput, cursor: lastCursor });
         }
         return;
       }
-      if (type === "command" || type === "overlay_action") {
-        const action = String(msg.action ?? msg.id ?? "");
+      if (type === "command") {
+        // Nav / palette: open local overlay or run slash (Ink NavBar + runCommand)
+        const id = String(msg.id ?? msg.action ?? "");
+        const args = msg.args != null ? String(msg.args) : undefined;
+        if (!id) return;
+        const store = useStore.getState();
+        if (store.isLocalCommand(id)) {
+          store.runCommand(id);
+        } else if (id === "new" || id === "clear") {
+          store.runCommand(id);
+        } else {
+          try {
+            cli.runCommand(id, args);
+          } catch {
+            store.toastMsg(`未知命令: ${id}`, "warn");
+          }
+        }
+        lastSig = "";
+        pushState(undefined, true);
+        return;
+      }
+      if (type === "overlay_action") {
+        const action = String(msg.action ?? "");
         const value = msg.value != null ? String(msg.value) : "";
         await handleOverlayAction(action, value);
         return;
@@ -423,8 +570,41 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       }
       if (type === "message_expand") {
         const mid = String(msg.id ?? "");
-        if (expandedMsgs.has(mid)) expandedMsgs.delete(mid);
-        else expandedMsgs.add(mid);
+        if (!mid) return;
+        // 最新轮默认展开：点一下 → 收纳；历史轮默认收：点一下 → 展开
+        const msgs = useStore.getState().messages;
+        let lastHuman = -1;
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const m = msgs[i]!;
+          if (m.role !== "user") continue;
+          const kind = m.kind ?? "human_user";
+          if (
+            kind === "system_notice" ||
+            kind === "runtime_control" ||
+            kind === "agent_message" ||
+            kind === "compact" ||
+            kind === "unknown"
+          ) {
+            continue;
+          }
+          lastHuman = i;
+          break;
+        }
+        const idx = msgs.findIndex((m) => m.id === mid);
+        const inLatest = lastHuman < 0 || idx >= lastHuman;
+        if (inLatest) {
+          if (collapsedMsgs.has(mid)) collapsedMsgs.delete(mid);
+          else {
+            collapsedMsgs.add(mid);
+            expandedMsgs.delete(mid);
+          }
+        } else {
+          if (expandedMsgs.has(mid)) expandedMsgs.delete(mid);
+          else {
+            expandedMsgs.add(mid);
+            collapsedMsgs.delete(mid);
+          }
+        }
         pushState(undefined, true);
         return;
       }
@@ -546,35 +726,48 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     },
   );
 
+  // 子进程异常退出时立刻停掉后续 push，并提示退出码（避免干到一半只看到 EPIPE）
+  session.child.on("exit", (code, signal) => {
+    cancelScheduledPush();
+    if (code && code !== 0) {
+      try {
+        process.stderr.write(
+          `[maou] ratatui 子进程退出 code=${code}${signal ? ` signal=${signal}` : ""}\n` +
+            `  若频繁闪退，可暂时 MAOU_TUI=ink maou coding，或把 [ratatui] 日志贴出排查。\n`,
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+
   async function handleHotkey(key: string) {
     const store = useStore.getState();
-    switch (key) {
-      case "ctrl+k":
+    const kb = resolveKeyBinding(key);
+
+    if (kb?.commandId) {
+      if (kb.commandId === "new" || kb.commandId === "clear") {
+        cli.resetAgent();
+      }
+      store.runCommand(kb.commandId);
+      pushState(undefined, true);
+      return;
+    }
+
+    switch (kb?.ui) {
+      case "command_palette":
         store.setOverlay("command");
         break;
-      case "ctrl+m":
-        store.setOverlay("model");
-        break;
-      case "ctrl+,":
-        store.setOverlay("settings");
-        break;
-      case "ctrl+n":
-        cli.resetAgent();
-        store.startNewSession({ clearScreen: true, toast: "新会话" });
-        break;
-      case "ctrl+e":
+      case "full_editor":
         session?.send({ type: "full_editor", text: lastInput });
         break;
-      case "ctrl+g":
-        store.runCommand("screenshot");
-        break;
-      case "ctrl+s": {
+      case "toggle_sound": {
         const en = !cli.sound.isEnabled();
         cli.sound.updateConfig({ enabled: en });
         store.toastMsg(en ? "🔊 音效已开启" : "🔇 音效已关闭", "info");
         break;
       }
-      case "shift+tab": {
+      case "cycle_approval": {
         const next = store.cycleApprovalMode();
         store.toastMsg(`审核 · ${next}`, "info");
         break;
@@ -594,6 +787,30 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
 
     if (action === "close") {
       store.setOverlay(null);
+      modelProvider = null;
+      promptSectionIndex = 0;
+      pushState(undefined, true);
+      return;
+    }
+    // prompt 分段切换
+    if (kind === "prompt" && (action === "section_prev" || action === "section_next" || action === "section_goto")) {
+      const ov = buildOverlay("prompt", opts.config, store.agentName, {
+        promptSectionIndex,
+      });
+      const n = ov?.sections?.length ?? 0;
+      if (n > 0) {
+        if (action === "section_prev") {
+          promptSectionIndex = (promptSectionIndex - 1 + n) % n;
+        } else if (action === "section_next") {
+          promptSectionIndex = (promptSectionIndex + 1) % n;
+        } else {
+          const g = Number(value);
+          if (Number.isFinite(g)) {
+            promptSectionIndex = Math.max(0, Math.min(Math.floor(g), n - 1));
+          }
+        }
+      }
+      lastSig = "";
       pushState(undefined, true);
       return;
     }
@@ -603,7 +820,9 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         const id = value || action;
         if (id === "quit") {
           store.requestExit();
+          store.toastMsg("正在退出…", "ok");
           session?.kill();
+          setTimeout(() => process.exit(0), 80);
           return;
         }
         if (store.isLocalCommand(id)) {
@@ -611,13 +830,21 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         } else {
           cli.runCommand(id);
         }
-        if (id !== "model" && id !== "sessions" && id !== "settings" && id !== "agents" && id !== "help" && id !== "prompt") {
+        // 打开 overlay 的指令由注册表判定，勿硬编码 id 列表
+        if (!commandOpensOverlay(id)) {
           store.setOverlay(null);
         }
         pushState(undefined, true);
         return;
       }
       if (kind === "model") {
+        // 一级：进入 provider
+        if (value.startsWith("provider:")) {
+          modelProvider = value.slice("provider:".length) || null;
+          lastSig = "";
+          pushState(undefined, true);
+          return;
+        }
         const [p, m] = value.split("\0");
         if (p && m) {
           store.setProviderModel(p, m);
@@ -633,6 +860,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
           );
           store.toastMsg(`已切换 ${p}/${m}`, "ok");
         }
+        modelProvider = null;
         store.setOverlay(null);
         pushState(undefined, true);
         return;
@@ -678,6 +906,25 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         } else if (value === "sound") {
           await handleHotkey("ctrl+s");
           return;
+        } else if (value === "perf_hud") {
+          const on = store.togglePerfHud();
+          store.toastMsg(
+            on ? "Debug 显示已开启（已保存）" : "Debug 显示已关闭（已保存）",
+            "ok",
+          );
+          lastSig = "";
+          pushState(undefined, true);
+          return;
+        } else if (value === "mouse") {
+          const next = !store.mouseCapture;
+          store.setMouseCapture(next);
+          store.toastMsg(
+            next ? "鼠标捕获已开启（已保存）" : "鼠标捕获已关闭（已保存）",
+            "ok",
+          );
+          lastSig = "";
+          pushState(undefined, true);
+          return;
         } else if (value === "help") {
           store.setOverlay("help");
           pushState(undefined, true);
@@ -697,8 +944,24 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   }
 
   const unsubExit = useStore.subscribe((s) => {
-    if (s.exitRequested) session?.kill();
+    if (s.exitRequested) {
+      session?.kill();
+      setTimeout(() => process.exit(0), 80);
+    }
   });
+
+  // 父进程收到 Ctrl+C（TTY 共享时 SIGINT 可能到 Node 而非 TUI）→ 干净退出
+  const onSigInt = () => {
+    try {
+      useStore.getState().requestExit();
+    } catch {
+      /* ignore */
+    }
+    session?.kill();
+    setTimeout(() => process.exit(0), 50);
+  };
+  process.once("SIGINT", onSigInt);
+  process.once("SIGTERM", onSigInt);
 
   // agent 切换 nonce
   let lastSwitch = useStore.getState().agentSwitchNonce;
@@ -731,6 +994,8 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       process.stderr.write(`[maou] ratatui exit code ${code}\n`);
     }
   } finally {
+    process.off("SIGINT", onSigInt);
+    process.off("SIGTERM", onSigInt);
     if (pushTimer) clearTimeout(pushTimer);
     unsubPerf?.();
     unsub();
@@ -741,5 +1006,9 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     cancelAllTerminalApprovals("ratatui exit");
     uninstallCliTerminalApprover();
     cli.dispose();
+  }
+  // 子进程结束后确保 CLI 退出（与 Ink requestExit 后 process.exit 一致）
+  if (useStore.getState().exitRequested) {
+    process.exit(0);
   }
 }

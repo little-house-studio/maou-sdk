@@ -61,8 +61,23 @@ import {
 
 type Item = ScrollItem;
 
-/** 贴底只隔一行空白 */
-const BOTTOM_PAD = 1;
+/** 空闲贴底：只隔一行空白 */
+const BOTTOM_PAD_IDLE = 1;
+
+/** 是否为对话里的真人 user（与 MessageRow round 语义一致） */
+function isHumanUserItem(it: Item): boolean {
+  if (it.type !== "msg") return false;
+  const m = it.data;
+  if (m.role !== "user") return false;
+  const kind = m.kind ?? "human_user";
+  return !(
+    kind === "system_notice" ||
+    kind === "runtime_control" ||
+    kind === "agent_message" ||
+    kind === "compact" ||
+    kind === "unknown"
+  );
+}
 
 function measureKeyFor(it: Item, epoch: number): string {
   if (it.type === "sys") return `s:${it.id}:${epoch}`;
@@ -197,9 +212,31 @@ export function ScrollHistory({ frame }: { frame: number }) {
     return Math.max(Math.round(contentSize.height || 0), env);
   }, [virtOn, contentSize.height, contentLayoutEpoch, windowed.length, streaming]);
 
+  // Grok 贴底：pad = viewH − (最后一条 user 起算的 tail 高)，使发送后 user 顶到视口顶，
+  // AI 增长时 pad 缩小，视口自然下移。仅 autoFollow 时启用。
+  const bottomPad = useMemo(() => {
+    if (!autoFollow) return BOTTOM_PAD_IDLE;
+    let lastUser = -1;
+    for (let i = windowed.length - 1; i >= 0; i--) {
+      if (isHumanUserItem(windowed[i]!)) {
+        lastUser = i;
+        break;
+      }
+    }
+    if (lastUser < 0) return BOTTOM_PAD_IDLE;
+    let tailH = 0;
+    for (let i = lastUser; i < heights.length; i++) {
+      tailH += heights[i] ?? 0;
+    }
+    // viewH not frozen yet on first pass — use live viewH
+    const vh = Math.max(4, viewH);
+    // 始终 Grok 公式：tail 短 → 大 pad（user 在顶）；tail 填满视口 → pad=1
+    return Math.max(1, vh - Math.max(1, tailH));
+  }, [autoFollow, windowed, heights, viewH]);
+
   const rawContentH = virtOn
-    ? itemsTotalH + BOTTOM_PAD
-    : Math.max(measuredFull, itemsTotalH + BOTTOM_PAD);
+    ? itemsTotalH + bottomPad
+    : Math.max(measuredFull, itemsTotalH + bottomPad);
 
   const frozenLayoutRef = useRef({ contentH: 0, viewH: 0 });
   if (!scrollActive) {
@@ -237,7 +274,7 @@ export function ScrollHistory({ frame }: { frame: number }) {
     const fresh = virtualRange(
       heights,
       starts,
-      Math.max(0, contentH - BOTTOM_PAD),
+      Math.max(0, contentH - bottomPad),
       viewHStable,
       fb,
       buf,
@@ -262,7 +299,7 @@ export function ScrollHistory({ frame }: { frame: number }) {
     const startIdx = Math.min(fr.startIdx, fresh.startIdx);
     const endIdx = Math.max(fr.endIdx, fresh.endIdx);
     freezeVrRef.current = { startIdx, endIdx, n: windowed.length };
-    const itemsH = Math.max(0, contentH - BOTTOM_PAD);
+    const itemsH = Math.max(0, contentH - bottomPad);
     const padTop = starts[startIdx] ?? 0;
     const padBottom =
       endIdx >= windowed.length ? 0 : itemsH - (starts[endIdx] ?? itemsH);
@@ -332,18 +369,28 @@ export function ScrollHistory({ frame }: { frame: number }) {
     }
 
     if (historyStart < prevHs && contentH > prevH && prevH > 0) {
+      // Prepend older history above: pin content (offset += Δ)
       store.setMaxChatScroll(maxS, "pin-content");
       return;
     }
 
     if (prevH <= 0 || contentH === prevH) {
+      // No content height change (or first measure): only sync max / clamp.
       if (store.maxChatScroll !== maxS) store.setMaxChatScroll(maxS, "pin-offset");
       else if (store.chatScrollOffset > maxS) store.setChatScrollLayout(maxS, maxS);
       return;
     }
 
-    const nextFb = Math.max(0, Math.min(maxS, store.chatScrollOffset));
-    store.setChatScrollLayout(maxS, nextFb);
+    // Content height changed while user left the tail (stream / reflow / expand).
+    // MUST pin visible content: fixed fromBottom while total grows at the tail
+    // feels like the view is sucked toward latest on every delta.
+    // pin-content → offset += (newMax - oldMax) so contentTopY stays put.
+    if (contentH > prevH) {
+      store.setMaxChatScroll(maxS, "pin-content");
+      return;
+    }
+    // Height shrank: clamp offset without inventing upward jumps.
+    store.setMaxChatScroll(maxS, "pin-offset");
   }, [contentH, maxS, viewHStable, autoFollow, windowed.length, historyStart, contentLayoutEpoch, scrollActive, heightTick]);
 
   useEffect(() => {
@@ -366,7 +413,7 @@ export function ScrollHistory({ frame }: { frame: number }) {
   // 「上一条用户」：用缓存 starts，不扫 Yoga 子树
   const olderUser = useMemo(() => {
     if (scrollActive || fb <= 0 || windowed.length === 0) return null;
-    const topY = topYOf(contentH - BOTTOM_PAD, viewHStable, fb);
+    const topY = topYOf(contentH - bottomPad, viewHStable, fb);
     let last: (Item & { type: "msg" }) | null = null;
     for (let i = 0; i < windowed.length; i++) {
       const start = starts[i] ?? 0;
@@ -535,7 +582,7 @@ export function ScrollHistory({ frame }: { frame: number }) {
               </Box>
             ) : null}
 
-            <Box height={BOTTOM_PAD} flexShrink={0} width={chatWFixed}>
+            <Box height={bottomPad} flexShrink={0} width={chatWFixed}>
               <Text>{" "}</Text>
             </Box>
           </Box>

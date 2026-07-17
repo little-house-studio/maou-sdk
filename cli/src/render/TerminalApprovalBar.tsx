@@ -4,6 +4,11 @@
  * 不占用 overlay（不遮盖对话），用户能边看工具卡边选。
  * 快捷键：Y 允许一次 · A 始终允许 · N 拒绝 · B 黑名单 · Esc 拒绝
  * 鼠标：悬停高亮（与 NavBar 同套 hoverId + OSC8 手型）
+ *
+ * 风险色：
+ * - low  → 黄底（普通需确认）
+ * - high → 红底（危险命令）
+ * 并展示「语言简介」帮助非技术用户判断是否授权。
  */
 
 import React, { useRef, useEffect, useMemo } from "react";
@@ -39,11 +44,11 @@ function truncateCmd(cmd: string, maxW: number): string {
 function ChoiceBtn({
   label,
   choice,
-  accent,
+  risk,
 }: {
   label: string;
   choice: TerminalApprovalChoice;
-  accent?: boolean;
+  risk: "low" | "high";
 }) {
   const t = useTheme();
   const req = useStore((s) => s.terminalApproval);
@@ -52,9 +57,10 @@ function ChoiceBtn({
     if (req) answerTerminalApproval(req.id, choice);
   }, [req?.id, choice]);
   const hover = useStore((s) => s.hoverId) === cid;
-  // 与 SelectList / Nav 一致：悬停酸绿底黑字
-  const bg = hover ? t.accent : accent ? t.warn : t.userBg;
-  const fg = hover || accent ? "#101010" : t.user;
+  const baseBg = risk === "high" ? t.err : t.warn;
+  // 悬停酸绿；默认随风险黄/红
+  const bg = hover ? t.accent : baseBg;
+  const fg = "#101010";
   const linkTransform = useMemo(
     () => makeClickableTransform(`approval/${choice}`),
     [choice],
@@ -105,8 +111,20 @@ export function TerminalApprovalBar() {
 
   if (!req) return null;
 
+  const risk: "low" | "high" = req.risk === "high" ? "high" : "low";
+  const barBg = risk === "high" ? t.err : t.warn;
+  const title = risk === "high" ? "高风险审批" : "命令审批";
+  const label = req.label || (risk === "high" ? "高风险" : "需确认");
+  const summary =
+    req.summary ||
+    req.hint ||
+    (risk === "high"
+      ? "此命令风险较高，请确认你理解影响后再授权。"
+      : "AI 请求在终端执行该命令。");
+
   const maxCmd = Math.max(20, term.cols - 8);
   const cmdLine = truncateCmd(req.command, maxCmd);
+  const sumLine = truncateCmd(summary, maxCmd);
   const firstToken = req.command.trim().split(/\s+/)[0] || "cmd";
 
   return (
@@ -115,27 +133,38 @@ export function TerminalApprovalBar() {
       flexShrink={0}
       width="100%"
       borderStyle="single"
-      borderColor={t.warn}
+      borderColor={barBg}
       paddingX={1}
     >
-      <Text color={t.warn} bold>
-        {"🔐 终端命令需要你确认"}
-        <Text color={t.dim}>{` · ${req.agentName}`}</Text>
+      <Text backgroundColor={barBg} color="#101010" bold>
+        {` ${title} · ${label} `}
+        <Text color="#101010">{` · ${req.agentName}`}</Text>
       </Text>
       <Text color={t.fg}>
-        <Text color={t.accent}>{"$ "}</Text>
+        <Text color={t.dim}>{"AI 说明 · "}</Text>
+        {sumLine}
+      </Text>
+      <Text color={t.fg}>
+        <Text color={risk === "high" ? t.err : t.accent} bold>
+          {"$ "}
+        </Text>
         {cmdLine}
       </Text>
-      {req.cwd ? (
-        <Text color={t.dim}>{`cwd: ${req.cwd}`}</Text>
+      {req.cwd ? <Text color={t.dim}>{`cwd: ${req.cwd}`}</Text> : null}
+      {req.reason ? (
+        <Text color={t.dim}>{`原因: ${truncateCmd(req.reason, maxCmd)}`}</Text>
       ) : null}
       <Box flexDirection="row" marginTop={0}>
-        <ChoiceBtn label="Y 允许一次" choice="once" accent />
-        <ChoiceBtn label={`A 始终允许 ${firstToken}`} choice="always" />
-        <ChoiceBtn label="N 拒绝" choice="deny" />
-        <ChoiceBtn label="B 拉黑" choice="blacklist" />
+        <ChoiceBtn label="Y 允许一次" choice="once" risk={risk} />
+        <ChoiceBtn label={`A 始终允许 ${firstToken}`} choice="always" risk={risk} />
+        <ChoiceBtn label="N 拒绝" choice="deny" risk={risk} />
+        <ChoiceBtn label="B 拉黑" choice="blacklist" risk={risk} />
       </Box>
-      <Text color={t.dim}>{"Y/Enter 允许 · A 白名单 · N/Esc 拒绝 · B 黑名单"}</Text>
+      <Text color={t.dim}>
+        {risk === "high"
+          ? "红条=高风险 · Y/Enter 允许 · A 白名单 · N/Esc 拒绝 · B 黑名单"
+          : "黄条=普通确认 · Y/Enter 允许 · A 白名单 · N/Esc 拒绝 · B 黑名单"}
+      </Text>
     </Box>
   );
 }

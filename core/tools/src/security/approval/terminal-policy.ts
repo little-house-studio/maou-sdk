@@ -48,7 +48,20 @@ export type TerminalReviewer = (
  */
 export type TerminalApprover = (
   command: string,
-  ctx: { agentName: string; cwd?: string },
+  ctx: {
+    agentName: string;
+    cwd?: string;
+    /** low=普通确认(黄) high=危险确认(红) */
+    risk?: "low" | "high";
+    /** 一句人话说明命令意图 */
+    summary?: string;
+    /** 短标签 */
+    label?: string;
+    /** 安全规则 id（若有） */
+    ruleId?: string;
+    /** 安全层原因 */
+    reason?: string;
+  },
 ) => Promise<{ approve: boolean; persist?: "whitelist" | "blacklist" | "none" }>;
 
 let policyRoot = join(homedir(), ".maou");

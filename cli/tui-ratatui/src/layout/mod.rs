@@ -295,10 +295,17 @@ mod tests {
         assert!(chat.height >= 3, "chat h={}", chat.height);
         assert_eq!(input.height, 2);
         assert_eq!(nav.height, 1);
-        assert_eq!(inner.x, chat.x + 1);
-        assert_eq!(inner.y, chat.y + 1);
-        // chrome: back(1)+event(1)+input(2)+info(1)+nav(1)=6; chat outer ≈ 30-6=24
-        assert_eq!(chat.height + 1 + 1 + 2 + 1 + 1, 30, "vertical stack fills");
+        // 无外框：ChatInner 与 Chat 同原点（仅 JumpPrev 时高度不同）
+        assert_eq!(inner.x, chat.x);
+        assert_eq!(inner.y, chat.y);
+        // chrome: no jump when show_jump=false → back(1)+event(1)+input(2)+info(1)+nav(1)=6
+        assert_eq!(
+            chat.height + 1 + 1 + 2 + 1 + 1,
+            30,
+            "vertical stack fills (no JumpPrev when not scrolling)"
+        );
+        assert!(s.get(Slot::JumpPrev).is_none(), "jump hidden when show_jump=false");
+        assert_eq!(chat.y, 0, "chat starts at top when no jump bar");
         let mut nav_w = 0u16;
         for i in 0..7 {
             nav_w += s.get(Slot::NavSeg(i)).expect("seg").width;

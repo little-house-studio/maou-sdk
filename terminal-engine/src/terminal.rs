@@ -137,10 +137,13 @@ fn get_platform_shell() -> (String, Vec<String>) {
 /// 构建安全环境变量（白名单过滤）
 fn build_safe_env() -> Vec<(String, String)> {
     const ENV_WHITELIST: &[&str] = &[
-        "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
-        "TERM", "COLORTERM", "TMPDIR", "TMP", "TEMP", "JAVA_HOME",
-        "NODE_PATH", "PYTHONPATH", "GOPATH", "GOROOT", "RUSTUP_HOME",
-        "CARGO_HOME", "NVM_DIR", "CONDA_PREFIX",
+        "PATH", "HOME", "USER", "USERNAME", "USERPROFILE", "SHELL",
+        "LANG", "LC_ALL", "LC_CTYPE",
+        "TERM", "COLORTERM", "TMPDIR", "TMP", "TEMP",
+        "APPDATA", "LOCALAPPDATA", "SystemRoot", "SYSTEMROOT", "COMSPEC", "PATHEXT",
+        "JAVA_HOME", "NODE_PATH", "PYTHONPATH", "GOPATH", "GOROOT",
+        "RUSTUP_HOME", "CARGO_HOME", "NVM_DIR", "CONDA_PREFIX",
+        "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
     ];
 
     let mut env: Vec<(String, String)> = ENV_WHITELIST

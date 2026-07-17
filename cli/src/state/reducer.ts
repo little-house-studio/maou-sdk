@@ -32,6 +32,34 @@ function clipToast(s: string): string {
   return s.slice(0, TOAST_TEXT_MAX);
 }
 
+/**
+ * 思考结束：把仍 streaming 的 thinking 块收尾。
+ * 正文 / 工具开始时就必须 seal，否则 UI 一直当「思考中」展开全文。
+ */
+function sealThinkingBlocks(
+  blocks: ChatMessage["thinkingBlocks"] | undefined,
+  now = Date.now(),
+): ChatMessage["thinkingBlocks"] | undefined {
+  if (!blocks?.length) return blocks;
+  let changed = false;
+  const next = blocks.map((b) => {
+    if (!b.streaming) return b;
+    changed = true;
+    return {
+      ...b,
+      streaming: false,
+      duration: b.duration ?? (b.startTs ? now - b.startTs : undefined),
+    };
+  });
+  return changed ? next : blocks;
+}
+
+/** 给一条消息 seal thinking；未变则返回原引用 */
+function sealMessageThinking(m: ChatMessage, now = Date.now()): ChatMessage {
+  const sealed = sealThinkingBlocks(m.thinkingBlocks, now);
+  return sealed === m.thinkingBlocks ? m : { ...m, thinkingBlocks: sealed };
+}
+
 /** 从 usage 对象取 input/output token（兼容各家字段名） */
 function parseUsage(u: Record<string, unknown> | undefined): { input: number; output: number; cacheRead?: number } {
   if (!u) return { input: 0, output: 0 };
@@ -200,15 +228,36 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const delta = ev.delta ?? "";
       const id = state.currentAssistantId;
       const existing = id ? state.messages.find(m => m.id === id) : undefined;
-      // 若当前消息已有 toolCalls（上一轮带工具的），新建消息流式占位，不追加到旧消息
-      const shouldCreate = !id || !existing || !!existing.toolCalls?.length;
+      // 仅当「上一轮已收口」（不在 streaming 且已有工具）才新开消息；
+      // 本轮仍 streaming 时即使已有工具也继续写同一条，避免 LIVE+完成双份。
+      const shouldCreate =
+        !id ||
+        !existing ||
+        (!existing.streaming && (existing.toolCalls?.length ?? 0) > 0);
       let messages = state.messages;
       let currentAssistantId = id;
+      const nowTs = Date.now();
       if (shouldCreate) {
+        // 新正文轮：上一轮占位上的 thinking 先收尾（若还挂着）
+        if (existing?.thinkingBlocks?.some((b) => b.streaming)) {
+          messages = messages.map((m) =>
+            m.id === existing.id ? sealMessageThinking(m, nowTs) : m,
+          );
+        }
         currentAssistantId = uid();
-        messages = [...messages, { id: currentAssistantId, role: "assistant", content: delta, streaming: true, ts: Date.now(), thinkingBlocks: [], round: state.round + 1 }];
+        messages = [...messages, { id: currentAssistantId, role: "assistant", content: delta, streaming: true, ts: nowTs, thinkingBlocks: [], round: state.round + 1 }];
       } else {
-        messages = messages.map(m => m.id === currentAssistantId ? { ...m, content: m.content + delta, streaming: true } : m);
+        // 同一条消息：正文开始 → 立刻 seal thinking（收成一行标识）
+        messages = messages.map((m) => {
+          if (m.id !== currentAssistantId) return m;
+          const sealed = sealThinkingBlocks(m.thinkingBlocks, nowTs);
+          return {
+            ...m,
+            content: m.content + delta,
+            streaming: true,
+            thinkingBlocks: sealed,
+          };
+        });
       }
       return {
         messages,
@@ -223,50 +272,75 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const usage = parseUsage(ev.usage as Record<string, unknown> | undefined);
       const maxContext = Number((ev.usage as { max_context?: number } | undefined)?.max_context) || undefined;
       const round = ev.round ?? state.round;
-      // 完整 assistant 消息：若当前占位消息是本轮流式占位则更新；否则新建。
-      // 关键：若占位消息已有 toolCalls（上一轮带工具调用的消息），不能覆盖——
-      // 新轮次的回复必须是独立消息，否则回复被塞进上一轮工具卡片消息，
-      // 渲染时工具卡片"悬浮"在底部，回复显示顺序错乱。
+      // runtime 顺序：先 assistant 完整事件，再 processToolCalls。
+      // 若本轮还有工具，必须保留 currentAssistantId，否则 tool_call 会另开空消息 → 双份 UI。
+      const nativeTools = (ev as { nativeToolCalls?: unknown[] }).nativeToolCalls;
+      const hasFollowOnTools = Array.isArray(nativeTools) && nativeTools.length > 0;
+
       const id = state.currentAssistantId;
       const existing = id ? state.messages.find(m => m.id === id) : undefined;
-      // 允许更新「仅思考占位」的 streaming 消息（可能 content 仍为空）
-      const canUpdate = existing && !existing.toolCalls?.length && (existing.streaming || !!existing.thinkingBlocks?.length);
+      // 可更新：当前槽仍是本轮（streaming，或尚无工具的思考/正文占位）
+      const canUpdate =
+        !!existing &&
+        (existing.streaming || !(existing.toolCalls?.length) || !!existing.thinkingBlocks?.length);
       let messages = state.messages;
       const nowTs = Date.now();
-      if (canUpdate) {
+      let slotId = id;
+
+      if (canUpdate && id) {
         messages = messages.map(m => m.id === id ? {
           ...m,
           content: content || m.content,
-          streaming: false,
+          // 后面还有工具 → 保持 LIVE；否则本轮文案结束
+          streaming: hasFollowOnTools ? true : false,
           usage: { input: usage.input, output: usage.output, maxContext },
-          // 收尾思考块 duration，避免一直显示 streaming
-          thinkingBlocks: m.thinkingBlocks?.map((b) => ({
-            ...b,
-            streaming: false,
-            duration: b.duration ?? (b.startTs ? nowTs - b.startTs : undefined),
-          })),
+          thinkingBlocks: sealThinkingBlocks(m.thinkingBlocks, nowTs),
+          round: m.round ?? round,
         } : m);
+        slotId = id;
       } else {
-        // 若上一轮占位有 thinking 但 canUpdate 失败，尽量挂到新消息（不丢思考）
-        const orphanThink =
-          existing?.thinkingBlocks?.length && existing.toolCalls?.length
-            ? existing.thinkingBlocks
-            : undefined;
-        messages = [...messages, {
-          id: uid(),
-          role: "assistant",
-          content,
-          streaming: false,
-          ts: nowTs,
-          usage: { input: usage.input, output: usage.output, maxContext },
-          thinkingBlocks: orphanThink,
-          kind: "assistant_turn",
-          author: { type: "agent", id: "ai", displayName: "ai" },
-        }];
+        // 无可用占位：新建。若 content 与最近一条 assistant 完全相同则合并，防重放双份
+        const lastAsst = [...messages].reverse().find((m) => m.role === "assistant");
+        if (
+          lastAsst &&
+          content &&
+          lastAsst.content === content &&
+          !lastAsst.toolCalls?.length
+        ) {
+          messages = messages.map((m) =>
+            m.id === lastAsst.id
+              ? {
+                  ...m,
+                  streaming: hasFollowOnTools ? true : false,
+                  usage: { input: usage.input, output: usage.output, maxContext },
+                  thinkingBlocks: sealThinkingBlocks(m.thinkingBlocks, nowTs),
+                }
+              : m,
+          );
+          slotId = lastAsst.id;
+        } else {
+          slotId = uid();
+          messages = [...messages, {
+            id: slotId,
+            role: "assistant",
+            content,
+            streaming: hasFollowOnTools ? true : false,
+            ts: nowTs,
+            usage: { input: usage.input, output: usage.output, maxContext },
+            thinkingBlocks: sealThinkingBlocks(
+              existing?.thinkingBlocks?.length ? existing.thinkingBlocks : undefined,
+              nowTs,
+            ),
+            kind: "assistant_turn",
+            author: { type: "agent", id: "ai", displayName: "ai" },
+            round,
+          }];
+        }
       }
       const patch: Patch = {
         messages,
-        currentAssistantId: null,
+        // 有后续工具则保留槽位，供 tool_call 挂载
+        currentAssistantId: hasFollowOnTools ? slotId : null,
         maxContext: maxContext ?? state.maxContext,
       };
       // 注意：runtime 同一轮会先发 model.usage 再发 assistant，二者携带同一份 result.usage。
@@ -277,25 +351,95 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     }
 
     // ── 工具调用（ev.tool 是对象） ────────────────────────
+    // 注意：runtime 会在执行前先 announce tool_call，执行完再 tool_result。
+    // 若已有同 id 卡（重复 announce / 重放）不重复加。
     case "tool_call": {
       const tool = ev.tool as { id?: string; name: string; parameters?: Record<string, unknown> } | undefined;
-      const id = state.currentAssistantId ?? uid();
       let messages = state.messages;
-      if (!state.currentAssistantId || !messages.find(m => m.id === id)) {
-        messages = [...messages, { id, role: "assistant", content: "", streaming: true, ts: Date.now(), thinkingBlocks: [] }];
+      const nowTs = Date.now();
+
+      // 解析挂载目标：currentAssistantId → 最近一条 assistant（防 assistant 清槽后工具另开）
+      let id = state.currentAssistantId ?? null;
+      if (!id || !messages.find((m) => m.id === id)) {
+        const lastAsst = [...messages].reverse().find((m) => m.role === "assistant");
+        id = lastAsst?.id ?? null;
       }
-      const tc: ToolCardState = {
-        id: tool?.id ?? uid(),
-        name: tool?.name ?? "?",
-        args: JSON.stringify(tool?.parameters ?? {}),
-        done: false,
-        callStartTs: Date.now(),
-      };
-      messages = messages.map(m => m.id === id ? { ...m, toolCalls: [...(m.toolCalls ?? []), tc] } : m);
+      if (!id) {
+        id = uid();
+        messages = [
+          ...messages.map((m) => sealMessageThinking(m, nowTs)),
+          { id, role: "assistant", content: "", streaming: true, ts: nowTs, thinkingBlocks: [] },
+        ];
+      }
+
+      const tcId = tool?.id ?? uid();
+      const tcName = tool?.name ?? "?";
+      // 已有同 id，或同名未完成的 pending 预检卡 → 升级/更新，不重复插
+      let already = false;
+      messages = messages.map((m) => {
+        if (m.id !== id) return m;
+        // 工具开始 = 思考已结束，先 seal
+        const sealedBlocks = sealThinkingBlocks(m.thinkingBlocks, nowTs);
+        const list = m.toolCalls ?? [];
+        let idx = list.findIndex((t) => t.id === tcId);
+        if (idx < 0) {
+          idx = list.findIndex(
+            (t) =>
+              !t.done &&
+              t.name === tcName &&
+              (t.id.startsWith("pending_") || !t.result),
+          );
+        }
+        // 再兜底：同名且 args 相同的未完成卡（防 announce 双 id）
+        if (idx < 0) {
+          const argsStr = JSON.stringify(tool?.parameters ?? {});
+          idx = list.findIndex(
+            (t) => !t.done && t.name === tcName && t.args === argsStr,
+          );
+        }
+        if (idx >= 0) {
+          already = true;
+          const next = list.slice();
+          next[idx] = {
+            ...next[idx]!,
+            id: tcId, // 预检卡升级为真实 id
+            name: tcName,
+            args: JSON.stringify(tool?.parameters ?? {}),
+            done: false,
+            callStartTs: next[idx]!.callStartTs ?? nowTs,
+          };
+          return { ...m, toolCalls: next, streaming: true, thinkingBlocks: sealedBlocks };
+        }
+        return {
+          ...m,
+          thinkingBlocks: sealedBlocks,
+          streaming: true,
+        };
+      });
+      if (!already) {
+        const tc: ToolCardState = {
+          id: tcId,
+          name: tcName,
+          args: JSON.stringify(tool?.parameters ?? {}),
+          done: false,
+          callStartTs: nowTs,
+        };
+        messages = messages.map((m) =>
+          m.id === id
+            ? {
+                ...m,
+                toolCalls: [...(m.toolCalls ?? []), tc],
+                streaming: true,
+                thinkingBlocks: sealThinkingBlocks(m.thinkingBlocks, nowTs),
+              }
+            : m,
+        );
+      }
       return {
         messages,
         currentAssistantId: id,
-        eventBlock: { ...state.eventBlock, mode: "tool_pending", detail: tc.name },
+        streaming: true,
+        eventBlock: { ...state.eventBlock, mode: "tool_pending", detail: tcName },
       };
     }
 
@@ -306,21 +450,107 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const content = typeof ev.content === "string" ? ev.content : JSON.stringify(ev.content ?? "");
       const ok = ev.ok !== false;
       const now = Date.now();
-      const messages = state.messages.map(m => m.toolCalls ? {
-        ...m,
-        toolCalls: m.toolCalls.map(tc =>
-          (tc.id === toolCallId || (!toolCallId && tc.name === name && !tc.done))
-            ? { ...tc, result: content.slice(0, MAX_RESULT), isError: !ok, done: true, callDuration: tc.callStartTs ? now - tc.callStartTs : undefined }
-            : tc
-        ),
-      } : m);
+      // 若只有 result、没有事先的 tool_call（旧路径/后台补发），补一张已完成卡
+      let matched = false;
+      let messages = state.messages.map((m) => {
+        if (!m.toolCalls?.length) return m;
+        const next = m.toolCalls.map((tc) => {
+          if (tc.id === toolCallId || (!toolCallId && tc.name === name && !tc.done)) {
+            matched = true;
+            return {
+              ...tc,
+              result: content.slice(0, MAX_RESULT),
+              isError: !ok,
+              done: true,
+              callDuration: tc.callStartTs ? now - tc.callStartTs : undefined,
+            };
+          }
+          return tc;
+        });
+        if (next === m.toolCalls) return m;
+        // 本消息上所有工具都结束 → 收口 streaming，避免下一条又叠 LIVE
+        const allDone = next.every((t) => t.done);
+        return { ...m, toolCalls: next, streaming: allDone ? false : m.streaming };
+      });
+      if (!matched && (toolCallId || name)) {
+        // 优先挂到最近 assistant，不新开空消息
+        let id = state.currentAssistantId ?? null;
+        if (!id || !messages.find((m) => m.id === id)) {
+          id = [...messages].reverse().find((m) => m.role === "assistant")?.id ?? null;
+        }
+        if (!id) {
+          id = uid();
+          messages = [
+            ...messages,
+            { id, role: "assistant", content: "", streaming: false, ts: now, thinkingBlocks: [] },
+          ];
+        }
+        const tc: ToolCardState = {
+          id: toolCallId ?? uid(),
+          name: name ?? "?",
+          args: "{}",
+          result: content.slice(0, MAX_RESULT),
+          isError: !ok,
+          done: true,
+          callStartTs: now,
+          callDuration: 0,
+        };
+        messages = messages.map((m) => {
+          if (m.id !== id) return m;
+          const list = [...(m.toolCalls ?? []), tc];
+          const allDone = list.every((t) => t.done);
+          return { ...m, toolCalls: list, streaming: allDone ? false : true };
+        });
+        return {
+          messages,
+          currentAssistantId: id,
+          eventBlock: { ...state.eventBlock, mode: ok ? "generating" : "error", detail: name },
+        };
+      }
       return { messages, eventBlock: { ...state.eventBlock, mode: ok ? "generating" : "error", detail: name } };
     }
 
-    // ── 工具待执行 ────────────────────────────────────────
+    // ── 工具待执行（模型流式中预检到 tool 字段） ──────────
+    // 只更新状态栏；若带 name 且尚无进行中卡，补一张 pending 卡（意图先于完整 tool_call）
     case "tool_pending": {
-      const tool = ev.tool as { name?: string } | undefined;
-      return { eventBlock: { ...state.eventBlock, mode: "tool_pending", detail: tool?.name } };
+      const tool = ev.tool as { name?: string; id?: string; parameters?: Record<string, unknown> } | undefined;
+      const name = tool?.name;
+      if (!name) {
+        return { eventBlock: { ...state.eventBlock, mode: "tool_pending", detail: undefined } };
+      }
+      const id = state.currentAssistantId ?? uid();
+      let messages = state.messages;
+      if (!state.currentAssistantId || !messages.find((m) => m.id === id)) {
+        messages = [
+          ...messages,
+          { id, role: "assistant", content: "", streaming: true, ts: Date.now(), thinkingBlocks: [] },
+        ];
+      }
+      const hasPending = messages.some(
+        (m) =>
+          m.id === id &&
+          m.toolCalls?.some((t) => !t.done && (t.name === name || (tool?.id && t.id === tool.id))),
+      );
+      if (!hasPending) {
+        const tc: ToolCardState = {
+          id: tool?.id ?? `pending_${name}_${Date.now().toString(36)}`,
+          name,
+          args: JSON.stringify(tool?.parameters ?? {}),
+          done: false,
+          callStartTs: Date.now(),
+        };
+        messages = messages.map((m) =>
+          m.id === id
+            ? { ...m, toolCalls: [...(m.toolCalls ?? []), tc], streaming: true }
+            : m,
+        );
+      }
+      return {
+        messages,
+        currentAssistantId: id,
+        streaming: true,
+        eventBlock: { ...state.eventBlock, mode: "tool_pending", detail: name },
+      };
     }
 
     // ── model.usage（裸 usage，不含 max_context） ─────────
@@ -390,24 +620,36 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     case "log": {
       const level = ev.level as string | undefined;
       const message = (ev.message as string | undefined) ?? "";
-      // 压缩报告 → 黄色系统事件行（kind=compress）
+      // 压缩报告 → 一行黄色系统事件；展开 detail 看阶段 token / 摘要
       if (
         message.includes("上下文已压缩") ||
         message.includes("ContextEngine] 压缩失败") ||
         message.includes("压缩失败，本轮跳过")
       ) {
+        const oneLine = message
+          .replace(/^\[ContextEngine\]\s*/, "")
+          .split("\n")[0]!
+          .trim();
+        // SDK 经 log.detail 下发压缩摘要；无则回退整段 message
+        const detailField = (ev as { detail?: unknown }).detail;
+        const detailRaw =
+          typeof detailField === "string" ? detailField : message;
         const sysEvent: SystemEvent = {
           id: uid(),
           kind: "compress",
-          content: clipToast(message.replace(/^\[ContextEngine\]\s*/, "")),
+          // 一行标题放宽，避免 token 数字被 clip 掉
+          content: oneLine.length > 140 ? oneLine.slice(0, 137) + "…" : oneLine,
           ts: Date.now(),
-          detail: message,
+          detail: detailRaw,
         };
+        // 大压缩：一行系统事件（可点开）+ 短 toast（store 补 timer，约 1.2s 消失）
         return {
           systemEvents: [...state.systemEvents, sysEvent],
           toast: {
-            text: clipToast(message.includes("失败") ? "压缩失败，将稍后重试" : "上下文已压缩"),
-            kind: message.includes("失败") ? "warn" : "info",
+            text: message.includes("失败")
+              ? clipToast("压缩失败，将稍后重试")
+              : "上下文已压缩",
+            kind: message.includes("失败") ? "warn" : "ok",
           },
         };
       }
@@ -546,8 +788,12 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     case "error": {
       // 陷阱①：error 后 runAgentCli 即 return，必须这里置 streaming:false
       const msg = typeof ev.message === "string" ? ev.message : String(ev.message ?? "错误");
-      const messages = state.messages.map(m => m.streaming ? { ...m, streaming: false } : m);
-      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: clipToast(msg), ts: Date.now() };
+      const nowTs = Date.now();
+      const messages = state.messages.map((m) => {
+        const sealed = sealMessageThinking(m, nowTs);
+        return sealed.streaming ? { ...sealed, streaming: false } : sealed;
+      });
+      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: clipToast(msg), ts: nowTs };
       return {
         messages,
         streaming: false,

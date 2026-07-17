@@ -261,10 +261,52 @@ pub struct ProtoTheme {
     pub nav_notice: Option<String>,
     #[serde(default)]
     pub nav_settings: Option<String>,
+    /// 各 nav 段悬停底色（主题 nav.items.*.bgHover）
+    #[serde(default)]
+    pub nav_agent_hover: Option<String>,
+    #[serde(default)]
+    pub nav_sessions_hover: Option<String>,
+    #[serde(default)]
+    pub nav_terminal_hover: Option<String>,
+    #[serde(default)]
+    pub nav_todo_hover: Option<String>,
+    #[serde(default)]
+    pub nav_inbox_hover: Option<String>,
+    #[serde(default)]
+    pub nav_notice_hover: Option<String>,
+    #[serde(default)]
+    pub nav_settings_hover: Option<String>,
+    /// 主题 nav.order + items + 动作（动态；优先于 legacy nav_*）
+    #[serde(default)]
+    pub nav_items: Option<Vec<ProtoNavItem>>,
     #[serde(default)]
     pub sel_bg: Option<String>,
     #[serde(default)]
     pub sel_fg: Option<String>,
+}
+
+/// 底栏一段：文案/色/点击动作均由 Node 主题+配置下发
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProtoNavItem {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub short: String,
+    #[serde(default)]
+    pub bg: Option<String>,
+    #[serde(default)]
+    pub bg_hover: Option<String>,
+    #[serde(default)]
+    pub fg: Option<String>,
+    #[serde(default)]
+    pub fg_hover: Option<String>,
+    /// command | hotkey | toast | noop
+    #[serde(default)]
+    pub action_kind: Option<String>,
+    #[serde(default)]
+    pub action_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -291,6 +333,12 @@ pub struct ProtoOverlay {
     pub lines: Option<Vec<String>>,
     #[serde(default)]
     pub selected: Option<usize>,
+    /// prompt 等：分段目录（id/title 放在 SelectItem.value/label）
+    #[serde(default)]
+    pub sections: Option<Vec<SelectItem>>,
+    /// 当前分段下标（0-based）
+    #[serde(default)]
+    pub section_index: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -323,6 +371,18 @@ pub struct ProtoTerminalApproval {
     pub agent_name: Option<String>,
     #[serde(default)]
     pub hint: Option<String>,
+    /// "low" | "high"
+    #[serde(default)]
+    pub risk: Option<String>,
+    /// 人话简介
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub rule_id: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -361,7 +421,12 @@ pub enum InMsg {
         input: Option<String>,
         #[serde(default)]
         gallery_lines: Option<Vec<String>>,
+        /// Hard full paint: clear TTY buffers + rewrite every cell (after /new etc.)
+        #[serde(default)]
+        full_paint: bool,
     },
+    /// Dedicated full redraw request (optional; State.full_paint preferred).
+    FullPaint,
     MessagesSnapshot {
         messages: Vec<UiMessage>,
         #[serde(default)]

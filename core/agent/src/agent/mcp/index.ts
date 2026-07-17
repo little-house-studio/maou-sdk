@@ -55,6 +55,7 @@ export {
   standardEntryToConnection,
   parseMcpServersFile,
   discoverStandardMcpConnections,
+  describeMcpConfigLocations,
 } from "./config-discover.js";
 export type {
   StandardMcpServerEntry,
@@ -80,3 +81,10 @@ export type { McpToolExposureStrategy } from "./strategy.js";
 
 export { createMcpGatewayTool } from "./gateway-tool.js";
 export type { McpGatewayBackend } from "./gateway-tool.js";
+
+export {
+  validateMcpToolArgs,
+  formatMcpArgValidationError,
+  rejectIfMcpArgsInvalid,
+} from "./validate-args.js";
+export type { McpArgIssue, McpArgValidationResult } from "./validate-args.js";

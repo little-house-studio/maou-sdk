@@ -432,8 +432,8 @@ function inInputTextCell(screenRow1: number, screenCol1: number): boolean {
   return screenCol1 >= c0 && screenCol1 <= c1;
 }
 
-/** 输入区块状光标：计算机蓝底 + 白字（与选区同色，光标≈选区） */
-const CURSOR_BLOCK_SGR = "\x1b[0m\x1b[48;2;33;33;255m\x1b[38;2;255;255;255m";
+/** 输入框插入光标：终端反色（非实体 ▌ 图标、非蓝块） */
+const CURSOR_BLOCK_SGR = "\x1b[0m\x1b[7m";
 
 // ── 插入光标闪烁（非选区时）────────────────────────────────
 /** true = 显示蓝块；false = 熄灭（按普通字画） */
@@ -860,12 +860,27 @@ export function scheduleFullPaint(): void {
  * （供 clearTerminalScreen、resize 使用）
  */
 export function requestScreenRefresh(opts?: { clear?: boolean }): void {
-  if (opts?.clear && process.stdout.isTTY) {
+  // Dynamic import avoids vram ↔ config cycle at module init; check env inline too.
+  const tui = (
+    process.env.MAOU_TUI_ACTIVE ||
+    process.env.MAOU_TUI ||
+    ""
+  ).toLowerCase();
+  const ratatui =
+    tui === "ratatui" || tui === "rust" || tui === "rt";
+  // Ratatui owns the TTY — never CSI-clear from Node (desyncs Rust buffers → 花屏)
+  if (opts?.clear && process.stdout.isTTY && !ratatui) {
     try {
       process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
     } catch {
       /* ignore */
     }
+  }
+  if (ratatui) {
+    void import("../state/store.js")
+      .then(({ useStore }) => useStore.getState().bumpScreenEpoch())
+      .catch(() => {});
+    return;
   }
   invalidatePaintCache();
   scheduleFullPaint();
@@ -927,8 +942,13 @@ export function extractFullScreen(opts: FullScreenDumpOpts = {}): string {
   const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
   const inkRows = lastGrid?.length ?? 0;
   const inkCols = lastGrid?.[0]?.length ?? 0;
+  // 「ink WxH」仅表示 Node 帧缓冲尺寸，不是 TUI 后端名（易与 MAOU_TUI=ink 混淆）
+  const gridNote =
+    inkCols > 0 && inkRows > 0
+      ? ` · grid ${inkCols}×${inkRows}`
+      : ` · grid empty`;
   return [
-    `── maou screen dump ${ts} · tty ${cols}×${rows} · ink ${inkCols}×${inkRows} ──`,
+    `── maou screen dump ${ts} · tty ${cols}×${rows}${gridNote} ──`,
     body,
     `── end dump (${lines.length} lines, ${body.length} chars) ──`,
   ].join("\n");

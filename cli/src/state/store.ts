@@ -24,7 +24,15 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { StreamEvent } from "@little-house-studio/types";
-import type { UIState, ChatMessage, SystemEvent, Toast, CompletionState, SupervisorState } from "./types.js";
+import type {
+  UIState,
+  ChatMessage,
+  SystemEvent,
+  Toast,
+  CompletionState,
+  SupervisorState,
+  OverlayKind,
+} from "./types.js";
 import type { CompletionItem } from "../overlay/Completer.js";
 import { complete, applyCompletion } from "../overlay/Completer.js";
 import { reduce } from "./reducer.js";
@@ -32,7 +40,22 @@ import { dispatchDisplayEvent } from "../events/display-events.js";
 import { SUPERVISOR_MANAGER } from "@little-house-studio/agent";
 import { loadCacheHistoryFromLedger } from "../lib/prompt-cache.js";
 import { perfInc } from "../hooks/perf.js";
-import { noteUiPhase, setScrollBusy } from "../hooks/process-stats.js";
+import {
+  noteUiPhase,
+  setProcessStatsHudEnabled,
+  setScrollBusy,
+} from "../hooks/process-stats.js";
+import {
+  resolvePerfHudDefault,
+  setPreferredPerfHud,
+  resolveMouseCaptureDefault,
+  setPreferredMouseCapture,
+} from "../config/cli-ui-prefs.js";
+import {
+  getCommand,
+  isLocalCommandId,
+  registerBuiltinCliCommands,
+} from "../config/cli-commands.js";
 import {
   noteScrollWheel,
   scrollCoalesceMs,
@@ -99,6 +122,11 @@ interface Store extends UIState {
   // Terminal.app 下 1000 模式与直接拖拽选字互斥，提供运行时切换。
   mouseCapture: boolean;
   setMouseCapture: (b: boolean) => void;
+  /** 右上角 PerfHud（性能调试条）显示开关 */
+  setPerfHud: (on: boolean) => void;
+  togglePerfHud: () => boolean;
+  /** /new 清屏、强制全量重绘：递增 screenEpoch（Ratatui 用） */
+  bumpScreenEpoch: () => void;
   // 对话区滚动（行级，marginTop={-offset} 上移内容实现网页感滚动）
   chatScrollOffset: number;          // 当前滚动偏移（0=底部看最新）
   maxChatScroll: number;             // 最大滚动偏移（contentHeight - viewportHeight，组件回写）
@@ -241,6 +269,9 @@ const initialState: UIState = {
   chatScrollOffset: 0,
   maxChatScroll: 0,
   autoFollow: true,
+  perfHud: resolvePerfHudDefault(),
+  mouseCapture: resolveMouseCaptureDefault(),
+  screenEpoch: 0,
   chatHistoryStart: -1,
   scrollActive: false,
   contentLayoutEpoch: 0,
@@ -406,25 +437,7 @@ export function persistEmptySession(
   return sessionId;
 }
 
-// 纯 UI 命令白名单（开 overlay / 退出 / 调思考级别）。
-// 其余 /xxx 透传 runtime 由 SDK commandRegistry 识别。
-const LOCAL_COMMANDS = new Set([
-  "model",
-  "sessions",
-  "help",
-  "settings",
-  "agents",
-  "quit",
-  "thinking",
-  "prompt",
-  // 新会话 / 清空：本地处理，避免走 runtime 留下 "/new" 气泡挡住画廊
-  "new",
-  "clear",
-  // 整屏显存文字截图（不依赖快捷键是否到达）
-  "screenshot",
-  "dump",
-]);
-
+// 本地命令白名单：config/cli-commands.ts 统一注册表
 /** toast 自动消失计时（模块级，避免连发 toast 时旧 timer 清掉新提示） */
 let _toastTimer: ReturnType<typeof setTimeout> | null = null;
 let _toastGen = 0;
@@ -492,20 +505,28 @@ export const useStore = create<Store>((set, get) => ({
         currentRoundUsage: { input: 0, output: 0 },
       };
     }),
-  pushUserMessage: (text) => set((s) => ({
-    messages: [...s.messages, {
+  pushUserMessage: (text) => set((s) => {
+    const msg = {
       id: `u${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      role: "user",
+      role: "user" as const,
       content: text,
       ts: Date.now(),
       kind: "human_user" as const,
       source: "human",
       author: { type: "human" as const, id: "user", displayName: "user" },
-    }],
-    streaming: true,
-    currentRoundUsage: { input: 0, output: 0 },
-    eventBlock: { mode: "thinking", upTokens: 0, downTokens: 0, detail: undefined },
-  })),
+    };
+    // Grok：仅当本来就在最下面时贴底 + 让 user 顶到视口顶（bottomPad 动态算）
+    const atBottom = s.autoFollow || s.chatScrollOffset <= 0;
+    return {
+      messages: [...s.messages, msg],
+      streaming: true,
+      currentRoundUsage: { input: 0, output: 0 },
+      eventBlock: { mode: "thinking" as const, upTokens: 0, downTokens: 0, detail: undefined },
+      ...(atBottom
+        ? { chatScrollOffset: 0, autoFollow: true, chatHistoryStart: -1 as const }
+        : {}),
+    };
+  }),
   clearMessages: () =>
     set({
       messages: [],
@@ -590,12 +611,14 @@ export const useStore = create<Store>((set, get) => ({
       return;
     }
     set({ toast: { text: t.slice(0, TOAST_TEXT_MAX), kind } });
-    // 自动消失：ok/info 2.2s · warn 3s · err 4s（避免「已复制」一直占位）
+    // 自动消失：压缩/ok 短提示 1.2s · info 2.2s · warn 3s · err 4s
     if (_toastTimer) clearTimeout(_toastTimer);
     const gen = ++_toastGen;
+    const isCompress = t.includes("上下文已压缩") || t.includes("已压缩");
     const ms =
       kind === "err" ? 4000
       : kind === "warn" ? 3000
+      : isCompress || kind === "ok" ? 1200
       : 2200;
     _toastTimer = setTimeout(() => {
       // 仅清除仍是这一次 toast 的情况（中途又 toast 了则 gen 已变）
@@ -616,45 +639,40 @@ export const useStore = create<Store>((set, get) => ({
   }),
   clearPendingSubmit: () => set({ pendingSubmit: null, fullEditorResult: null }),
 
-  // 纯 UI 命令白名单：只开 overlay / 退出 / 调思考级别。其余 /xxx（goal/new/clear/stop/agent 等）
-  // 透传 runtime，由 SDK commandRegistry 识别——SDK 加新命令 CLI 自动支持。
-  isLocalCommand: (id) => LOCAL_COMMANDS.has(id),
+  // 纯 UI 命令白名单：CliCommandSpec 注册表（local|both）；其余透传 runtime
+  isLocalCommand: (id) => isLocalCommandId(id),
 
+  /**
+   * 执行本地指令 —— 由 CliCommandSpec.local 驱动，禁止再按 id 硬编码 switch。
+   * 注意：打开 overlay 时不要再 set({ overlay: null })，否则立刻被关掉。
+   */
   runCommand: (id) => {
-    // 注意：打开 overlay 时不要再 set({ overlay: null })，否则立刻被关掉。
-    switch (id) {
-      case "model":
+    registerBuiltinCliCommands();
+    const spec = getCommand(id);
+    if (!spec?.local) return;
+
+    const local = spec.local;
+    if (local.kind === "overlay") {
+      set({ overlay: local.overlay as OverlayKind });
+      return;
+    }
+
+    switch (local.action) {
+      case "switch_model":
+        // 无参：开列表（带参路径走 cli-session dispatchSlash）
         set({ overlay: "model" });
-        break;
-      case "sessions":
-        set({ overlay: "sessions" });
-        break;
-      case "help":
-        set({ overlay: "help" });
-        break;
-      case "settings":
-        set({ overlay: "settings" });
-        break;
-      case "agents":
-        set({ overlay: "agents" });
-        break;
-      case "prompt":
-        // 本地调试预览请求材料（system/bake/tools/before_user…），不进入 messages
-        set({ overlay: "prompt" });
         break;
       case "quit":
         get().requestExit();
         break;
-      case "thinking": {
+      case "thinking_cycle": {
         const cur = get().thinkingLevel;
         get().setThinking((cur + 1) % 6);
         get().toastMsg(`思考级别: ${get().thinkingLevel}`, "info");
-        set({ overlay: null }); // 从命令面板进来时关掉面板
+        set({ overlay: null });
         break;
       }
-      case "screenshot":
-      case "dump": {
-        // 动态 import，避免 store ↔ vram 循环依赖在冷启动路径变重
+      case "screenshot": {
         void import("../lib/screen-dump.js").then(({ copyScreenDump }) => {
           const r = copyScreenDump();
           if (r.ok) {
@@ -669,15 +687,18 @@ export const useStore = create<Store>((set, get) => ({
         set({ overlay: null });
         break;
       }
-      case "new":
+      case "new_session":
         get().startNewSession({ clearScreen: true, toast: "新会话" });
         break;
-      case "clear":
-        // 清空历史：同样回空会话画廊（不挡画作）
+      case "clear_session":
         get().startNewSession({ clearScreen: true, toast: "已清空" });
         break;
+      case "stop":
+        // 中断由 cli-session.abort 处理；store 仅兜底 toast
+        get().toastMsg("请用 Esc / 中断停止生成", "info");
+        break;
       default:
-        return;
+        break;
     }
   },
 
@@ -688,8 +709,33 @@ export const useStore = create<Store>((set, get) => ({
   setMouseCursorCol: (col) => set({ mouseCursorCol: col }),
   mouseCursorLine: null,
   setMouseCursorLine: (line) => set({ mouseCursorLine: line }),
-  mouseCapture: process.env.MAOU_MOUSE !== "0",  // 默认开；MAOU_MOUSE=0 关
-  setMouseCapture: (b) => set({ mouseCapture: b }),
+  mouseCapture: resolveMouseCaptureDefault(),
+  setMouseCapture: (b) => {
+    try {
+      setPreferredMouseCapture(b);
+    } catch {
+      /* ignore */
+    }
+    set({ mouseCapture: b });
+  },
+  // Debug 性能条：env → ~/.maou/cli-ui.json → 默认；设置切换持久化
+  perfHud: resolvePerfHudDefault(),
+  setPerfHud: (on) => {
+    setProcessStatsHudEnabled(on);
+    try {
+      setPreferredPerfHud(on);
+    } catch {
+      /* ignore disk errors */
+    }
+    set({ perfHud: on });
+  },
+  togglePerfHud: () => {
+    const next = !get().perfHud;
+    get().setPerfHud(next);
+    return next;
+  },
+  bumpScreenEpoch: () =>
+    set((s) => ({ screenEpoch: (s.screenEpoch ?? 0) + 1 })),
   // 行级平滑滚动（网页感）：marginTop={-(max-offset)} 上移内容。
   // offset 语义：0=看最新（底部），max=看最早（顶部）。
   // autoFollow=true 时新消息到达自动钉到底部（offset=0）；用户上滚后关闭，回到底部重启。
@@ -1148,6 +1194,7 @@ function applyStreamEvent(ev: StreamEvent): void {
   flushStreamDeltas();
 
   const checkSup = ev.type === "tool_result" || ev.type === "done";
+  const prevToast = useStore.getState().toast;
   useStore.setState((s) => {
     const patch = reduce(s, ev);
     return {
@@ -1158,6 +1205,18 @@ function applyStreamEvent(ev: StreamEvent): void {
         : {}),
     };
   });
+  // reduce 直接写 toast 时不会走 toastMsg 计时器 → 必须在此补自动消失
+  // （否则「上下文已压缩」会一直占位）
+  const nextToast = useStore.getState().toast;
+  if (
+    nextToast &&
+    nextToast.text &&
+    (!prevToast ||
+      prevToast.text !== nextToast.text ||
+      prevToast.kind !== nextToast.kind)
+  ) {
+    useStore.getState().toastMsg(nextToast.text, nextToast.kind);
+  }
 
   // displayEvents 通用分发（副作用，reducer 外）
   if (ev.type === "tool_result") {

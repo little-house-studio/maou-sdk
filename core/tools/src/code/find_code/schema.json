@@ -45,15 +45,15 @@
           "module",
           "namespace"
         ],
-        "description": "符号类型过滤。默认不过滤。"
+        "description": "符号类型过滤/消歧。search/unused/impact/explain/path 等可用。同文件 interface 与 type 同名时必传。"
       },
       "lang": {
         "type": "string",
-        "description": "语言过滤。如 ts、python、rust、go。"
+        "description": "语言过滤。正式 id（typescript/javascript/python/rust/go）或别名（ts/js/py/rs）。"
       },
       "in_file": {
         "type": "string",
-        "description": "符号所在文件路径。当符号名有歧义（多个定义）时用于消歧。"
+        "description": "符号所在文件路径（相对项目根）。与 kind 一起用于消歧；impact/explain/search/path/hierarchy/subgraph 有效。"
       },
       "exact": {
         "type": "boolean",
@@ -78,7 +78,7 @@
           "function",
           "struct"
         ],
-        "description": "unused 模式专用。all=所有未使用符号(默认)，public=未使用的公开符号，private=未使用的私有符号，function=只看函数，struct=只看类型。"
+        "description": "unused 模式：all/public/private/function/struct。默认 public（减少导出符号误报）；全量用 all。"
       },
       "cycle_type": {
         "type": "string",

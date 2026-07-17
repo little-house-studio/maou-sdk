@@ -39,9 +39,22 @@ import {
   findPrevWordBoundary,
   prevCodePointIndex,
 } from "../input/text-edit.js";
+import {
+  noteInputContentWidth,
+  scheduleIdleViewportCheck,
+  setImePinTarget,
+  restoreTerminalViewport,
+  countInputVisualLines,
+  inputContentCols,
+} from "../input/terminal-viewport.js";
+import stringWidth from "string-width";
+import { getElementRect } from "../input/click-target.js";
 
 /** 计算机蓝 —— 光标/选区/可识别指令同色 */
 const COMPUTER_BLUE = "#2121FF";
+
+/** 输入框最大可见视觉行（软折行也算）；超过内部滚动 */
+const INPUT_VP = 5;
 
 /** 识别为已注册斜杠指令时，整段 token 高亮 */
 function buildCommandLabels(): TLabels {
@@ -83,14 +96,6 @@ function cursorAfterInsert(prev: string, next: string, prevCursor: number): numb
   if (insertLen <= 1) return null;
   return insertEnd;
 }
-import {
-  noteInputContentWidth,
-  scheduleIdleViewportCheck,
-  setImePinTarget,
-  restoreTerminalViewport,
-} from "../input/terminal-viewport.js";
-import stringWidth from "string-width";
-import { getElementRect } from "../input/click-target.js";
 
 interface Props {
   value: string;
@@ -183,17 +188,29 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     savedInputRef.current = null;
   };
 
+  // 内容可用列：❯ 前缀 2 + 右侧滚动条槽 1
+  const contentCols = useMemo(() => inputContentCols(term.cols), [term.cols]);
+  // 视觉行（含软折行）—— 外壳高度 / 命中 / 滚动条 都用它，不能只数 \n
+  const visualTotal = useMemo(
+    () => countInputVisualLines(value, contentCols),
+    [value, contentCols],
+  );
+  const inputLines = Math.max(1, Math.min(INPUT_VP, visualTotal));
+  const showInputScroll = visualTotal > INPUT_VP;
+
   useEffect(() => {
-    setInputLineCount(Math.max(1, value.split("\n").length));
-  }, [value, setInputLineCount]);
+    // 上报「视觉总行数」（未封顶）：
+    // · 滚轮分流用 visualTotal > 5 判断是否滚输入视口
+    // · hit-test fallback 自己 min(5, n)；有 inputRect 时用实测高度
+    setInputLineCount(visualTotal);
+  }, [visualTotal, setInputLineCount]);
 
   // IME / 超长行：检测逻辑溢出；回落后恢复终端横向视口
   useEffect(() => {
-    const contentCols = Math.max(8, term.cols - 6); // ❯ 前缀 + 边距
     noteInputContentWidth(value, contentCols);
     // 组字结束常见：value 稳定后右侧不再需要溢出 → 空闲再确认一次恢复
     scheduleIdleViewportCheck(150);
-  }, [value, term.cols]);
+  }, [value, contentCols]);
 
   // 上报 IME 硬件光标锚点（屏幕 1-based）；setImePinTarget 内会钳制并记录越界 latch
   useEffect(() => {
@@ -204,7 +221,7 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     const rect = getElementRect(boxRef.current);
     const rows = term.rows;
     const cols = term.cols;
-    const colOffset = 4; // " ❯ " 视觉宽
+    const colOffset = 2; // "❯ " 视觉宽
     let row: number;
     let col: number;
     if (rect && rect.width > 0 && rect.height > 0) {
@@ -265,7 +282,7 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     boxRef,
     value,
     onChange,
-    colOffset: 4,
+    colOffset: 2,
     setCursor: (pos) => placeCursor(value, pos),
     active: !overlay,
   });
@@ -333,9 +350,9 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
     cursor: cursorPos[1],
     rows: term.rows,
     inputRowFromBottom: 2,
-    colOffset: 4,
+    colOffset: 2,
     cursorLine: cursorPos[0],
-    viewportLines: 4,
+    viewportLines: 5,
   });
 
   const handleChange = (v: string) => {
@@ -486,12 +503,11 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
   const footerBg = t.footerBg;
   /** 补全弹出层：计算机蓝，与 footer 浅灰区分 */
   const compBg = t.info;
-  const inputLines = Math.max(1, Math.min(4, value.split("\n").length || 1));
 
   return (
     <Box flexShrink={0} flexDirection="column" backgroundColor={footerBg} width="100%">
       {showComp && (
-        <Box flexDirection="column" paddingLeft={2} backgroundColor={compBg} width="100%">
+        <Box flexDirection="column" paddingLeft={1} backgroundColor={compBg} width="100%">
           {completion!.items.slice(0, 5).map((it, i) => {
             const isSel = i === completion!.sel;
             // 选中行：荧光黄绿底 + 黑字；未选中：计算机蓝底 + 白字
@@ -524,13 +540,26 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
         flexDirection="row"
         width="100%"
         backgroundColor={footerBg}
+        height={inputLines}
         minHeight={inputLines}
       >
-        {/* 浅灰 footer 上用黑字：❯ / 正文 / 占位符 */}
+        {/* 与 EventBlock 对齐：无额外左缩进，❯ + 空格 */}
         <Text backgroundColor={footerBg} color="#000000" bold>
-          {" ❯ "}
+          {"❯ "}
         </Text>
-        <Box flexGrow={1} flexShrink={1} backgroundColor={fieldBg} minHeight={inputLines}>
+        {/*
+          显式 width=contentCols：让 TextArea 的 useBoxMetrics 立刻量到稳定列宽，
+          触发 buildVisualRows 软折行。若 width 测成 0，超长单行不会折，只显示 1 行并裁切。
+          flexShrink=0：防止终端高度紧张时把输入区压回 1 行。
+        */}
+        <Box
+          width={contentCols}
+          flexShrink={0}
+          backgroundColor={fieldBg}
+          height={inputLines}
+          minHeight={inputLines}
+          overflow="hidden"
+        >
           <TextArea
             ref={taRef}
             // 有选区时失焦：隐藏 Ink 插入光标（标准编辑器：选区与光标互斥）
@@ -551,9 +580,10 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
                 : "输入文字…（/ 命令 · Ctrl+E 全屏）"
             }
             initialLineCount={1}
-            viewportLines={4}
+            viewportLines={INPUT_VP}
             highlightActiveLine={false}
-            disableCursorBlink={true}
+            disableCursorBlink={false}
+            cursorInterval={530}
             autoNewLineLimit={0}
             keybindings={
               showComp
@@ -600,25 +630,31 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
               }
             }}
             onFirstLineUp={() => {
+              // 第 1 行再 ↑ → 上一条历史，光标置最前
               if (showComp) return;
-              const [line, col] = cursorPosRef.current;
-              if (line > 0 || col > 0) {
-                placeCursor(value, [0, 0]);
-              } else {
-                if (useStore.getState().historyIndex < 0) {
-                  savedInputRef.current = value;
-                }
-                const prev = useStore.getState().navigateHistory("up");
-                if (prev !== null) applyHistoryText(prev);
+              if (useStore.getState().historyIndex < 0) {
+                savedInputRef.current = valueRef.current;
+              }
+              const prev = useStore.getState().navigateHistory("up");
+              if (prev !== null) {
+                applyingHistoryRef.current = true;
+                onChange(prev);
+                useStore.getState().closeCompletion();
+                placeCursorAtIndex(prev, 0);
+                queueMicrotask(() => {
+                  applyingHistoryRef.current = false;
+                });
               }
             }}
             onLastLineDown={() => {
+              // 末行再 ↓ → 下一条历史（无则回到草稿/不动）
               if (showComp) return;
               const next = useStore.getState().navigateHistory("down");
               if (next !== null) {
                 if (next === "") {
-                  applyHistoryText(savedInputRef.current ?? "");
+                  const draft = savedInputRef.current ?? "";
                   savedInputRef.current = null;
+                  applyHistoryText(draft);
                 } else {
                   applyHistoryText(next);
                 }
@@ -638,7 +674,14 @@ export function InputBar({ value, onSubmit, onChange, onFullEditor }: Props) {
             }}
           />
         </Box>
-        <Text backgroundColor={footerBg}>{" "}</Text>
+        {/* 超 5 行：右侧细滚动条（示意位置） */}
+        {showInputScroll ? (
+          <Text backgroundColor={footerBg} color={t.accent}>
+            {"▐"}
+          </Text>
+        ) : (
+          <Text backgroundColor={footerBg}>{" "}</Text>
+        )}
       </Box>
     </Box>
   );

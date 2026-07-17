@@ -46,6 +46,20 @@ export const GALLERY_ART_ROWS: Record<GallerySize, number> = {
   lg: 32,
 };
 
+/**
+ * 挂画区（logo 以下可用行）少于此值时不展示油画与铭牌，只保留左上 logo。
+ *
+ * 阈值 = sm 画高 + 紧凑铭牌(空行+2行) + 最少呼吸 2 行
+ * → 17 + 3 + 2 = 22。更矮时画会被裁碎/贴底，不如不挂。
+ */
+export const GALLERY_MIN_HANG_ROWS_FOR_ART =
+  GALLERY_ART_ROWS.sm + 3 + 2;
+
+/** 挂画区高度是否足够展示油画（与 Ratatui `GALLERY_MIN_HANG_FOR_ART` 对齐） */
+export function shouldShowGalleryArt(hangRows: number): boolean {
+  return hangRows >= GALLERY_MIN_HANG_ROWS_FOR_ART;
+}
+
 export function pickGallerySize(cols: number, rows: number): GallerySize {
   const artBudget = Math.max(0, rows - GALLERY_LAYOUT_OVERHEAD);
   if (cols >= 140 && artBudget >= GALLERY_ART_ROWS.lg) return "lg";

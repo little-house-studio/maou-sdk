@@ -12,10 +12,12 @@
  *   1010101
  *   1111111
  *
- * 右侧文案（不隔行贴顶，再隔一行写版本）：
- *   MAOU-AGENT
- *   （空一行）
- *   v <package.json version>
+ * 右侧文案区：与方印同高的细线边框（贴邻、无间隙）：
+ *   ┌──────────────┐
+ *   │ MAOU-AGENT   │
+ *   │              │
+ *   │ v <version>  │
+ *   └──────────────┘
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -42,7 +44,6 @@ function bitsToRow(bits: string): string {
 const MONO: string[] = BITMAP.map(bitsToRow);
 
 const TITLE = "MAOU-AGENT";
-const GAP = "  ";
 
 /**
  * 读 CLI 包 version（package.json）。
@@ -68,23 +69,39 @@ export function readCliPackageVersion(): string {
   return "0.0.0";
 }
 
+/** 框内左对齐：前导 1 空格，右侧 pad 到 innerW */
+function boxPad(text: string, innerW: number): string {
+  const body = ` ${text}`;
+  if (body.length >= innerW) return body.slice(0, innerW);
+  return body + " ".repeat(innerW - body.length);
+}
+
 /**
- * 固定标：5 行。
+ * 固定标：5 行。方印 + 右侧同高边框文案区（贴邻）。
  *
- *   ██████████████  MAOU-AGENT     ← 顶行右侧，不隔行
- *   ██  ██████  ██                 ← 隔一行（右侧空）
- *   ████  ██  ████  v 0.3.0        ← 版本（自动读 package.json）
- *   ██  ██  ██  ██
- *   ██████████████
+ *   ██████████████┌──────────────┐
+ *   ██  ██████  ██│ MAOU-AGENT   │
+ *   ████  ██  ████│              │
+ *   ██  ██  ██  ██│ v 0.1a       │
+ *   ██████████████└──────────────┘
  */
 function buildFixedLogo(version: string): string[] {
-  const verLabel = version.startsWith("v") ? version : `v ${version}`;
+  const verLabel = version.startsWith("v") || version.startsWith("V")
+    ? version
+    : `v ${version}`;
+  // 内宽：最长文案 + 左右各 1 空格；至少能装下 TITLE
+  const innerW = Math.max(TITLE.length, verLabel.length) + 2;
+  const top = `┌${"─".repeat(innerW)}┐`;
+  const midEmpty = `│${" ".repeat(innerW)}│`;
+  const titleRow = `│${boxPad(TITLE, innerW)}│`;
+  const verRow = `│${boxPad(verLabel, innerW)}│`;
+  const bot = `└${"─".repeat(innerW)}┘`;
   return [
-    MONO[0]! + GAP + TITLE,
-    MONO[1]!,
-    MONO[2]! + GAP + verLabel,
-    MONO[3]!,
-    MONO[4]!,
+    MONO[0]! + top,
+    MONO[1]! + titleRow,
+    MONO[2]! + midEmpty,
+    MONO[3]! + verRow,
+    MONO[4]! + bot,
   ];
 }
 

@@ -1,7 +1,8 @@
 //! Frame layout + paint (chat, chrome, overlays).
 
 use super::input_paint::{
-    input_height, input_view_start, paint_input_lines_ink, center_in_width, trim_to_width,
+    center_in_width, input_height, input_view_start_with_offset,
+    paint_input_lines_ink_offset, trim_to_width, INPUT_VIEWPORT_LINES,
 };
 use super::text_util::{center, trunc};
 use super::App;
@@ -16,6 +17,106 @@ use ratatui::Frame;
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
 
+/// Pad a styled line to `width` display columns so every cell is rewritten each frame.
+/// 补空格只用 **bg（聊天底）**，不带随机 fg；也不把整行重写成 pad 色（否则 MD 半截色条）。
+fn pad_line_to_width(line: Line<'static>, width: usize, pad_style: Style) -> Line<'static> {
+    if width == 0 {
+        return line;
+    }
+    // 右侧空白：仅 bg，fg 与 bg 相同 → 不可见字符不串色
+    let fill = Style::default()
+        .fg(pad_style.bg.unwrap_or(Color::Reset))
+        .bg(pad_style.bg.unwrap_or(Color::Reset));
+    let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let w = UnicodeWidthStr::width(plain.as_str());
+    if w > width {
+        // 溢出：尽量保留 span 样式截断（避免整行变成 pad 色）
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut used = 0usize;
+        for sp in line.spans {
+            if used >= width {
+                break;
+            }
+            let s = sp.content.as_ref();
+            let sw = UnicodeWidthStr::width(s);
+            if used + sw <= width {
+                used += sw;
+                spans.push(sp);
+            } else {
+                let rest = width - used;
+                let t = trim_to_width(s, rest);
+                if !t.is_empty() {
+                    spans.push(Span::styled(t, sp.style));
+                }
+                used = width;
+                break;
+            }
+        }
+        let tw = spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum::<usize>();
+        if tw < width {
+            spans.push(Span::styled(" ".repeat(width - tw), fill));
+        }
+        return Line::from(spans);
+    }
+    if w == width {
+        return line;
+    }
+    let mut spans = line.spans;
+    spans.push(Span::styled(" ".repeat(width - w), fill));
+    Line::from(spans)
+}
+
+/// Right-edge vertical scrollbar for chat (track + thumb).
+fn paint_chat_scrollbar(
+    f: &mut Frame,
+    area: Rect,
+    from_bottom: usize,
+    max_scroll: usize,
+    body_h: usize,
+    total_lines: usize,
+    track_fg: Color,
+    thumb_fg: Color,
+    bg: Color,
+) {
+    if area.width == 0 || area.height == 0 || total_lines <= body_h || max_scroll == 0 {
+        return;
+    }
+    let track_h = area.height as usize;
+    let thumb_h = ((body_h * track_h) / total_lines.max(1))
+        .max(1)
+        .min(track_h);
+    // from_bottom=0 → thumb at bottom; from_bottom=max → thumb at top
+    let travel = track_h.saturating_sub(thumb_h);
+    let thumb_top = if max_scroll == 0 {
+        travel
+    } else {
+        let from_top = max_scroll.saturating_sub(from_bottom);
+        ((from_top * travel) / max_scroll).min(travel)
+    };
+    let bar_x = area.x.saturating_add(area.width.saturating_sub(1));
+    for i in 0..track_h {
+        let y = area.y.saturating_add(i as u16);
+        let on = i >= thumb_top && i < thumb_top + thumb_h;
+        let ch = if on { "▐" } else { "│" };
+        let fg = if on { thumb_fg } else { track_fg };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                ch,
+                Style::default().fg(fg).bg(bg),
+            ))),
+            Rect {
+                x: bar_x,
+                y,
+                width: 1,
+                height: 1,
+            },
+        );
+    }
+}
+
 impl App {
     pub fn note_frame(&mut self) {
         let now = Instant::now();
@@ -24,14 +125,18 @@ impl App {
             self.frame_times.pop_front();
         }
         if self.frame_times.len() >= 2 {
-            let dt = now
-                .duration_since(*self.frame_times.front().unwrap())
-                .as_secs_f32();
-            if dt > 0.0 {
-                self.fps = (self.frame_times.len() as f32 - 1.0) / dt;
+            if let Some(front) = self.frame_times.front() {
+                let dt = now.duration_since(*front).as_secs_f32();
+                if dt > 0.0 {
+                    self.fps = (self.frame_times.len() as f32 - 1.0) / dt;
+                }
             }
         }
-        if self.streaming || self.messages.iter().any(|m| m.streaming) {
+        // 流式 / 空开屏：每帧推进 spinner 相位
+        if self.streaming
+            || self.messages.iter().any(|m| m.streaming)
+            || self.messages.is_empty()
+        {
             self.spinner_frame = self.spinner_frame.wrapping_add(1);
         }
     }
@@ -42,20 +147,15 @@ impl App {
         self.screen_cols = area.width;
         self.screen_rows = area.height;
 
-        // After Terminal::clear the buffer is empty — paint a full-frame base so no
-        // region is left as "undefined" if a widget skips a row.
-        f.render_widget(
-            Block::default().style(Style::default().bg(th.bg).fg(th.fg)),
-            area,
-        );
-
         // ── Shell metrics (Ink Layout.tsx heights) → integer flex tree ──
         self.purge_toast();
         let has_approval = self.terminal_approval.is_some();
         let has_toast = self.local_toast.is_some() || self.chrome.toast.is_some();
-        let show_back = self.scroll_from_bottom > 0;
-        let show_jump = self.scroll_from_bottom > 2;
         let empty = self.messages.is_empty();
+        // 空开屏（画廊）会把 scroll_from_bottom 设为 max 以贴顶 logo，
+        // 但那不是「聊天上滚」—— 不显示「上一条 / 回到底部」。
+        let show_back = !empty && self.scroll_from_bottom > 0;
+        let show_jump = !empty && self.scroll_from_bottom > 2;
         let comp_items = self
             .completions
             .as_ref()
@@ -111,7 +211,11 @@ impl App {
         } else {
             0
         };
-        let input_h = input_height(&self.input) as u16;
+        // Body cols for soft-wrap: full width minus prompt (and 1 col scrollbar when tall).
+        let prompt_w = mouse::prompt_cols() as usize;
+        let approx_inp_w = area.width.max(8) as usize;
+        let input_body_w = approx_inp_w.saturating_sub(prompt_w).max(4);
+        let input_h = input_height(&self.input, input_body_w) as u16;
 
         // Overlay preferred size (absolute layer after flex)
         let (overlay_w, overlay_h) = if let Some(o) = &self.overlay {
@@ -142,12 +246,22 @@ impl App {
             event_h,
             input_h,
             show_info: !show_comp,
-            nav_seg_count: ShellMetrics::nav_count(),
+            nav_seg_count: {
+                let n = self.theme.nav_segs_for_draw().len() as u16;
+                if n == 0 {
+                    ShellMetrics::nav_count()
+                } else {
+                    n
+                }
+            },
             overlay_w,
             overlay_h,
             full_editor: self.full_editor,
         };
         let solved = solve_shell(&metrics, area);
+
+        // 禁止每帧全屏 Block 填充：会让 ratatui diff 几乎整屏脏写，滚动出现「卷帘」。
+        // 各区域（chat_inner / footer / nav）已各自 pad 满宽；整屏清洗仅用 terminal.clear()。
 
         // full editor — layout tree: FullEditor + body (padding = border)
         if self.full_editor {
@@ -198,16 +312,27 @@ impl App {
         }
         self.full_editor_rect = None;
 
-        // chat body from layout slots (border padding + optional jump bar)
+        // chat body from layout slots（无外框；ChatInner ≈ Chat 全区域）
         let chat = solved.get(Slot::Chat).unwrap_or(area);
         self.chat_rect = chat;
-        self.chat_inner = solved.get(Slot::ChatInner).unwrap_or(Rect {
-            x: chat.x.saturating_add(1),
-            y: chat.y.saturating_add(1),
-            width: chat.width.saturating_sub(2),
-            height: chat.height.saturating_sub(2),
-        });
-        self.jump_prev_y = solved.get(Slot::JumpPrev).map(|r| r.y);
+        let chat_full = solved.get(Slot::ChatInner).unwrap_or(chat);
+        // Reserve 1 col for scrollbar when content can scroll (computed after layout;
+        // first paint uses full width; after max_scroll known we shrink — use sticky
+        // last-frame flag so width stays stable while scrolling).
+        let show_sb = self.max_scroll_lines > 0 || self.scroll_from_bottom > 0;
+        let sb_w: u16 = if show_sb && chat_full.width > 4 { 1 } else { 0 };
+        self.chat_inner = if sb_w > 0 {
+            Rect {
+                x: chat_full.x,
+                y: chat_full.y,
+                width: chat_full.width.saturating_sub(sb_w),
+                height: chat_full.height,
+            }
+        } else {
+            chat_full
+        };
+        // jump_prev_y set when painting JumpPrev (only when show_jump)
+
         self.tool_hits.clear();
         self.msg_expand_hits.clear();
         self.thinking_hits.clear();
@@ -217,14 +342,30 @@ impl App {
         let body_h = self.chat_inner.height.max(1) as usize;
         let mut lines =
             self.build_scroll_lines(self.chat_inner.width.max(1) as usize, body_h);
-        // Ink BOTTOM_PAD + Grok follow: when at latest, pad empty rows under content
-        // so a new send / AI stream has room in the lower viewport.
-        // Empty gallery splash already fills viewport with logo at top — do not pad
-        // or follow-tail would scroll the first logo row off-screen.
+        // Grok follow pad: empty rows under content so last user message can sit at
+        // the top of the viewport (from_bottom=0). Pad shrinks as AI tail grows.
+        // Empty gallery splash: no pad (would scroll logo off-screen).
         let tail_pad = if self.messages.is_empty() {
             0
         } else {
-            self.follow_tail_pad_lines(body_h)
+            // Lines from last user-head → end (before pad)
+            let mut last_user: Option<usize> = None;
+            for (i, line) in lines.iter().enumerate() {
+                let plain: String =
+                    line.spans.iter().map(|s| s.content.as_ref()).collect();
+                if Self::looks_user_head_line(&plain) {
+                    last_user = Some(i);
+                }
+            }
+            let tail_lines = match last_user {
+                Some(i) => lines.len().saturating_sub(i),
+                None => {
+                    // structured fallback: last human user message share of total
+                    // (string probe miss → treat as unknown tail → generous when boost)
+                    0
+                }
+            };
+            self.follow_tail_pad_lines(body_h, tail_lines)
         };
         if tail_pad > 0 {
             for _ in 0..tail_pad {
@@ -237,15 +378,28 @@ impl App {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect();
         let max_scroll = lines.len().saturating_sub(body_h.max(1));
-        self.max_scroll_lines = max_scroll;
-        // Empty splash: top-align (Ink logo flexShrink=0 贴顶，overflow 裁下方)
+        // ── Scroll follow (Ink autoFollow / pin-content) ────────────────────
+        // auto_follow / from_bottom==0 → pin to latest (stream grows underfoot).
+        // else → pin absolute content: from_bottom += Δmax so stream growth at
+        // the tail does not drag the viewport toward latest.
+        let prev_max = self.max_scroll_lines;
         if self.messages.is_empty() {
+            // Empty splash: top-align (logo 贴顶)
             self.scroll_from_bottom = max_scroll as u16;
-        } else if self.scroll_from_bottom == 0 {
-            // Following: force from_bottom=0 so growth sticks to latest (Ink autoFollow)
-        } else if self.scroll_from_bottom as usize > max_scroll {
-            self.scroll_from_bottom = max_scroll as u16;
+            self.auto_follow = false;
+        } else if self.auto_follow || self.scroll_from_bottom == 0 {
+            self.scroll_from_bottom = 0;
+            self.auto_follow = true;
+        } else {
+            let next = Self::pin_scroll_on_max_change(
+                self.scroll_from_bottom as usize,
+                prev_max,
+                max_scroll,
+                false,
+            );
+            self.scroll_from_bottom = next as u16;
         }
+        self.max_scroll_lines = max_scroll;
         let from_bottom = (self.scroll_from_bottom as usize).min(max_scroll);
         let end = lines.len().saturating_sub(from_bottom);
         let start = end.saturating_sub(body_h.max(1));
@@ -259,6 +413,7 @@ impl App {
         let x0 = self.chat_inner.x;
         let content_top = start as i64;
         let inner_w = self.chat_inner.width as usize;
+        let pad_style = Style::default().fg(th.fg).bg(th.bg);
         let mut visible: Vec<Line> = Vec::new();
         for (i, line) in lines[start..end].iter().enumerate() {
             let screen_y = self.chat_inner.y.saturating_add(i as u16);
@@ -270,70 +425,106 @@ impl App {
                 .put_line_cache(content_top + i as i64, plain.clone());
 
             let logical = start + i;
-            let hovered = self.hover_id.as_ref().map(|h| {
-                self.tool_hits
-                    .iter()
-                    .any(|t| t.line_idx == logical && h == &format!("tool:{}", t.tool_id))
-                    || self.thinking_hits.iter().any(|t| {
-                        t.line_idx == logical && h == &format!("think:{}", t.thinking_id)
+            let hid = self.hover_id.as_ref();
+            // 收纳态「展开」芯片：只亮这一行的折叠文案，不整行铺 panel 黄底
+            let expand_chip = hid
+                .map(|h| {
+                    self.msg_expand_hits.iter().any(|e| {
+                        e.hover_paint
+                            && e.line_idx == logical
+                            && h == &format!("expand:{}", e.message_id)
                     })
-                    || self.msg_expand_hits.iter().any(|e| {
-                        e.line_idx == logical && h == &format!("expand:{}", e.message_id)
-                    })
-                    || self.system_event_hits.iter().any(|s| {
-                        s.line_idx == logical && h == &format!("sys:{}", s.event_id)
-                    })
-            }).unwrap_or(false);
-            if hovered {
-                visible.push(Line::from(Span::styled(
+                })
+                .unwrap_or(false);
+            // 工具头 / think / 系统事件：仍可整行轻提示（非消息全文）
+            let other_hot = hid
+                .map(|h| {
+                    self.tool_hits
+                        .iter()
+                        .any(|t| t.line_idx == logical && h == &format!("tool:{}", t.tool_id))
+                        || self.thinking_hits.iter().any(|t| {
+                            t.line_idx == logical && h == &format!("think:{}", t.thinking_id)
+                        })
+                        || self.system_event_hits.iter().any(|s| {
+                            s.line_idx == logical && h == &format!("sys:{}", s.event_id)
+                        })
+                })
+                .unwrap_or(false);
+            let row = if expand_chip {
+                // 浅黄芯片：仅文案宽；右侧空白保持聊天底色
+                let chip = plain.trim_end();
+                let chip_style = Style::default()
+                    .fg(Color::Black)
+                    .bg(th.warn)
+                    .add_modifier(Modifier::BOLD);
+                if chip.is_empty() {
+                    line.clone()
+                } else {
+                    Line::from(Span::styled(chip.to_string(), chip_style))
+                }
+            } else if other_hot {
+                Line::from(Span::styled(
                     plain,
                     Style::default().fg(th.fg).bg(th.panel_bg),
-                )));
+                ))
             } else {
-                visible.push(line.clone());
-            }
+                line.clone()
+            };
+            // Pad to full width so every cell is rewritten (kills black-bar ghosting
+            // from half-updated CJK rows after send/stream reflow).
+            visible.push(pad_line_to_width(row, inner_w, pad_style));
         }
-        // Fill viewport so leftover cells never flash stale/blank holes mid-stream
+        // Fill viewport with full-width blank rows (same bg) — never leave stale cells
+        let blank = pad_line_to_width(Line::from(""), inner_w, pad_style);
         while visible.len() < body_h {
-            visible.push(Line::from(""));
+            visible.push(blank.clone());
         }
 
-        let title = if empty {
-            " maou ".to_string()
-        } else if from_bottom > 0 {
-            format!(" {} · ↑{} ", self.messages.len(), from_bottom)
-        } else {
-            format!(" {} ", self.messages.len())
-        };
-        let _ = max_scroll;
-        // 1) Border chrome only (full chat slot)
+        // Wipe chat_inner then paint body（无 ┌ maou ── 外框）
         f.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(Style::default().fg(th.border)),
-            chat,
+            Block::default().style(Style::default().bg(th.bg).fg(th.fg)),
+            self.chat_inner,
         );
-        // 2) Message body strictly in ChatInner (layout slot)
         f.render_widget(Paragraph::new(visible), self.chat_inner);
-        // 3) Jump bar last so it is never covered by the body Paragraph
-        if let Some(jr) = solved.get(Slot::JumpPrev) {
-            self.jump_prev_y = Some(jr.y);
-            let preview = self.prev_user_jump_label(jr.width as usize);
-            f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    trunc(&preview, jr.width as usize),
-                    Style::default()
-                        .fg(th.user)
-                        .bg(th.user_bg)
-                        .add_modifier(Modifier::BOLD),
-                )))
-                .style(Style::default().bg(th.user_bg)),
-                jr,
+        // Right scrollbar (when content overflows viewport)
+        if max_scroll > 0 && chat_full.width > self.chat_inner.width {
+            paint_chat_scrollbar(
+                f,
+                chat_full,
+                from_bottom,
+                max_scroll,
+                body_h,
+                lines.len(),
+                th.dim,
+                th.accent,
+                th.bg,
             );
         }
+        // Jump bar only when show_jump（上滚）；贴底时不占顶行
+        self.jump_prev_y = None;
+        if show_jump {
+            if let Some(jr) = solved.get(Slot::JumpPrev) {
+                self.jump_prev_y = Some(jr.y);
+                let preview = self.prev_user_jump_label(jr.width as usize);
+                let line = pad_line_to_width(
+                    Line::from(Span::styled(
+                        trunc(&preview, jr.width as usize),
+                        Style::default()
+                            .fg(th.user)
+                            .bg(th.user_bg)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    jr.width as usize,
+                    Style::default().bg(th.user_bg),
+                );
+                f.render_widget(
+                    Paragraph::new(line).style(Style::default().bg(th.user_bg)),
+                    jr,
+                );
+            }
+        }
 
-        // PerfHud (top-right of chat) — Ink 5-line process-stats when Node sends perf_lines
+        // PerfHud (top-right of chat) — solid panel bg wipe + full-width pad (no ghost cells)
         if self.chrome.perf_hud && !self.chrome.lite {
             let mut lines: Vec<String> = if !self.chrome.perf_lines.is_empty() {
                 self.chrome.perf_lines.clone()
@@ -365,6 +556,8 @@ impl App {
                 .map(|l| UnicodeWidthStr::width(l.as_str()))
                 .max()
                 .unwrap_or(0) as u16;
+            // Cap width so long/garbled lines never spill over the gallery logo
+            let max_w = max_w.min(chat.width.saturating_sub(4)).max(8);
             if chat.width > max_w + 2 && chat.height > n {
                 let hr = Rect {
                     x: chat.x.saturating_add(chat.width.saturating_sub(max_w + 1)),
@@ -372,6 +565,12 @@ impl App {
                     width: max_w.min(chat.width),
                     height: n.min(chat.height),
                 };
+                // Wipe hud rect first (panel bg) — kills leftover CJK half-cells
+                f.render_widget(
+                    Block::default().style(Style::default().bg(th.panel_bg).fg(th.panel_bg)),
+                    hr,
+                );
+                let pad_style = Style::default().fg(th.dim).bg(th.panel_bg);
                 let para_lines: Vec<Line> = lines
                     .iter()
                     .enumerate()
@@ -387,11 +586,9 @@ impl App {
                         } else {
                             th.dim
                         };
-                        // right-pad for block alignment
-                        let pad = max_w.saturating_sub(UnicodeWidthStr::width(l.as_str()) as u16);
-                        let text = format!("{l}{}", " ".repeat(pad as usize));
-                        Line::from(Span::styled(
-                            text,
+                        let plain = trunc(l, max_w as usize);
+                        let row = Line::from(Span::styled(
+                            plain,
                             Style::default()
                                 .fg(color)
                                 .bg(th.panel_bg)
@@ -400,7 +597,8 @@ impl App {
                                 } else {
                                     Modifier::empty()
                                 }),
-                        ))
+                        ));
+                        pad_line_to_width(row, max_w as usize, pad_style)
                     })
                     .collect();
                 f.render_widget(Paragraph::new(para_lines), hr);
@@ -520,55 +718,101 @@ impl App {
         }
 
         self.approval_rect = None;
-        if has_approval {
-            let a = &self.terminal_approval.as_ref().unwrap();
+        self.approval_chips.clear();
+        // 不用 unwrap：has_approval 与 Option 可能瞬时不一致，panic 会整 TUI 闪退
+        if let Some(a) = self.terminal_approval.as_ref() {
             let r = match solved.get(Slot::Approval) {
                 Some(r) => r,
                 None => Rect::default(),
             };
             self.approval_rect = Some(r);
-            // Ink TerminalApprovalBar: bar bg + per-chip hover (Y/A/N/B markers stable for hit)
-            let cmd = trunc(&a.command, (r.width as usize).saturating_sub(48).max(8));
-            let hint = a.hint.clone().unwrap_or_default();
-            let bar_bg = th.warn;
-            let chip = |key: &str, label: &str, choice: &str| -> Span<'static> {
+            // 风险色：high=红底，low=黄底；展示人话简介 + 命令
+            let risk = a
+                .risk
+                .as_deref()
+                .unwrap_or("low")
+                .to_ascii_lowercase();
+            let high = risk == "high" || risk == "dangerous" || risk == "fatal";
+            let bar_bg = if high { th.err } else { th.warn };
+            let title = if high { "高风险审批" } else { "命令审批" };
+            let label = a
+                .label
+                .clone()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| if high { "高风险".into() } else { "需确认".into() });
+            let summary = a
+                .summary
+                .clone()
+                .or_else(|| a.hint.clone())
+                .unwrap_or_else(|| {
+                    if high {
+                        "此命令风险较高，请确认后再授权。".into()
+                    } else {
+                        "AI 请求在终端执行该命令。".into()
+                    }
+                });
+            let cmd = trunc(&a.command, (r.width as usize).saturating_sub(4).max(8));
+            let sum = trunc(&summary, (r.width as usize).saturating_sub(4).max(8));
+            // 可点按键：白底/高亮底 + 键位，与条底色区分
+            let defs = [
+                ("Y", "一次", "y", th.ok),
+                ("A", "总是", "a", th.accent),
+                ("N", "拒绝", "n", th.warn),
+                ("B", "拉黑", "b", th.err),
+            ];
+            let title_s = format!(" {title} · {label}  ");
+            let mut x_cursor = r.x.saturating_add(UnicodeWidthStr::width(title_s.as_str()) as u16);
+            let mut spans: Vec<Span<'static>> = vec![Span::styled(
+                title_s,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(bar_bg)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            for (key, lab, choice, base_bg) in defs {
                 let hot = self
                     .approval_hover
                     .as_deref()
                     .map(|h| h == choice)
                     .unwrap_or(false);
+                let chip_txt = format!(" [{key}] {lab} ");
+                let w = UnicodeWidthStr::width(chip_txt.as_str()) as u16;
+                let x0 = x_cursor;
+                let x1 = x_cursor.saturating_add(w);
+                self.approval_chips.push((x0, x1, choice.into()));
+                x_cursor = x1.saturating_add(1); // gap
                 let (fg, bg) = if hot {
                     (Color::Black, th.accent)
                 } else {
-                    (Color::Black, bar_bg)
+                    (Color::Black, base_bg)
                 };
-                Span::styled(
-                    format!("[{key}]{label} "),
+                spans.push(Span::styled(
+                    chip_txt,
                     Style::default()
                         .fg(fg)
                         .bg(bg)
                         .add_modifier(Modifier::BOLD),
-                )
-            };
-            let spans = vec![
-                Span::styled(
-                    format!(" 审批 · {cmd}  "),
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(bar_bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                chip("Y", "一次", "y"),
-                chip("A", "总是", "a"),
-                chip("N", "拒绝", "n"),
-                chip("B", "拉黑", "b"),
-                Span::styled(
-                    format!(" {hint}"),
-                    Style::default().fg(Color::Black).bg(bar_bg),
-                ),
-            ];
+                ));
+                spans.push(Span::styled(" ", Style::default().bg(bar_bg)));
+            }
+            spans.push(Span::styled(
+                "  Y/A/N/B 键盘 ",
+                Style::default().fg(Color::Black).bg(bar_bg),
+            ));
+            let line0 = Line::from(spans);
+            let line1 = Line::from(Span::styled(
+                format!(" AI说明: {sum}"),
+                Style::default().fg(Color::Black).bg(bar_bg),
+            ));
+            let line2 = Line::from(Span::styled(
+                format!(" $ {cmd}"),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(bar_bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
             f.render_widget(
-                Paragraph::new(Line::from(spans)).style(Style::default().bg(bar_bg)),
+                Paragraph::new(vec![line0, line1, line2]).style(Style::default().bg(bar_bg)),
                 r,
             );
         }
@@ -621,18 +865,20 @@ impl App {
                 "ok" => (th.accent, Color::Black, "✓ "),
                 _ => (th.info, Color::White, "· "),
             };
-            let raw = format!("{prefix}{text}");
-            let line = center(&raw, r.width as usize);
+            // 先整格铺底，再写居中字（避免右侧空 cell 无 bg）
             f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    line,
-                    Style::default()
-                        .fg(fg)
-                        .bg(bg)
-                        .add_modifier(Modifier::BOLD),
-                ))),
+                Block::default().style(Style::default().bg(bg).fg(bg)),
                 r,
             );
+            let raw = format!("{prefix}{text}");
+            let line = center(&raw, r.width as usize);
+            let pad_style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
+            let row = pad_line_to_width(
+                Line::from(Span::styled(line, pad_style)),
+                r.width as usize,
+                Style::default().bg(bg).fg(bg),
+            );
+            f.render_widget(Paragraph::new(row), r);
         }
 
         if empty {
@@ -656,13 +902,13 @@ impl App {
 
         // Completion menu ABOVE input (Ink InputBar); hide Event when open
         self.completion_rect = None;
-        if show_comp {
+        // 与 show_comp 解耦：completions 可能在布局后清空，禁止 unwrap
+        if let Some(c) = self.completions.as_ref().filter(|c| !c.items.is_empty()) {
             let r = match solved.get(Slot::Completion) {
                 Some(r) => r,
                 None => Rect::default(),
             };
             self.completion_rect = Some(r);
-            let c = self.completions.as_ref().unwrap();
             // Ink: computer-blue panel, ▸ selected, accent yellow selected row
             let comp_bg = th.info; // #2121FF
             let mut lines: Vec<Line> = Vec::new();
@@ -717,9 +963,17 @@ impl App {
                 .as_ref()
                 .map(|s| s.active)
                 .unwrap_or(false);
-            if self.chrome.event_block_expanded && sup_active {
-                // Ink EventBlockExpanded
-                let sup = self.chrome.supervisor.as_ref().unwrap();
+            // 展开监督面板：仅 expanded && supervisor active；否则画短状态条
+            // 避免 unwrap：用 clone 状态字段后离开 borrow
+            let paint_expanded = self.chrome.event_block_expanded
+                && self
+                    .chrome
+                    .supervisor
+                    .as_ref()
+                    .map(|s| s.active)
+                    .unwrap_or(false);
+            if paint_expanded {
+                if let Some(sup) = self.chrome.supervisor.clone() {
                 let state_label = match sup.state.as_str() {
                     "planning" => "规划中",
                     "confirming_plan" => "待确认计划",
@@ -764,9 +1018,6 @@ impl App {
                         for l in msg.lines() {
                             all_lines.push(l.to_string());
                         }
-                        if msg.ends_with('\n') || msg.is_empty() {
-                            // keep spacing
-                        }
                     }
                 }
                 let view_h = 12usize;
@@ -793,6 +1044,7 @@ impl App {
                     ),
                     ev,
                 );
+                } // if let Some(sup)
             } else {
                 let mode = self.chrome.event_mode.clone().unwrap_or_else(|| {
                     if self.streaming {
@@ -865,7 +1117,7 @@ impl App {
             }
         }
 
-        // Input — Ink: footerBg shell + " ❯ " black + inputFieldBg body (multi-line TextArea)
+        // Input — footerBg + `❯ ` + fieldBg body; reverse-video caret (not ▌)
         let inp = solved.get(Slot::Input).unwrap_or(Rect::default());
         self.input_rect = inp;
         let ph = self
@@ -877,7 +1129,17 @@ impl App {
         // Ink hasTextSel ⇒ focus off insert caret (mutual exclusion with selection box)
         self.tick_caret_blink();
         let show_caret = self.should_show_insert_caret();
+        let body_w = self.input_body_width();
+        let n_lines = self.input_display_line_count();
+        // Clamp manual offset (display rows after soft-wrap)
+        if let Some(off) = self.input_view_offset {
+            let max_off = n_lines.saturating_sub(INPUT_VIEWPORT_LINES);
+            if off > max_off {
+                self.input_view_offset = if max_off == 0 { None } else { Some(max_off) };
+            }
+        }
         let input_lines = if self.input.is_empty() {
+            // 光标格始终占 1 列：闪烁时反色，熄灭时同底，避免 placeholder 左右抖
             let mut spans = vec![Span::styled(
                 mouse::PROMPT_STR.to_string(),
                 Style::default()
@@ -887,8 +1149,18 @@ impl App {
             )];
             if show_caret {
                 spans.push(Span::styled(
-                    "▌".to_string(),
-                    Style::default().fg(Color::Black).bg(field_bg),
+                    " ".to_string(),
+                    Style::default()
+                        .fg(field_bg)
+                        .bg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    " ".to_string(),
+                    Style::default()
+                        .fg(th.input_placeholder_fg)
+                        .bg(field_bg),
                 ));
             }
             spans.push(Span::styled(
@@ -897,20 +1169,65 @@ impl App {
             ));
             vec![Line::from(spans)]
         } else {
-            paint_input_lines_ink(
+            paint_input_lines_ink_offset(
                 &self.input,
                 self.cursor,
                 th.footer_bg,
                 field_bg,
                 show_caret,
+                self.input_view_offset,
+                body_w,
             )
         };
         // 无顶部分割线（对齐 Ink：EventBlock 与输入直接相接）。
-        // 禁止 soft-wrap：逻辑行 = 鼠标 hit 行，避免 input_visual_to_byte 错位（M09）。
+        // 超长单行按 body_w 软折行（paint 与 hit-test 共用 display rows）。
+        // 每行 pad 到 inp.width，避免 caret 闪烁时右侧 ghost / placeholder 半格抖
+        let field_pad = Style::default().bg(field_bg);
+        let padded_input: Vec<Line> = input_lines
+            .into_iter()
+            .map(|l| pad_line_to_width(l, inp.width as usize, field_pad))
+            .collect();
         f.render_widget(
-            Paragraph::new(input_lines).style(Style::default().bg(th.footer_bg)),
+            Paragraph::new(padded_input).style(Style::default().bg(th.footer_bg)),
             inp,
         );
+        // 超视口：右侧细滚动条（相对全文位置）
+        if n_lines > INPUT_VIEWPORT_LINES && inp.width > 2 && inp.height > 0 {
+            let max_off = n_lines.saturating_sub(INPUT_VIEWPORT_LINES);
+            let start = input_view_start_with_offset(
+                &self.input,
+                self.cursor,
+                self.input_view_offset,
+                body_w,
+            );
+            let track_h = inp.height as usize;
+            let thumb_h = ((INPUT_VIEWPORT_LINES * track_h) / n_lines).max(1).min(track_h);
+            let thumb_top = if max_off == 0 {
+                0
+            } else {
+                (start * (track_h.saturating_sub(thumb_h))) / max_off
+            };
+            let bar_x = inp.x.saturating_add(inp.width.saturating_sub(1));
+            for i in 0..track_h {
+                let y = inp.y.saturating_add(i as u16);
+                let on_thumb = i >= thumb_top && i < thumb_top + thumb_h;
+                let cell = if on_thumb { "▐" } else { " " };
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        cell,
+                        Style::default()
+                            .fg(if on_thumb { th.accent } else { th.dim })
+                            .bg(th.footer_bg),
+                    ))),
+                    Rect {
+                        x: bar_x,
+                        y,
+                        width: 1,
+                        height: 1,
+                    },
+                );
+            }
+        }
 
         // InfoBar (hidden when completion open — Ink Layout showComp)
         if !show_comp {
@@ -956,10 +1273,11 @@ impl App {
                 messages::compact(maxc)
             );
             let right = format!(" {model} ");
+            let right_w = UnicodeWidthStr::width(right.as_str());
             let mid_w = UnicodeWidthStr::width(left_txt.as_str())
                 + bar_w
                 + UnicodeWidthStr::width(cache.as_str())
-                + UnicodeWidthStr::width(right.as_str());
+                + right_w;
             // Ink justifyContent space-between: all free space in the middle gap
             let gap_n = (info.width as usize).saturating_sub(mid_w);
             let gap = " ".repeat(gap_n);
@@ -975,6 +1293,29 @@ impl App {
             } else {
                 Color::Black
             };
+            // 模型名 hit：右侧 right 段
+            let model_x = info
+                .x
+                .saturating_add(info.width.saturating_sub(right_w as u16));
+            self.model_hit = Some(Rect {
+                x: model_x,
+                y: info.y,
+                width: right_w as u16,
+                height: info.height.max(1),
+            });
+            let model_hover = self
+                .hover_id
+                .as_ref()
+                .map(|h| h == "model_chip")
+                .unwrap_or(false);
+            let model_st = if model_hover {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(th.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Black).bg(th.footer_bg)
+            };
             f.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
@@ -988,33 +1329,27 @@ impl App {
                     ),
                     Span::styled(cache, Style::default().fg(cache_fg).bg(th.footer_bg)),
                     Span::styled(gap, Style::default().bg(th.footer_bg)),
-                    Span::styled(right, Style::default().fg(Color::Black).bg(th.footer_bg)),
+                    Span::styled(right, model_st),
                 ]))
                 .style(Style::default().bg(th.footer_bg)),
                 info,
             );
+        } else {
+            self.model_hit = None;
         }
 
         // NavBar — Ink: equal cells (base+rem), label centered in each cell's own Rect
         // (do NOT stitch spans into one Paragraph — width/bg drift breaks visual center)
         let nav = solved.get(Slot::Nav).unwrap_or(Rect::default());
         self.nav_rect = nav;
-        let segs: [(&str, &str, &str, Color); 7] = [
-            ("agent", "agent", "ag", th.nav_agent),
-            ("sessions", "会话", "会话", th.nav_sessions),
-            ("terminal", "终端", "终端", th.nav_terminal),
-            ("todo", "任务", "任务", th.nav_todo),
-            ("inbox", "收件箱", "收件", th.nav_inbox),
-            ("notice", "公告", "公告", th.nav_notice),
-            ("settings", "设置", "设置", th.nav_settings),
-        ];
+        // 文案/色/动作均来自主题 nav_items（Node 下发），禁止本地硬编码标签
+        let segs = th.nav_segs_for_draw();
         self.nav_segs.clear();
-        // Prefer layout slots; if missing, fall back to Ink base/rem split
-        let n = segs.len();
+        let n = segs.len().max(1);
         let base = (nav.width as usize / n).max(1);
         let rem = (nav.width as usize).saturating_sub(base * n);
         let mut x_cursor = nav.x;
-        for (i, (id, label, short, bg)) in segs.iter().enumerate() {
+        for (i, seg) in segs.iter().enumerate() {
             let seg_r = solved.get(Slot::NavSeg(i as u16)).unwrap_or_else(|| {
                 let w = (base + if i < rem { 1 } else { 0 }) as u16;
                 let r = Rect::new(x_cursor, nav.y, w, nav.height.max(1));
@@ -1022,34 +1357,42 @@ impl App {
                 r
             });
             let w = seg_r.width as usize;
-            // Ink centerInWidth(text, short, width)
-            let text = if UnicodeWidthStr::width(*label) <= w {
-                *label
+            let text = if UnicodeWidthStr::width(seg.label.as_str()) <= w {
+                seg.label.as_str()
             } else {
-                *short
+                seg.short.as_str()
             };
             let cell = center_in_width(text, w.max(1));
-            self.nav_segs
-                .push((seg_r.x, seg_r.x.saturating_add(seg_r.width), id));
+            self.nav_segs.push((
+                seg_r.x,
+                seg_r.x.saturating_add(seg_r.width),
+                seg.id.clone(),
+                seg.action_kind.clone(),
+                seg.action_value.clone(),
+            ));
             let hovered = self
                 .hover_id
                 .as_ref()
-                .map(|h| h == &format!("nav:{id}"))
+                .map(|h| h == &format!("nav:{}", seg.id))
                 .unwrap_or(false);
             let (fg, bgc) = if hovered {
-                (Color::Black, th.accent)
+                (seg.fg_hover, seg.bg_hover)
             } else {
-                (Color::Black, *bg)
+                (seg.fg, seg.bg)
             };
-            f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
+            let nav_line = pad_line_to_width(
+                Line::from(Span::styled(
                     cell,
                     Style::default()
                         .fg(fg)
                         .bg(bgc)
                         .add_modifier(Modifier::BOLD),
-                )))
-                .style(Style::default().bg(bgc)),
+                )),
+                w.max(1),
+                Style::default().bg(bgc),
+            );
+            f.render_widget(
+                Paragraph::new(nav_line).style(Style::default().bg(bgc)),
                 seg_r,
             );
         }
@@ -1069,14 +1412,24 @@ impl App {
                 .border_style(Style::default().fg(th.accent));
             let mut body: Vec<Line> = Vec::new();
             if let Some(lines) = &o.lines {
-                for l in lines.iter().take(h as usize - 3) {
+                // help / prompt dump: scrollable text
+                let inner_h = h.saturating_sub(3) as usize; // borders + footer
+                let max_scroll = lines.len().saturating_sub(inner_h.max(1));
+                if self.overlay_scroll > max_scroll {
+                    self.overlay_scroll = max_scroll;
+                }
+                let from = self.overlay_scroll;
+                let to = (from + inner_h).min(lines.len());
+                self.overlay_list_from = from;
+                self.overlay_list_count = to.saturating_sub(from);
+                for l in lines.iter().take(to).skip(from) {
                     body.push(Line::from(Span::styled(
                         l.clone(),
                         Style::default().fg(th.fg),
                     )));
                 }
             } else {
-                // Ink SelectList: windowed + ❯ pointer
+                // Ink SelectList: windowed + ❯ pointer + hover highlight
                 let n = o.items.len();
                 let inner_h = h.saturating_sub(3) as usize; // borders + footer
                 let vis = inner_h.min(n).max(1).min(12);
@@ -1090,16 +1443,29 @@ impl App {
                 for i in from..to {
                     let it = &o.items[i];
                     let desc = it.description.clone().unwrap_or_default();
+                    let hovered = self.overlay_hover == Some(i);
+                    let selected = i == self.overlay_sel;
                     body.push(select_row(
                         &it.label,
                         &desc,
-                        i == self.overlay_sel,
+                        selected || hovered,
                         &th,
                     ));
                 }
             }
+            let foot = if o.lines.as_ref().map(|l| l.len()).unwrap_or(0) > 0 {
+                let n = o.lines.as_ref().map(|l| l.len()).unwrap_or(0);
+                format!(
+                    " {}  · 行 {}/{} · ↑↓ 滚动 · Esc 关闭 ",
+                    o.footer,
+                    self.overlay_scroll.saturating_add(1).min(n.max(1)),
+                    n.max(1)
+                )
+            } else {
+                format!(" {} ", o.footer)
+            };
             body.push(Line::from(Span::styled(
-                format!(" {} ", o.footer),
+                foot,
                 Style::default().fg(th.dim),
             )));
             f.render_widget(
@@ -1116,7 +1482,12 @@ impl App {
         let vis = self.visible_start;
         let input_rect = self.input_rect;
         let input = self.input.clone();
-        let view_start = input_view_start(&input, self.cursor);
+        let view_start = input_view_start_with_offset(
+            &input,
+            self.cursor,
+            self.input_view_offset,
+            self.input_body_width(),
+        );
         self.sel.apply_overlay(
             f.buffer_mut(),
             chat_inner,
@@ -1132,9 +1503,40 @@ impl App {
         let th = self.theme.clone();
         // Ink GallerySplash: logo 左上贴顶 + 画/铭牌水平居中 + 光学垂直留白
         if self.messages.is_empty() {
+            self.scroll_render_cache = None;
             return self.build_gallery_splash(width.max(8), body_h.max(1), &th);
         }
         let hist = self.chrome.history_base.unwrap_or(200) as usize;
+        // Cheap cache key: O(1) 摘要，禁止每帧 join 全部消息 id（121 条时很重）
+        let spin_q = self.spinner_frame / 4;
+        let last = self.messages.last();
+        let content_sum: u64 = self.messages.iter().map(|m| m.content.len() as u64).sum();
+        let tools_n: usize = self.messages.iter().map(|m| m.tool_cards.len()).sum();
+        let think_n: usize = self
+            .messages
+            .iter()
+            .map(|m| m.thinking_blocks.len())
+            .sum();
+        let cache_key = format!(
+            "w{width}|h{hist}|sp{spin_q}|n{}|c{content_sum}|t{tools_n}|k{think_n}|e{}|x{}|r{}|L{}:{}:{}",
+            self.messages.len(),
+            self.system_events.len(),
+            self.expanded_system_events.len(),
+            self.expanded_tool_results.len(),
+            last.map(|m| m.id.as_str()).unwrap_or(""),
+            last.map(|m| m.content.len()).unwrap_or(0),
+            last.map(|m| m.streaming).unwrap_or(false),
+        );
+        if let Some((ref k, w, ref lines, ref hits)) = self.scroll_render_cache {
+            if *k == cache_key && w == width {
+                self.tool_hits = hits.tools.clone();
+                self.msg_expand_hits = hits.expands.clone();
+                self.thinking_hits = hits.thinking.clone();
+                self.system_event_hits = hits.system_events.clone();
+                self.tool_result_hits = hits.tool_results.clone();
+                return lines.clone();
+            }
+        }
         let (lines, hits) = render_messages(
             &self.messages,
             &self.system_events,
@@ -1145,11 +1547,12 @@ impl App {
             &self.expanded_system_events,
             &self.expanded_tool_results,
         );
-        self.tool_hits = hits.tools;
-        self.msg_expand_hits = hits.expands;
-        self.thinking_hits = hits.thinking;
-        self.system_event_hits = hits.system_events;
-        self.tool_result_hits = hits.tool_results;
+        self.tool_hits = hits.tools.clone();
+        self.msg_expand_hits = hits.expands.clone();
+        self.thinking_hits = hits.thinking.clone();
+        self.system_event_hits = hits.system_events.clone();
+        self.tool_result_hits = hits.tool_results.clone();
+        self.scroll_render_cache = Some((cache_key, width, lines.clone(), hits));
         lines
     }
 
@@ -1164,31 +1567,40 @@ impl App {
         body_h: usize,
         th: &crate::theme::Theme,
     ) -> Vec<Line<'static>> {
-        use crate::maou_logo::{
-            center_gallery_line, gallery_vertical_pads, maou_logo_lines,
-        };
+        use crate::maou_logo::{center_gallery_line, gallery_vertical_pads, maou_logo_lines};
 
         let mut out: Vec<Line<'static>> = Vec::new();
+        let pad_bg = Style::default().fg(th.fg).bg(th.bg);
 
-        // ① 左上像素标：贴顶，不居中
-        let logo = maou_logo_lines();
-        let logo_h = logo.len();
-        for ln in &logo {
-            // Ink: marginLeft={1}
-            out.push(Line::from(Span::styled(
-                format!(" {ln}"),
-                Style::default()
-                    .fg(th.accent)
-                    .add_modifier(Modifier::BOLD),
-            )));
+        // 与 `GALLERY_MIN_HANG_ROWS_FOR_ART`（sm 17 + 铭牌 3 + 呼吸 2 = 22）对齐。
+        // 挂画区过矮 / 无画：居中品牌块（logo + 分隔 + 标题/版本 + studio）。
+        const GALLERY_MIN_HANG_FOR_ART: usize = 22;
+        let logo_corner = maou_logo_lines();
+        let logo_h = logo_corner.len(); // 横构仅 3 行，无上下加行
+        let hang_area = body_h.saturating_sub(logo_h);
+        let show_art =
+            hang_area >= GALLERY_MIN_HANG_FOR_ART && !self.gallery_lines.is_empty();
+
+        if !show_art {
+            // 竖构无油画：居中静态品牌块
+            return self.build_compact_brand_splash(width, body_h, th);
+        }
+
+        // ① 有油画：横构 logo 三行 —— 蓝底 + 白字（不加上下空行）
+        let logo_bar = Style::default()
+            .fg(Color::Rgb(255, 255, 255))
+            .bg(th.info);
+        for ln in &logo_corner {
+            let row = Line::from(Span::styled(format!(" {ln}"), logo_bar));
+            out.push(pad_line_to_width(row, width, logo_bar));
         }
 
         // hang = art + plaque from Node (no logo)
-        let hang_src: Vec<&str> = if self.gallery_lines.is_empty() {
-            vec!["", "  输入消息开始对话"]
-        } else {
-            self.gallery_lines.iter().map(|s| s.as_str()).collect()
-        };
+        let hang_src: Vec<&str> = self
+            .gallery_lines
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
 
         // 识别：首块非空行为画；空行后为铭牌（标题更亮）
         let mut art: Vec<&str> = Vec::new();
@@ -1226,7 +1638,6 @@ impl App {
             1 + plaque.len()
         };
         let hang_h = art.len() + plaque_h;
-        let hang_area = body_h.saturating_sub(logo_h);
         let (pad_top, pad_bot) = gallery_vertical_pads(hang_area, hang_h);
         // Ink: 画作起点再下移 2 格（光学 top+2）
         let free = pad_top + pad_bot;
@@ -1238,41 +1649,82 @@ impl App {
         let below = free.saturating_sub(above);
 
         for _ in 0..above {
-            out.push(Line::from(""));
+            out.push(pad_line_to_width(Line::from(""), width, pad_bg));
         }
 
         // ③ 画：水平居中，正文色
         for ln in &art {
             let centered = center_gallery_line(ln, width);
-            out.push(Line::from(Span::styled(
+            let row = Line::from(Span::styled(
                 centered,
-                Style::default().fg(th.fg),
-            )));
+                Style::default().fg(th.fg).bg(th.bg),
+            ));
+            out.push(pad_line_to_width(row, width, pad_bg));
         }
 
         // ④ 铭牌
         if !plaque.is_empty() {
-            out.push(Line::from(""));
+            out.push(pad_line_to_width(Line::from(""), width, pad_bg));
             for (i, ln) in plaque.iter().enumerate() {
                 let centered = center_gallery_line(ln, width);
                 let st = if i == 0 {
                     Style::default()
                         .fg(th.fg)
+                        .bg(th.bg)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(th.muted)
+                    Style::default().fg(th.muted).bg(th.bg)
                 };
-                out.push(Line::from(Span::styled(centered, st)));
+                out.push(pad_line_to_width(
+                    Line::from(Span::styled(centered, st)),
+                    width,
+                    pad_bg,
+                ));
             }
         }
 
         for _ in 0..below {
-            out.push(Line::from(""));
+            out.push(pad_line_to_width(Line::from(""), width, pad_bg));
         }
 
-        // 至少占满视口，避免 follow 把 logo 卷走
+        // 至少占满视口，避免 follow 把 logo 卷走；full-width pad 防残影
         while out.len() < body_h {
-            out.push(Line::from(""));
+            out.push(pad_line_to_width(Line::from(""), width, pad_bg));
+        }
+        out
+    }
+
+    /// 竖构开屏（无油画）：居中静态品牌块。
+    fn build_compact_brand_splash(
+        &self,
+        width: usize,
+        body_h: usize,
+        th: &crate::theme::Theme,
+    ) -> Vec<Line<'static>> {
+        use crate::maou_logo::{center_block_lines_inner, compact_brand_block};
+
+        let brand = compact_brand_block(&crate::maou_logo::cli_version());
+        let centered = center_block_lines_inner(&brand, width);
+        let brand_h = centered.len();
+        let free = body_h.saturating_sub(brand_h);
+        let pad_top = free / 2;
+        let pad_bot = free.saturating_sub(pad_top);
+        let pad_bg = Style::default().fg(th.fg).bg(th.bg);
+        let brand_st = Style::default().fg(th.accent).bg(th.bg);
+
+        let mut out: Vec<Line<'static>> = Vec::with_capacity(body_h);
+        for _ in 0..pad_top {
+            out.push(pad_line_to_width(Line::from(""), width, pad_bg));
+        }
+        for ln in &centered {
+            let row = Line::from(Span::styled(ln.clone(), brand_st));
+            out.push(pad_line_to_width(row, width, pad_bg));
+        }
+        for _ in 0..pad_bot {
+            out.push(pad_line_to_width(Line::from(""), width, pad_bg));
+        }
+        while out.len() < body_h {
+            out.push(pad_line_to_width(Line::from(""), width, pad_bg));
         }
         out
     }

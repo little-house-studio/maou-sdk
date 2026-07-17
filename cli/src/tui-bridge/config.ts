@@ -1,13 +1,32 @@
 /**
- * TUI 后端选择：ink（默认，现网）| ratatui（可选新后端）
+ * TUI 后端选择：ratatui | ink
  *
- * 优先级：CLI flag > MAOU_TUI env > ~/.maou/config.json cli.tui > ink
+ * 优先级：CLI flag > MAOU_TUI env > ~/.maou/config.json cli.tui >
+ *   win32 → ink；其它 → ratatui
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { userConfigPath } from "../config/paths.js";
 
 export type TuiBackend = "ink" | "ratatui";
+
+/**
+ * Ratatui 是否正在占用 TTY（alternate screen + 双缓冲）。
+ * Node 侧禁止对此写 CSI 清屏 / 视口复位，否则会花屏。
+ * 运行时以 MAOU_TUI_ACTIVE 为准（bridge 启动时设置）。
+ */
+export function isRatatuiBackend(): boolean {
+  const active = (process.env.MAOU_TUI_ACTIVE || "").toLowerCase();
+  if (active === "ratatui" || active === "rust" || active === "rt") return true;
+  const v = (process.env.MAOU_TUI || "").toLowerCase();
+  return v === "ratatui" || v === "rust" || v === "rt";
+}
+
+/** 标记当前进程由 Ratatui 持有 TTY（须在任何可能写 stdout CSI 之前调用） */
+export function markRatatuiActive(): void {
+  process.env.MAOU_TUI_ACTIVE = "ratatui";
+  if (!process.env.MAOU_TUI) process.env.MAOU_TUI = "ratatui";
+}
 
 export function resolveTuiBackend(flag?: string | null): TuiBackend {
   const fromFlag = normalize(flag);
@@ -19,7 +38,9 @@ export function resolveTuiBackend(flag?: string | null): TuiBackend {
   const fromCfg = readConfigTui();
   if (fromCfg) return fromCfg;
 
-  return "ink";
+  // Windows 原生无 /dev/tty，默认 Ink；macOS/Linux 默认 ratatui
+  if (process.platform === "win32") return "ink";
+  return "ratatui";
 }
 
 function normalize(v: string | null | undefined): TuiBackend | null {

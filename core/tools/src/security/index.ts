@@ -75,3 +75,11 @@ export type {
   PolicyAction,
   PolicyDecision,
 } from "./approval/terminal-policy.js";
+
+export {
+  describeCommandForApproval,
+} from "./command-summary.js";
+export type {
+  CommandRiskLevel,
+  CommandHumanSummary,
+} from "./command-summary.js";

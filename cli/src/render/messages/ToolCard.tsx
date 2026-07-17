@@ -43,13 +43,25 @@ function parseArgs(args: string): {
 } {
   try {
     const a = JSON.parse(args) as Record<string, unknown>;
+    const description =
+      typeof a.description === "string" ? a.description.trim() : "";
     const reason = typeof a.reason === "string" ? a.reason.trim() : "";
-    const target = String(
-      a.path ?? a.file_path ?? a.command ?? a.pattern ?? a.query ?? a.name ?? a.url ?? "",
+    const pathish = String(
+      a.path ?? a.file_path ?? a.pattern ?? a.query ?? a.name ?? a.url ?? "",
     ).trim();
-    // 美化 JSON；reason 单独展示时可从 pretty 里去掉重复
+    const command = typeof a.command === "string" ? a.command.trim() : "";
+    // 折叠摘要：人话 > reason > 路径 > 命令首段（勿整段 cd && cat …）
+    let target = "";
+    if (description) target = description;
+    else if (reason) target = reason;
+    else if (pathish) target = pathish;
+    else if (command) {
+      const one = command.split("\n")[0] ?? command;
+      const head = (one.split("&&")[0] ?? one).trim();
+      target = head.length > 48 ? head.slice(0, 45) + "…" : head;
+    }
     const pretty = JSON.stringify(a, null, 2);
-    return { reason, target, pretty, raw: a };
+    return { reason: description || reason, target, pretty, raw: a };
   } catch {
     return {
       reason: "",
@@ -172,16 +184,11 @@ export function ToolCard({
   const waiting = !tool.done && tool.result === undefined;
   const parsed = useMemo(() => parseArgs(tool.args), [tool.args]);
   const longCmd = isLongCommandTool(tool.name, tool.args, parsed.raw);
-  // 仅执行中默认展开；历史/已完成卡一律折叠（用户点过标题后以手动为准）
-  const [open, setOpen] = useState(() => waiting);
+  // 默认折叠：执行中也只显示标题行；点标题才看过程/结果
+  const [open, setOpen] = useState(false);
   const [userToggled, setUserToggled] = useState(false);
 
-  // 进入 waiting：若未手动操作则展开（看 ring/进度）
-  useEffect(() => {
-    if (waiting && !userToggled) setOpen(true);
-  }, [waiting, userToggled]);
-
-  // 完成/历史：未手动操作则强制收起，降挂载与 paint 成本
+  // 完成/历史：未手动操作则强制收起
   useEffect(() => {
     if (!waiting && !userToggled) setOpen(false);
   }, [waiting, userToggled]);

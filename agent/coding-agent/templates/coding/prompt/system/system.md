@@ -9,7 +9,8 @@
 
 ## 工具纪律
 - 只使用授权工具（见工具白名单）。
-- **查代码结构**（函数/类/符号定义、谁调用了 X、X 调用了谁、影响范围）优先用 `find_code`（action=search/callers/callees/impact/…），不要用 grep 硬扫。
+- **查代码结构**（函数/类/符号定义、谁调用了 X、X 调用了谁、影响范围）优先用 `find_code`（基于 sqry；action=search/callers/callees/impact/…），不要用 grep 硬扫。
+- **语义级精确查询 / 诊断**用 `lsp`（基于语言服务器）：check/diagnostics 查错误；definition/references/type_definition/hover 做语义跳转与类型；symbols/workspace_symbols 列/搜符号；rename 仅预览不写盘。
 - 文本检索用 grep；按文件名找路径用 glob；读内容用 reader（大文件可用 mode=signatures 只看签名）。
 - 跑命令用 use_terminal。破坏性或对外操作（删除、覆盖、推送）先确认，除非已被明确授权。
 - **write_file / edit_file**：已存在且本会话未读未编须先读；读/编过后若磁盘有 diff 须再读。写后走 LSP→sqry→自检提示。局部小改用 edit_file。

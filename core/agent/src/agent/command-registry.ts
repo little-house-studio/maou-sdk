@@ -10,7 +10,7 @@
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { runAgentCommand } from "./command-runner.js";
+import { resolveAndRunAgentCommand } from "./command-runner.js";
 
 // ── 类型 ────────────────────────────────────────────────────────────────
 
@@ -82,6 +82,8 @@ export interface CommandRuntimeRef {
     stage?: string;
     originalTokens?: number;
     compressedTokens?: number;
+    droppedSummary?: string;
+    taskBlocks?: string[];
     error?: string;
   }>;
   /** /cost 粗算 */
@@ -162,11 +164,31 @@ export class CommandRegistry {
       return def.execute(cmdCtx);
     }
 
-    // 2. 尝试 agent command/ 目录下的文件指令
-    const agentDir = join(ctx.maouRoot, "agents", ctx.agentName || "main");
-    const fileResult = await runAgentCommand(agentDir, cmdName, args, ctx.projectRoot);
+    // 2. 文件指令：项目/全局实例 + .agent.ref 模板 command/
+    const fileResult = await resolveAndRunAgentCommand({
+      name: cmdName,
+      argline: args,
+      agentName: ctx.agentName || "main",
+      maouRoot: ctx.maouRoot,
+      projectRoot: ctx.projectRoot,
+    });
     if (fileResult !== null) {
-      return { content: fileResult, meta: { command: cmdName } };
+      if (fileResult.kind === "task") {
+        // 任务模式：交给 runtime 当作用户消息继续跑 AI（类似 skill 任务注入）
+        return {
+          content: fileResult.content,
+          meta: {
+            command: cmdName,
+            asUserTask: true,
+            taskPrompt: fileResult.content,
+            sourcePath: fileResult.sourcePath,
+          },
+        };
+      }
+      return {
+        content: fileResult.content,
+        meta: { command: cmdName, sourcePath: fileResult.sourcePath },
+      };
     }
 
     return null;
@@ -284,6 +306,8 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
           stage?: string;
           originalTokens?: number;
           compressedTokens?: number;
+          droppedSummary?: string;
+          taskBlocks?: string[];
           error?: string;
         }>;
       }).forceCompress;
@@ -298,13 +322,41 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
             meta: { compressFailed: true, ...r },
           };
         }
+        const stage = r.stage ?? "?";
+        const stageLabel =
+          stage === "compactStage"
+            ? "微压缩"
+            : stage === "summaryStage"
+              ? "大压缩"
+              : stage === "archiveStage"
+                ? "归档"
+                : stage;
+        const orig = r.originalTokens;
+        const comp = r.compressedTokens;
+        const save =
+          orig != null && comp != null && orig > 0
+            ? Math.round(((orig - comp) / orig) * 100)
+            : null;
+        const head = `✅ 上下文已压缩 · ${stageLabel} · token ${orig ?? "?"} → ${comp ?? "?"}${
+          save != null ? `（-${save}%）` : ""
+        }`;
+        const detailParts = [
+          `阶段: ${stageLabel} (${stage})`,
+          `Token: ${orig ?? "?"} → ${comp ?? "?"}${save != null ? `  节省 ${save}%` : ""}`,
+          r.taskBlocks?.length ? `任务块: ${r.taskBlocks.join(", ")}` : "",
+          "",
+          "── 压缩后摘要 ──",
+          (r.droppedSummary ?? "").trim() || "（无摘要正文）",
+        ].filter((l, i, a) => l !== "" || (i > 0 && a[i - 1] !== ""));
         return {
-          content: `✅ 上下文已压缩 stage=${r.stage ?? "?"} token: ${r.originalTokens ?? "?"} → ${r.compressedTokens ?? "?"}`,
+          content: `${head}\n\n${detailParts.join("\n")}`,
           meta: {
             compress: true,
             stage: r.stage,
             originalTokens: r.originalTokens,
             compressedTokens: r.compressedTokens,
+            droppedSummary: r.droppedSummary,
+            taskBlocks: r.taskBlocks,
           },
         };
       } catch (e) {

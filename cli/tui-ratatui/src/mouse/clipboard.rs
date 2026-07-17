@@ -18,10 +18,8 @@ pub fn osc52_copy(text: &str) {
     } else {
         payload
     };
-    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-        let _ = f.write_all(seq.as_bytes());
-        let _ = f.flush();
-    } else {
+    let written = write_console_bytes(seq.as_bytes());
+    if !written {
         let _ = std::io::stdout().write_all(seq.as_bytes());
         let _ = std::io::stdout().flush();
     }
@@ -51,8 +49,27 @@ pub fn set_pointer_shape(shape: &str) {
         return;
     }
     let seq = format!("\x1b]22;{shape}\x07");
-    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-        let _ = f.write_all(seq.as_bytes());
-        let _ = f.flush();
+    let _ = write_console_bytes(seq.as_bytes());
+}
+
+fn write_console_bytes(bytes: &[u8]) -> bool {
+    #[cfg(unix)]
+    {
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+            let _ = f.write_all(bytes);
+            let _ = f.flush();
+            return true;
+        }
     }
+    #[cfg(windows)]
+    {
+        for name in ["CONOUT$", "CON"] {
+            if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open(name) {
+                let _ = f.write_all(bytes);
+                let _ = f.flush();
+                return true;
+            }
+        }
+    }
+    false
 }

@@ -2,7 +2,7 @@
  * MessageRow —— logo 列版式 + 用户灰矩形 + 超长折叠 + 工具卡。
  */
 
-import React, { memo, useMemo, useState, useRef } from "react";
+import React, { memo, useMemo, useState, useRef, useEffect } from "react";
 import { Box, Text } from "ink";
 import type { DOMElement } from "ink";
 import stringWidth from "string-width";
@@ -21,6 +21,7 @@ import { useStore } from "../../state/store.js";
 import { repairUtf8Mojibake } from "../../input/filtered-stdin.js";
 import { useAnimFrame, spinnerChar, neonRgb } from "../../hooks/useAnimFrame.js";
 import { chatInnerCols, chatBodyCols } from "../../layout/chat-width.js";
+import { isInLatestRound } from "./round.js";
 
 /** 流式 LIVE 徽章：酸性霓虹色扫过 */
 function LiveBadge({ frame }: { frame: number }) {
@@ -141,17 +142,19 @@ function UserBubble({
   const total = estimateLines(bodyText, colW);
   const need = total > 10;
   const [open, setOpen] = useState(false);
-  const ref = useRef<DOMElement | null>(null);
+  const foldRef = useRef<DOMElement | null>(null);
+  // 仅折叠功能行可点；正文不再整块挂热区（避免大面积 hover 高亮）
   const cid = useClickTarget(
-    ref,
+    foldRef,
     () => {
       if (!need) return;
       setOpen((o) => !o);
       useStore.getState().bumpContentLayout();
     },
-    [need, open],
+    [need],
   );
   const isHover = useStore((s) => s.hoverId) === cid;
+  const foldHot = isHover && !open;
 
   // 折叠时只取前 10 显示行
   let bodyLines = (bodyText || " ").split("\n");
@@ -182,7 +185,7 @@ function UserBubble({
   const botMid = " ".repeat(Math.max(0, innerW - screwW - inset));
   const foldCore = need
     ? fitVisual(
-        ` ${open ? `▲ 收起（共 ${total} 行）` : `▼ 展开全文（${total} 行 · 点击）`}`,
+        ` ${open ? `▲ 收起（共 ${total} 行 · 再点收起）` : `▼ 展开全文（${total} 行 · 点击）`}`,
         innerW,
       )
     : null;
@@ -199,7 +202,7 @@ function UserBubble({
   );
 
   return (
-    <Box ref={ref} flexDirection="column" flexShrink={0} marginTop={1}>
+    <Box flexDirection="column" flexShrink={0} marginTop={1}>
       {/* 顶行：│ + 头 + 右上 ⨁ + 右内缩 */}
       {withBar(
         <>
@@ -215,7 +218,16 @@ function UserBubble({
         ),
       )}
       {foldCore && withBar(
-        <Text backgroundColor={bg} color={isHover ? t.accent : t.dim}>{foldCore}</Text>,
+        <Box ref={foldRef}>
+          {/* 收纳态悬停：浅黄芯片底；展开后无高亮 */}
+          <Text
+            backgroundColor={foldHot ? t.warn : bg}
+            color={foldHot ? "#101010" : t.dim}
+            bold={foldHot}
+          >
+            {foldCore}
+          </Text>
+        </Box>,
         "fold",
       )}
       {/* 底垫：│ + 中空 + 右下 ⨁（无左下钉） */}
@@ -231,10 +243,21 @@ function UserBubble({
   );
 }
 
-const ASSISTANT_FOLD_LINES = 12;
+/** 折叠预览行数：最新轮收纳后仍留较多；历史轮更短 */
+const ASSISTANT_PREVIEW_LATEST = 12;
+const ASSISTANT_PREVIEW_HISTORY = 3;
 
 /** assistant 正文：普通文字无缩进；仅结构化 MD 走居中纸面（左右对称留白） */
-function AssistantBody({ content, streaming }: { content: string; streaming: boolean }) {
+function AssistantBody({
+  content,
+  streaming,
+  inLatestRound,
+}: {
+  content: string;
+  streaming: boolean;
+  /** 最新一轮：默认展开；历史轮默认折叠。均可再点正文切换 */
+  inLatestRound: boolean;
+}) {
   const t = useTheme();
   const term = useTerminalSize();
   // 流式光标动画（hooks 必须无条件调用）；略慢一点减卡
@@ -244,6 +267,10 @@ function AssistantBody({ content, streaming }: { content: string; streaming: boo
   const paper = mdPaperLayout(plainW);
   const colW = paper.contentW;
 
+  const previewLines = inLatestRound
+    ? ASSISTANT_PREVIEW_LATEST
+    : ASSISTANT_PREVIEW_HISTORY;
+
   const asMd = useMemo(
     () => !streaming && hasStructuredMarkdown(content),
     [content, streaming],
@@ -252,23 +279,37 @@ function AssistantBody({ content, streaming }: { content: string; streaming: boo
     () => (asMd ? estimateMarkdownLines(content, colW) : estimateLines(content, plainW)),
     [asMd, content, colW, plainW],
   );
-  const need = !streaming && asMd && total > ASSISTANT_FOLD_LINES;
-  const [open, setOpen] = useState(false);
+  // 超过预览行数才可折叠；最新轮默认开、历史轮默认关
+  const need = !streaming && total > previewLines;
+  const userTouched = useRef(false);
+  const [open, setOpen] = useState(inLatestRound);
+  // 轮次变化：进历史强制收；回最新且用户未手点过则默认开
+  useEffect(() => {
+    if (!inLatestRound) {
+      userTouched.current = false;
+      setOpen(false);
+    } else if (!userTouched.current) {
+      setOpen(true);
+    }
+  }, [inLatestRound]);
+
   const ref = useRef<DOMElement | null>(null);
   const cid = useClickTarget(
     ref,
     () => {
       if (!need) return;
+      userTouched.current = true;
       setOpen((o) => !o);
       useStore.getState().bumpContentLayout();
     },
-    [need, open],
+    [need],
   );
   const isHover = useStore((s) => s.hoverId) === cid;
+  const foldHot = isHover && !open;
 
   if (!content && !streaming) return null;
 
-  // 流式：霓虹扫尾光标 + 正文
+  // 流式：霓虹扫尾光标 + 正文（始终在最新轮）
   if (streaming) {
     const cursor = spinnerChar(streamFrame);
     const [cr, cg, cb] = neonRgb(streamFrame * 0.4);
@@ -285,26 +326,31 @@ function AssistantBody({ content, streaming }: { content: string; streaming: boo
       <CollapsibleText
         text={content}
         color={t.assistant}
-        maxLines={ASSISTANT_FOLD_LINES}
+        maxLines={previewLines}
+        defaultOpen={inLatestRound}
       />
     );
   }
 
-  // 结构化 MD：左竖线标示 + 限宽折行，整块不铺底（避免右侧空填色）
+  // 结构化 MD：正文只展示；仅折叠功能行可点展开/收起
   return (
-    <Box ref={ref} flexDirection="column" alignSelf="flex-start">
+    <Box flexDirection="column" alignSelf="flex-start">
       <MdPaper width={plainW}>
         <MarkdownRenderer
           md={content}
           contentWidth={colW}
-          maxLines={need && !open ? ASSISTANT_FOLD_LINES : undefined}
+          maxLines={need && !open ? previewLines : undefined}
         />
       </MdPaper>
       {need && (
-        <Box marginLeft={2}>
-          <Text color={isHover ? t.accent : t.dim}>
+        <Box ref={ref} marginLeft={2}>
+          <Text
+            color={foldHot ? "#101010" : t.dim}
+            backgroundColor={foldHot ? t.warn : undefined}
+            bold={foldHot}
+          >
             {open
-              ? ` ▲ 收起（共 ${total} 行 · 点击收起）`
+              ? ` ▲ 收起（共 ${total} 行 · 再点此行收起）`
               : ` ▼ 展开全文（已折叠约 ${total} 行 · 点击展开）`}
           </Text>
         </Box>
@@ -319,6 +365,12 @@ function MessageRowImpl({ msg, frame }: { msg: ChatMessage; frame: number }) {
   const ts = timecode(new Date(msg.ts));
   // 外层 Chat 有 single 边框，内容区 = cols-2
   const blockW = chatInnerCols(term.cols);
+  // 最新一轮（最后一条真人 user 及其后）：正文默认展开；历史轮默认折叠
+  const messages = useStore((s) => s.messages);
+  const inLatestRound = useMemo(
+    () => isInLatestRound(messages, msg.id),
+    [messages, msg.id],
+  );
 
   if (msg.role === "user") {
     // 非真人 user（wire 妥协）：按系统/agent 通知渲染，避免灰底用户气泡
@@ -391,7 +443,11 @@ function MessageRowImpl({ msg, frame }: { msg: ChatMessage; frame: number }) {
         )}
         {(content || streaming) ? (
           <MsgBody>
-            <AssistantBody content={content} streaming={streaming} />
+            <AssistantBody
+              content={content}
+              streaming={streaming}
+              inLatestRound={inLatestRound}
+            />
           </MsgBody>
         ) : null}
         {/* think / 正文 与工具卡紧挨，中间不空行 */}

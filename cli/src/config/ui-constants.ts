@@ -1,6 +1,7 @@
 /**
  * CLI UI / 性能相关命名常量（行为与原散落字面量一致）。
- * 后续若进 ~/.maou/config.json ui.*，在此做默认值即可。
+ * 用户可持久化偏好见 config/cli-ui-prefs.ts（~/.maou/cli-ui.json）。
+ * 指令注册表见 config/cli-commands.ts；设置目录见 config/cli-settings.ts。
  */
 
 // ── 终端宽度断点（cols）────────────────────────────────────

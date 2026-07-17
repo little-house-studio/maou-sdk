@@ -11,6 +11,7 @@ import type { ToolContext, ToolResponse, ToolDefinition } from "@little-house-st
 import type { JsonSchema, McpToolDescriptor, McpToolInvoker } from "@little-house-studio/types";
 import type { ToolRegistry } from "@little-house-studio/tools";
 import { mapProtocolErrorToToolResponse } from "./mappers.js";
+import { rejectIfMcpArgsInvalid } from "./validate-args.js";
 
 /**
  * 可返回文本或完整 ToolResponse 的调用器。
@@ -30,9 +31,12 @@ export function createMcpBridgeTool(
   handler: McpToolCallHandler,
 ): Tool {
   const toolName = descriptor.name;
-  const desc =
+  const baseDesc =
     descriptor.description?.trim() ||
     `MCP tool「${descriptor.originalName}」(connection: ${descriptor.connectionName})`;
+  // flat 模式下每条 mcp__* 也标明：仅配置文件启用的 server 会加载
+  const desc =
+    `${baseDesc} [MCP connection «${descriptor.connectionName}»; enable/disable via ~/.maou/mcp.json or .maou/agents/*/connections/*.json — next message reloads]`;
 
   class _McpBridgeTool extends Tool {
     readonly definition: ToolDefinition = {
@@ -51,10 +55,21 @@ export function createMcpBridgeTool(
 
     async execute(params: Record<string, unknown>, _ctx: ToolContext): Promise<ToolResponse> {
       try {
+        const args = params ?? {};
+        // 本地 schema 校验：错参立刻结构化反馈，避免 server 含糊错误导致瞎猜
+        const rejected = rejectIfMcpArgsInvalid({
+          toolLabel: toolName,
+          connectionName: descriptor.connectionName,
+          originalName: descriptor.originalName,
+          schema: descriptor.parameters as JsonSchema,
+          args,
+        });
+        if (rejected) return rejected;
+
         const out = await handler(
           descriptor.connectionName,
           descriptor.originalName,
-          params ?? {},
+          args,
         );
         if (typeof out === "string") {
           return createToolResponse(true, out || "(MCP tool returned empty content)", {

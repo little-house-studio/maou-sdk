@@ -84,6 +84,13 @@ export function osc22Supported(): boolean {
 
 function writeOsc22(shape: string): void {
   if (!process.stdout.isTTY) return;
+  // Ratatui writes OSC22 itself; Node must not interleave on the same TTY
+  const tui = (
+    process.env.MAOU_TUI_ACTIVE ||
+    process.env.MAOU_TUI ||
+    ""
+  ).toLowerCase();
+  if (tui === "ratatui" || tui === "rust" || tui === "rt") return;
   // Kitty 规范用 ST；部分实现只认 BEL —— 双写兼容
   const st = `\x1b]22;${shape}\x1b\\`;
   const bel = `\x1b]22;${shape}\x07`;

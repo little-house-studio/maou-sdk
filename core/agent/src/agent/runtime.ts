@@ -25,6 +25,10 @@ import {
   ContextEngine,
   estimateTokensFromText,
   estimateTokens,
+  estimateTokensFromStrings,
+  estimateFullPromptTokens,
+  parsePromptTokensFromUsage,
+  resolveContextUsedTokens,
   MAX_ROUNDS,
   DEFAULT_AGENT_ROUND_LIMIT,
   DEFAULT_LOOP_THRESHOLD,
@@ -83,7 +87,7 @@ import type { AgentSkillOptions } from "../bootstrap/skills.js";
 import { createAgentSkillManager, applyAgentSkillOptions } from "../bootstrap/skills.js";
 import type { SubagentExecutorLike } from "@little-house-studio/types";
 import type { StreamEvent } from "@little-house-studio/types";
-import { Profiler } from "@little-house-studio/types";
+import { Profiler, resolveUserMaouRoot } from "@little-house-studio/types";
 import type { Hooks } from "./hooks.js";
 import { FileDiffWatch } from "../agent_factory/file-diff-watch.js";
 
@@ -348,6 +352,14 @@ export class AgentRuntime {
   /** 默认压缩失败后 15s 再试 */
   private static COMPRESS_RETRY_MS = 15_000;
 
+  /**
+   * 最近一次主模型 API 回报的 prompt/input token（真 usage）。
+   * 压缩与 /context 优先用此值，避免仅估 session 正文导致阈值永不触发。
+   */
+  private sessionLastApiPromptTokens = new Map<string, number>();
+  /** 记录该 usage 时的 history 估算 token，用于工具结果追加后的增量修正 */
+  private sessionHistoryTokensAtLastApi = new Map<string, number>();
+
   // ── 可插拔工厂（缺省使用内部默认实现）──
   private createSessionManagerFn: (sessions: SessionStore, maouRoot: string) => SessionManager;
   private createCheckpointStoreFn: (sessions: SessionStore) => CheckpointStore;
@@ -367,7 +379,7 @@ export class AgentRuntime {
     this.agentRoundLimit = options.agentRoundLimit ?? DEFAULT_AGENT_ROUND_LIMIT;
     this.loopThreshold = options.loopThreshold ?? DEFAULT_LOOP_THRESHOLD;
     this.logFn = options.log ?? (() => {});
-    this.maouRoot = options.maouRoot ?? join(process.env.HOME ?? '', '.maou');
+    this.maouRoot = options.maouRoot ?? resolveUserMaouRoot();
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.harnessStore = options.harnessStore;
     this.taskStore = options.taskStore;
@@ -427,6 +439,8 @@ export class AgentRuntime {
     stage?: string;
     originalTokens?: number;
     compressedTokens?: number;
+    droppedSummary?: string;
+    taskBlocks?: string[];
     error?: string;
   }> {
     if (!this.harnessStore || !this.taskStore) {
@@ -446,8 +460,12 @@ export class AgentRuntime {
         this.currentPreset?.maxContext ??
         this.currentPreset?.maxTokens ??
         65536;
-      const report = await engine.compress(limit);
+      const known = this.resolveSessionContextTokens(sessionId, engine.getHistory());
+      const report = await engine.compress(limit, { knownTokens: known, force: true });
       this.compressRetryAfter.delete(sessionId);
+      // 压缩后失效旧 API usage，等下一轮真回报
+      this.sessionLastApiPromptTokens.delete(sessionId);
+      this.sessionHistoryTokensAtLastApi.delete(sessionId);
       if (report.stage !== "activeStage") {
         const existing = this.sessionManager.getRollingSummary(sessionId) ?? "";
         const merged = existing && report.droppedSummary
@@ -464,11 +482,102 @@ export class AgentRuntime {
         stage: report.stage,
         originalTokens: report.originalTokens,
         compressedTokens: report.compressedTokens,
+        droppedSummary: report.droppedSummary,
+        taskBlocks: report.taskBlocks,
       };
     } catch (e) {
       this.compressRetryAfter.set(sessionId, Date.now() + AgentRuntime.COMPRESS_RETRY_MS);
       return { ok: false, error: String(e) };
     }
+  }
+
+  /**
+   * 解析会话上下文占用 token（优先 API prompt usage，再与本地全量估算取 max）。
+   * history 可选：传入当前 engine 工作集可避免重复 load。
+   */
+  private resolveSessionContextTokens(
+    sessionId: string,
+    history?: Parameters<typeof estimateTokens>[0],
+    opts?: {
+      systemPrompt?: string;
+      toolSchemas?: unknown;
+      extras?: string[];
+    },
+  ): number {
+    let api = this.sessionLastApiPromptTokens.get(sessionId) ?? 0;
+    if (api <= 0) {
+      try {
+        const latest = this.sessions.getLatestUsage(sessionId);
+        api = parsePromptTokensFromUsage(latest.usage as Record<string, unknown>);
+        if (api > 0) {
+          this.sessionLastApiPromptTokens.set(sessionId, api);
+        }
+      } catch { /* ignore */ }
+    }
+
+    let historyTokens = 0;
+    if (history) {
+      historyTokens = estimateTokens(history);
+    } else {
+      try {
+        const session = this.sessions.load(sessionId);
+        if (session?.messages?.length) {
+          // wire 消息粗算（无 Maou 结构时）
+          for (const m of session.messages) {
+            historyTokens += 4;
+            historyTokens += estimateTokensFromText(String((m as { content?: string }).content ?? ""));
+            const tcs = (m as { toolCalls?: unknown[] }).toolCalls;
+            if (Array.isArray(tcs)) {
+              for (const tc of tcs) {
+                historyTokens += 8;
+                const rec = tc as { name?: string; arguments?: unknown; parameters?: unknown };
+                historyTokens += estimateTokensFromText(String(rec.name ?? ""));
+                try {
+                  historyTokens += estimateTokensFromText(
+                    JSON.stringify(rec.arguments ?? rec.parameters ?? {}),
+                  );
+                } catch {
+                  historyTokens += 16;
+                }
+              }
+            }
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    // 工具结果追加后：在上次 API prompt 上叠加 history 增量（避免低估）
+    let apiAdjusted = api;
+    if (api > 0) {
+      const atApi = this.sessionHistoryTokensAtLastApi.get(sessionId);
+      if (atApi != null && historyTokens > atApi) {
+        apiAdjusted = api + (historyTokens - atApi);
+      }
+    }
+
+    const estimated = estimateFullPromptTokens({
+      historyTokens,
+      systemPrompt: opts?.systemPrompt,
+      toolSchemas: opts?.toolSchemas,
+      extras: opts?.extras,
+    });
+
+    return resolveContextUsedTokens({
+      apiPromptTokens: apiAdjusted,
+      estimatedPromptTokens: estimated,
+    });
+  }
+
+  /** 记录主模型本轮 API prompt tokens + 当时 history 估算 */
+  private recordApiPromptTokens(
+    sessionId: string,
+    usage: Record<string, unknown> | null | undefined,
+    historyTokens: number,
+  ): void {
+    const prompt = parsePromptTokensFromUsage(usage ?? undefined);
+    if (prompt <= 0) return;
+    this.sessionLastApiPromptTokens.set(sessionId, prompt);
+    this.sessionHistoryTokensAtLastApi.set(sessionId, Math.max(0, historyTokens));
   }
 
   getUsageStatsForSession(sessionId: string): {
@@ -675,11 +784,7 @@ export class AgentRuntime {
     try {
       const session = this.sessions.load(sessionId);
       if (!session) return null;
-      let used = 0;
-      for (const m of session.messages ?? []) {
-        used += 4;
-        used += estimateTokensFromText(String((m as { content?: string }).content ?? ""));
-      }
+      const used = this.resolveSessionContextTokens(sessionId);
       const max =
         this.currentPreset?.maxContext ??
         this.currentPreset?.maxTokens ??
@@ -690,7 +795,7 @@ export class AgentRuntime {
         max,
         pct,
         remaining: Math.max(0, max - used),
-        compactAt: 70,
+        compactAt: CONTEXT_THRESHOLD_PERCENT,
         summaryAt: 80,
         archiveAt: 90,
       };
@@ -707,13 +812,15 @@ export class AgentRuntime {
     userMessage: string,
     options: RunOptions,
   ): AsyncGenerator<StreamEvent> {
+    // task 指令可改写消息；用局部可变变量承接
+    let activeUserMessage = userMessage;
     // ── 性能埋点：本次 run 的 profiler（常驻、低开销，定位各阶段耗时）──
     const prof = new Profiler(`run:${(sessionId ?? "new").slice(0, 8)}`);
 
     // ── 1. 确保 session 存在（新会话首条消息即绑定到 initAgentName，如 coding）──
     const session = prof.sync("ensure_session", () => this.sessions.ensure(sessionId ?? undefined, options.initAgentName));
     sessionId = session.id;
-    this.log("info", `[RUN] start session=${sessionId} msg_len=${userMessage.length}`);
+    this.log("info", `[RUN] start session=${sessionId} msg_len=${activeUserMessage.length}`);
 
     // pathGuard：RunOptions 优先，否则用 per-session map
     if (options.pathGuard) {
@@ -730,7 +837,7 @@ export class AgentRuntime {
 
     // ── 1. 指令匹配：/xxx 指令直接执行，不走 AI ──
     const cmdCtx: CommandContext = {
-      rawInput: userMessage.trim(),
+      rawInput: activeUserMessage.trim(),
       args: "",
       sessionId: sessionId!,
       agentName: session.agentName || "main",
@@ -787,17 +894,26 @@ export class AgentRuntime {
         abortSignal: options.abortSignal,
       },
     };
-    const cmdResult = await this.commandRegistry.tryExecute(userMessage, cmdCtx);
+    const cmdResult = await this.commandRegistry.tryExecute(activeUserMessage, cmdCtx);
     if (cmdResult) {
-      // 指令匹配成功，直接返回结果
       const meta = cmdResult.meta ?? {};
-      // /new 返回新 session ID
-      const effectiveSessionId = (meta.sessionId as string) ?? sessionId!;
-      yield this.event("session", { sessionId: effectiveSessionId });
-      yield this.event("assistant", { content: cmdResult.content, round: 0 });
-      yield this.event("done", { sessionId: effectiveSessionId, rounds: 0, ...meta });
-      this.log("info", `[RUN] 指令命中 → ${userMessage.trim().split(/\s/)[0]}`);
-      return;
+      // task 模式（如 /init）：把指令正文当作用户任务注入，继续走正常 AI 流程
+      if (meta.asUserTask && typeof meta.taskPrompt === "string" && meta.taskPrompt.trim()) {
+        activeUserMessage = String(meta.taskPrompt);
+        this.log(
+          "info",
+          `[RUN] 指令任务注入 → ${String(meta.command ?? "").trim() || "task"}（继续 AI）`,
+        );
+        // fall through to agent loop
+      } else {
+        // 指令匹配成功，直接返回结果（固定回复 / 脚本输出）
+        const effectiveSessionId = (meta.sessionId as string) ?? sessionId!;
+        yield this.event("session", { sessionId: effectiveSessionId });
+        yield this.event("assistant", { content: cmdResult.content, round: 0 });
+        yield this.event("done", { sessionId: effectiveSessionId, rounds: 0, ...meta });
+        this.log("info", `[RUN] 指令命中 → ${activeUserMessage.trim().split(/\s/)[0]}`);
+        return;
+      }
     }
 
     // ── 1a. 内部 AbortController：让 MessageQueue interrupt 模式可以触发 abort ──
@@ -1185,7 +1301,27 @@ export class AgentRuntime {
         // gateway 模式：catalog 帮助模型知道有 MCP；真正调用走元工具 `mcp`
         // flat 模式：catalog + 全量 tool schemas
         try {
-          const catalog = await this.mcpManager.buildCatalogPrompt({ enrichLists: true });
+          // agent.json: mcp_catalog_detail = full | servers_only | auto
+          // auto：指令总数≤25 注入完整 tool 列表，否则仅服务名（专门 MCP agent 可设 full 强制全量）
+          const agentRec = agentEntry as unknown as Record<string, unknown>;
+          const rawDetail = agentRec?.mcp_catalog_detail
+            ?? (agentRec?.mcp as { catalog_detail?: string } | undefined)?.catalog_detail;
+          const catalogDetail =
+            rawDetail === "full" || rawDetail === "servers_only" || rawDetail === "auto"
+              ? rawDetail
+              : "auto";
+          const rawThr =
+            agentRec?.mcp_catalog_full_threshold
+            ?? (agentRec?.mcp as { full_inject_threshold?: unknown } | undefined)
+              ?.full_inject_threshold;
+          const thrNum = Number(rawThr);
+          const fullInjectThreshold =
+            Number.isFinite(thrNum) && thrNum > 0 ? thrNum : 25;
+          const catalog = await this.mcpManager.buildCatalogPrompt({
+            enrichLists: true,
+            detail: catalogDetail,
+            fullInjectThreshold,
+          });
           if (catalog) {
             let catalogBlock = catalog;
             if (mcpStrategy === "gateway") {
@@ -1193,14 +1329,18 @@ export class AgentRuntime {
                 catalog +
                 "\n\n<mcp_gateway_hint>\n" +
                 "MCP tools are NOT each listed in your tools array. Use the single tool `mcp`:\n" +
-                "  action=list | search | schema | call\n" +
-                "Example: mcp({ action: \"search\", query: \"env\" }) then mcp({ action: \"call\", name: \"mcp__server__tool\", arguments: {...} }).\n" +
+                "  list — one shot: full description + parameters for every matching tool\n" +
+                "  call — execute mcp__server__tool\n" +
+                "Examples:\n" +
+                "  mcp({ action: \"list\" })\n" +
+                "  mcp({ action: \"list\", server: \"my-server\" })\n" +
+                "  mcp({ action: \"call\", name: \"mcp__server__tool\", arguments: {...} })\n" +
                 "</mcp_gateway_hint>";
             }
             systemPrompt = `${systemPrompt}\n\n${catalogBlock}`;
             yield this.logEvent(
               "info",
-              `已注入 MCP catalog 到系统提示词（strategy=${mcpStrategy}, llm_tools=${names.length}, underlying=${this.mcpManager.listDescriptors().length}, servers=${this.mcpManager.sessionCount}）`,
+              `已注入 MCP catalog 到系统提示词（strategy=${mcpStrategy}, catalog_detail=${catalogDetail}, llm_tools=${names.length}, underlying=${this.mcpManager.listDescriptors().length}, servers=${this.mcpManager.sessionCount}）`,
             );
           }
         } catch (catErr) {
@@ -1339,7 +1479,7 @@ export class AgentRuntime {
     endToolSetup();
 
     // ── /todo：清洗指令词 + 靠后追加 plan_required notice（不改 system，保 cache）──
-    const todoPre = preprocessTodoSlash(userMessage);
+    const todoPre = preprocessTodoSlash(activeUserMessage);
     let effectiveUserMessage = todoPre.message;
     if (todoPre.requirePlan) {
       const notice = buildPlanRequiredNotice();
@@ -1572,15 +1712,16 @@ export class AgentRuntime {
       if (roundCount === 0 || !runMemoryCache) {
         runMemoryCache = prof.sync("memory_recall", () => {
           const memoryStore = this.createMemoryStoreFn(this.maouRoot, agentName);
-          return memoryStore.recall(userMessage, 5);
+          return memoryStore.recall(activeUserMessage, 5);
         }, { round: currentRound });
       }
       const memoryResult = runMemoryCache;
 
       // 自动压缩检查
-      // 上下文压缩阈值应基于输入上下文上限（maxContext），而非输出上限（maxTokens）。
-      // 优先 maxContext，回退 maxTokens（兼容旧 preset），最后 65536 兜底。
+      // 阈值基于输入上下文上限 maxContext（非输出 maxTokens）。
+      // 占用 token 优先 API 真 prompt usage，再与 system+tools+history 全量估算取 max。
       const contextLimit = preset.maxContext ?? preset.maxTokens ?? 65536;
+      const compressTriggerAt = contextLimit * (CONTEXT_THRESHOLD_PERCENT / 100);
 
       // ── ContextEngine 闭环路径（注入 stores 时启用）──
       // 每轮从原始 session 重建工作集 → 超阈值则 compress（备份/任务块/zone 落盘）→ toLLMHistory。
@@ -1602,18 +1743,32 @@ export class AgentRuntime {
               summarizer: runSummarizer,
             });
             engine.initFromSessionMessages(sessionMessages as unknown as Array<Record<string, unknown>>);
-            const tokens = estimateTokens(engine.getHistory());
-            if (tokens >= contextLimit * (CONTEXT_THRESHOLD_PERCENT / 100)) {
+            const usedTokens = this.resolveSessionContextTokens(sessionId!, engine.getHistory(), {
+              systemPrompt,
+              toolSchemas,
+              extras: [
+                effectiveBeforeUser,
+                currentDynamicInjections,
+                memoryResult.formattedContext ?? "",
+                this.sessionManager.getRollingSummary(sessionId!) ?? "",
+              ].filter(Boolean),
+            });
+            if (usedTokens >= compressTriggerAt) {
               this.hooks?.preCompact();
               if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
                 this.checkpointStore.createCheckpoint(
                   sessionId!, `auto_before_compression_round_${currentRound}`, true, "compression",
                 );
               }
-              const report = await engine.compress(contextLimit);
+              const report = await engine.compress(contextLimit, {
+                knownTokens: usedTokens,
+                force: usedTokens >= compressTriggerAt,
+              });
               if (report.stage !== "activeStage") {
                 compressedHistory = engine.toLLMHistory();
                 this.compressRetryAfter.delete(sessionId!);
+                this.sessionLastApiPromptTokens.delete(sessionId!);
+                this.sessionHistoryTokensAtLastApi.delete(sessionId!);
                 const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
                 const merged = existing && report.droppedSummary
                   ? `${existing}\n\n---\n\n${report.droppedSummary}`
@@ -1627,11 +1782,24 @@ export class AgentRuntime {
                     this.onCompress(sessionId!, report.stage, report.droppedSummary, report.taskBlocks ?? []);
                   } catch { /* 落盘失败不影响主流程 */ }
                 }
-                // warning 级别：CLI 渲染为黄色系统事件
-                yield this.logEvent(
-                  "warning",
-                  `上下文已压缩 (stage=${report.stage}，token: ${report.originalTokens} → ${report.compressedTokens})`,
-                );
+                // 仅大压缩 / 归档提醒一次；微压缩（compactStage）永不刷 UI
+                if (
+                  report.stage === "summaryStage" ||
+                  report.stage === "archiveStage"
+                ) {
+                  yield this.compressLogEvent({
+                    stage: report.stage,
+                    originalTokens: report.originalTokens,
+                    compressedTokens: report.compressedTokens,
+                    droppedSummary: report.droppedSummary,
+                    taskBlocks: report.taskBlocks,
+                  });
+                } else {
+                  this.log(
+                    "info",
+                    `[ContextEngine] 微压缩静默 stage=${report.stage} token ${report.originalTokens}→${report.compressedTokens}`,
+                  );
+                }
                 this.hooks?.postCompact(report.compressedTokens ?? 0);
               }
             }
@@ -1659,7 +1827,7 @@ export class AgentRuntime {
         userOpts: {
           beforeUserContent: effectiveBeforeUser,
           dynamicInjections: currentDynamicInjections,
-          userMessage: roundCount === 0 ? userMessage : "",
+          userMessage: roundCount === 0 ? activeUserMessage : "",
           userName: options.userName ?? "user",
         },
         platformContext: options.platformContext,
@@ -1687,11 +1855,28 @@ export class AgentRuntime {
           );
         }
 
-        const compressResult = prof.sync("context_compress_legacy", () => maybeCompress(messages, contextLimit), { round: currentRound });
+        // legacy：用全量占用触发；maybeCompress 内部仍估消息体，超阈值才 truncate
+        const legacyUsed = this.resolveSessionContextTokens(sessionId!, undefined, {
+          systemPrompt,
+          toolSchemas,
+          extras: [
+            effectiveBeforeUser,
+            currentDynamicInjections,
+            memoryResult.formattedContext ?? "",
+          ].filter(Boolean),
+        });
+        const compressResult = prof.sync("context_compress_legacy", () => {
+          return maybeCompress(messages, contextLimit, {
+            knownTokens: legacyUsed,
+            force: legacyUsed >= compressTriggerAt,
+          });
+        }, { round: currentRound });
         finalMessages = compressResult.messages;
         const compressed = compressResult.compressed;
         const droppedSummary = compressResult.droppedSummary;
         if (compressed) {
+          this.sessionLastApiPromptTokens.delete(sessionId!);
+          this.sessionHistoryTokensAtLastApi.delete(sessionId!);
           // 把本轮新产生的摘要拼接到滚动摘要里，让后续轮次依然能看到被丢弃内容的线索
           const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
           const merged = existing
@@ -1709,15 +1894,19 @@ export class AgentRuntime {
             }
           }
 
-          const zoneName = compressResult.stage ?? "unknown";
-          const tokenStr =
-            compressResult.originalTokens && compressResult.compressedTokens
-              ? `，token: ${compressResult.originalTokens} → ${compressResult.compressedTokens}`
-              : "";
-          yield this.logEvent(
-            "info",
-            `上下文已压缩 (zone=${zoneName}${tokenStr})，消息数: ${sessionMessages.length}`,
-          );
+          // 仅大压缩 / 归档提醒；微压缩静默
+          if (
+            compressResult.stage === "summaryStage" ||
+            compressResult.stage === "archiveStage"
+          ) {
+            yield this.compressLogEvent({
+              stage: compressResult.stage,
+              originalTokens: compressResult.originalTokens,
+              compressedTokens: compressResult.compressedTokens,
+              droppedSummary: droppedSummary,
+              taskBlocks: compressResult.taskBlocks,
+            });
+          }
           this.hooks?.postCompact(compressResult.compressedTokens ?? 0);
         }
       }
@@ -1840,6 +2029,30 @@ export class AgentRuntime {
           ?? (preset as { name?: string }).name
           ?? "",
         );
+        // 压缩门槛：记下本轮真实 prompt tokens（含 system/tools）
+        try {
+          const histTok = estimateFullPromptTokens({
+            historyTokens: estimateTokensFromStrings(
+              (finalMessages as Array<{ content?: unknown }>).map((m) => ({
+                content: typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
+              })),
+            ),
+          });
+          // 用 session history 粗算作增量基线（下一轮工具结果追加后可叠加）
+          let sessionHistTok = 0;
+          try {
+            const sess = this.sessions.load(sessionId!);
+            for (const m of sess?.messages ?? []) {
+              sessionHistTok += 4;
+              sessionHistTok += estimateTokensFromText(String((m as { content?: string }).content ?? ""));
+            }
+          } catch { /* ignore */ }
+          this.recordApiPromptTokens(
+            sessionId!,
+            result.usage as Record<string, unknown>,
+            sessionHistTok > 0 ? sessionHistTok : histTok,
+          );
+        } catch { /* ignore */ }
         // Agent 层权威写入：(agentName, sessionId, mainModel) 桶
         const cacheSnap = promptCacheLedger().recordUsage({
           agentName,
@@ -2454,6 +2667,9 @@ export class AgentRuntime {
     // 执行可并发，但「提交」（落盘 raw + 写 session 消息 + yield 事件）严格按调用顺序，
     // 保证下一轮 LLM 看到的工具结果顺序与调用顺序一致。
     //
+    // UX：阻塞工具在**开始执行前**先 yield tool_call，前端立刻出卡片（意图→过程→结果），
+    // 不再等工具跑完才把 call+result 一起吐出。
+    //
     // 收集本轮所有「真实执行」（非 background）工具的 ok 状态，
     // 用于 endsLoop 判定时考虑执行失败（todo_finish 失败时不应退出 loop）。
     const executedTools: { name: string; ok: boolean }[] = [];
@@ -2493,11 +2709,17 @@ export class AgentRuntime {
           group.push(toolCalls[i]);
           i++;
         }
+        // 先公告整组 tool_call，再并行执行——前端同时看到多张「进行中」卡
+        for (const g of group) {
+          for (const ev of this.announceToolCall(g, round, sessionId)) yield ev;
+        }
         if (group.length > 1) {
           yield this.logEvent("info", `并行执行 ${group.length} 个只读工具: ${group.map(g => g.name).join(", ")}`);
         }
         const commits = await Promise.all(
-          group.map((g) => this.execOneToolCall(g, round, sessionId, context, prof)),
+          group.map((g) =>
+            this.execOneToolCall(g, round, sessionId, context, prof, { announced: true }),
+          ),
         );
         for (let k = 0; k < commits.length; k++) {
           const events = commits[k]();
@@ -2512,7 +2734,16 @@ export class AgentRuntime {
           }
         }
       } else {
-        const commit = await this.execOneToolCall(toolCalls[i], round, sessionId, context, prof);
+        // 串行：先公告再执行
+        for (const ev of this.announceToolCall(toolCalls[i], round, sessionId)) yield ev;
+        const commit = await this.execOneToolCall(
+          toolCalls[i],
+          round,
+          sessionId,
+          context,
+          prof,
+          { announced: true },
+        );
         const events = commit();
         for (const ev of events) yield ev;
         const tr = events.find((e) => e.type === "tool_result");
@@ -2828,9 +3059,49 @@ export class AgentRuntime {
   }
 
   /**
+   * 执行前公告 tool_call（前端立刻出卡），与 execOneToolCall({ announced:true }) 配对。
+   * 落 raw + yield tool_call，保证「意图」先于执行可见。
+   */
+  private announceToolCall(
+    toolCall: LLMToolCall,
+    round: number,
+    sessionId: string,
+  ): StreamEvent[] {
+    const now = () => new Date().toISOString();
+    this.sessions.appendRawEntry(sessionId, {
+      type: "tool_call",
+      round,
+      created_at: now(),
+      data: {
+        name: toolCall.name,
+        parameters: toolCall.parameters ?? {},
+        id: toolCall.id,
+        provider: toolCall.provider,
+        tool_type: toolCall.type,
+      },
+    });
+    return [
+      this.event("tool_call", {
+        tool: {
+          id: toolCall.id,
+          name: toolCall.name,
+          parameters: toolCall.parameters ?? {},
+          provider: toolCall.provider,
+          type: toolCall.type,
+        },
+        round,
+      }),
+      this.logEvent("info", `执行工具: ${toolCall.name}`),
+    ];
+  }
+
+  /**
    * 执行单个工具调用（异步部分），返回一个 commit 闭包。
    * commit() 同步执行所有有序副作用（落盘 raw + 写 session 消息）并返回需 yield 的事件数组。
    * 拆分「执行」与「提交」，使并发组可并行执行、按序提交。
+   *
+   * opts.announced：调用方已用 announceToolCall 推过 tool_call 时置 true，
+   * commit 时不再重复写 raw / yield tool_call。
    */
   private async execOneToolCall(
     toolCall: LLMToolCall,
@@ -2838,12 +3109,13 @@ export class AgentRuntime {
     sessionId: string,
     context: ToolContext,
     prof?: Profiler,
-    opts?: { background?: boolean },
+    opts?: { background?: boolean; announced?: boolean },
   ): Promise<() => StreamEvent[]> {
     const tcInfo = { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters };
     // background=true：后台执行（fire-and-forget），commit() 时跳过 appendMessage
     // （占位 tool_result 已由 commitBackgroundToolCall 写入，重复写会破坏 tool_call_id 一一对应）
     const background = opts?.background ?? false;
+    const announced = opts?.announced ?? false;
 
     // ── 前置校验：必填参数缺失时提前拦截，避免浪费一轮执行 ──
     // LLM 有时产生不完整的 tool_call（缺必填参数），此时直接返回引导性错误。
@@ -2856,12 +3128,13 @@ export class AgentRuntime {
       this.log("warn", `[Runtime] 拦截缺参数工具调用: ${toolCall.name} (round=${round}, missing=${missingRequired.join(",")})`);
       return (): StreamEvent[] => {
         const now = () => new Date().toISOString();
-        this.sessions.appendRawEntry(sessionId, { type: "tool_call", round, created_at: now(), data: { name: toolCall.name, parameters: toolCall.parameters ?? {}, id: toolCall.id, provider: toolCall.provider, tool_type: toolCall.type } });
+        const events: StreamEvent[] = [];
+        if (!background && !announced) {
+          this.sessions.appendRawEntry(sessionId, { type: "tool_call", round, created_at: now(), data: { name: toolCall.name, parameters: toolCall.parameters ?? {}, id: toolCall.id, provider: toolCall.provider, tool_type: toolCall.type } });
+          events.push(this.event("tool_call", { tool: { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters ?? {}, provider: toolCall.provider, type: toolCall.type }, round }));
+        }
         this.sessions.appendRawEntry(sessionId, { type: "tool_result", round, created_at: now(), data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: emptyMsg, ok: false, background } });
-        const events: StreamEvent[] = [
-          this.event("tool_call", { tool: { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters ?? {}, provider: toolCall.provider, type: toolCall.type }, round }),
-          this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: emptyMsg, ok: false, round, background }),
-        ];
+        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: emptyMsg, ok: false, round, background }));
         if (!background) {
           this.sessions.appendMessage(sessionId, "tool", emptyMsg, { round, toolCallId: toolCall.id, tool_name: toolCall.name, tool_ok: false });
         }
@@ -2893,8 +3166,9 @@ export class AgentRuntime {
       const events: StreamEvent[] = [];
       const now = () => new Date().toISOString();
 
-      // background=true：tool_call 日志由 commitBackgroundToolCall 已写过，这里不重复
-      if (!background) {
+      // background=true：tool_call 日志由 commitBackgroundToolCall 已写过
+      // announced=true：tool_call 已由 announceToolCall 写过
+      if (!background && !announced) {
         this.sessions.appendRawEntry(sessionId, {
           type: "tool_call",
           round,
@@ -3012,8 +3286,62 @@ export class AgentRuntime {
     return { type, ...data };
   }
 
-  private logEvent(level: string, message: string): StreamEvent {
-    return { type: "log", level, message };
+  private logEvent(level: string, message: string, detail?: string): StreamEvent {
+    return detail
+      ? { type: "log", level, message, detail }
+      : { type: "log", level, message };
+  }
+
+  /** 压缩系统事件：一行摘要 + 可展开详情（阶段 token / 压缩文） */
+  private compressLogEvent(report: {
+    stage?: string;
+    originalTokens?: number;
+    compressedTokens?: number;
+    droppedSummary?: string;
+    taskBlocks?: string[];
+  }): StreamEvent {
+    const stage = report.stage ?? "?";
+    const stageLabel =
+      stage === "compactStage"
+        ? "微压缩"
+        : stage === "summaryStage"
+          ? "大压缩"
+          : stage === "archiveStage"
+            ? "归档"
+            : stage === "activeStage"
+              ? "未压缩"
+              : stage;
+    const orig = report.originalTokens;
+    const comp = report.compressedTokens;
+    const tok =
+      orig != null && comp != null
+        ? `${orig} → ${comp}`
+        : orig != null
+          ? `${orig}`
+          : "?";
+    const save =
+      orig != null && comp != null && orig > 0
+        ? Math.round(((orig - comp) / orig) * 100)
+        : null;
+    const oneLine = `上下文已压缩 · ${stageLabel} · token ${tok}${
+      save != null ? `（-${save}%）` : ""
+    }`;
+    const detailParts: string[] = [
+      `阶段: ${stageLabel} (${stage})`,
+      orig != null || comp != null
+        ? `Token: ${orig ?? "?"} → ${comp ?? "?"}${
+            save != null ? `  节省 ${save}%` : ""
+          }`
+        : "Token: （未上报）",
+    ];
+    if (report.taskBlocks && report.taskBlocks.length > 0) {
+      detailParts.push(`任务块: ${report.taskBlocks.join(", ")}`);
+    }
+    detailParts.push("");
+    detailParts.push("── 压缩后摘要（检查是否到位）──");
+    const summary = (report.droppedSummary ?? "").trim();
+    detailParts.push(summary || "（无摘要正文 · 可能本轮未折叠内容）");
+    return this.logEvent("warning", oneLine, detailParts.join("\n"));
   }
 
   private log(level: string, message: string): void {

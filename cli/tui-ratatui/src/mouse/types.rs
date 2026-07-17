@@ -4,9 +4,9 @@ use ratatui::style::Color;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// Ink SEL_BG_RGB #2121FF
+/// Ink SEL_BG_RGB #2121FF —— Tau Ceti 计算机蓝，选区唯一底色（无渐变）
 pub const SEL_BG: Color = Color::Rgb(0x21, 0x21, 0xff);
-/// Ink SEL_FG_SGR ≈ #EBEBEB (useAnimFrame SEL_FG_SGR)
+/// Ink SEL_FG_SGR #EBEBEB —— 计算机蓝底上的浅字
 pub const SEL_FG: Color = Color::Rgb(0xEB, 0xEB, 0xEB);
 /// Flash phase (sel-fx.ts)
 pub const SEL_FLASH_BG: Color = Color::Rgb(220, 220, 220);

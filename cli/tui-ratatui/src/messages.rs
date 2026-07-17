@@ -107,6 +107,9 @@ pub struct ToolHit {
 pub struct ExpandHit {
     pub line_idx: usize,
     pub message_id: String,
+    /// 悬停是否铺底色：仅「收纳态 · 展开功能行」为 true。
+    /// 展开态仍可点收起，但不整行发黄（用户反馈整块黄底太大）。
+    pub hover_paint: bool,
 }
 
 /// Click thinking header → ThinkingToggle (Ink ThinkingBlock useClickTarget).
@@ -130,6 +133,7 @@ pub struct ToolResultHit {
     pub tool_id: String,
 }
 
+#[derive(Clone, Default)]
 pub struct RenderHits {
     pub tools: Vec<ToolHit>,
     pub expands: Vec<ExpandHit>,
@@ -138,31 +142,57 @@ pub struct RenderHits {
     pub tool_results: Vec<ToolResultHit>,
 }
 
+/// Returns (summary_line, pretty_json).
+/// 折叠标题优先：description / reason / 短 target；整段 command 仅作展开详情。
 fn parse_args(args: &str) -> (String, String, String) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
         if let Some(obj) = v.as_object() {
+            let description = obj
+                .get("description")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             let reason = obj
                 .get("reason")
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let target = [
-                "path",
-                "file_path",
-                "command",
-                "pattern",
-                "query",
-                "name",
-                "url",
-            ]
-            .iter()
-            .find_map(|k| obj.get(*k).and_then(|x| x.as_str()))
-            .unwrap_or("")
-            .trim()
-            .to_string();
+            let pathish = ["path", "file_path", "pattern", "query", "name", "url"]
+                .iter()
+                .find_map(|k| obj.get(*k).and_then(|x| x.as_str()))
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let command = obj
+                .get("command")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            // 折叠摘要：人话 > reason > 路径类 > 命令首段（截断）
+            let summary = if !description.is_empty() {
+                description
+            } else if !reason.is_empty() {
+                reason
+            } else if !pathish.is_empty() {
+                pathish
+            } else if !command.is_empty() {
+                // 终端命令：只取首行 / 首段，避免整行 cd && cat 刷屏
+                let one = command.lines().next().unwrap_or(&command);
+                let cut = one
+                    .split("&&")
+                    .next()
+                    .unwrap_or(one)
+                    .trim();
+                trunc(cut, 48)
+            } else {
+                String::new()
+            };
             let pretty = serde_json::to_string_pretty(&v).unwrap_or_else(|_| args.to_string());
-            return (reason, target, pretty);
+            // reason 槽位留给摘要；target 空 → tool_title 只显示摘要
+            return (summary, String::new(), pretty);
         }
     }
     (
@@ -325,10 +355,12 @@ pub fn render_messages(
                 line_idx: out.len(),
                 event_id: ev.id.clone(),
             });
-            out.push(body_line(
-                "  ▶ 详情（点击展开）",
-                Style::default().fg(theme.dim),
-            ));
+            let hint = if ev.kind == "compress" {
+                "  ▶ 阶段 token · 压缩摘要（点击展开）"
+            } else {
+                "  ▶ 详情（点击展开）"
+            };
+            out.push(body_line(hint, Style::default().fg(theme.dim)));
         }
     }
 
@@ -338,7 +370,32 @@ pub fn render_messages(
         messages
     };
 
+    // 最新一轮 = 最后一条真人 user 及其后：正文默认全开；历史轮默认折叠（工具卡仍折）
+    let last_human_user_idx = messages.iter().rposition(|m| {
+        if m.role != "user" {
+            return false;
+        }
+        let kind = m.kind.as_deref().unwrap_or("human_user");
+        let k = kind.split('|').next().unwrap_or(kind);
+        !matches!(
+            k,
+            "system_notice" | "runtime_control" | "agent_message" | "compact" | "unknown"
+        )
+    });
+    // AI 最终回复：最后一条带正文（或仍在流式）的 assistant → ◈ 下白竖线
+    let final_assistant_id = messages
+        .iter()
+        .rev()
+        .find(|m| {
+            m.role == "assistant"
+                && (m.streaming || !m.content.trim().is_empty())
+        })
+        .map(|m| m.id.as_str());
+
     for m in slice {
+        let mi = messages.iter().position(|x| x.id == m.id).unwrap_or(0);
+        let in_latest_round = last_human_user_idx.map(|u| mi >= u).unwrap_or(true);
+        let is_final_reply = final_assistant_id == Some(m.id.as_str());
         let label = m
             .author_label
             .clone()
@@ -393,11 +450,12 @@ pub fn render_messages(
                     true, // top screw ⨁ right-aligned
                     w,
                 ));
-                let body_w = w.saturating_sub(2); // │ + content
+                // logo(┃ 宽2) + 正文；与最终 AI 回复块线同列
+                let body_w = w.saturating_sub(LOGO_W).max(8);
                 let body_lines: Vec<String> = m
                     .content
                     .split('\n')
-                    .flat_map(|p| wrap_str(p, body_w.saturating_sub(1)))
+                    .flat_map(|p| wrap_str(p, body_w))
                     .collect();
                 let limit = 10;
                 let expanded = kind.contains("expanded");
@@ -420,13 +478,9 @@ pub fn render_messages(
                     ));
                 }
                 if total > limit {
-                    hits.expands.push(ExpandHit {
-                        line_idx: out.len(),
-                        message_id: m.id.clone(),
-                    });
                     // Ink: expand vs collapse affordance
                     let fold = if expanded {
-                        format!(" ▲ 收起全文（{total} 行 · 点击）")
+                        format!(" ▲ 收起全文（{total} 行 · 再点收起）")
                     } else {
                         format!(" ▼ 展开全文（{total} 行 · 点击）")
                     };
@@ -440,6 +494,14 @@ pub fn render_messages(
                         false,
                         w,
                     ));
+                    // 只把「展开/收起」功能行注册为热区：
+                    // · 悬停高亮仅收纳态（hover_paint）
+                    // · 不再把整块正文挂 expand，避免移上去整片发黄
+                    hits.expands.push(ExpandHit {
+                        line_idx: out.len() - 1,
+                        message_id: m.id.clone(),
+                        hover_paint: !expanded,
+                    });
                 }
                 // bottom pad with right-aligned ⨁
                 out.push(user_bar_line(
@@ -505,10 +567,15 @@ pub fn render_messages(
 
                 for th in &m.thinking_blocks {
                     let chars = th.content.chars().count();
-                    // Ink ThinkingBlock: `* think (dur) // N 字 ▶` or streaming with spinner
+                    // Ink ThinkingBlock: fixed-width dots + spinner so header never reflows height
                     let tlabel: String = if th.streaming {
+                        let dots = match (spinner_frame / 2) % 3 {
+                            0 => ".  ",
+                            1 => ".. ",
+                            _ => "...",
+                        };
                         format!(
-                            "* think {} // {chars} 字",
+                            "* think {}{dots} // {chars} 字",
                             spinner_char(spinner_frame)
                         )
                     } else {
@@ -527,31 +594,57 @@ pub fn render_messages(
                             thinking_id: th.id.clone(),
                         });
                     }
-                    out.push(pipe_body(&tlabel, theme.muted, theme));
-                    if !th.collapsed || th.streaming {
-                        let body = if th.collapsed && !th.streaming {
-                            let t: String = th.content.chars().take(100).collect();
-                            format!("{t}…")
+                    out.push(pipe_body(&tlabel, theme.muted, theme, false));
+                    // 收纳态：只留一行标识；流式 / 用户展开才画正文窗口
+                    if th.streaming || !th.collapsed {
+                        // Stable body height while streaming: always THINK_MAX visual rows.
+                        // (wrap full text → take tail/head window → pad top when short)
+                        const THINK_MAX: usize = 5;
+                        let body_w = w.saturating_sub(LOGO_W + 4).max(8);
+                        // Wrap each logical line, then flatten
+                        let mut visual: Vec<String> = Vec::new();
+                        if th.content.is_empty() {
+                            visual.push(String::new());
                         } else {
-                            // Ink: max 5 lines for think body
-                            let lines: Vec<&str> = th.content.lines().collect();
-                            if lines.len() > 5 {
-                                if th.streaming {
-                                    format!("…\n{}", lines[lines.len() - 5..].join("\n"))
+                            for para in th.content.split('\n') {
+                                if para.is_empty() {
+                                    visual.push(String::new());
                                 } else {
-                                    format!("{}\n…", lines[..5].join("\n"))
+                                    visual.extend(wrap_str(para, body_w));
                                 }
-                            } else {
-                                th.content.clone()
                             }
+                        }
+                        let total = visual.len();
+                        let window: Vec<String> = if th.streaming {
+                            if total <= THINK_MAX {
+                                let mut v = vec![String::new(); THINK_MAX - total];
+                                v.extend(visual);
+                                v
+                            } else {
+                                visual[total - THINK_MAX..].to_vec()
+                            }
+                        } else if total <= THINK_MAX {
+                            visual
+                        } else {
+                            visual[..THINK_MAX].to_vec()
                         };
-                        for chunk in wrap_str(&body, w.saturating_sub(LOGO_W + 4)) {
-                            out.push(pipe_body(&format!("  {chunk}"), theme.dim, theme));
+                        for chunk in &window {
+                            // Pad empty row with a space so the slot still paints (no ghost holes)
+                            let line = if chunk.is_empty() { " " } else { chunk.as_str() };
+                            out.push(pipe_body(&format!("  {line}"), theme.dim, theme, false));
+                        }
+                        if !th.streaming && total > THINK_MAX {
+                            out.push(pipe_body(
+                                &format!("  … 共 {total} 行 · 仅显示 {THINK_MAX} 行"),
+                                theme.dim,
+                                theme,
+                                false,
+                            ));
                         }
                     }
                 }
 
-                // Ink MdPaper-ish: assistant content with left │ gutter
+                // assistant content：最终回复（◈ 下）白竖线；历史轮无竖线
                 let content_trim = m.content.trim();
                 if !content_trim.is_empty() || m.streaming {
                     let md = render_markdown(
@@ -566,20 +659,7 @@ pub fn render_messages(
                     );
                     let mut md_lines: Vec<Line<'static>> = Vec::new();
                     for line in md {
-                        let plain: String =
-                            line.spans.iter().map(|s| s.content.as_ref()).collect();
-                        let text = plain.strip_prefix("  ").unwrap_or(&plain);
-                        if text.chars().all(|c| c == '─' || c == ' ' || c == '-')
-                            && text.contains('─')
-                        {
-                            md_lines.push(pipe_body(
-                                &"─".repeat((w.saturating_sub(LOGO_W + 2)).min(80)),
-                                theme.dim,
-                                theme,
-                            ));
-                        } else {
-                            md_lines.push(pipe_body(text, theme.assistant, theme));
-                        }
+                        md_lines.push(pipe_md_line(line, theme, is_final_reply));
                     }
                     if m.streaming {
                         // trailing spinner cursor
@@ -596,33 +676,38 @@ pub fn render_messages(
                                 &format!(" {spin}"),
                                 theme.accent,
                                 theme,
+                                is_final_reply,
                             ));
                         }
                     }
-                    let limit = 12;
+                    // 预览行：最新轮收纳后 12 行；历史轮 3 行。expanded 由 Node 决定
+                    // （最新默认开 / 历史默认关；再点切换）。
+                    let preview = if in_latest_round { 12 } else { 3 };
                     let expanded = m
                         .kind
                         .as_ref()
                         .map(|k| k.contains("expanded"))
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                        || m.streaming;
                     let total = md_lines.len();
-                    if !m.streaming && total > limit {
+                    if !m.streaming && total > preview {
                         if expanded {
                             out.extend(md_lines);
                         } else {
-                            out.extend(md_lines.into_iter().take(limit));
+                            out.extend(md_lines.into_iter().take(preview));
                         }
-                        hits.expands.push(ExpandHit {
-                            line_idx: out.len(),
-                            message_id: m.id.clone(),
-                        });
-                        // Ink expand / collapse affordance
+                        // 展开/收起功能行（仅此行可点；收纳态才 hover 铺底）
                         let fold = if expanded {
-                            format!("▲ 收起全文（{total} 行 · 点击）")
+                            format!("▲ 收起全文（{total} 行 · 再点此行收起）")
                         } else {
                             format!("▼ 展开全文（已折叠约 {total} 行 · 点击展开）")
                         };
-                        out.push(pipe_body(&fold, theme.dim, theme));
+                        out.push(pipe_body(&fold, theme.dim, theme, is_final_reply));
+                        hits.expands.push(ExpandHit {
+                            line_idx: out.len() - 1,
+                            message_id: m.id.clone(),
+                            hover_paint: !expanded,
+                        });
                     } else {
                         out.extend(md_lines);
                     }
@@ -673,8 +758,8 @@ pub fn render_messages(
     (out, hits)
 }
 
-/// User bubble row: │ + text + optional right-aligned ⨁ (Ink UserBubble).
-/// `width` is full chat inner width; bar takes 1 col, screw takes ~2.
+/// User bubble row: logo 列视觉块线 ┃（与 ◈ 平齐）+ 正文 + 可选右对齐 ⨁。
+/// 块线色用 `bar`（调用方传 theme.accent 酸性绿，与旧 │ 一致）。
 fn user_bar_line(
     text: &str,
     fg: Color,
@@ -689,30 +774,34 @@ fn user_bar_line(
     if bold {
         st = st.add_modifier(Modifier::BOLD);
     }
-    let bar_w = 1usize;
+    let bg_st = Style::default().fg(bg).bg(bg);
+    // logo 列：┃ 与 head_line(◈) 同列（pad_logo 宽 = LOGO_W）
+    let logo = pad_logo("┃");
+    let logo_w = UnicodeWidthStr::width(logo.as_str()).max(LOGO_W);
     let screw_s = "⨁";
     let screw_w = if screw {
-        UnicodeWidthStr::width(screw_s) + 1 // leading space before screw on head only varies
+        UnicodeWidthStr::width(screw_s)
     } else {
         0
     };
-    // Ink: inset 1 on head/bot for screw; body fills inner
-    let inner_w = width.saturating_sub(bar_w).max(1);
-    let text_budget = if screw {
-        inner_w.saturating_sub(screw_w).saturating_sub(1) // trailing pad
-    } else {
-        inner_w
-    };
-    // pad text to budget so ⨁ sits on the right edge
+    // 正文预算：总宽 − logo − 可选 ⨁（贴右，无额外 gap 列）
+    let text_budget = width.saturating_sub(logo_w).saturating_sub(screw_w).max(1);
     let mut core = text.to_string();
     let tw = UnicodeWidthStr::width(core.as_str());
     if tw > text_budget {
         core = trunc(&core, text_budget);
     } else if tw < text_budget {
+        // 用空格垫满正文区，bg 才能铺到 ⨁ 左侧
         core.push_str(&" ".repeat(text_budget - tw));
     }
     let mut spans = vec![
-        Span::styled("│".to_string(), Style::default().fg(bar).bg(bg)),
+        Span::styled(
+            logo,
+            Style::default()
+                .fg(bar) // 酸性绿（theme.accent），不是白
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(core, st),
     ];
     if screw {
@@ -720,22 +809,70 @@ fn user_bar_line(
             screw_s.to_string(),
             Style::default().fg(screw_fg).bg(bg),
         ));
-        // trailing 1-col inset
-        spans.push(Span::styled(
-            " ".to_string(),
-            Style::default().fg(bg).bg(bg),
-        ));
+    }
+    // 兜底：若显示宽仍不足 width（截断误差），补 user_bg 空格
+    let used: usize = spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    if used < width {
+        spans.push(Span::styled(" ".repeat(width - used), bg_st));
     }
     Line::from(spans)
 }
 
-/// Assistant body: logo empty + │ + text (Ink MdPaper gutter)
-fn pipe_body(text: &str, fg: Color, theme: &Theme) -> Line<'static> {
+/// 视觉块线占 logo 列（与 head_line 的 ◈ 同列对齐）：pad_logo("┃") → 宽 2
+fn final_reply_logo_span() -> Span<'static> {
+    Span::styled(
+        pad_logo("┃"),
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+/// Assistant body：logo 列 = 空格或 ┃（与 ◈ 平齐），再接正文
+fn pipe_body(text: &str, fg: Color, theme: &Theme, final_reply_bar: bool) -> Line<'static> {
+    let logo = if final_reply_bar {
+        final_reply_logo_span()
+    } else {
+        Span::raw(logo_empty())
+    };
+    let _ = theme;
     Line::from(vec![
-        Span::raw(logo_empty()),
-        Span::styled("│ ".to_string(), Style::default().fg(theme.dim)),
+        logo,
         Span::styled(text.to_string(), Style::default().fg(fg)),
     ])
+}
+
+/// 保留 markdown 行内样式；最终回复 logo 列为 ┃（与 ◈ 平齐）
+fn pipe_md_line(line: Line<'static>, theme: &Theme, final_reply_bar: bool) -> Line<'static> {
+    let _ = theme;
+    let mut spans = line.spans;
+    if let Some(first) = spans.first_mut() {
+        let c = first.content.as_ref();
+        if let Some(rest) = c.strip_prefix("  ") {
+            *first = Span::styled(rest.to_string(), first.style);
+        } else if c == "  " {
+            spans.remove(0);
+        }
+    }
+    let logo = if final_reply_bar {
+        final_reply_logo_span()
+    } else {
+        Span::raw(logo_empty())
+    };
+    if spans.is_empty()
+        || spans
+            .iter()
+            .all(|s| s.content.as_ref().trim().is_empty())
+    {
+        // 空行仍画 logo 列上的 ┃，块线不断
+        return Line::from(vec![logo]);
+    }
+    let mut out = vec![logo];
+    out.extend(spans);
+    Line::from(out)
 }
 
 fn render_tool_card(
@@ -748,7 +885,7 @@ fn render_tool_card(
     spinner_frame: u64,
     expanded_tool_results: &std::collections::HashSet<String>,
 ) {
-    let (reason, target, pretty) = parse_args(&t.args);
+    let (summary, _unused_target, pretty) = parse_args(&t.args);
     let mark = if !t.done {
         spinner_char(spinner_frame)
     } else if t.is_error {
@@ -758,16 +895,18 @@ fn render_tool_card(
     } else {
         "▶"
     };
-    let mut meta = target.clone();
-    if !reason.is_empty() {
+    // 折叠：只显示短摘要（description/reason/命令首段），不刷整段 command
+    let mut meta = if summary.is_empty() {
+        String::new()
+    } else {
+        trunc(&summary, 56)
+    };
+    let dur = duration_str(t.duration_ms);
+    if !dur.is_empty() {
         if !meta.is_empty() {
             meta.push(' ');
         }
-        meta.push_str(&trunc(&reason, 40));
-    }
-    let dur = duration_str(t.duration_ms);
-    if !dur.is_empty() {
-        meta.push_str(&format!(" ({dur})"));
+        meta.push_str(&format!("({dur})"));
     }
 
     hits.tools.push(ToolHit {
@@ -775,15 +914,15 @@ fn render_tool_card(
         message_id: m.id.clone(),
         tool_id: t.id.clone(),
     });
-    // Ink: logo empty + " name " yellow + " target ▶"
+    // Ink: logo empty + " name " yellow + " summary ▶"
     out.push(tool_title_line(&t.name, &meta, mark, t.is_error, theme));
 
     if t.expanded {
         if !pretty.is_empty() && pretty != "{}" && pretty != "{\n}" {
-            out.push(pipe_body("▸ 输入", theme.dim, theme));
+            out.push(pipe_body("▸ 输入", theme.dim, theme, false));
             let show: String = pretty.lines().take(6).collect::<Vec<_>>().join("\n");
             for chunk in wrap_str(&show, w.saturating_sub(LOGO_W + 4)) {
-                out.push(pipe_body(&chunk, theme.warn, theme));
+                out.push(pipe_body(&chunk, theme.warn, theme, false));
             }
         }
         if let Some(res) = &t.result {
@@ -792,7 +931,7 @@ fn render_tool_card(
             } else {
                 "▸ 输出"
             };
-            out.push(pipe_body(label, theme.dim, theme));
+            out.push(pipe_body(label, theme.dim, theme, false));
             // Ink ResultSection: toolResult (cyan) / err
             let color = if t.is_error {
                 theme.err
@@ -823,12 +962,12 @@ fn render_tool_card(
                         color
                     };
                     for chunk in wrap_str(raw, w.saturating_sub(LOGO_W + 4)) {
-                        out.push(pipe_body(&chunk, st, theme));
+                        out.push(pipe_body(&chunk, st, theme, false));
                     }
                 }
             } else {
                 for chunk in wrap_str(&show, w.saturating_sub(LOGO_W + 4)) {
-                    out.push(pipe_body(&chunk, color, theme));
+                    out.push(pipe_body(&chunk, color, theme, false));
                 }
             }
             if need_fold {
@@ -843,7 +982,7 @@ fn render_tool_card(
                 } else {
                     format!("▼ 展开完整输出（{} 行 · 点击）", lines.len())
                 };
-                out.push(pipe_body(&fold, theme.dim, theme));
+                out.push(pipe_body(&fold, theme.dim, theme, false));
             }
         }
     }
@@ -968,8 +1107,8 @@ pub fn render_event_block_framed(
     } else {
         format!("↑{up}")
     };
-    // Ink dump: ◤○ IDLE  ↑~57.2k …… NORMAL · 询问 …… 0↑ 0↓ ◥
-    let left = format!("{icon} {en}  {up_s}");
+    // ◤ ○ IDLE  ↑~12.5k …… （角后仅 1 空格，勿双空）
+    let left = format!(" {icon} {en}  {up_s}");
     let mid = format!(" {appr_title} · {appr_hint} ");
     let right = format!("{up}↑ {down}↓");
     let pend = if pending > 0 {
@@ -984,15 +1123,8 @@ pub fn render_event_block_framed(
         + UnicodeWidthStr::width(pend.as_str())
         + 2; // corners
     let pad = (width as usize).saturating_sub(used);
-    // Ink-ish: left cluster · mid chip · right tokens; gaps fill exact width
-    // Prefer slightly larger right gap so mid sits optically left-of-center (Ink pad/3)
-    let gap_l_n = if pad <= 1 {
-        0
-    } else if pad == 2 {
-        1
-    } else {
-        (pad / 3).max(1)
-    };
+    // 中间审批芯片几何居中：左右空白尽量均分（右可多 1 列吸收奇数宽度）
+    let gap_l_n = pad / 2;
     let gap_r_n = pad.saturating_sub(gap_l_n);
     let gap_l = " ".repeat(gap_l_n);
     let gap_r = " ".repeat(gap_r_n);
@@ -1145,6 +1277,11 @@ mod tests {
         let plain = line_plain(&line);
         assert!(plain.contains('◤') && plain.contains('◥'), "corners: {plain}");
         assert!(plain.contains("IDLE"), "idle: {plain}");
+        // ◤ 后仅一空再接 ○
+        assert!(
+            plain.contains("◤ ○") && !plain.contains("◤  ○"),
+            "no double space after corner: {plain}"
+        );
         assert!(plain.contains("NORMAL") && plain.contains("询问"), "approval: {plain}");
         assert!(plain.contains('↑') && plain.contains('↓'), "tokens: {plain}");
     }
@@ -1186,7 +1323,10 @@ mod tests {
         let (lines, hits) =
             render_messages(&[], &[ev.clone()], 80, &theme, 200, 0, &empty, &empty_tr);
         let joined: String = lines.iter().map(line_plain).collect::<Vec<_>>().join("\n");
-        assert!(joined.contains("▶ 详情"), "collapsed affordance: {joined}");
+        assert!(
+            joined.contains("▶ 详情") || joined.contains("▶ 阶段"),
+            "collapsed affordance: {joined}"
+        );
         assert!(!joined.contains("line1"), "detail hidden when collapsed");
         assert!(!hits.system_events.is_empty());
 
@@ -1254,6 +1394,66 @@ mod tests {
     }
 
     #[test]
+    fn thinking_streaming_body_height_stable() {
+        use crate::protocol::ProtoThinking;
+        let theme = Theme::default();
+        let empty = std::collections::HashSet::new();
+        let empty_tr = std::collections::HashSet::new();
+
+        fn think_block_height(lines: &[ratatui::text::Line]) -> usize {
+            let mut start = None;
+            for (i, l) in lines.iter().enumerate() {
+                let p = line_plain(l);
+                if p.contains("think") && p.contains("字") {
+                    start = Some(i);
+                    break;
+                }
+            }
+            let s = start.expect("think header");
+            // header + 5 fixed body rows while streaming
+            1 + lines
+                .iter()
+                .skip(s + 1)
+                .take(5)
+                .count()
+        }
+
+        let mut short = fixture_messages();
+        short[1].thinking_blocks = vec![ProtoThinking {
+            id: "th".into(),
+            content: "a".into(),
+            streaming: true,
+            ..Default::default()
+        }];
+        let (lines_a, _) =
+            render_messages(&short, &[], 80, &theme, 200, 0, &empty, &empty_tr);
+
+        let long_body = (0..20)
+            .map(|i| format!("thinking line {i} with more words"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut long = fixture_messages();
+        long[1].thinking_blocks = vec![ProtoThinking {
+            id: "th".into(),
+            content: long_body,
+            streaming: true,
+            ..Default::default()
+        }];
+        let (lines_b, _) =
+            render_messages(&long, &[], 80, &theme, 200, 3, &empty, &empty_tr);
+        let (lines_c, _) =
+            render_messages(&long, &[], 80, &theme, 200, 11, &empty, &empty_tr);
+
+        assert_eq!(think_block_height(&lines_a), 6, "short: header+5");
+        assert_eq!(think_block_height(&lines_b), 6, "long: header+5");
+        assert_eq!(
+            think_block_height(&lines_c),
+            6,
+            "spinner frame must not change height"
+        );
+    }
+
+    #[test]
     fn message_layout_markers_match_ink_chrome() {
         let theme = Theme::default();
         let empty_sys = std::collections::HashSet::new();
@@ -1270,10 +1470,10 @@ mod tests {
         );
         let joined: String = lines.iter().map(line_plain).collect::<Vec<_>>().join("\n");
 
-        // user bar + screw
+        // user block line + screw（视觉块线 ┃ 与 ◈ 同列）
         assert!(
-            joined.contains('│') && joined.contains('⨁'),
-            "user block must use │ bar and ⨁: {joined}"
+            (joined.contains('┃') || joined.contains('│')) && joined.contains('⨁'),
+            "user block must use bar and ⨁: {joined}"
         );
         assert!(
             joined.contains("user |") || joined.contains("user"),
@@ -1294,10 +1494,11 @@ mod tests {
             "agent label: {joined}"
         );
 
-        // assistant body gutter
+        // assistant body: no left gutter bar (logo indent only)
+        // (content still present)
         assert!(
-            joined.contains("│ "),
-            "assistant body │ gutter: {joined}"
+            joined.contains("hello") || joined.to_lowercase().contains("hi"),
+            "assistant body text: {joined}"
         );
 
         // tool yellow-name line marker

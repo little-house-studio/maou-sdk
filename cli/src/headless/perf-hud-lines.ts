@@ -20,8 +20,9 @@ import {
 } from "../hooks/process-stats.js";
 import { isLiteMode, LITE_HISTORY_BASE } from "../config/lite-mode.js";
 
+/** 阶段短标签：ink 是「UI 提交」计数桶名，不是 TUI 后端（Ratatui 下也会有 ui/pnt） */
 const PHASE_LABEL: Record<UiPhase, string> = {
-  ink: "ink",
+  ink: "ui",
   paint: "pnt",
   grid: "grd",
   mouse: "mse",
@@ -47,10 +48,14 @@ export type PerfHudPayload = {
   heat: "hot" | "warm" | "ok";
 };
 
-/** Keep sampler alive (unref interval). Call once from ratatui bridge boot. */
+/**
+ * Keep process-stats sampler alive for Ratatui chrome.
+ * Always subscribe so a later Settings toggle can start the timer;
+ * buildPerfHudPayload still no-ops when HUD is disabled.
+ */
 export function ensurePerfHudSampler(onTick?: () => void): () => void {
-  if (!processStatsHudEnabled()) return () => {};
   return subscribeProcessStats(() => {
+    if (!processStatsHudEnabled()) return;
     onTick?.();
   });
 }
@@ -68,20 +73,26 @@ export function buildPerfHudPayload(
   const liteTag = isLiteMode() ? ` ·LITE≤${LITE_HISTORY_BASE}` : "";
   const nativeTag = s.native ? " ·rs" : " ·js";
 
+  // inkFps = noteInkFrame（仅 Ink 路径）；Ratatui 下通常为 0，勿显示以免误以为在跑 Ink
+  const inkPart =
+    s.inkFps > 0 ? `/${formatFps(s.inkFps)}ink` : "";
   const line1 =
     `⚡ ${formatFps(s.fps)}fps` +
-    (s.inkFps > 0 ? `/${formatFps(s.inkFps)}ink` : "") +
+    inkPart +
     ` · cpu ${formatCpu(s.cpuPct)}` +
     `(ui${formatCpu(s.uiCpuPct)} ag${formatCpu(s.agentCpuPct)})` +
     ` · ${formatMem(s.rssMb)}/${formatMem(s.heapMb)}` +
     nativeTag +
     liteTag +
-    ` ·${winSec}s avg`;
+    ` ·${winSec}s avg` +
+    ` ·rt`; // 标明本 HUD 给 Ratatui 壳用（Node 采样）
 
   const line2 =
     a.samples > 0
-      ? `  ~${rollSec}s avg cpu${formatCpu(a.cpuPct)} fps${formatFps(a.fps)}/${formatFps(a.inkFps)}ink` +
-        ` · peak cpu${formatCpu(a.maxCpuPct)} fps${formatFps(a.maxFps)} ink${formatFps(a.maxInkFps)}` +
+      ? `  ~${rollSec}s avg cpu${formatCpu(a.cpuPct)} fps${formatFps(a.fps)}` +
+        (a.inkFps > 0 ? `/${formatFps(a.inkFps)}ink` : "") +
+        ` · peak cpu${formatCpu(a.maxCpuPct)} fps${formatFps(a.maxFps)}` +
+        (a.maxInkFps > 0 ? ` ink${formatFps(a.maxInkFps)}` : "") +
         (a.maxLoopLagMs > 0 ? ` lag${a.maxLoopLagMs}` : "")
       : `  ~${rollSec}s …采样中`;
 

@@ -6,25 +6,44 @@
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { homedir, platform } from "node:os";
 
 let cachedBinary: string | null | undefined;
+
+function binNames(): string[] {
+  return platform() === "win32" ? ["sqry.exe", "sqry"] : ["sqry"];
+}
 
 /** 查找 sqry 二进制路径（带缓存） */
 export function findSqryBinary(): string | null {
   if (cachedBinary !== undefined) return cachedBinary;
 
-  const candidates = [
-    join(process.env.HOME ?? "", ".cargo/bin/sqry"),
-    join(process.env.HOME ?? "", ".maou/bin/sqry"),
-    "sqry", // PATH
+  const home = homedir();
+  const names = binNames();
+  const dirs = [
+    join(home, ".cargo", "bin"),
+    join(home, ".maou", "bin"),
+    join(home, ".local", "bin"),
+    join(home, "bin"),
   ];
+  // Windows cargo default
+  if (platform() === "win32") {
+    const up = process.env.USERPROFILE;
+    if (up) dirs.push(join(up, ".cargo", "bin"));
+  }
+
+  const candidates: string[] = [];
+  for (const d of dirs) {
+    for (const n of names) candidates.push(join(d, n));
+  }
+  // PATH bare name
+  candidates.push(...names);
 
   for (const c of candidates) {
     try {
-      if (c === "sqry") {
-        // execFile 会搜索 PATH；先确认存在
-        execFileSync("sqry", ["--version"], { stdio: "ignore" });
-        cachedBinary = "sqry";
+      if (c === "sqry" || c === "sqry.exe") {
+        execFileSync(c, ["--version"], { stdio: "ignore", timeout: 5000 });
+        cachedBinary = c;
         return cachedBinary;
       } else if (existsSync(c)) {
         cachedBinary = c;
@@ -60,7 +79,12 @@ export function runSqry(args: string[], cwd: string, timeout = 30000): Promise<R
   return new Promise((resolve) => {
     const bin = findSqryBinary();
     if (!bin) {
-      resolve({ stdout: "", stderr: "sqry 未安装。请运行: cargo install sqry", code: 1 });
+      resolve({
+        stdout: "",
+        stderr:
+          "sqry 未安装。请运行: cargo install sqry  或将 sqry 放到 ~/.maou/bin（Windows: %USERPROFILE%\\.maou\\bin）",
+        code: 1,
+      });
       return;
     }
 

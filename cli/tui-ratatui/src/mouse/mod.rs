@@ -358,6 +358,19 @@ mod tests {
     }
 
     #[test]
+    fn byte_to_visual_col_mid_utf8_snaps_not_zero() {
+        // a(1) + 你(display 2) + b → mid byte of 你 must snap to start of 你 → width of "a" = 1
+        // (old bug: return 0 → caret jumps to line start)
+        let s = "a你b";
+        let mid = 2; // inside 你
+        assert!(!s.is_char_boundary(mid));
+        assert_eq!(byte_to_visual_col(s, mid), 1);
+        assert_eq!(byte_to_visual_col(s, 1), 1); // start of 你
+        assert_eq!(byte_to_visual_col(s, 0), 0);
+        assert_eq!(byte_to_visual_col(s, s.len()), 1 + 2 + 1); // a + 你 + b
+    }
+
+    #[test]
     fn input_extract_snaps_mid_utf8_range() {
         let draft = "hi你there";
         // hi(2) + 你(3) + there…
@@ -393,7 +406,7 @@ mod tests {
         assert!(!draft.is_char_boundary(mid));
         let _ = input_view_start(draft, mid); // must not panic
         let start = input_view_start(draft, draft.len());
-        assert!(start <= 2); // 6 lines → window starts near end
+        assert!(start <= 1); // 6 lines, viewport 5 → start ≤ 1
     }
 
     #[test]
@@ -415,6 +428,25 @@ mod tests {
         let (sg, sb) = sel_style_colors(SelPhase::Settled);
         assert_eq!(sb, SEL_BG);
         assert_eq!(sg, SEL_FG);
+    }
+
+    #[test]
+    fn sel_cell_style_is_solid_computer_blue() {
+        use ratatui::style::{Color, Modifier};
+        // live / settled：纯色 #2121FF + #EBEBEB，不依赖坐标
+        for phase in [SelPhase::Live, SelPhase::Settled] {
+            let st = sel_cell_style(phase);
+            assert_eq!(st.bg, Some(SEL_BG.into()));
+            assert_eq!(st.fg, Some(SEL_FG.into()));
+            assert!(st.add_modifier.contains(Modifier::BOLD));
+        }
+        let Color::Rgb(r, g, b) = SEL_BG else { panic!("rgb") };
+        assert_eq!((r, g, b), (0x21, 0x21, 0xff));
+        let Color::Rgb(r, g, b) = SEL_FG else { panic!("rgb") };
+        assert_eq!((r, g, b), (0xEB, 0xEB, 0xEB));
+        let flash = sel_cell_style(SelPhase::Flash);
+        assert_eq!(flash.bg, Some(SEL_FLASH_BG.into()));
+        assert_eq!(flash.fg, Some(SEL_FLASH_FG.into()));
     }
 
     #[test]

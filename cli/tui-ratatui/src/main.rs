@@ -22,22 +22,51 @@ use protocol::{emit, OutMsg};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::fs::OpenOptions;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::time::Duration;
 
+/// Terminal Synchronized Update (DECSET 2026)：整帧缓冲后再呈现，减轻滚动「果冻/撕裂」。
+/// Kitty / WezTerm / iTerm2 / Ghostty 等支持；不支持的终端会忽略。
+fn sync_update_begin(terminal: &mut Terminal<CrosstermBackend<std::fs::File>>) {
+    let _ = write!(terminal.backend_mut(), "\x1b[?2026h");
+}
+fn sync_update_end(terminal: &mut Terminal<CrosstermBackend<std::fs::File>>) {
+    let _ = write!(terminal.backend_mut(), "\x1b[?2026l");
+    let _ = terminal.backend_mut().flush();
+}
+
 fn open_tty_writer() -> anyhow::Result<std::fs::File> {
-    if let Ok(f) = OpenOptions::new().read(true).write(true).open("/dev/tty") {
-        return Ok(f);
-    }
-    if io::stdout().is_terminal() {
-        let fd = io::stdout().as_raw_fd();
-        let dup = unsafe { libc::dup(fd) };
-        if dup >= 0 {
-            return Ok(unsafe { std::fs::File::from_raw_fd(dup) });
+    // Unix: prefer /dev/tty so drawing is independent of redirected stdout
+    #[cfg(unix)]
+    {
+        if let Ok(f) = OpenOptions::new().read(true).write(true).open("/dev/tty") {
+            return Ok(f);
         }
+        if io::stdout().is_terminal() {
+            let fd = io::stdout().as_raw_fd();
+            let dup = unsafe { libc::dup(fd) };
+            if dup >= 0 {
+                return Ok(unsafe { std::fs::File::from_raw_fd(dup) });
+            }
+        }
+        anyhow::bail!("no /dev/tty and stdout is not a TTY");
     }
-    anyhow::bail!("no /dev/tty and stdout is not a TTY");
+    #[cfg(windows)]
+    {
+        // Windows: CONOUT$ is the console output device (no /dev/tty)
+        if let Ok(f) = OpenOptions::new().read(true).write(true).open("CONOUT$") {
+            return Ok(f);
+        }
+        if io::stdout().is_terminal() {
+            // Fallback: reopen stdout handle path is limited; try CON
+            if let Ok(f) = OpenOptions::new().write(true).open("CON") {
+                return Ok(f);
+            }
+        }
+        anyhow::bail!("no CONOUT$ and stdout is not a TTY (use MAOU_TUI=ink on Windows if this fails)");
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -62,14 +91,12 @@ fn main() -> anyhow::Result<()> {
 
     enable_raw_mode()?;
     let mut tty = tty;
-    // EnableBracketedPaste: Event::Paste for whole blocks (Ink paste end-lock parity)
     execute!(
         tty,
         EnterAlternateScreen,
         EnableMouseCapture,
         EnableBracketedPaste
     )?;
-    // Hide hardware cursor — software ▌ only (Ink)
     let _ = execute!(tty, crossterm::cursor::Hide);
     let backend = CrosstermBackend::new(tty);
     let mut terminal = Terminal::new(backend)?;
@@ -80,6 +107,7 @@ fn main() -> anyhow::Result<()> {
 
     let rx = spawn_protocol_reader();
     let mut app = App::new(rx);
+    // 16ms idle poll → ~60fps 上限（与 09bd0cc 一致）
     let tick = Duration::from_millis(16);
     let res = run_loop(&mut terminal, &mut app, tick);
 
@@ -102,12 +130,10 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Ink restoreTerminalViewport CSI (scroll region + auto-wrap + hide cursor).
 fn restore_terminal_viewport(
     terminal: &mut Terminal<CrosstermBackend<std::fs::File>>,
 ) -> anyhow::Result<()> {
     use std::io::Write;
-    // Reset scroll region, disable left/right margin, enable wrap, home+hide
     write!(
         terminal.backend_mut(),
         "\x1b[r\x1b[?69l\x1b[?7h\x1b[1;1H\x1b[?25l"
@@ -116,7 +142,6 @@ fn restore_terminal_viewport(
     Ok(())
 }
 
-/// Ink pinHardwareCursorForIme: move *hidden* HW cursor to caret for IME candidate window.
 fn pin_hardware_cursor_for_ime(
     terminal: &mut Terminal<CrosstermBackend<std::fs::File>>,
     app: &App,
@@ -133,6 +158,9 @@ fn pin_hardware_cursor_for_ime(
     Ok(())
 }
 
+/// 主循环对齐 09bd0cc 热路径：
+/// tick_input → (轻量 clear 若需) → **单次** draw → capture(选中时) → poll。
+/// 禁止 hard_full_paint 双 draw / CSI Purge（那是 7fps 主因）。
 fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<std::fs::File>>,
     app: &mut App,
@@ -142,38 +170,49 @@ fn run_loop(
         app.tick_input();
         app.note_frame();
 
-        // Full redraw: invalidate ratatui previous buffer so the next paint is not
-        // a sparse diff (blank regions after send/overlay/state — user workaround was resize).
+        // 轻量 full redraw：只 reset ratatui 双缓冲，不双 paint、不 Purge
         if app.take_full_redraw() {
             let _ = terminal.clear();
             let _ = restore_terminal_viewport(terminal);
         }
 
-        // draw 后 CompletedFrame.buffer = 本帧显存（Ink lastGrid 对等）
-        let completed = terminal.draw(|f| {
+        // 同步更新：本帧全部 CSI 写完再让终端合成一帧（类垂直同步）
+        sync_update_begin(terminal);
+        let draw_res = terminal.draw(|f| {
             let a = f.area();
-            if a.width != app.screen_cols || a.height != app.screen_rows {
-                // Resize already full-clears buffers, but request next-frame full for safety
-                app.screen_cols = a.width;
-                app.screen_rows = a.height;
-            } else {
-                app.screen_cols = a.width;
-                app.screen_rows = a.height;
-            }
+            app.screen_cols = a.width;
+            app.screen_rows = a.height;
             app.draw(f);
-        })?;
-        app.capture_vram(completed.buffer);
-        // I03: after paint, note overflow; restore once when latch clears
+        });
+        match draw_res {
+            Ok(completed) => {
+                app.capture_vram(completed.buffer);
+            }
+            Err(e) => {
+                emit(&OutMsg::Log {
+                    text: format!("draw: {e}"),
+                });
+                app.request_full_redraw();
+            }
+        }
+        sync_update_end(terminal);
+
         app.update_viewport_overflow();
         if app.take_viewport_restore() {
             let _ = restore_terminal_viewport(terminal);
-            // force full repaint after viewport reset (Ink fullPaintFn)
             let _ = terminal.clear();
+            sync_update_begin(terminal);
             let _ = terminal.draw(|f| app.draw(f));
+            sync_update_end(terminal);
         }
-        // I02: pin hidden HW caret for IME (after any restore)
         let _ = pin_hardware_cursor_for_ime(terminal, app);
-        poll_events(app, tick)?;
+
+        // 批量 drain 输入（最多 16），超时 tick 保持 idle ~60fps
+        if let Err(e) = poll_events(app, tick) {
+            emit(&OutMsg::Log {
+                text: format!("poll_events: {e}"),
+            });
+        }
     }
     Ok(())
 }

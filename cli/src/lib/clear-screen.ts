@@ -1,20 +1,37 @@
 /**
  * 清屏并强制 TUI 全量重绘。
  *
- * 仅写 CSI 2J 会把终端擦空，但 vram 的 prevEncoded 行 diff 仍认为
- * 「行未变」→ 跳过写出 → 画面空白/残影。必须同步 invalidatePaintCache。
+ * Ink：CSI 2J + invalidate vram diff，否则清屏后 diff 认为「未变」→ 空白/残影。
+ * Ratatui：绝不能从 Node 写 CSI 清屏——会弄乱 Rust 侧双缓冲，导致花屏/黑条/残字。
+ * 只 bump screenEpoch，由 bridge 发 full_paint / Rust 自行 hard clear。
  */
 
+import { isRatatuiBackend } from "../tui-bridge/config.js";
+
 export function clearTerminalScreen(): void {
-  // 动态 import：避免 clear-screen ↔ store ↔ vram 循环依赖在模块初始化期炸掉
+  // Always bump epoch so Ratatui bridge / any subscriber can force full paint
+  void import("../state/store.js")
+    .then(({ useStore }) => {
+      useStore.getState().bumpScreenEpoch();
+    })
+    .catch(() => {
+      /* store not ready */
+    });
+
+  // Ratatui owns the alternate screen — Node must not CSI-clear the TTY
+  if (isRatatuiBackend()) {
+    return;
+  }
+
+  // Ink path
   void import("../render/vram-layer.js")
     .then((m) => {
       m.requestScreenRefresh({ clear: true });
-      // Ink/React 状态更新后可能再来一帧；稍后再刷一次兜底
       setTimeout(() => m.scheduleFullPaint(), 32);
       setTimeout(() => m.scheduleFullPaint(), 120);
     })
     .catch(() => {
+      if (isRatatuiBackend()) return;
       try {
         if (process.stdout.isTTY) {
           process.stdout.write("\x1b[2J\x1b[3J\x1b[H");

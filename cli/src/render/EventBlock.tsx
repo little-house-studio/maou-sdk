@@ -356,8 +356,8 @@ export function EventBlock({ draft = "" }: { draft?: string }) {
   const rightBudget = Math.max(10, Math.floor(midW * 0.28));
   const centerBudget = Math.max(8, midW - leftBudget - rightBudget);
 
-  // 状态 chip 本体（仅 streaming 霓虹尾点）；其余左栏空白用静态底
-  const statusCore = `${leftIcon} ${st.en}${needFastAnim ? spinnerChar(anim + 3) : ""}  ↑${uncachedApprox ? "~" : ""}${compact(uncached)}`;
+  // 状态 chip：角 ◤ 后空一格再画图标（格式：◤  ○ IDLE …）
+  const statusCore = ` ${leftIcon} ${st.en}${needFastAnim ? spinnerChar(anim + 3) : ""}  ↑${uncachedApprox ? "~" : ""}${compact(uncached)}`;
   const statusCoreW = Math.min(leftBudget, Math.max(1, stringWidth(statusCore)));
   const statusPad = Math.max(0, leftBudget - statusCoreW);
   const centerStr = centerFit(

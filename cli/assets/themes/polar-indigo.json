@@ -1,0 +1,153 @@
+{
+  "id": "polar-indigo",
+  "name": "Polar Indigo",
+  "description": "极夜靛光：顶黑 → 紫靛 → 天空蓝。参考竖向光幕配色。",
+  "defaults": {
+    "hover": {
+      "mode": "lighten",
+      "amount": 0.16,
+      "fallback": "#3A3A60"
+    }
+  },
+  "palette": {
+    "void": { "base": "#000000", "hover": "#0A0A12" },
+    "deep": { "base": "#08060F", "hover": "#100C1C" },
+    "indigo": { "base": "#1A0F32", "hover": "#261848" },
+    "violet": { "base": "#3D2A7A", "hover": "#4E3A96" },
+    "glow": { "base": "#6B5BFF", "hover": "#8A7CFF" },
+    "sky": { "base": "#7EB6FF", "hover": "#A0C8FF" },
+    "mist": { "base": "#C5D6F8", "hover": "#DCE6FC" },
+    "frost": { "base": "#E8F0FF", "hover": "#FFFFFF" },
+    "danger": { "base": "#FF5C7A", "hover": "#FF7A94" },
+    "warn": { "base": "#FFB84D", "hover": "#FFC970" },
+    "ok": { "base": "#5EEAD4", "hover": "#7FF0DE" }
+  },
+  "colors": {
+    "bg": "#000000",
+    "panelBg": "#0C0A16",
+    "fg": "#E8F0FF",
+    "muted": "#7A88B8",
+    "dim": "#5A6490",
+    "border": "#1A1430",
+    "borderMuted": "#14102A",
+    "borderAccent": { "base": "#7EB6FF", "hover": "#A0C8FF" },
+    "accent": { "base": "#7EB6FF", "hover": "#A0C8FF" },
+    "accent2": { "base": "#9B7BFF", "hover": "#B59BFF" },
+    "ok": { "base": "#5EEAD4", "hover": "#7FF0DE" },
+    "warn": { "base": "#FFB84D", "hover": "#FFC970" },
+    "err": { "base": "#FF5C7A", "hover": "#FF7A94" },
+    "info": { "base": "#5B8CFF", "hover": "#7AA4FF" },
+    "user": "#FFFFFF",
+    "assistant": "#D4E0F8",
+    "system": { "base": "#9B7BFF", "hover": "#B59BFF" },
+    "tool": { "base": "#7EB6FF", "hover": "#A0C8FF" },
+    "toolResult": { "base": "#5EEAD4", "hover": "#7FF0DE" },
+    "thinkingOff": "#0C0A16",
+    "thinkingMinimal": "#5A6490",
+    "thinkingLow": "#A8B4D8",
+    "thinkingMedium": { "base": "#FFB84D", "hover": "#FFC970" },
+    "thinkingHigh": { "base": "#7EB6FF", "hover": "#A0C8FF" },
+    "thinkingXhigh": { "base": "#FF5C7A", "hover": "#FF7A94" },
+    "syntaxComment": "#5A6490",
+    "syntaxKeyword": { "base": "#9B7BFF", "hover": "#B59BFF" },
+    "syntaxString": { "base": "#7EB6FF", "hover": "#A0C8FF" },
+    "syntaxNumber": { "base": "#FFB84D", "hover": "#FFC970" },
+    "syntaxFunction": { "base": "#5B8CFF", "hover": "#7AA4FF" },
+    "syntaxType": { "base": "#C5B0FF", "hover": "#D8C8FF" },
+    "syntaxOperator": "#A8B4D8",
+    "syntaxVariable": "#FFFFFF",
+    "syntaxPunctuation": "#5A6490",
+    "mdHeading": { "base": "#A0C8FF", "hover": "#C5D6F8" },
+    "mdHeading2": { "base": "#9B7BFF", "hover": "#B59BFF" },
+    "mdHeading3": { "base": "#7EB6FF", "hover": "#A0C8FF" },
+    "mdCode": { "base": "#5EEAD4", "hover": "#7FF0DE" },
+    "mdCodeBlock": "#D4E0F8",
+    "mdCodeBlockBorder": "#1A1430",
+    "mdQuote": "#7A88B8",
+    "mdQuoteBorder": { "base": "#7EB6FF", "hover": "#A0C8FF" },
+    "mdHr": "#1A1430",
+    "mdLink": { "base": "#5B8CFF", "hover": "#7AA4FF" },
+    "mdListBullet": { "base": "#9B7BFF", "hover": "#B59BFF" },
+    "toolDiffAdded": { "base": "#5EEAD4", "hover": "#7FF0DE" },
+    "toolDiffRemoved": { "base": "#FF5C7A", "hover": "#FF7A94" },
+    "toolDiffContext": "#5A6490",
+    "selectedBg": "#1A0F32",
+    "userBg": "#120C22",
+    "systemBg": "#120C22",
+    "toolPendingBg": "#120C22",
+    "toolSuccessBg": "#08060F",
+    "toolErrorBg": "#1A0A18",
+    "footerBg": "#C5D6F8",
+    "inputFieldBg": "#A8BCE8",
+    "assistantMdBg": "#0A0814",
+    "mdPaperBorder": "#1A1430",
+    "bashMode": { "base": "#5EEAD4", "hover": "#7FF0DE" }
+  },
+  "nav": {
+    "defaults": {
+      "fg": "#FFFFFF",
+      "fgHover": "#FFFFFF"
+    },
+    "order": ["agent", "sessions", "terminal", "todo", "inbox", "notice", "settings"],
+    "items": {
+      "agent": {
+        "label": "agent",
+        "short": "A",
+        "bg": "#5B8CFF",
+        "bgHover": "#7AA4FF",
+        "fg": "#000000",
+        "fgHover": "#000000"
+      },
+      "sessions": {
+        "label": "会话",
+        "short": "会",
+        "bg": "#C5D6F8",
+        "bgHover": "#E8F0FF",
+        "fg": "#0A0814",
+        "fgHover": "#0A0814"
+      },
+      "terminal": {
+        "label": "终端",
+        "short": "终",
+        "bg": "#2A1F4A",
+        "bgHover": "#3D2A7A",
+        "fg": "#E8F0FF",
+        "fgHover": "#FFFFFF"
+      },
+      "todo": {
+        "label": "任务",
+        "short": "务",
+        "bg": "#1A1430",
+        "bgHover": "#2A1F4A",
+        "fg": "#E8F0FF",
+        "fgHover": "#FFFFFF"
+      },
+      "inbox": {
+        "label": "收件箱",
+        "short": "收",
+        "bg": "#120C22",
+        "bgHover": "#1A1430",
+        "fg": "#C5D6F8",
+        "fgHover": "#FFFFFF",
+        "badge": 0
+      },
+      "notice": {
+        "label": "公告",
+        "short": "告",
+        "bg": "#0A0814",
+        "bgHover": "#120C22",
+        "fg": "#A8B4D8",
+        "fgHover": "#E8F0FF",
+        "badge": 0
+      },
+      "settings": {
+        "label": "设置",
+        "short": "设",
+        "bg": "#9B7BFF",
+        "bgHover": "#B59BFF",
+        "fg": "#000000",
+        "fgHover": "#000000"
+      }
+    }
+  }
+}

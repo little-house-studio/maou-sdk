@@ -57,7 +57,7 @@ MAOU_TUI=ink maou coding
 - **PerfHud**：5 行 process-stats
 - **上一条 user**：对话区顶栏 + 预览
 - **复制**：Cmd+C / Ctrl+Shift+C
-- **滚轮（Grok/macOS 对齐）**：1 事件 = 1 行；惯性交给 OS
+- **滚轮（Grok 对齐）**：基线约 **3 行/齿**（对标 Grok `scroll_lines`）；触控板短间隔分数累加防放大惯性；快滑可到 4 行/步，单次封顶 8
 - **贴底发送 follow**：send 时 pin 最新；尾部 pad（idle 1 行 / 流式 ~40% 视口）预留 AI 输出空间；过滚回底 re-follow
 - cargo test + release
 

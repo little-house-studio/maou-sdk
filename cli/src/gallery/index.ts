@@ -5,6 +5,8 @@ export {
   pickGallerySize,
   pickGalleryWork,
   formatPlaque,
+  GALLERY_MIN_HANG_ROWS_FOR_ART,
+  shouldShowGalleryArt,
 } from "./catalog.js";
 export type { GalleryWork, GallerySize } from "./catalog.js";
 export {

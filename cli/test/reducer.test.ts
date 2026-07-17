@@ -230,10 +230,118 @@ describe("reducer: 27 StreamEvent types", () => {
     expect(s.currentRoundUsage.input).toBe(0);
   });
 
-  it("tool_pending: 事件块模式", () => {
+  it("tool_pending: 事件块模式 + 立刻出 pending 卡", () => {
     const s = apply(freshState(), { type: "tool_pending", tool: { name: "bash" } });
     expect(s.eventBlock.mode).toBe("tool_pending");
     expect(s.eventBlock.detail).toBe("bash");
+    const cards = s.messages[0]?.toolCalls ?? [];
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.name).toBe("bash");
+    expect(cards[0]!.done).toBe(false);
+  });
+
+  it("tool_call 在 tool_result 前就有进行中卡（意图先显示）", () => {
+    let s = apply(freshState(), {
+      type: "tool_call",
+      tool: { id: "t1", name: "read", parameters: { path: "/x" } },
+    });
+    const cards = s.messages[0]?.toolCalls ?? [];
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.done).toBe(false);
+    expect(cards[0]!.name).toBe("read");
+    expect(s.eventBlock.mode).toBe("tool_pending");
+    s = apply(s, {
+      type: "tool_result",
+      toolCallId: "t1",
+      name: "read",
+      content: "ok",
+      ok: true,
+    });
+    expect(s.messages[0]!.toolCalls![0]!.done).toBe(true);
+    expect(s.messages[0]!.toolCalls![0]!.result).toContain("ok");
+  });
+
+  it("thinking 在 assistant_delta / tool_call 时 seal，不再保持 streaming", () => {
+    let s = apply(freshState(), { type: "thinking_delta", delta: "先想一步" });
+    const bid = s.messages[0]!.thinkingBlocks![0]!.id;
+    expect(s.messages[0]!.thinkingBlocks![0]!.streaming).toBe(true);
+
+    s = apply(s, { type: "assistant_delta", delta: "开始写" });
+    const afterText = s.messages[0]!.thinkingBlocks!.find((b) => b.id === bid)!;
+    expect(afterText.streaming).toBe(false);
+    expect(afterText.content).toContain("先想一步");
+    expect(s.messages[0]!.content).toContain("开始写");
+
+    // 新一轮思考 + 直接工具
+    s = apply(s, { type: "thinking_delta", delta: "再查一下" });
+    // thinking 会因已有 toolCalls? 无 — 同消息无 tool，会 append 到新 block 或同消息
+    // 若 assistant 已有 content 且无 tool，thinking 可能仍在同一 assistant 上
+    const streamingThink = (s.messages[0]!.thinkingBlocks ?? []).some((b) => b.streaming);
+    // 若当前消息已有 content，thinking_delta 仍挂同一消息
+    if (streamingThink) {
+      s = apply(s, {
+        type: "tool_call",
+        tool: { id: "t-seal", name: "use_terminal", parameters: { cmd: "ls" } },
+      });
+      const allSealed = (s.messages.flatMap((m) => m.thinkingBlocks ?? [])).every(
+        (b) => !b.streaming,
+      );
+      expect(allSealed).toBe(true);
+    }
+  });
+
+  it("tool_call 前有 thinking 时会 seal 成一行状态", () => {
+    let s = apply(freshState(), { type: "thinking_delta", delta: "abc".repeat(40) });
+    expect(s.messages[0]!.thinkingBlocks![0]!.streaming).toBe(true);
+    s = apply(s, {
+      type: "tool_call",
+      tool: { id: "t9", name: "read", parameters: { path: "x" } },
+    });
+    expect(s.messages[0]!.thinkingBlocks![0]!.streaming).toBe(false);
+    expect(s.messages[0]!.toolCalls![0]!.done).toBe(false);
+  });
+
+  it("同一轮 assistant+tool 不拆成双消息、工具不叠卡", () => {
+    let s = apply(freshState(), { type: "thinking_delta", delta: "先想" });
+    s = apply(s, { type: "assistant_delta", delta: "让我验证一下 👇" });
+    // 完整 assistant（runtime 会带 nativeToolCalls 表示后面还有工具）
+    s = apply(s, {
+      type: "assistant",
+      content: "让我验证一下 👇",
+      nativeToolCalls: [{ id: "tc1", name: "use_terminal" }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    } as StreamEvent);
+    // 必须仍是 1 条 assistant，且 streaming 保持 true、槽位不丢
+    expect(s.messages.filter((m) => m.role === "assistant")).toHaveLength(1);
+    expect(s.messages[0]!.streaming).toBe(true);
+    expect(s.currentAssistantId).toBe(s.messages[0]!.id);
+    expect(s.messages[0]!.thinkingBlocks![0]!.streaming).toBe(false);
+
+    s = apply(s, {
+      type: "tool_call",
+      tool: { id: "tc1", name: "use_terminal", parameters: { command: "ls" } },
+    });
+    expect(s.messages.filter((m) => m.role === "assistant")).toHaveLength(1);
+    expect(s.messages[0]!.toolCalls).toHaveLength(1);
+    expect(s.messages[0]!.content).toContain("验证");
+
+    // 重复 announce 同 id 不叠第二张
+    s = apply(s, {
+      type: "tool_call",
+      tool: { id: "tc1", name: "use_terminal", parameters: { command: "ls" } },
+    });
+    expect(s.messages[0]!.toolCalls).toHaveLength(1);
+
+    s = apply(s, {
+      type: "tool_result",
+      toolCallId: "tc1",
+      name: "use_terminal",
+      content: "ok",
+      ok: true,
+    });
+    expect(s.messages).toHaveLength(1);
+    expect(s.messages[0]!.toolCalls![0]!.done).toBe(true);
+    expect(s.messages[0]!.streaming).toBe(false);
   });
 
   it("trace 类静默 drop（不抛错）", () => {

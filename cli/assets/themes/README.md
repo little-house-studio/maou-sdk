@@ -8,12 +8,20 @@
 |------|------|
 | `cli/assets/themes/<name>.json` | 包内内置配色 |
 | `~/.maou/themes/<name>.json` | 用户自定义（同名覆盖内置） |
-| `~/.maou/cli-ui.json` | 记住当前选用主题 `{ "theme": "tau-ceti" }` |
+| `~/.maou/cli-ui.json` | 记住当前选用主题 `{ "theme": "polar-indigo" }` |
+
+## 内置主题
+
+| id | 名称 | 说明 |
+|----|------|------|
+| `polar-indigo` | Polar Indigo | **默认**：顶黑 → 紫靛 → 天空蓝（极夜光幕） |
+| `tau-ceti` | Tau Ceti | Braun 灰阶 + 酸性黄绿 |
 
 ## 加载
 
 ```bash
-# 按主题名
+# 按主题名（默认 polar-indigo）
+maou coding --theme polar-indigo
 maou coding --theme tau-ceti
 
 # 按文件路径

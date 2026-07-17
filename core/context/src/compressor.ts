@@ -56,6 +56,16 @@ export interface CompressOptions {
    * 未传：所有 task 摘要都进压缩区（兼容旧行为）。
    */
   activeTaskIds?: string[];
+  /**
+   * 真实/全量上下文 token（含 system+tools 时通常 > history 估算）。
+   * 用于门槛判定；阶段内再压仍用 history 估算衡量是否够矮。
+   */
+  knownTokens?: number;
+  /**
+   * 强制至少进入 compactStage（/compact、UI 强制压缩）。
+   * 跳过 activeStage 的「未达 70% 不压」早退。
+   */
+  force?: boolean;
 }
 
 export interface CompressMaouResult {
@@ -86,7 +96,15 @@ export async function compressMaou(
   opts: CompressOptions,
 ): Promise<CompressMaouResult> {
   const threshold = opts.maxTokens > 0 ? opts.maxTokens : 65536;
-  const originalTokens = estimateTokens(history);
+  const historyTokens = estimateTokens(history);
+  // 门槛用 knownTokens（API/全量估算）与 history 估算取大，避免「UI 已满、history 低估」不压
+  const originalTokens =
+    opts.knownTokens != null && opts.knownTokens > 0
+      ? Math.max(opts.knownTokens, historyTokens)
+      : historyTokens;
+  // system/tools 等固定开销：阶段是否够矮要按「history 后 + overhead」估整包
+  const fixedOverhead = Math.max(0, originalTokens - historyTokens);
+  const effective = (histTok: number) => histTok + fixedOverhead;
   const maxStageIdx = opts.maxStage ? stageIndex(opts.maxStage) : STAGE_ORDER.length - 1;
 
   const noChange = (): CompressMaouResult => ({
@@ -99,15 +117,19 @@ export async function compressMaou(
     compressedTokens: originalTokens,
   });
 
-  // activeStage
-  if (originalTokens < Math.floor((threshold * MICRO_TRIGGER_PERCENT) / 100)) {
+  // activeStage（force 时跳过，至少走微压缩）
+  if (
+    !opts.force &&
+    originalTokens < Math.floor((threshold * MICRO_TRIGGER_PERCENT) / 100)
+  ) {
     return noChange();
   }
 
   // compactStage（微压缩）
   if (maxStageIdx < stageIndex("compactStage")) return noChange();
   const afterMicro = await microCompactAll(history, opts.summarizer);
-  const microTokens = estimateTokens(afterMicro);
+  const microHist = estimateTokens(afterMicro);
+  const microTokens = effective(microHist);
   if (microTokens < Math.floor((threshold * SUMMARY_TRIGGER_PERCENT) / 100)) {
     return {
       history: afterMicro,
@@ -134,7 +156,8 @@ export async function compressMaou(
     };
   }
   const afterSummary = await summaryCompressHarness(afterMicro, opts.summarizer, opts.activeTaskIds);
-  const summaryTokens = estimateTokens(afterSummary.messages);
+  const summaryHist = estimateTokens(afterSummary.messages);
+  const summaryTokens = effective(summaryHist);
   if (summaryTokens < Math.floor((threshold * ARCHIVE_TRIGGER_PERCENT) / 100)) {
     return {
       history: afterSummary.messages,
@@ -168,7 +191,7 @@ export async function compressMaou(
     taskBlocks: afterArchive.taskBlocks,
     perTaskOriginals: afterSummary.perTaskOriginals,
     originalTokens,
-    compressedTokens: estimateTokens(afterArchive.messages),
+    compressedTokens: effective(estimateTokens(afterArchive.messages)),
   };
 }
 
@@ -177,13 +200,21 @@ export async function compressMaou(
 export function maybeCompress(
   messages: Record<string, unknown>[],
   maxTokens: number,
+  opts?: { knownTokens?: number; force?: boolean },
 ): CompressResult {
   const maou = messages.map((m, i) => rawToMaou(m, i));
-  const originalTokens = estimateTokens(maou);
+  const historyTokens = estimateTokens(maou);
+  const originalTokens =
+    opts?.knownTokens != null && opts.knownTokens > 0
+      ? Math.max(opts.knownTokens, historyTokens)
+      : historyTokens;
   const threshold = maxTokens > 0 ? maxTokens : 65536;
 
-  if (originalTokens < Math.floor((threshold * MICRO_TRIGGER_PERCENT) / 100)) {
-    return { messages, compressed: false, droppedSummary: "", stage: "activeStage", originalTokens, compressedTokens: originalTokens };
+  if (
+    !opts?.force &&
+    originalTokens < Math.floor((threshold * MICRO_TRIGGER_PERCENT) / 100)
+  ) {
+    return { messages, compressed: false, droppedSummary: "", stage: "activeStage", originalTokens, compressedTokens: historyTokens };
   }
 
   const afterMicro = microCompactAllSync(maou);

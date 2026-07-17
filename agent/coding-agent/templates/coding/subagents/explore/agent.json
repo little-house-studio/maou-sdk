@@ -1,0 +1,23 @@
+{
+  "name": "explore",
+  "display_name": "Explorer",
+  "role": "explore",
+  "scope": "subagent",
+  "subagent_kind": "task",
+  "description": "探索者子 Agent：快速了解代码库结构、定位文件、查找实现。只读工具，不修改任何文件。适合「这个功能在哪实现」「找一下相关代码」等调研任务。",
+  "status": "active",
+  "round_limit": 20,
+  "max_retries": 5,
+  "terminal_mode": "normal",
+  "enable_loop": true,
+  "persist_context": true,
+  "inherit_full_context": false,
+  "permission": "readonly",
+  "tool_preset": "explore",
+  "tools": ["reader", "glob", "grep", "find_code", "todo_finish"],
+  "list_in_manager": true,
+  "use_executor": true,
+  "over_round_policy": "wrap_up",
+  "ephemeral": false,
+  "storage_scope": "nested"
+}

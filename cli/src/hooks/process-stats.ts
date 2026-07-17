@@ -11,6 +11,7 @@
  */
 
 import os from "node:os";
+import { resolvePerfHudDefault } from "../config/cli-ui-prefs.js";
 
 /** HUD 上展示的 UI 阶段（events/sec） */
 export const UI_PHASES = [
@@ -464,9 +465,12 @@ function ensureTimer(): void {
   scrollSampleStart = lastWall;
   agentActiveMs = 0;
   scrollActiveMs = 0;
+  // 先立刻采一帧，避免 HUD 长时间停在全 0 初值
+  expectedTickAt = 0;
+  tick();
   expectedTickAt = Date.now() + SAMPLE_MS;
   timer = setInterval(tick, SAMPLE_MS);
-  if (typeof timer === "object" && "unref" in timer) timer.unref();
+  // 保持 ref：unref 时若主线程只挂 pipe 读，部分环境 interval 会极不稳定 / 像停更
 }
 
 function stopTimerIfIdle(): void {
@@ -501,15 +505,39 @@ export function processStatsRollSec(): number {
   return Math.round((SAMPLE_MS * ROLL_SAMPLES) / 1000);
 }
 
-export function subscribeProcessStats(cb: () => void): () => void {
-  if (process.env.MAOU_PERF_HUD === "0" || process.env.MAOU_PERF_HUD === "false") {
+/** Runtime override from Settings; null = follow env MAOU_PERF_HUD. */
+let hudUserEnabled: boolean | null = null;
+
+function envPerfHudDefault(): boolean {
+  return resolvePerfHudDefault();
+}
+
+/** Settings / store: turn right-top PerfHud sampling + display on/off at runtime. */
+export function setProcessStatsHudEnabled(on: boolean): void {
+  hudUserEnabled = on;
+  if (!on) {
     enabled = false;
-    return () => {};
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  } else {
+    enabled = true;
+    if (listeners.size > 0) {
+      ensureTimer();
+      if (snap.ts === 0 || Date.now() - snap.ts > SAMPLE_MS * 2) tick();
+    }
   }
-  enabled = true;
+}
+
+export function subscribeProcessStats(cb: () => void): () => void {
   listeners.add(cb);
-  ensureTimer();
-  if (snap.ts === 0 || Date.now() - snap.ts > SAMPLE_MS * 2) tick();
+  if (processStatsHudEnabled()) {
+    enabled = true;
+    ensureTimer(); // 内部会立即 tick 一次
+  } else {
+    enabled = false;
+  }
   return () => {
     listeners.delete(cb);
     stopTimerIfIdle();
@@ -517,7 +545,8 @@ export function subscribeProcessStats(cb: () => void): () => void {
 }
 
 export function processStatsHudEnabled(): boolean {
-  return process.env.MAOU_PERF_HUD !== "0" && process.env.MAOU_PERF_HUD !== "false";
+  if (hudUserEnabled !== null) return hudUserEnabled;
+  return envPerfHudDefault();
 }
 
 export function formatMem(mb: number): string {

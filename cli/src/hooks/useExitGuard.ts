@@ -18,6 +18,22 @@ function restore(): void {
   for (const h of handlers) {
     try { h(); } catch { /* 兜底里不能再抛 */ }
   }
+  // Ratatui child owns alt-screen enter/leave; Node writing leave-alt mid-flight
+  // or racing exit can corrupt the TTY. Only restore when Ink held the screen.
+  const tui = (
+    process.env.MAOU_TUI_ACTIVE ||
+    process.env.MAOU_TUI ||
+    ""
+  ).toLowerCase();
+  if (tui === "ratatui" || tui === "rust" || tui === "rt") {
+    // Minimal: show cursor only (child should already LeaveAlternateScreen)
+    try {
+      process.stdout.write("\x1b[?25h");
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
   process.stdout.write(RESTORE);
 }
 
@@ -38,6 +54,20 @@ export function installExitGuard(): () => void {
   process.on("SIGTERM", onSignal);
   process.on("SIGHUP", onSignal);
   process.on("uncaughtException", (err) => {
+    // Ratatui 子进程先退后，Node 再 write IPC 会得到 EPIPE。
+    // 这是管道生命周期问题，不应整进程 exit(1) 闪退（看起来像「干到一半崩了」）。
+    const code = (err as NodeJS.ErrnoException)?.code;
+    const msg = String((err as Error)?.message ?? err ?? "");
+    if (code === "EPIPE" || msg.includes("EPIPE")) {
+      try {
+        process.stderr.write(
+          `\n[maou] ignored EPIPE (TUI/IPC 已关闭): ${msg}\n`,
+        );
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     restore();
     process.stderr.write(`\n[maou] uncaught: ${err?.stack ?? err}\n`);
     process.exit(1);

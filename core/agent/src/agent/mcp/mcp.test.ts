@@ -746,7 +746,7 @@ describe("standard mcpServers discovery + catalog prompt", () => {
       expect(prompt).toContain('name="cat"');
       expect(prompt).toContain("mcp__cat__echo");
       expect(prompt).toContain("Echo for catalog");
-      expect(prompt).toContain("tool-calling");
+      expect(prompt).toContain("mcp__");
 
       const snap = snapshotMcpCatalog(manager);
       const formatted = formatMcpCatalogPrompt(snap);

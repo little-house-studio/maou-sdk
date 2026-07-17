@@ -81,6 +81,15 @@ export interface AgentEntry {
    * coding 模板默认 gateway。
    */
   mcp_tool_strategy?: "flat" | "gateway" | string;
+  /**
+   * MCP catalog 注入细节（辅通道写进 system prompt）：
+   * - auto：toolCount≤阈值 full，否则 servers_only（默认阈值 25）
+   * - full：强制注入每条 tool 指令（专用 agent）
+   * - servers_only：只列 MCP 服务名
+   */
+  mcp_catalog_detail?: "full" | "servers_only" | "auto";
+  /** full 注入阈值，默认 25（仅 auto 时生效） */
+  mcp_catalog_full_threshold?: number;
   /** agent 轮次上限（可选），0=无限 */
   round_limit?: number;
   /** 模型配置（可选），覆盖 preset 中的 model */

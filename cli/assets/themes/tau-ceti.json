@@ -10,15 +10,15 @@
     }
   },
   "palette": {
-    "black": { "base": "#101010", "hover": "#1A1A1A" },
+    "black": { "base": "#1A1A1A", "hover": "#222222" },
     "gray1a": { "base": "#1A1A1A", "hover": "#242424" },
     "gray20": { "base": "#242424", "hover": "#303030" },
     "gray2a": { "base": "#2A2A2A", "hover": "#353535" },
     "gray3a": { "base": "#3A3A3A", "hover": "#4A4A4A" },
-    "gray4a": { "base": "#4A4A4A", "hover": "#5A5A5A" },
-    "gray80": { "base": "#808080", "hover": "#909090" },
-    "grayB0": { "base": "#B0B0B0", "hover": "#C0C0C0" },
-    "grayC5": { "base": "#C5C5C5", "hover": "#D5D5D5" },
+    "gray4a": { "base": "#4A473F", "hover": "#5A564C" },
+    "gray80": { "base": "#858070", "hover": "#958F7C" },
+    "grayB0": { "base": "#B3AD9E", "hover": "#C3BCAE" },
+    "grayC5": { "base": "#C8C4B6", "hover": "#D8D4C6" },
     "cream": { "base": "#F5F0D8", "hover": "#FFF8E0" },
     "white": { "base": "#FFFFFF", "hover": "#FFFFFF" },
     "acid": { "base": "#C7FF20", "hover": "#D4FF4A" },
@@ -29,13 +29,13 @@
     "cyan": { "base": "#3BFFA7", "hover": "#5FFFC0" }
   },
   "colors": {
-    "bg": "#101010",
-    "panelBg": "#242424",
-    "fg": "#C5C5C5",
-    "muted": "#808080",
-    "dim": "#808080",
-    "border": "#242424",
-    "borderMuted": "#242424",
+    "bg": "#1A1A1A",
+    "panelBg": "#26241F",
+    "fg": "#C8C4B6",
+    "muted": "#858070",
+    "dim": "#858070",
+    "border": "#26241F",
+    "borderMuted": "#26241F",
     "borderAccent": { "base": "#C7FF20", "hover": "#D4FF4A" },
     "accent": { "base": "#C7FF20", "hover": "#D4FF4A" },
     "accent2": { "base": "#3BFFA7", "hover": "#5FFFC0" },
@@ -76,17 +76,17 @@
     "mdListBullet": { "base": "#C7FF20", "hover": "#D4FF4A" },
     "toolDiffAdded": { "base": "#3BFFA7", "hover": "#5FFFC0" },
     "toolDiffRemoved": { "base": "#FF741D", "hover": "#FF8A3D" },
-    "toolDiffContext": "#808080",
-    "selectedBg": "#242424",
-    "userBg": "#242424",
-    "systemBg": "#242424",
-    "toolPendingBg": "#242424",
-    "toolSuccessBg": "#101010",
-    "toolErrorBg": "#242424",
-    "footerBg": "#C5C5C5",
-    "inputFieldBg": "#B0B0B0",
-    "assistantMdBg": "#1A1A1A",
-    "mdPaperBorder": "#242424",
+    "toolDiffContext": "#858070",
+    "selectedBg": "#26241F",
+    "userBg": "#26241F",
+    "systemBg": "#26241F",
+    "toolPendingBg": "#26241F",
+    "toolSuccessBg": "#1A1A1A",
+    "toolErrorBg": "#26241F",
+    "footerBg": "#C8C4B6",
+    "inputFieldBg": "#B3AD9E",
+    "assistantMdBg": "#22201A",
+    "mdPaperBorder": "#26241F",
     "bashMode": { "base": "#3BFFA7", "hover": "#5FFFC0" }
   },
   "nav": {
@@ -115,23 +115,23 @@
       "terminal": {
         "label": "终端",
         "short": "终",
-        "bg": "#4A4A4A"
+        "bg": "#4A473F"
       },
       "todo": {
         "label": "任务",
         "short": "务",
-        "bg": "#3A3A3A"
+        "bg": "#3A3830"
       },
       "inbox": {
         "label": "收件箱",
         "short": "收",
-        "bg": "#2A2A2A",
+        "bg": "#2A2822",
         "badge": 0
       },
       "notice": {
         "label": "公告",
         "short": "告",
-        "bg": "#1A1A1A",
+        "bg": "#1E1C18",
         "badge": 0
       },
       "settings": {

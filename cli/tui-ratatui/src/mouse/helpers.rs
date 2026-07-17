@@ -3,7 +3,7 @@
 use super::types::*;
 use crate::vram::Vram;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub fn sel_style_colors(phase: SelPhase) -> (Color, Color) {
@@ -11,6 +11,20 @@ pub fn sel_style_colors(phase: SelPhase) -> (Color, Color) {
         SelPhase::Flash => (SEL_FLASH_FG, SEL_FLASH_BG),
         SelPhase::Live | SelPhase::Settled => (SEL_FG, SEL_BG),
         SelPhase::None => (SEL_FG, SEL_BG),
+    }
+}
+
+/// 选择区单元格样式（对齐 Ink sel-fx）：
+/// Live/Settled = 纯色计算机蓝 #2121FF + 浅字；Flash 保持闪白。
+pub fn sel_cell_style(phase: SelPhase) -> Style {
+    use ratatui::style::Modifier;
+    match phase {
+        SelPhase::None => Style::default(),
+        SelPhase::Flash => Style::default().fg(SEL_FLASH_FG).bg(SEL_FLASH_BG),
+        SelPhase::Live | SelPhase::Settled => Style::default()
+            .fg(SEL_FG)
+            .bg(SEL_BG)
+            .add_modifier(Modifier::BOLD),
     }
 }
 
@@ -24,7 +38,8 @@ pub fn should_paint_insert_caret(input_sel: Option<(usize, usize)>) -> bool {
 }
 
 /// Ink InputBar prompt `" ❯ "` display columns.
-pub const PROMPT_STR: &str = " ❯ ";
+/// Prompt without leading pad (format: `❯ 输入…` flush with chrome content).
+pub const PROMPT_STR: &str = "❯ ";
 pub fn prompt_cols() -> u16 {
     UnicodeWidthStr::width(PROMPT_STR) as u16
 }
@@ -107,10 +122,8 @@ pub fn visual_col_to_byte(s: &str, visual_col: usize) -> usize {
 }
 
 pub fn byte_to_visual_col(s: &str, byte: usize) -> usize {
-    let byte = byte.min(s.len());
-    if !s.is_char_boundary(byte) {
-        return 0;
-    }
+    // 半码点下标不能 return 0（会把光标/选区打到行首）；向下 snap 到合法边界
+    let byte = snap_char_boundary(s, byte.min(s.len()));
     UnicodeWidthStr::width(&s[..byte])
 }
 
@@ -268,9 +281,10 @@ pub fn plain_line_visual_cols(text: &str) -> (u16, u16) {
     // trim trailing spaces for end (Ink findLineBoundaries trims)
     let trimmed = text.trim_end();
     let end = UnicodeWidthStr::width(trimmed).saturating_sub(1) as u16;
+    // 前导空白字节数：trim_start 在 char 边界；再 snap 更稳
     let start_trim = text.len() - text.trim_start().len();
-    // approximate start col: leading space width
-    let lead = &text[..start_trim.min(text.len())];
+    let bi = snap_char_boundary(text, start_trim.min(text.len()));
+    let lead = &text[..bi];
     let start = UnicodeWidthStr::width(lead) as u16;
     (start.min(end), end)
 }

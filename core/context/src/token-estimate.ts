@@ -94,3 +94,69 @@ export function contextRemainingRatio(used: number, max: number): number {
   if (max <= 0) return 1;
   return Math.max(0, Math.min(1, 1 - used / max));
 }
+
+/**
+ * 从厂商/runtime usage 对象解析 **prompt/input** token（上下文占用）。
+ * 不含 completion；字段兼容 OpenAI / Anthropic / 内部别名。
+ */
+export function parsePromptTokensFromUsage(
+  usage: Record<string, unknown> | null | undefined,
+): number {
+  if (!usage || typeof usage !== "object") return 0;
+  const details = usage.prompt_tokens_details as { cached_tokens?: number } | undefined;
+  const n = Number(
+    usage.prompt_tokens
+      ?? usage.input_tokens
+      ?? usage.inputTokens
+      ?? usage.input
+      ?? 0,
+  );
+  if (Number.isFinite(n) && n > 0) return Math.trunc(n);
+  // 少数适配器只给 total + completion：反推 prompt
+  const total = Number(usage.total_tokens ?? usage.totalTokens ?? 0);
+  const out = Number(
+    usage.completion_tokens ?? usage.output_tokens ?? usage.outputTokens ?? usage.output ?? 0,
+  );
+  if (Number.isFinite(total) && total > 0 && Number.isFinite(out) && out >= 0 && total >= out) {
+    return Math.trunc(total - out);
+  }
+  void details;
+  return 0;
+}
+
+/**
+ * 估算「整包 prompt」token：history + system + tools schema + 其它注入。
+ * 用于无 API usage 时的压缩触发（首轮 / 厂商不回 usage）。
+ */
+export function estimateFullPromptTokens(parts: {
+  historyTokens?: number;
+  systemPrompt?: string;
+  toolSchemas?: unknown;
+  extras?: string[];
+}): number {
+  let total = Math.max(0, Math.trunc(parts.historyTokens ?? 0));
+  if (parts.systemPrompt) total += estimateTokensFromText(parts.systemPrompt);
+  for (const e of parts.extras ?? []) {
+    if (e) total += estimateTokensFromText(e);
+  }
+  if (parts.toolSchemas != null) {
+    try {
+      total += estimateTokensFromText(JSON.stringify(parts.toolSchemas));
+    } catch {
+      total += 2048;
+    }
+  }
+  return total;
+}
+
+/**
+ * 决策用上下文占用：优先真实 API prompt tokens，再与本地全量估算取 max（防低估）。
+ */
+export function resolveContextUsedTokens(opts: {
+  apiPromptTokens?: number;
+  estimatedPromptTokens?: number;
+}): number {
+  const api = Math.max(0, Math.trunc(opts.apiPromptTokens ?? 0));
+  const est = Math.max(0, Math.trunc(opts.estimatedPromptTokens ?? 0));
+  return Math.max(api, est);
+}

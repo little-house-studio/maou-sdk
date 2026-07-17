@@ -1,31 +1,28 @@
 # Maou CLI
 
-终端 AI agent 入口（默认 **Ink** TUI）。
+终端 AI agent 入口（默认 **Ratatui** TUI；Ink 保留可回退）。
 
-## TUI 后端切换（Ink 保留 / Ratatui 可选）
-
-**默认仍是 Ink 现网版，未删除、未覆盖。**
+## TUI 后端
 
 ```bash
-# 1) 编译 Ratatui 后端（一次）
+# 编译 Ratatui 二进制（首次 / 改 Rust 后）
 cd maou-sdk/cli
 npm run build:tui-ratatui
 
-# 2) 切换启动
-maou coding                    # Ink（默认）
-MAOU_TUI=ink maou coding       # 显式 Ink
-MAOU_TUI=ratatui maou coding   # Ratatui
-maou coding --tui ratatui      # 同上
+maou coding                    # Ratatui（默认）
+MAOU_TUI=ratatui maou coding   # 显式 Ratatui
+MAOU_TUI=ink maou coding       # 回退 Ink
+maou coding --tui ink          # 同上
 ```
 
-可选配置 `~/.maou/config.json`：
+可选 `~/.maou/config.json`：
 
 ```json
-{ "cli": { "tui": "ratatui" } }
+{ "cli": { "tui": "ink" } }
 ```
 
-优先级：`--tui` > `MAOU_TUI` > config > `ink`。
+优先级：`--tui` > `MAOU_TUI` > config > **`ratatui`**。
 
 更多：[`tui-ratatui/README.md`](./tui-ratatui/README.md)。
 
-Ratatui 为 **Phase 0/1 切片**（可聊 + 滚动 + 状态栏），完整 parity 分阶段；缺功能时回退 `MAOU_TUI=ink`。
+缺二进制时启动会提示编译或回退 Ink。

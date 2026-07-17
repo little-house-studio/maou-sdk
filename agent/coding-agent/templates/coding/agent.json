@@ -8,5 +8,23 @@
   "tool_compression": "normal",
   "thinking_context_mode": "first_round",
   "mcp_tool_strategy": "gateway",
-  "tools": ["reader", "write_file", "edit_file", "glob", "grep", "find_code", "use_terminal", "search_internet", "use_skill", "find_skill", "todo_manage", "todo_finish"]
+  "mcp_catalog_detail": "auto",
+  "tools": [
+    "reader",
+    "write_file",
+    "edit_file",
+    "glob",
+    "grep",
+    "find_code",
+    "lsp",
+    "use_terminal",
+    "search_internet",
+    "use_skill",
+    "find_skill",
+    "todo_manage",
+    "todo_finish",
+    "agent_message",
+    "agent_manage",
+    "yield"
+  ]
 }

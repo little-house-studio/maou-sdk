@@ -29,8 +29,13 @@ export interface SpawnPtyOptions {
 
 /** 允许透传到子进程的环境变量白名单（大写匹配） */
 const ENV_WHITELIST = new Set([
-  "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+  "PATH", "HOME", "USER", "USERNAME", "USERPROFILE", "SHELL",
+  "LANG", "LC_ALL", "LC_CTYPE",
   "TERM", "COLORTERM", "TMPDIR", "TMP", "TEMP",
+  "APPDATA", "LOCALAPPDATA", "SystemRoot", "SYSTEMROOT", "COMSPEC", "PATHEXT",
+  "JAVA_HOME", "NODE_PATH", "PYTHONPATH", "GOPATH", "GOROOT",
+  "RUSTUP_HOME", "CARGO_HOME", "NVM_DIR", "CONDA_PREFIX",
+  "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA",
 ]);
 
 /**

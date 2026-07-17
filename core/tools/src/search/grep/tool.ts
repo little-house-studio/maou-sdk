@@ -4,19 +4,36 @@
  * 设计参考 Claude Code 的 Grep 工具，透传 rg 参数
  */
 
-import { exec } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, relative, join, extname, sep } from "node:path";
+import { platform } from "node:os";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { groupGrepByFile } from "../../compress/output-compressor.js";
 
-/** Node.js 降级方案用的跳过目录（rg 模式自动读 .gitignore） */
+/** 默认跳过目录（Node 降级 + rg 额外 glob，避免未 gitignore 的 node_modules 噪声） */
 const SKIP_DIRS = new Set([
   ".git", "node_modules", "__pycache__", ".venv", "venv",
-  ".next", "dist", "build", ".cache",
+  ".next", "dist", "build", ".cache", "coverage", ".turbo",
+  ".sqry", "target", "out", ".output",
 ]);
+
+/** rg 默认排除（即使仓库没写 .gitignore 也生效；用户 glob 仍可叠加） */
+const DEFAULT_RG_EXCLUDE_GLOBS = [
+  "!**/node_modules/**",
+  "!**/.git/**",
+  "!**/dist/**",
+  "!**/build/**",
+  "!**/.next/**",
+  "!**/coverage/**",
+  "!**/.sqry/**",
+  "!**/target/**",
+  "!**/__pycache__/**",
+  "!**/.venv/**",
+  "!**/venv/**",
+];
 
 /** Node.js 降级方案用的二进制扩展名（rg 模式自动检测） */
 const BINARY_EXTENSIONS = new Set([
@@ -28,13 +45,18 @@ const BINARY_EXTENSIONS = new Set([
   ".woff", ".woff2", ".ttf", ".eot",
 ]);
 
+/** 跨平台检测 PATH 上的命令（Win 用 where，Unix 用 which） */
+function commandOnPath(name: string): boolean {
+  const cmd = platform() === "win32" ? "where" : "which";
+  const r = spawnSync(cmd, [name], { encoding: "utf-8", windowsHide: true });
+  return r.status === 0 && Boolean(r.stdout?.trim());
+}
+
 /**
  * 检查 ripgrep 是否可用
  */
 function hasRg(): Promise<boolean> {
-  return new Promise((resolve) => {
-    exec("which rg", (err) => resolve(!err));
-  });
+  return Promise.resolve(commandOnPath("rg") || commandOnPath("rg.exe"));
 }
 
 /** rg 搜索参数 */
@@ -70,6 +92,10 @@ function searchWithRg(opts: RgOptions): Promise<string> {
     }
 
     if (opts.ignoreCase) args.push("--ignore-case");
+    // 始终排除常见噪声目录（rg 默认读 .gitignore，但很多项目漏写 node_modules）
+    for (const g of DEFAULT_RG_EXCLUDE_GLOBS) {
+      args.push("--glob", g);
+    }
     if (opts.glob) args.push("--glob", opts.glob);
     if (opts.type) args.push("--type", opts.type);
     if (opts.multiline) args.push("--multiline", "--multiline-dotall");
@@ -84,8 +110,8 @@ function searchWithRg(opts: RgOptions): Promise<string> {
 
     args.push(opts.pattern, opts.searchDir);
 
-    const cmd = `rg ${args.map((a) => `'${a}'`).join(" ")}`;
-    exec(cmd, { maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
+    // execFile 避免 shell 引号在 Windows 上炸；rg 在 PATH 即可
+    execFile("rg", args, { maxBuffer: 5 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
       if (err && !stdout) {
         resolve("");
         return;

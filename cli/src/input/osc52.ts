@@ -28,6 +28,14 @@ function b64encode(s: string): string {
 /** 仅写 OSC52（tmux 包 DCS passthrough） */
 export function osc52(text: string): void {
   if (!text || !process.stdout.isTTY) return;
+  // Under Ratatui, prefer native clipboard (pbcopy) — dual OSC52 from Node+Rust races.
+  // copyToClipboard still falls back to spawnClipboard when osc52 is skipped.
+  const tui = (
+    process.env.MAOU_TUI_ACTIVE ||
+    process.env.MAOU_TUI ||
+    ""
+  ).toLowerCase();
+  if (tui === "ratatui" || tui === "rust" || tui === "rt") return;
   // BEL 与 ST 双终结，兼容性更好
   const payload = `\x1b]52;c;${b64encode(text)}\x07`;
   const seq = process.env.TMUX

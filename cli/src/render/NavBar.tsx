@@ -20,6 +20,8 @@ import { useClickTarget } from "../input/click-target.js";
 import { makeClickableTransform } from "../input/osc8-link.js";
 import { TERM_BREAKPOINTS } from "../config/ui-constants.js";
 import { formatCacheLabel } from "../lib/prompt-cache.js";
+import { getNavAction, type NavActionDef } from "../config/nav-actions.js";
+import { resolveKeyBinding } from "../config/keybindings.js";
 
 /** 信息栏：上下文占用 + 近10轮主模型缓存命中 + model */
 export function InfoBar() {
@@ -32,11 +34,11 @@ export function InfoBar() {
   const currentRoundUsage = useStore((s) => s.currentRoundUsage);
   const cacheHistory = useStore((s) => s.cacheHistory);
 
-  const currentTokens = currentRoundUsage.input + currentRoundUsage.output;
+  // 上下文窗口占用 = prompt/input（与压缩阈值一致）；不含 completion
   const lastRound = rounds[rounds.length - 1];
   const ctxTokens = lastRound
-    ? (lastRound.total ?? lastRound.input + lastRound.output)
-    : currentTokens;
+    ? lastRound.input
+    : currentRoundUsage.input;
   const usedPct = maxContext > 0 ? Math.min(1.2, ctxTokens / maxContext) : 0;
   // 仅当前主 agent 主模型；无 cache 能力的模型（xopqwen 等）显示 c— 而非假 c0%
   const { label: cacheLabel, pct: cacheAvg, eligible: cacheEligible } = formatCacheLabel(
@@ -123,15 +125,36 @@ function centerInWidth(text: string, short: string, width: number): string {
   return " ".repeat(left) + label + " ".repeat(right);
 }
 
-const NAV_ACTIONS: Record<string, () => void> = {
-  agent: () => useStore.getState().setOverlay("agents"),
-  terminal: () => useStore.getState().setOverlay("command"),
-  todo: () => useStore.getState().setOverlay("command"),
-  sessions: () => useStore.getState().setOverlay("sessions"),
-  inbox: () => {},
-  notice: () => {},
-  settings: () => useStore.getState().setOverlay("settings"),
-};
+/** 由 nav-actions + keybindings 配置驱动 */
+function runNavAction(def: NavActionDef): void {
+  const store = useStore.getState();
+  switch (def.kind) {
+    case "command":
+      if (def.value) store.runCommand(def.value);
+      break;
+    case "hotkey": {
+      if (!def.value) break;
+      const kb = resolveKeyBinding(def.value);
+      if (kb?.commandId) {
+        store.runCommand(kb.commandId);
+      } else if (kb?.ui === "command_palette") {
+        store.setOverlay("command");
+      } else if (kb?.ui === "open_agents") {
+        store.setOverlay("agents");
+      } else if (def.value === "open_agents") {
+        store.setOverlay("agents");
+      } else if (def.value === "ctrl+k") {
+        store.setOverlay("command");
+      }
+      break;
+    }
+    case "toast":
+      if (def.value) store.toastMsg(def.value, def.toastLevel ?? "info");
+      break;
+    default:
+      break;
+  }
+}
 
 /** 导航栏：顺序/颜色来自当前主题 nav */
 export function NavBar() {
@@ -153,7 +176,10 @@ export function NavBar() {
         bgHover: cfg.bgHover,
         fg: cfg.fg,
         fgHover: cfg.fgHover ?? cfg.fg,
-        action: NAV_ACTIONS[id] ?? (() => {}),
+        action: () => {
+          const a = getNavAction(id);
+          if (a) runNavAction(a);
+        },
       });
     }
     return out;
