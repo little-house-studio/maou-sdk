@@ -3,8 +3,16 @@
   "version": "0.1.0",
   "description": "高性能终端引擎 — Rust + napi-rs",
   "type": "module",
-  "main": "./terminal_engine.js",
-  "types": "./terminal_engine.d.ts",
+  "main": "./load.mjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./load.mjs",
+      "require": "./load.mjs",
+      "default": "./load.mjs"
+    }
+  },
   "napi": {
     "name": "terminal-engine",
     "triples": {
@@ -12,13 +20,17 @@
     }
   },
   "scripts": {
-    "build": "cargo build --release",
-    "build:debug": "cargo build"
+    "build": "napi build --release --platform --js index.cjs --dts index.d.ts",
+    "build:debug": "napi build --platform --js index.cjs --dts index.d.ts"
   },
   "files": [
-    "*.node",
-    "*.d.ts",
-    "terminal_engine.js"
+    "load.mjs",
+    "index.cjs",
+    "index.js",
+    "index.d.ts",
+    "terminal_engine.js",
+    "terminal_engine.d.ts",
+    "*.node"
   ],
   "license": "MIT"
 }
