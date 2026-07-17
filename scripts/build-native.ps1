@@ -105,9 +105,20 @@ if (Test-Path $rt) {
 }
 
 Push-Location (Join-Path $Root "cli")
-try { npm rebuild node-pty 2>$null } catch {}
-try { npm rebuild @lydell/node-pty 2>$null } catch {}
+$npOk = $true
+try {
+  $out = & npm rebuild node-pty 2>&1
+  if ($LASTEXITCODE -ne 0) { $npOk = $false; Write-Host "  node-pty rebuild stdout: $out" }
+  $out2 = & npm rebuild @lydell/node-pty 2>&1
+  if ($LASTEXITCODE -ne 0) { $npOk = $false; Write-Host "  @lydell/node-pty rebuild stdout: $out2" }
+} catch { $npOk = $false }
 Pop-Location
+if ($npOk) {
+  Log "[build-native] node-pty rebuild: OK"
+} else {
+  Log "[build-native] WARNING node-pty rebuild failed - use_terminal will degrade to spawn (Windows: install VS Build Tools + Windows SDK)"
+  Log "[build-native]   fix: winget install Microsoft.VisualStudio.2022.BuildTools --override --add Microsoft.VisualStudio.Workload.VCTools"
+}
 
 Cleanup-RustCaches
 Report-Size

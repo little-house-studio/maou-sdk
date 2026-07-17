@@ -5,7 +5,9 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { homedir, platform } from "node:os";
 import {
   createProtocolConnection,
   StreamMessageReader,
@@ -73,7 +75,16 @@ export class LanguageServer {
   private async start(): Promise<void> {
     let child: ChildProcess;
     try {
-      child = spawn(this.spec.command, this.spec.args, { cwd: this.root, stdio: ["pipe", "pipe", "pipe"] });
+      // Windows: npm 全局 CLI 是 .cmd 包装脚本，无 shell 时 spawn("typescript-language-server") 会 ENOENT。
+      // 用 shell:true + 解析绝对路径，与 doctor 的 resolveExecutable 对齐。
+      const { command, args, shell } = resolveSpawnCommand(this.spec.command, this.spec.args);
+      child = spawn(command, args, {
+        cwd: this.root,
+        stdio: ["pipe", "pipe", "pipe"],
+        shell,
+        windowsHide: true,
+        env: process.env,
+      });
     } catch {
       throw new ServerNotInstalledError(this.spec.languageId, this.spec.command, this.spec.installHint ?? "");
     }
@@ -252,4 +263,55 @@ export class LanguageServer {
     try { this.conn?.dispose(); } catch { /* ignore */ }
     try { this.child?.kill(); } catch { /* ignore */ }
   }
+}
+
+/**
+ * 解析可 spawn 的命令。
+ * Windows 上 npm 全局包装是 .cmd；无 shell 时 spawn("foo") 会 ENOENT。
+ * 优先 .cmd/.exe，避免命中无扩展名的 bash shim。
+ */
+function resolveSpawnCommand(
+  command: string,
+  args: string[],
+): { command: string; args: string[]; shell: boolean } {
+  if (platform() !== "win32") {
+    return { command, args, shell: false };
+  }
+
+  // 已是绝对路径
+  if (/^[a-zA-Z]:[\\/]/.test(command) || command.startsWith("\\\\")) {
+    const shell = /\.(cmd|bat)$/i.test(command);
+    return { command, args, shell };
+  }
+
+  const pathEnv = process.env.Path || process.env.PATH || "";
+  const segs = pathEnv.split(";").filter(Boolean);
+  // npm 全局 bin 常在 Roaming\npm（放最前）
+  segs.unshift(join(process.env.ProgramFiles || "C:\\Program Files", "nodejs"));
+  segs.unshift(join(homedir(), "AppData", "Roaming", "npm"));
+
+  // 优先带扩展名的 Windows 可执行包装（.cmd 先于无扩展 bash shim）
+  const preferredExts = [".cmd", ".CMD", ".exe", ".EXE", ".bat", ".BAT"];
+  const otherExts = (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .filter((e) => e && !preferredExts.includes(e));
+  const names = [
+    ...preferredExts.map((e) => command + e),
+    ...otherExts.map((e) => command + e),
+    // 无扩展名最后才试
+    command,
+  ];
+
+  for (const dir of segs) {
+    for (const name of names) {
+      const full = join(dir, name);
+      if (existsSync(full)) {
+        const shell = /\.(cmd|bat)$/i.test(full);
+        return { command: full, args, shell };
+      }
+    }
+  }
+
+  // 找不到绝对路径：仍开 shell
+  return { command, args, shell: true };
 }

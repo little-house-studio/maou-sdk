@@ -82,7 +82,7 @@ export function runSqry(args: string[], cwd: string, timeout = 30000): Promise<R
       resolve({
         stdout: "",
         stderr:
-          "sqry 未安装。请运行: cargo install sqry  或将 sqry 放到 ~/.maou/bin（Windows: %USERPROFILE%\\.maou\\bin）",
+          "sqry 未安装。请运行: maou doctor  或 node scripts/ensure-sqry.mjs  或 cargo install sqry-cli；也可将 sqry 放到 ~/.maou/bin",
         code: 1,
       });
       return;

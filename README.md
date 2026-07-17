@@ -111,13 +111,18 @@ maou coding
 ## 常用命令
 
 ```bash
-maou doctor              # 诊断 + 自动修复依赖
+maou doctor              # 诊断 + 自动修复依赖（含 node-pty/sqry/ts-ls 检测）
 maou doctor --check      # 只诊断
 maou update              # git pull + 本机构建（仅 clone 安装）
 maou update --check      # 只看远程是否有更新
 maou setup               # 配置 API
 maou coding              # 启动 Coding Agent
 ```
+
+`maou doctor` 会自动补齐：
+- **Core**：pnpm build
+- **Terminal**：build-native / dcg / node-pty 加载检测
+- **Optional**：`sqry`（预编译）、`typescript-language-server`；`ddgr` 仅提示
 
 更新后请**手动退出**正在运行的 TUI，再执行 `maou coding`（不会自动杀进程）。
 

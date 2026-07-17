@@ -134,7 +134,7 @@ export class CodeSearchTool extends Tool {
     if (!action) return createToolResponse(false, '❌ find_code 缺少必填参数 action（操作类型）。正确用法示例：\n{"tool": "find_code", "params": {"action": "search", "symbol": "MyClass", "reason": "查找类定义"}}\n可选 action: search, callers, callees, path, cycles, unused, impact, explain, hierarchy, duplicates, subgraph。请用正确的 action 参数重试。');
 
     if (!sqry.isAvailable()) {
-      return createToolResponse(false, "sqry 未安装。请运行: cargo install sqry");
+      return createToolResponse(false, "sqry 未安装。请运行: maou doctor 或 node scripts/ensure-sqry.mjs");
     }
 
     const cwd = resolve(ctx.workingDir || ctx.projectRoot);

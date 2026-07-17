@@ -116,8 +116,15 @@ fi
 
 if command -v npm >/dev/null 2>&1; then
   log "[build-native] rebuild node-pty if present…"
-  (cd cli && npm rebuild node-pty 2>/dev/null) || true
-  (cd cli && npm rebuild @lydell/node-pty 2>/dev/null) || true
+  node_pty_ok=1
+  (cd cli && npm rebuild node-pty 2>/dev/null) || node_pty_ok=0
+  (cd cli && npm rebuild @lydell/node-pty 2>/dev/null) || node_pty_ok=0
+  if [[ "$node_pty_ok" -ne 0 ]]; then
+    log "[build-native] node-pty rebuild: ✓"
+  else
+    log "[build-native] ⚠ node-pty rebuild 失败 — use_terminal 将降级为无 PTY spawn（Windows 易因 VS Build Tools / Windows SDK 缺失）"
+    log "[build-native]   修复: winget install Microsoft.VisualStudio.2022.BuildTools --override --add Microsoft.VisualStudio.Workload.VCTools"
+  fi
 fi
 
 cleanup_rust_caches

@@ -13,4 +13,4 @@
 - **歧义消歧**：同名 interface/type/import 并存时，同时传 `kind` + `in_file`（仅 in_file 不够）。
 - lang 过滤语言：可用 `typescript` / `ts`、`javascript` / `js`、`python` / `py` 等。
 - depth 控制调用关系搜索深度，默认值通常够用，太深会返回过多结果。
-- 依赖本机已安装 `sqry`（`cargo install sqry`），首次会在项目根构建 `.sqry` 索引。
+- 依赖本机已安装 `sqry`（`maou doctor` / `node scripts/ensure-sqry.mjs` 下载预编译；或 `cargo install sqry-cli`），首次会在项目根构建 `.sqry` 索引。

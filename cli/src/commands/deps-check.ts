@@ -16,14 +16,70 @@ import { spawnSync } from "node:child_process";
 import { platform, homedir } from "node:os";
 import { findMonorepoRoot, findSdkGitRoot, resolveCliPackageRoot } from "./repo-root.js";
 
+/**
+ * 解析可执行文件绝对路径。
+ * Windows 上 npm/pnpm/cargo 常是 .cmd / 不在 PATH（cargo 默认 ~/.cargo/bin），
+ * 直接 spawnSync("npm") 会 ENOENT。
+ */
+function resolveExecutable(name: string): string {
+  const isWin = platform() === "win32";
+  const candidates: string[] = [];
+  if (isWin) {
+    if (name === "npm" || name === "npx") {
+      const base = process.env.ProgramFiles
+        ? join(process.env.ProgramFiles, "nodejs")
+        : "C:\\Program Files\\nodejs";
+      candidates.push(join(base, `${name}.cmd`), join(base, name));
+    }
+    if (name === "cargo" || name === "rustc") {
+      candidates.push(join(homedir(), ".cargo", "bin", `${name}.exe`));
+    }
+    // PATH 上的 .cmd / .exe
+    const where = spawnSync("where", [name], { encoding: "utf-8", windowsHide: true });
+    if (where.status === 0 && where.stdout) {
+      for (const line of where.stdout.split(/\r?\n/)) {
+        const p = line.trim();
+        if (p) candidates.push(p);
+      }
+    }
+  } else {
+    // cargo 默认 ~/.cargo/bin 不一定在非登录 shell PATH
+    if (name === "cargo" || name === "rustc") {
+      candidates.push(join(homedir(), ".cargo", "bin", name));
+    }
+    const which = spawnSync("which", [name], { encoding: "utf-8" });
+    if (which.status === 0 && which.stdout?.trim()) {
+      candidates.push(which.stdout.trim().split("\n")[0]!);
+    }
+  }
+  for (const p of candidates) {
+    if (p && existsSync(p)) return p;
+  }
+  return name;
+}
+
 function runInherit(cmd: string, args: string[], cwd: string): boolean {
-  const r = spawnSync(cmd, args, {
+  const resolved = resolveExecutable(cmd);
+  // Windows .cmd 必须 shell:true，否则 spawn ENOENT
+  const needShell = platform() === "win32" && /\.(cmd|bat)$/i.test(resolved);
+  const r = spawnSync(resolved, args, {
     cwd,
     env: process.env,
     stdio: "inherit",
     windowsHide: true,
+    shell: needShell,
   });
   return r.status === 0;
+}
+
+/** cargo 是否可用（PATH 或 ~/.cargo/bin） */
+function hasCargo(): boolean {
+  if (commandOnPath("cargo") || commandOnPath("cargo.exe")) return true;
+  const p =
+    platform() === "win32"
+      ? join(homedir(), ".cargo", "bin", "cargo.exe")
+      : join(homedir(), ".cargo", "bin", "cargo");
+  return existsSync(p);
 }
 
 const require = createRequire(import.meta.url);
@@ -49,6 +105,9 @@ export type CapabilityTier = {
   terminal: boolean;
   dcg: boolean;
   sqry: boolean;
+  nodePty: boolean;
+  lspTS: boolean;
+  ddgr: boolean;
 };
 
 export interface DepCheckResult {
@@ -68,6 +127,9 @@ export interface DepCheckResult {
     terminalEngine: string;
     dcg: string;
     sqry: string;
+    nodePty: string;
+    lspTS: string;
+    ddgr: string;
     git: string;
     pnpm: string;
     apiConfig: string;
@@ -178,13 +240,14 @@ function detectDcg(mono: string | null): { ok: boolean; detail: string } {
   return { ok: false, detail: "缺失 — node scripts/ensure-dcg.mjs --user" };
 }
 
-function detectSqry(): { ok: boolean; detail: string } {
+function detectSqry(mono: string | null = null): { ok: boolean; detail: string } {
   const names = platform() === "win32" ? ["sqry.exe", "sqry"] : ["sqry"];
   const dirs = [
+    mono ? join(mono, "vendor", "bin") : "",
     join(homedir(), ".cargo", "bin"),
     join(homedir(), ".maou", "bin"),
     join(homedir(), ".local", "bin"),
-  ];
+  ].filter(Boolean) as string[];
   for (const n of names) {
     for (const d of dirs) {
       const p = join(d, n);
@@ -194,7 +257,37 @@ function detectSqry(): { ok: boolean; detail: string } {
   if (commandOnPath("sqry") || commandOnPath("sqry.exe")) {
     return { ok: true, detail: "on PATH" };
   }
-  return { ok: false, detail: "未安装（find_code 不可用）" };
+  return { ok: false, detail: "未安装（find_code 不可用）— node scripts/ensure-sqry.mjs" };
+}
+
+/** 尝试 require("node-pty")，验证原生模块加载成功（不只是包是否 resolve） */
+function detectNodePty(): { ok: boolean; detail: string } {
+  try {
+    const mod = require("node-pty") ?? require("@lydell/node-pty");
+    if (mod && typeof mod.spawn === "function") return { ok: true, detail: "已加载" };
+    return { ok: false, detail: "包存在但 spawn 不可用" };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    // Windows 典型：DLL 缺失 / STATUS_DLL_NOT_FOUND
+    return { ok: false, detail: `加载失败：${msg.split("\n")[0]}` };
+  }
+}
+
+/** 检测 typescript-language-server（TS/JS LSP）—— maou-sdk 主语言 */
+function detectLspTS(): { ok: boolean; detail: string } {
+  const name = platform() === "win32" ? "typescript-language-server.cmd" : "typescript-language-server";
+  if (commandOnPath("typescript-language-server") || commandOnPath(name)) {
+    return { ok: true, detail: "on PATH" };
+  }
+  return { ok: false, detail: "未安装 — npm i -g typescript-language-server typescript" };
+}
+
+/** 检测 ddgr（可选搜索 CLI，未安装时 search_internet 走 HTTP fallback） */
+function detectDdgr(): { ok: boolean; detail: string } {
+  if (commandOnPath("ddgr") || commandOnPath("ddgr.exe")) {
+    return { ok: true, detail: "on PATH" };
+  }
+  return { ok: false, detail: "未安装（搜索走 HTTP fallback）" };
 }
 
 function detectGit(mono: string | null): string {
@@ -351,7 +444,10 @@ export async function ensureDependencies(
 
   const te = detectTerminalEngine(cliRoot, monoRoot);
   const dcg = detectDcg(monoRoot);
-  const sqry = detectSqry();
+  const sqry = detectSqry(monoRoot);
+  const nodePty = detectNodePty();
+  const lspTS = detectLspTS();
+  const ddgr = detectDdgr();
   const gitInfo = detectGit(monoRoot);
   const pnpmInfo = detectPnpm();
   const apiInfo = detectApiConfig();
@@ -362,6 +458,9 @@ export async function ensureDependencies(
     terminal: te.ok,
     dcg: dcg.ok,
     sqry: sqry.ok,
+    nodePty: nodePty.ok,
+    lspTS: lspTS.ok,
+    ddgr: ddgr.ok,
   };
 
   return {
@@ -381,6 +480,9 @@ export async function ensureDependencies(
       terminalEngine: `${te.ok ? "✓" : "△"} ${te.detail}`,
       dcg: `${dcg.ok ? "✓" : "△"} ${dcg.detail}`,
       sqry: `${sqry.ok ? "✓" : "△"} ${sqry.detail}`,
+      nodePty: `${nodePty.ok ? "✓" : "△"} ${nodePty.detail}`,
+      lspTS: `${lspTS.ok ? "✓" : "△"} ${lspTS.detail}`,
+      ddgr: `${ddgr.ok ? "✓" : "△"} ${ddgr.detail}`,
       git: gitInfo,
       pnpm: pnpmInfo,
       apiConfig: apiInfo,
@@ -417,6 +519,9 @@ export interface AutoFixResult {
   coreFixed: boolean;
   terminalFixed: boolean;
   dcgFixed: boolean;
+  sqryFixed: boolean;
+  lspTSFixed: boolean;
+  nodePtyFixed: boolean;
   actions: string[];
   errors: string[];
 }
@@ -442,6 +547,9 @@ export async function autoFixDependencies(opts: {
       coreFixed: false,
       terminalFixed: false,
       dcgFixed: false,
+      sqryFixed: false,
+      lspTSFixed: false,
+      nodePtyFixed: false,
       actions,
       errors: ["Node < 20，无法自动修复 — 请先安装 Node.js >= 20"],
     };
@@ -450,14 +558,20 @@ export async function autoFixDependencies(opts: {
   let needCore = !before.tiers.core;
   let needDcg = !before.tiers.dcg;
   let needTerminal = !before.tiers.terminal;
+  let needSqry = !before.tiers.sqry;
+  let needLspTS = !before.tiers.lspTS;
+  let needNodePty = !before.tiers.nodePty;
 
   // 已全绿
-  if (!needCore && !needDcg && !needTerminal) {
+  if (!needCore && !needDcg && !needTerminal && !needSqry && !needLspTS && !needNodePty) {
     return {
       attempted: false,
       coreFixed: true,
       terminalFixed: before.tiers.terminal,
       dcgFixed: before.tiers.dcg,
+      sqryFixed: before.tiers.sqry,
+      lspTSFixed: before.tiers.lspTS,
+      nodePtyFixed: before.tiers.nodePty,
       actions: ["无需修复"],
       errors: [],
     };
@@ -476,6 +590,9 @@ export async function autoFixDependencies(opts: {
         coreFixed: false,
         terminalFixed: false,
         dcgFixed: false,
+        sqryFixed: before.tiers.sqry,
+        lspTSFixed: before.tiers.lspTS,
+        nodePtyFixed: before.tiers.nodePty,
         actions,
         errors,
       };
@@ -509,8 +626,8 @@ export async function autoFixDependencies(opts: {
       }
     }
 
-    // Terminal / 完整 native：Core 已好但缺 engine，或刚修完 Core
-    const runNative = needTerminal || needCore;
+    // Terminal / 完整 native：Core 已好但缺 engine，或刚修完 Core，或 node-pty 加载失败
+    const runNative = needTerminal || needCore || needNodePty;
     if (runNative) {
       const isWin = platform() === "win32";
       if (isWin) {
@@ -520,8 +637,8 @@ export async function autoFixDependencies(opts: {
           if (!opts.quiet) log(`[fix] build-native.ps1…`);
           actions.push("build-native.ps1");
           if (!runInherit("powershell", args, mono)) {
-            if (needTerminal || !needCore) {
-              errors.push("build-native 失败 — Terminal 可能仍降级");
+            if (needTerminal || needNodePty || !needCore) {
+              errors.push("build-native 失败 — Terminal/node-pty 可能仍降级");
             }
           }
         }
@@ -532,12 +649,68 @@ export async function autoFixDependencies(opts: {
           if (!opts.quiet) log(`[fix] bash ${args.join(" ")}…`);
           actions.push("build-native.sh");
           if (!runInherit("bash", args, mono)) {
-            if (needTerminal || !needCore) {
-              errors.push("build-native 失败 — Terminal 可能仍降级");
+            if (needTerminal || needNodePty || !needCore) {
+              errors.push("build-native 失败 — Terminal/node-pty 可能仍降级");
             }
           }
         }
       }
+    }
+
+    // sqry —— 预编译二进制（ensure-sqry.mjs）；cargo install 在 Windows 上常因 C 编译器失败
+    if (needSqry) {
+      const ensure = join(mono, "scripts", "ensure-sqry.mjs");
+      if (existsSync(ensure)) {
+        if (!opts.quiet) log("[fix] ensure-sqry…");
+        actions.push("ensure-sqry");
+        const ok =
+          runInherit(process.execPath, [ensure, "--user"], mono) ||
+          runInherit(process.execPath, [ensure], mono);
+        if (!ok) {
+          // 回退：cargo install sqry-cli（需要较新 rustc，且 Windows 可能失败）
+          if (hasCargo()) {
+            if (!opts.quiet) log("[fix] ensure-sqry 失败，回退 cargo install sqry-cli…");
+            actions.push("cargo install sqry-cli");
+            const cargoBin = join(homedir(), ".cargo", "bin");
+            const prevPath = process.env.PATH ?? process.env.Path ?? "";
+            process.env.PATH = `${cargoBin}${platform() === "win32" ? ";" : ":"}${prevPath}`;
+            const cargoOk = runInherit("cargo", ["install", "sqry-cli"], mono);
+            process.env.PATH = prevPath;
+            if (!cargoOk) errors.push("sqry 安装失败 — find_code 将不可用（可手动: node scripts/ensure-sqry.mjs）");
+          } else {
+            errors.push("ensure-sqry 失败且无 cargo — find_code 将不可用");
+          }
+        }
+      } else if (hasCargo()) {
+        if (!opts.quiet) log("[fix] cargo install sqry-cli…");
+        actions.push("cargo install sqry-cli");
+        const cargoBin = join(homedir(), ".cargo", "bin");
+        const prevPath = process.env.PATH ?? process.env.Path ?? "";
+        process.env.PATH = `${cargoBin}${platform() === "win32" ? ";" : ":"}${prevPath}`;
+        const ok = runInherit("cargo", ["install", "sqry-cli"], mono);
+        process.env.PATH = prevPath;
+        if (!ok) errors.push("cargo install sqry-cli 失败 — find_code 将不可用");
+      } else {
+        errors.push("sqry 未安装且无 ensure-sqry.mjs / cargo");
+      }
+    }
+
+    // typescript-language-server —— npm i -g（Windows 走 .cmd + shell）
+    if (needLspTS) {
+      if (commandOnPath("npm") || commandOnPath("npm.cmd") || existsSync(resolveExecutable("npm"))) {
+        if (!opts.quiet) log("[fix] npm i -g typescript-language-server typescript…");
+        actions.push("npm i -g typescript-language-server typescript");
+        if (!runInherit("npm", ["install", "-g", "typescript-language-server", "typescript"], mono)) {
+          errors.push("npm i -g typescript-language-server 失败 — LSP 诊断将不可用");
+        }
+      } else {
+        errors.push("typescript-language-server 未安装且无 npm");
+      }
+    }
+
+    // ddgr —— 跨平台安装方式不一（brew/apt/pip），不自动装，仅告警
+    if (!before.tiers.ddgr) {
+      if (!opts.quiet) log("△ ddgr 未安装 — search_internet 走 HTTP fallback；如需更好结果: brew install ddgr / pip install ddgr");
     }
   } else {
     // 非 monorepo：尽力 npm install 核心包
@@ -547,6 +720,29 @@ export async function autoFixDependencies(opts: {
       const r = tryInstall([...before.missingCritical], cliRoot, null);
       if (!r.ok && r.error) errors.push(r.error);
     }
+    // 非 monorepo 下也尝试装 ts-ls（全局）
+    if (needLspTS && (commandOnPath("npm") || commandOnPath("npm.cmd") || existsSync(resolveExecutable("npm")))) {
+      if (!opts.quiet) log("[fix] npm i -g typescript-language-server typescript…");
+      actions.push("npm i -g typescript-language-server typescript");
+      if (!runInherit("npm", ["install", "-g", "typescript-language-server", "typescript"], cliRoot)) {
+        errors.push("npm i -g typescript-language-server 失败");
+      }
+    }
+    if (needSqry) {
+      // 非 monorepo：尝试从 npm 包旁 scripts 或用户自备 ensure；否则 cargo
+      if (hasCargo()) {
+        if (!opts.quiet) log("[fix] cargo install sqry-cli…");
+        actions.push("cargo install sqry-cli");
+        const cargoBin = join(homedir(), ".cargo", "bin");
+        const prevPath = process.env.PATH ?? process.env.Path ?? "";
+        process.env.PATH = `${cargoBin}${platform() === "win32" ? ";" : ":"}${prevPath}`;
+        const ok = runInherit("cargo", ["install", "sqry-cli"], cliRoot);
+        process.env.PATH = prevPath;
+        if (!ok) errors.push("cargo install sqry-cli 失败");
+      } else {
+        errors.push("sqry 未安装 — 请运行: cargo install sqry-cli 或下载 https://github.com/verivus-oss/sqry/releases");
+      }
+    }
   }
 
   const after = await ensureDependencies({ autoInstall: false, quiet: true });
@@ -555,6 +751,9 @@ export async function autoFixDependencies(opts: {
     coreFixed: after.tiers.core,
     terminalFixed: after.tiers.terminal,
     dcgFixed: after.tiers.dcg,
+    sqryFixed: after.tiers.sqry,
+    lspTSFixed: after.tiers.lspTS,
+    nodePtyFixed: after.tiers.nodePty,
     actions,
     errors,
   };
@@ -576,10 +775,14 @@ function printDoctorReport(r: DepCheckResult): void {
 
   log("");
   log("── Terminal（建议）──");
-  log(`  engine: ${r.details.terminalEngine}`);
-  log(`  dcg:    ${r.details.dcg}`);
+  log(`  engine:   ${r.details.terminalEngine}`);
+  log(`  dcg:      ${r.details.dcg}`);
+  log(`  node-pty: ${r.details.nodePty}`);
   if (!r.tiers.terminal) {
     log("  兜底: child_process 弱 PTY");
+  }
+  if (!r.tiers.nodePty) {
+    log("  兜底: node-pty 加载失败 → use_terminal 退化为无 PTY spawn（Windows 易 DLL 缺失）");
   }
   if (!r.tiers.dcg) {
     log("  兜底: 危险命令门不可靠");
@@ -587,13 +790,17 @@ function printDoctorReport(r: DepCheckResult): void {
 
   log("");
   log("── Optional ──");
-  log(`  sqry:   ${r.details.sqry}`);
+  log(`  sqry:             ${r.details.sqry}`);
+  log(`  typescript-ls:    ${r.details.lspTS}`);
+  log(`  ddgr:             ${r.details.ddgr}`);
   if (r.missingOptional.length) {
-    log(`  其它:   △ ${r.missingOptional.join(", ")}`);
+    log(`  其它:             △ ${r.missingOptional.join(", ")}`);
   } else {
-    log("  其它:   ✓");
+    log("  其它:             ✓");
   }
   if (!r.tiers.sqry) log("  兜底: find_code 不可用；grep/glob 仍可用");
+  if (!r.tiers.lspTS) log("  兜底: LSP 诊断/跳转不可用（TS/JS）");
+  if (!r.tiers.ddgr) log("  兜底: search_internet 走 HTTP fallback");
 
   log("");
   log("── Install / 环境 ──");
@@ -631,7 +838,8 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   printDoctorReport(r);
 
   const needsFix =
-    !r.tiers.core || !r.tiers.dcg || !r.tiers.terminal;
+    !r.tiers.core || !r.tiers.dcg || !r.tiers.terminal ||
+    !r.tiers.nodePty || !r.tiers.sqry || !r.tiers.lspTS;
 
   if (!noInstall && needsFix && r.nodeOk) {
     const fix = await autoFixDependencies({
@@ -646,7 +854,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
       log("");
       log("── 修复后 ──");
       log(
-        `  Core: ${r.tiers.core ? "✓" : "✗"}  Terminal: ${r.tiers.terminal ? "✓" : "△"}  dcg: ${r.tiers.dcg ? "✓" : "△"}  sqry: ${r.tiers.sqry ? "✓" : "△"}`,
+        `  Core: ${r.tiers.core ? "✓" : "✗"}  Terminal: ${r.tiers.terminal ? "✓" : "△"}  dcg: ${r.tiers.dcg ? "✓" : "△"}  node-pty: ${r.tiers.nodePty ? "✓" : "△"}  sqry: ${r.tiers.sqry ? "✓" : "△"}  ts-ls: ${r.tiers.lspTS ? "✓" : "△"}`,
       );
     }
   } else if (noInstall && needsFix) {
@@ -658,16 +866,21 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   log("── 下一步 ──");
   if (!r.tiers.core) {
     log("  Core 仍失败。检查 Node/pnpm，或手动: scripts/build-native");
-  } else if (!r.tiers.terminal || !r.tiers.dcg) {
+  } else if (!r.tiers.terminal || !r.tiers.dcg || !r.tiers.nodePty) {
     log("  可启动 maou coding（部分能力降级）");
+    if (!r.tiers.nodePty) log("  node-pty: 检查 Visual Studio Build Tools / Windows SDK");
     if (r.details.apiConfig.includes("△")) log("  API: maou setup");
+  } else if (!r.tiers.sqry || !r.tiers.lspTS) {
+    log("  可启动 maou coding（部分 Optional 降级）");
+    if (!r.tiers.sqry) log("  sqry: maou doctor（ensure-sqry / cargo install sqry-cli）");
+    if (!r.tiers.lspTS) log("  ts-ls: maou doctor（npm i -g typescript-language-server typescript）");
   } else {
     log("  就绪 → maou coding");
     if (!r.details.git.includes("非 git")) log("  更新: maou update");
   }
 
   log("");
-  if (r.tiers.core && r.tiers.terminal && r.tiers.dcg) {
+  if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.nodePty) {
     log("✓ Core+Terminal 就绪");
   } else if (r.tiers.core) {
     log("△ Core 就绪，有降级");
