@@ -513,41 +513,78 @@ impl Terminal {
 
     /// Windows 一次性命令：std::process 捕获输出，绕过 ConPTY 读输出问题。
     /// 命令结束后 ring buffer 已有完整输出，try_wait_exit 立即返回。
+    ///
+    /// 引号语义对齐 Node `child_process` shell:true：
+    ///   cmd.exe /d /s /c "<user-command>"
+    /// 并用 `raw_arg` 禁止 Rust 二次转义。否则 `node -p "1+1"` 会变成输出 `1+1`，
+    /// `type cli\package.json` 的反斜杠也会被吞掉——表现为「审批通过后命令全挂」。
     #[cfg(windows)]
     fn spawn_windows_oneshot(
         opts: CreateOptions,
         command: &str,
         cwd: String,
     ) -> TerminalResult<Self> {
+        use std::os::windows::process::CommandExt;
         use std::process::{Command, Stdio};
 
-        let (shell, _) = get_platform_shell();
+        let root = windows_system_root();
+        let comspec = std::env::var("ComSpec")
+            .or_else(|_| std::env::var("COMSPEC"))
+            .unwrap_or_else(|_| format!(r"{}\System32\cmd.exe", root));
+
         let raw_path = std::env::var("Path")
             .or_else(|_| std::env::var("PATH"))
             .unwrap_or_default();
         let clean_path = sanitize_windows_path(&raw_path);
 
-        let mut cmd = Command::new(&shell);
-        if shell.to_ascii_lowercase().contains("powershell") {
-            cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]);
-        } else {
-            cmd.args(["/D", "/C", command]);
-        }
+        // 始终用 cmd.exe 一次性执行：/d 禁 AutoRun，/s 保留 /c 参数内部引号
+        let mut cmd = Command::new(&comspec);
+        cmd.arg("/d").arg("/s").arg("/c");
+        // 整段用户命令包一层引号；/S 会剥掉首尾引号后原样执行中间内容
+        let mut wrapped = String::with_capacity(command.len() + 2);
+        wrapped.push('"');
+        wrapped.push_str(command);
+        wrapped.push('"');
+        cmd.raw_arg(wrapped);
+
         cmd.current_dir(&cwd);
         cmd.env("Path", &clean_path);
         cmd.env("PATH", &clean_path);
-        if let Ok(root) = std::env::var("SystemRoot").or_else(|_| std::env::var("SYSTEMROOT")) {
-            cmd.env("SystemRoot", root);
+        cmd.env("SystemRoot", &root);
+        cmd.env("windir", &root);
+        cmd.env("ComSpec", &comspec);
+        if let Ok(v) = std::env::var("PATHEXT") {
+            cmd.env("PATHEXT", v);
         }
-        if let Ok(cs) = std::env::var("ComSpec").or_else(|_| std::env::var("COMSPEC")) {
-            cmd.env("ComSpec", cs);
+        if let Ok(v) = std::env::var("USERPROFILE") {
+            cmd.env("USERPROFILE", v);
         }
+        if let Ok(v) = std::env::var("USERNAME") {
+            cmd.env("USERNAME", v);
+        }
+        if let Ok(v) = std::env::var("APPDATA") {
+            cmd.env("APPDATA", v);
+        }
+        if let Ok(v) = std::env::var("LOCALAPPDATA") {
+            cmd.env("LOCALAPPDATA", v);
+        }
+        if let Ok(v) = std::env::var("TEMP") {
+            cmd.env("TEMP", &v);
+            cmd.env("TMP", &v);
+        } else if let Ok(v) = std::env::var("TMP") {
+            cmd.env("TEMP", &v);
+            cmd.env("TMP", &v);
+        }
+
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
         let output = cmd.output().map_err(|e| {
-            TerminalError::PtySpawnFailed(format!("spawn `{}` /C `{}`: {}", shell, command, e))
+            TerminalError::PtySpawnFailed(format!(
+                "spawn `{}` /d /s /c `{}`: {}",
+                comspec, command, e
+            ))
         })?;
 
         let mut text = String::new();
