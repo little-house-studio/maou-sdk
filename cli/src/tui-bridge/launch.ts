@@ -11,11 +11,15 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import type { Writable, Readable } from "node:stream";
+import {
+  ensureRatatuiBinary,
+  resolveRatatuiBinary,
+} from "./resolve-binary.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -29,38 +33,11 @@ export interface RatatuiLaunchOpts {
   agent?: string;
   /** 二进制绝对路径；默认探测 */
   binaryPath?: string;
+  /** 找不到时尝试 cargo build（默认 true） */
+  tryBuild?: boolean;
 }
 
-export function resolveRatatuiBinary(explicit?: string): string | null {
-  if (explicit && existsSync(explicit)) return explicit;
-  if (process.env.MAOU_TUI_BIN && existsSync(process.env.MAOU_TUI_BIN)) {
-    return process.env.MAOU_TUI_BIN;
-  }
-  // cli/src/tui-bridge → cli/tui-ratatui/target/release|debug
-  // dist/tui-bridge → 同上 ../.. = cli
-  const cliRoot = resolve(__dirname, "../..");
-  const exe = process.platform === "win32" ? ".exe" : "";
-  const names = [
-    `maou-tui-ratatui${exe}`,
-    "maou-tui-ratatui.exe", // cross-build leftover
-    "maou-tui-ratatui",
-  ];
-  const dirs = [
-    join(cliRoot, "tui-ratatui/target/release"),
-    join(cliRoot, "tui-ratatui/target/debug"),
-    join(process.cwd(), "tui-ratatui/target/release"),
-    join(process.cwd(), "tui-ratatui/target/debug"),
-    join(process.env.USERPROFILE || process.env.HOME || "", ".maou", "bin"),
-  ];
-  const candidates: string[] = [];
-  for (const d of dirs) {
-    for (const n of names) candidates.push(join(d, n));
-  }
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  return null;
-}
+export { resolveRatatuiBinary, ensureRatatuiBinary } from "./resolve-binary.js";
 
 export type ProtocolHandler = (msg: Record<string, unknown>) => void | Promise<void>;
 
@@ -80,13 +57,21 @@ export function spawnRatatui(
   opts: RatatuiLaunchOpts,
   onMessage: ProtocolHandler,
 ): RatatuiSession {
-  const bin = resolveRatatuiBinary(opts.binaryPath);
+  const bin =
+    resolveRatatuiBinary(opts.binaryPath) ??
+    (opts.tryBuild !== false
+      ? ensureRatatuiBinary({
+          explicit: opts.binaryPath,
+          tryBuild: true,
+        })
+      : null);
   if (!bin) {
     throw new Error(
       "找不到 maou-tui-ratatui 二进制。\n" +
         "  请先编译：cd maou-sdk/cli && npm run build:tui-ratatui\n" +
+        "  或 maou doctor\n" +
         "  或设置 MAOU_TUI_BIN=/path/to/maou-tui-ratatui\n" +
-        "  回退 Ink：MAOU_TUI=ink maou coding",
+        "  （产物默认安装到 ~/.maou/bin/）",
     );
   }
 
@@ -114,6 +99,8 @@ export function spawnRatatui(
     },
     // inherit TTY for keyboard + paint; pipe stderr (out) + fd3 (in)
     stdio: ["inherit", "inherit", "pipe", "pipe"],
+    // Windows：不弹控制台窗；mac/Linux 忽略
+    windowsHide: true,
   });
 
   const err = child.stderr as Readable | null;

@@ -11,11 +11,9 @@
  *   0. 依赖预检 / 自动补齐
  *   1. 系列首次 → maou setup（全局 API）
  *   2. 新路径 → 项目确认（创建 .maou）
- *   3. 进入 TUI
+ *   3. 进入 Ratatui TUI（唯一产品 UI）
  */
 
-import React from "react";
-import { render } from "ink";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentCliConfig } from "../types.js";
@@ -41,8 +39,8 @@ export interface AgentLaunchOptions {
   /** 新项目非交互确认 */
   yes?: boolean;
   /**
-   * TUI 后端：ratatui（默认）| ink（回退）。
-   * 也可由 MAOU_TUI / config cli.tui 决定。
+   * 历史兼容：曾支持 ink|ratatui。现仅 ratatui；
+   * 传入 ink 会报错并提示编译二进制。
    */
   tui?: string;
 }
@@ -95,7 +93,7 @@ async function resolveLaunchConfig(
   };
 }
 
-/** 启动 Ink TUI（需先装好 exit guard / console 重定向） */
+/** 启动产品 TUI（Ratatui） */
 export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> {
   // 0) 依赖：Core 必须；缺则自动修复一次再查
   if (!opts.skipDeps && process.env.MAOU_SKIP_DEPS !== "1") {
@@ -154,16 +152,14 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
 
   const themePath = opts.themePath;
 
-  // 画廊：catalog / 源图变更时自动重烘焙 ASCII（用户自定义友好）
+  // 画廊：catalog / 源图变更时自动重烘焙 ASCII
   try {
     const { syncGalleryOnStartup } = await import("../gallery/sync-gallery.js");
     const g = syncGalleryOnStartup({
       log: (m) => process.stderr.write(`  ${m}\n`),
     });
     if (g.rebuilt.length > 0) {
-      process.stderr.write(
-        `✓ 画廊已更新：${g.rebuilt.join(", ")}\n`,
-      );
+      process.stderr.write(`✓ 画廊已更新：${g.rebuilt.join(", ")}\n`);
     }
     if (g.errors.length > 0) {
       process.stderr.write(
@@ -176,134 +172,40 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
     );
   }
 
-  // ── TUI 后端分流：默认 ratatui ──
-  const { resolveTuiBackend, markRatatuiActive } = await import("../tui-bridge/config.js");
-  const tui = resolveTuiBackend(opts.tui);
-  if (tui === "ratatui") {
-    markRatatuiActive();
-    process.stderr.write(`[maou] tui=ratatui\n`);
-    const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
-    await runAgentWithRatatui({
-      config,
-      productName: product.name,
-      themePath,
-    });
-    return;
-  }
-  throw new Error(`不支持的 TUI：${tui}。请安装 Rust 编译 Ratatui。`);
-
-  const { autoEnablePerfFromEnv, perfInc } = await import("../hooks/perf.js");
-  autoEnablePerfFromEnv();
-  const { noteInkFrame } = await import("../hooks/process-stats.js");
-  // 帧率 A/B：MAOU_LITE=1 时关掉动画/hover/历史窗等（见 config/lite-mode.ts）
-  const { isLiteMode, liteModeBanner, liteModeToast } = await import("../config/lite-mode.js");
-  if (isLiteMode()) {
-    process.stderr.write(`${liteModeBanner()}\n`);
+  // 3) 唯一 TUI：Ratatui
+  const flag = (opts.tui || process.env.MAOU_TUI || "").toLowerCase().trim();
+  if (flag === "ink" || flag === "react") {
+    process.stderr.write(
+      "❌ Ink TUI 已移除。请使用 Ratatui：\n" +
+        "  cd maou-sdk/cli && npm run build:tui-ratatui\n" +
+        "  或 maou doctor\n" +
+        "  或 MAOU_TUI_BIN=/path/to/maou-tui-ratatui maou coding\n",
+    );
+    process.exit(1);
   }
 
-  const {
-    initVramLayer,
-    createFakeStdout,
-    setThemeBg,
-    scheduleFullPaint,
-    invalidatePaintCache,
-    requestScreenRefresh,
-  } = await import("../render/vram-layer.js");
-  await initVramLayer();
-
-  const { resolveThemeArg, setActiveTheme } = await import("../theme/load-theme.js");
-  const loaded = resolveThemeArg(themePath);
-  setActiveTheme(loaded, false);
-  setThemeBg(loaded.tokens.bg);
-
-  const fakeStdout = createFakeStdout();
-  process.stdout.write(
-    "\x1b[?1049h\x1b[H\x1b[2J\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?25l",
-  );
-
-  const scheduleRender = () => {
-    perfInc("inkRender");
-    noteInkFrame();
-    scheduleFullPaint();
-  };
-
-  const { setInkStdoutForResize, syncTerminalSize } = await import(
-    "../hooks/useTerminalSize.js"
-  );
-  setInkStdoutForResize(fakeStdout);
-
-  const { App } = await import("../app.js");
-  const { createFilteredStdin } = await import("../input/filtered-stdin.js");
-  const filteredStdin =
-    process.env.MAOU_NO_FILTER === "1"
-      ? process.stdin
-      : createFilteredStdin(process.stdin);
-
-  // Ink 默认 maxFps=30。目标滚动 ~25fps：用 40 留余量即可。
-  // 过高（60）会导致 ink 堆积、paint 跟不上（见 dump: ink23/pnt15）。
-  // MAOU_INK_MAX_FPS 可覆盖；0 = Ink 默认 30。
-  const inkMaxFps = (() => {
-    const raw = process.env.MAOU_INK_MAX_FPS;
-    if (raw === "0" || raw === "default") return 30;
-    if (raw != null && raw !== "") {
-      const n = Number(raw);
-      if (Number.isFinite(n) && n > 0) return Math.min(120, Math.round(n));
-    }
-    return 40;
-  })();
-
-  const { waitUntilExit } = render(
-    React.createElement(App, { config, themePath }),
-    {
-      exitOnCtrlC: false,
-      stdin: filteredStdin as NodeJS.ReadStream,
-      stdout: fakeStdout as any,
-      patchConsole: false,
-      onRender: scheduleRender,
-      maxFps: inkMaxFps,
-    },
-  );
-  setTimeout(() => scheduleFullPaint(), 200);
-  if (isLiteMode()) {
-    // 延迟 toast，等 store/App 挂上
-    setTimeout(() => {
-      void import("../state/store.js").then(({ useStore }) => {
-        useStore.getState().toastMsg(liteModeToast(), "warn");
-      });
-    }, 400);
+  const { markRatatuiActive } = await import("../tui-bridge/config.js");
+  const { ensureRatatuiBinary } = await import("../tui-bridge/resolve-binary.js");
+  const bin = ensureRatatuiBinary({
+    tryBuild: true,
+    log: (m) => process.stderr.write(`${m}\n`),
+  });
+  if (!bin) {
+    process.stderr.write(
+      "❌ 找不到 maou-tui-ratatui 二进制（Ink 已删除，无法回退）。\n" +
+        "  编译：cd maou-sdk/cli && npm run build:tui-ratatui\n" +
+        "  或：maou doctor\n" +
+        "  或：MAOU_TUI_BIN=/path/to/maou-tui-ratatui\n",
+    );
+    process.exit(1);
   }
 
-  // 拉宽/拉窄：清屏 + 作废 diff 缓存 + 多帧强制重绘。
-  // 仅 CSI 2J 而不 invalidate 时，行 diff 会认为「未变」跳过写出（拉宽尤其明显）。
-  let resizeTimer: ReturnType<typeof setTimeout> | null = null;
-  const onResize = () => {
-    syncTerminalSize(true);
-    // 立刻同步 fakeStdout 尺寸，促 Ink 下一帧用新 columns/rows 排版
-    const cols = process.stdout.columns || 80;
-    const rows = process.stdout.rows || 24;
-    fakeStdout.columns = cols;
-    fakeStdout.rows = rows;
-    try {
-      fakeStdout.emit?.("resize");
-    } catch {
-      /* ignore */
-    }
-    invalidatePaintCache();
-    requestScreenRefresh({ clear: true });
-    if (resizeTimer) clearTimeout(resizeTimer);
-    // Yoga/Ink 异步排版：短间隔再刷两帧，等 lastGrid 跟上新宽度
-    resizeTimer = setTimeout(() => {
-      invalidatePaintCache();
-      scheduleFullPaint();
-      setTimeout(() => {
-        invalidatePaintCache();
-        scheduleFullPaint();
-      }, 80);
-    }, 48);
-  };
-  process.stdout.on("resize", onResize);
-  process.on("SIGWINCH", onResize);
-
-  await waitUntilExit();
-  process.stdout.write("\x1b[?25h\x1b[?1006l\x1b[?1003l\x1b[?1049l");
+  markRatatuiActive();
+  process.stderr.write(`[maou] tui=ratatui binary=${bin}\n`);
+  const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
+  await runAgentWithRatatui({
+    config,
+    productName: product.name,
+    themePath,
+  });
 }

@@ -11,15 +11,23 @@ import type { ProtoOverlay, ProtoSelectItem } from "./protocol-types.js";
 import { useStore } from "../state/store.js";
 import { commandPaletteItems, helpKeyRows } from "../config/cli-commands.js";
 import { settingsForSurface } from "../config/cli-settings.js";
+import { getActiveTheme, listThemesMeta } from "../theme/load-theme.js";
 
 function settingsItems(): ProtoSelectItem[] {
   const s = useStore.getState();
+  let themeName = "";
+  try {
+    const th = getActiveTheme();
+    themeName = th.name || th.id;
+  } catch {
+    themeName = "";
+  }
   return settingsForSurface("ratatui", {
     provider: s.provider,
     model: s.model,
     approvalMode: s.approvalMode,
     thinkingLevel: s.thinkingLevel,
-    themeName: "",
+    themeName,
     perfHud: s.perfHud !== false,
     mouseCapture: s.mouseCapture !== false,
   });
@@ -136,6 +144,34 @@ export function buildOverlay(
         items: settingsItems(),
         selected: 0,
       };
+    case "theme": {
+      let currentId = "";
+      try {
+        currentId = getActiveTheme().id;
+      } catch {
+        /* ignore */
+      }
+      const items: ProtoSelectItem[] = listThemesMeta().map((th) => ({
+        value: th.id,
+        label: th.name,
+        description:
+          th.id === currentId
+            ? `当前 · ${th.source}`
+            : th.source === "user"
+              ? "用户 ~/.maou/themes"
+              : "内置 assets/themes",
+      }));
+      return {
+        kind,
+        title: "配色方案",
+        footer: "↑↓ 选择 · Enter 应用并保存 · Esc 关闭",
+        items,
+        selected: Math.max(
+          0,
+          items.findIndex((it) => it.value === currentId),
+        ),
+      };
+    }
     case "agents": {
       const entries = config.listAgents?.() ?? [];
       const items: ProtoSelectItem[] = [];

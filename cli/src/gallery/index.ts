@@ -1,4 +1,3 @@
-export { GallerySplash } from "./GallerySplash.js";
 export {
   GALLERY_WORKS,
   getGalleryWorks,

@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { platform, homedir } from "node:os";
 import { findMonorepoRoot, findSdkGitRoot, resolveCliPackageRoot } from "./repo-root.js";
+import { resolveRatatuiBinary } from "../tui-bridge/resolve-binary.js";
 
 /**
  * 解析可执行文件绝对路径。
@@ -340,21 +341,17 @@ function detectApiConfig(): string {
   }
 }
 
-function detectTui(mono: string | null): string {
+function detectTui(_mono: string | null): string {
   const forced = process.env.MAOU_TUI || "";
   const def = "ratatui";
   const active = forced || def;
-  const exe = platform() === "win32" ? ".exe" : "";
-  const bins = [
-    process.env.MAOU_TUI_BIN,
-    mono ? join(mono, "cli/tui-ratatui/target/release/maou-tui-ratatui" + exe) : "",
-    join(homedir(), ".maou", "bin", "maou-tui-ratatui" + exe),
-  ].filter(Boolean) as string[];
-  const hasRt = bins.some((b) => existsSync(b));
+  // 与 launch 同源探测（含 ~/.maou/bin、target/release、PATH；Windows 认 .exe）
+  const binPath = resolveRatatuiBinary() ?? "";
+  const hasRt = !!binPath;
   if (active === "ratatui" || active === "rust" || active === "rt") {
     return hasRt
-      ? `✓ ratatui（有二进制） default=${def}`
-      : `△ 配置倾向 ratatui 但无二进制 — 运行 maou doctor 修复`;
+      ? `✓ ratatui（${binPath}） default=${def}`
+      : `△ 配置倾向 ratatui 但无二进制 — npm run build:tui-ratatui 或 maou doctor`;
   }
   return `✓ ink（或默认） effective=${active}`;
 }
@@ -862,6 +859,32 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
     log("（--check：未自动修复。需要修复请运行: maou doctor  或  maou doctor --fix）");
   }
 
+  // Ratatui 二进制（产品默认 TUI；无则尝试 cargo build → ~/.maou/bin）
+  if (!noInstall) {
+    try {
+      const { resolveRatatuiBinary, ensureRatatuiBinary } = await import(
+        "../tui-bridge/resolve-binary.js"
+      );
+      if (!resolveRatatuiBinary()) {
+        log("");
+        log("── Ratatui TUI 二进制 ──");
+        const bin = ensureRatatuiBinary({
+          tryBuild: true,
+          log: (m) => log(m),
+        });
+        if (bin) log(`  ✓ ${bin}`);
+        else {
+          log("  △ 未安装 — 手动: cd maou-sdk/cli && npm run build:tui-ratatui");
+          log("  （无二进制时 maou coding 无法启动）");
+        }
+      }
+    } catch (e) {
+      log(
+        `  △ TUI 二进制检查跳过: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   log("");
   log("── 下一步 ──");
   if (!r.tiers.core) {
@@ -875,7 +898,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
     if (!r.tiers.sqry) log("  sqry: maou doctor（ensure-sqry / cargo install sqry-cli）");
     if (!r.tiers.lspTS) log("  ts-ls: maou doctor（npm i -g typescript-language-server typescript）");
   } else {
-    log("  就绪 → maou coding");
+    log("  就绪 → maou coding（默认 Ratatui）");
     if (!r.details.git.includes("非 git")) log("  更新: maou update");
   }
 

@@ -1,26 +1,20 @@
 /**
- * Esc 统一取消 / 返回 / 关闭。
+ * Esc 统一取消 / 返回 / 关闭（Ratatui + store）。
  *
  * 任意场景按 Esc 只做**一层**回退（由内到外）：
  *   1. 全屏编辑器 → 返回输入框（内容带回）
  *   2. 终端审批条 → 拒绝
  *   3. 输入框文本选区 → 取消选区
- *   4. 屏幕选区（蓝底）→ 清除
- *   5. 斜杠/路径补全菜单 → 关闭
- *   6. 嵌套页（设置二级等）→ 返回上级
- *   7. 任意 overlay 弹层 → 关闭
- *   8. 流式生成 / 中断中 → 停止任务
- *   9. 空闲 → 无操作（返回 false）
+ *   4. 斜杠/路径补全菜单 → 关闭
+ *   5. 嵌套页（设置二级等）→ 返回上级
+ *   6. 任意 overlay 弹层 → 关闭
+ *   7. 流式生成 / 中断中 → 停止任务
+ *   8. 空闲 → 无操作（返回 false）
  *
- * 各组件本地 useCleanInput 也应调用本函数，避免漏接。
+ * 屏幕选区由 Ratatui 子进程处理，Node 不再持有 Ink 显存选区。
  */
 
 import { useStore } from "../state/store.js";
-import {
-  clearSelection as vramClear,
-  getSelection as vramGet,
-} from "../render/vram-layer.js";
-import { clearActiveSel } from "../render/selection-model.js";
 import { answerTerminalApproval } from "../input/terminal-approval.js";
 
 export type EscapeAction =
@@ -48,22 +42,19 @@ export interface EscapeCancelContext {
 type NestedBackHandler = () => boolean;
 
 let nestedBackHandler: NestedBackHandler | null = null;
-/** 中断流式任务（由 App/useAgent 注册） */
+/** 中断流式任务（由 bridge 注册） */
 let abortStreamHandler: (() => void) | null = null;
-/** 全屏编辑器当前文本（避免全局 Esc 只带回 initial） */
+/** 全屏编辑器当前文本 */
 let fullEditorValueGetter: (() => string) | null = null;
 
-/** 注册/注销嵌套 Esc 返回（Settings 二级页 mount 时） */
 export function registerNestedEscapeBack(fn: NestedBackHandler | null): void {
   nestedBackHandler = fn;
 }
 
-/** 注册/注销流式中断 */
 export function registerAbortStream(fn: (() => void) | null): void {
   abortStreamHandler = fn;
 }
 
-/** 注册/注销全屏编辑器内容读取 */
 export function registerFullEditorValue(fn: (() => string) | null): void {
   fullEditorValueGetter = fn;
 }
@@ -94,29 +85,20 @@ export function handleEscapeCancel(ctx: EscapeCancelContext = {}): EscapeCancelR
     return { handled: true, action: "terminal_approval" };
   }
 
-  // 3. 输入框文本选区
+  // 3. 输入框文本选区（store 侧）
   const textSel = s.inputTextSel;
   if (textSel && textSel.startIdx !== textSel.endIdx) {
     s.setInputTextSel(null);
-    clearActiveSel();
-    vramClear();
     return { handled: true, action: "input_selection" };
   }
 
-  // 4. 屏幕选区蓝底
-  if (vramGet()) {
-    vramClear();
-    clearActiveSel();
-    return { handled: true, action: "screen_selection" };
-  }
-
-  // 5. 补全菜单
+  // 4. 补全菜单
   if (s.completion) {
     s.closeCompletion();
     return { handled: true, action: "completion" };
   }
 
-  // 6. 嵌套页返回（设置二级 → 一级）
+  // 5. 嵌套页返回
   if (nestedBackHandler) {
     try {
       if (nestedBackHandler()) {
@@ -127,13 +109,13 @@ export function handleEscapeCancel(ctx: EscapeCancelContext = {}): EscapeCancelR
     }
   }
 
-  // 7. overlay 弹层
+  // 6. overlay 弹层
   if (s.overlay) {
     s.setOverlay(null);
     return { handled: true, action: "overlay" };
   }
 
-  // 8. 流式生成 → 中断
+  // 7. 流式生成 → 中断
   if (s.streaming || s.aborting) {
     if (!s.aborting) {
       abortStreamHandler?.();

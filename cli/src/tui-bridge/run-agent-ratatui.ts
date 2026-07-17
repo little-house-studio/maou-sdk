@@ -11,7 +11,12 @@ import { useStore } from "../state/store.js";
 import type { UIState } from "../state/types.js";
 import { complete, applyCompletion } from "../overlay/Completer.js";
 import { loadSessionMessages } from "../state/session-loader.js";
-import { resolveThemeArg, setActiveTheme } from "../theme/load-theme.js";
+import {
+  resolveThemeArg,
+  setActiveTheme,
+  loadThemeById,
+  type LoadedTheme,
+} from "../theme/load-theme.js";
 import {
   installCliTerminalApprover,
   uninstallCliTerminalApprover,
@@ -90,8 +95,9 @@ function refreshSupervisor(): void {
 
 export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   const cwd = process.cwd();
-  const loadedTheme = resolveThemeArg(opts.themePath);
-  setActiveTheme(loadedTheme, false);
+  /** 可热切换；snapshot / ProtoTheme 读此引用 */
+  let activeTheme: LoadedTheme = resolveThemeArg(opts.themePath);
+  setActiveTheme(activeTheme, false);
 
   const cli = createCliSession({
     config: opts.config,
@@ -199,7 +205,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       expandedThinking,
       expandedMsgs,
       collapsedMsgs,
-      theme: loadedTheme.tokens,
+      theme: activeTheme.tokens,
       overlay,
       completions: comps,
       input: input ?? lastInput,
@@ -733,7 +739,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       try {
         process.stderr.write(
           `[maou] ratatui 子进程退出 code=${code}${signal ? ` signal=${signal}` : ""}\n` +
-            `  若频繁闪退，可暂时 MAOU_TUI=ink maou coding，或把 [ratatui] 日志贴出排查。\n`,
+            `  若频繁闪退，请把 [ratatui] 日志贴出排查，或重编：npm run build:tui-ratatui\n`,
         );
       } catch {
         /* ignore */
@@ -898,6 +904,17 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         return;
       }
       if (kind === "settings") {
+        if (value === "model") {
+          modelProvider = null;
+          store.setOverlay("model");
+          pushState(undefined, true);
+          return;
+        }
+        if (value === "theme") {
+          store.setOverlay("theme");
+          pushState(undefined, true);
+          return;
+        }
         if (value === "approval") {
           const next = store.cycleApprovalMode();
           store.toastMsg(`审核 · ${next}`, "info");
@@ -931,6 +948,20 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
           return;
         }
         store.setOverlay(null);
+        pushState(undefined, true);
+        return;
+      }
+      if (kind === "theme") {
+        const th = loadThemeById(value);
+        if (th) {
+          activeTheme = th;
+          setActiveTheme(th, true);
+          store.toastMsg(`配色 → ${th.name}`, "ok");
+        } else {
+          store.toastMsg(`未找到主题 ${value}`, "err");
+        }
+        store.setOverlay(null);
+        lastSig = "";
         pushState(undefined, true);
         return;
       }

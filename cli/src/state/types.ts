@@ -142,7 +142,16 @@ export interface CacheStat {
   model?: string;
 }
 
-export type OverlayKind = null | "command" | "model" | "sessions" | "help" | "settings" | "agents" | "prompt";
+export type OverlayKind =
+  | null
+  | "command"
+  | "model"
+  | "sessions"
+  | "help"
+  | "settings"
+  | "agents"
+  | "prompt"
+  | "theme";
 
 /** 终端命令交互审批请求（normal 模式阻塞 agent 直至用户选择） */
 export interface TerminalApprovalState {

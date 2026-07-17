@@ -3,6 +3,8 @@
  *
  * 每项：id + 标签 + 当前值描述 + 行为类型。
  * 持久化字段走 config/cli-ui-prefs；会话态（审核/思考）走 store。
+ *
+ * 产品 TUI 仅 Ratatui。surfaces 保留字段，一律含 "ratatui"。
  */
 
 export type SettingKind =
@@ -36,8 +38,8 @@ export interface SettingDef {
   id: SettingId;
   label: string;
   kind: SettingKind;
-  /** 主菜单是否显示（Ink 完整 / Ratatui 精简可过滤） */
-  surfaces: Array<"ink" | "ratatui">;
+  /** 显示表面（仅 ratatui；保留字段兼容） */
+  surfaces: Array<"ratatui">;
   description: (ctx: SettingContext) => string;
 }
 
@@ -55,7 +57,7 @@ export const CLI_SETTINGS: readonly SettingDef[] = [
     id: "perf_hud",
     label: "Debug 显示",
     kind: "toggle",
-    surfaces: ["ink", "ratatui"],
+    surfaces: ["ratatui"],
     description: (ctx) =>
       ctx.perfHud
         ? "开 · 右上角性能条 · Enter 关闭"
@@ -65,14 +67,14 @@ export const CLI_SETTINGS: readonly SettingDef[] = [
     id: "model",
     label: "API 配置",
     kind: "submenu",
-    surfaces: ["ink"],
+    surfaces: ["ratatui"],
     description: (ctx) => `${ctx.provider}/${ctx.model || "未选"}`,
   },
   {
     id: "approval",
     label: "审核模式",
     kind: "cycle",
-    surfaces: ["ink", "ratatui"],
+    surfaces: ["ratatui"],
     description: (ctx) =>
       `${ctx.approvalMode} · Shift+Tab 循环 normal/auto/yolo`,
   },
@@ -80,7 +82,7 @@ export const CLI_SETTINGS: readonly SettingDef[] = [
     id: "thinking",
     label: "思考级别",
     kind: "cycle",
-    surfaces: ["ink", "ratatui"],
+    surfaces: ["ratatui"],
     description: (ctx) =>
       `${ctx.thinkingLevel} (${THINKING_LABELS[ctx.thinkingLevel] ?? "?"} · 循环 0–5)`,
   },
@@ -88,8 +90,8 @@ export const CLI_SETTINGS: readonly SettingDef[] = [
     id: "theme",
     label: "配色方案",
     kind: "submenu",
-    surfaces: ["ink"],
-    description: (ctx) => ctx.themeName,
+    surfaces: ["ratatui"],
+    description: (ctx) => ctx.themeName || "默认",
   },
   {
     id: "sound",
@@ -102,7 +104,7 @@ export const CLI_SETTINGS: readonly SettingDef[] = [
     id: "mouse",
     label: "鼠标捕获",
     kind: "toggle",
-    surfaces: ["ink", "ratatui"],
+    surfaces: ["ratatui"],
     description: (ctx) =>
       ctx.mouseCapture ? "开 · SGR 点击/滚轮" : "关 · 终端原生选字",
   },
@@ -122,7 +124,7 @@ export interface SettingListItem {
 }
 
 export function settingsForSurface(
-  surface: "ink" | "ratatui",
+  surface: "ratatui",
   ctx: SettingContext,
 ): SettingListItem[] {
   return CLI_SETTINGS.filter((s) => s.surfaces.includes(surface)).map((s) => ({

@@ -44,7 +44,7 @@ ${formatProductList()}
   0. 依赖预检（缺则自动装）
   1. 首次系列产品 → maou setup
   2. 新项目路径 → 确认后创建 .maou
-  3. 进入 TUI
+  3. 进入 Ratatui TUI
 
 全局 API 配置文件（所有 Maou 系列产品共用）:
   ${resolveMaouConfigPath()}
@@ -62,9 +62,8 @@ ${formatProductList()}
   MAOU_LITE=1              帧率试验：关动画/hover/闪烁/轮询，历史窗缩到 12
   MAOU_LITE_HISTORY=N      LITE 下历史条数（默认 12）
   MAOU_PERF_HUD=0          关闭右上角 Debug 性能条（设置 → Debug 显示 会写入 ~/.maou/cli-ui.json）
-  MAOU_TUI=ink|ratatui     TUI 后端（Win 默认 ratatui；mac/Linux 默认 ratatui）
-  MAOU_TUI_BIN=path        ratatui 二进制路径（可选）
-  maou coding --tui ratatui  同上（旗标优先于 env）
+  MAOU_TUI_BIN=path        ratatui 二进制（默认 ~/.maou/bin/maou-tui-ratatui）
+  MAOU_TUI=ratatui         仅 ratatui（ink 已删除）
   MAOU_DCG_PATH            dcg 二进制绝对路径
 `;
 
@@ -72,7 +71,7 @@ function printHelp(): void {
   process.stdout.write(HELP);
 }
 
-// pino 日志不污染 Ink stdout
+// pino 日志不污染 TTY stdout
 process.env.NODE_ENV = "production";
 
 installExitGuard();

@@ -1,28 +1,21 @@
 # Maou CLI
 
-终端 AI agent 入口（默认 **Ratatui** TUI；Ink 保留可回退）。
+终端 AI agent 入口。**唯一 TUI：Ratatui**（Ink 已删除）。
 
-## TUI 后端
+## 编译 TUI 二进制
 
 ```bash
-# 编译 Ratatui 二进制（首次 / 改 Rust 后）
 cd maou-sdk/cli
-npm run build:tui-ratatui
-
-maou coding                    # Ratatui（默认）
-MAOU_TUI=ratatui maou coding   # 显式 Ratatui
-MAOU_TUI=ink maou coding       # 回退 Ink
-maou coding --tui ink          # 同上
+npm run build:tui-ratatui   # release → ~/.maou/bin
+# 或 maou doctor
 ```
 
-可选 `~/.maou/config.json`：
+## 启动
 
-```json
-{ "cli": { "tui": "ink" } }
+```bash
+maou coding
+MAOU_TUI_BIN=/path/to/maou-tui-ratatui maou coding
 ```
 
-优先级：`--tui` > `MAOU_TUI` > config > **`ratatui`**。
-
-更多：[`tui-ratatui/README.md`](./tui-ratatui/README.md)。
-
-缺二进制时启动会提示编译或回退 Ink。
+对等说明见 [`docs/PARITY-RATATUI.md`](./docs/PARITY-RATATUI.md)。  
+Rust 壳：[`tui-ratatui/README.md`](./tui-ratatui/README.md)。

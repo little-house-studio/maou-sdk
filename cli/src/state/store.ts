@@ -62,7 +62,6 @@ import {
   scrollCommitMinMs,
   scrollWheelLines,
 } from "../hooks/scroll-pace.js";
-import { invalidateClickTargetCache } from "../input/click-target.js";
 import {
   userHistoryPath,
   projectLastSessionPath,
@@ -1051,8 +1050,6 @@ function markScrollActiveNow(): void {
     flushPendingScroll();
     useStore.setState({ scrollActive: false });
     setScrollBusy(false);
-    // 滚动结束后矩形已变：立刻作废 click 缓存，否则 hover 用旧坐标会「指着不亮」
-    invalidateClickTargetCache();
   }, SCROLL_IDLE_MS);
 }
 
