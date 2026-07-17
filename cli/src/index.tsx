@@ -28,10 +28,18 @@ const HELP = `Maou CLI — 终端 AI agent 多产品入口
   maou setup              配置全局 API（全系列产品共用，首次必做）
   maou setup --force      强制重新配置
   maou setup --from-env   从环境变量写入 API
-  maou doctor             检查 Node/依赖，缺失则尝试自动安装
-  maou coding --yes       新路径免确认直接创建 .maou
-  maou coding --theme <name|path>  配色方案（assets/themes/<name>.json 或路径）
-  maou <path|pkg>         加载自定义 agent cli 配置
+  maou doctor             诊断并自动修复依赖（pnpm/build/dcg/native）
+  maou doctor --check     只诊断，不修复
+  maou doctor --js-only   修复时只保证 Core（跳过 terminal-engine）
+  maou doctor --full      修复时含 ratatui
+  maou update             Git pull + 本机构建（仅 clone 安装）
+  maou update --check     只 fetch 看 ahead/behind
+  maou update --force     脏工作区先 stash 再 pull
+  maou update --no-build  只 pull 不构建
+  maou update --js-only   仅 JS 构建
+  maou update --full      含 ratatui
+  maou coding --yes       新路径免确认
+  maou <path|pkg>         自定义配置
 
 产品:
 ${formatProductList()}
@@ -152,7 +160,7 @@ async function main(): Promise<void> {
         process.stderr.write(
           `❌ 未知子命令或产品「${resolved.token}」\n\n` +
             `可用产品:\n${formatProductList()}\n\n` +
-            `系统命令: setup, doctor, help\n` +
+            `系统命令: setup, doctor, update, help\n` +
             `自定义配置: maou <path-or-package>\n` +
             `运行 maou --help 查看完整帮助。\n`,
         );
@@ -167,13 +175,31 @@ async function main(): Promise<void> {
 
   if (systemCmd === "doctor") {
     const { runDoctor } = await import("./commands/deps-check.js");
-    const ok = await runDoctor();
+    // 默认自动修复；--check 只诊断
+    const ok = await runDoctor({
+      noInstall: argv.includes("--check") || argv.includes("--no-fix"),
+      jsOnly: argv.includes("--js-only"),
+      full: argv.includes("--full"),
+    });
     process.exit(ok ? 0 : 1);
   }
 
   if (systemCmd === "setup") {
     const { runSetup } = await import("./commands/setup.js");
     const ok = await runSetup({ force: setupForce, fromEnv: setupFromEnv });
+    process.exit(ok ? 0 : 1);
+  }
+
+  if (systemCmd === "update") {
+    const { runUpdate } = await import("./commands/update.js");
+    const ok = await runUpdate({
+      force: setupForce || argv.includes("--force"),
+      full: argv.includes("--full"),
+      jsOnly: argv.includes("--js-only"),
+      keepTarget: argv.includes("--keep-target"),
+      check: argv.includes("--check"),
+      noBuild: argv.includes("--no-build"),
+    });
     process.exit(ok ? 0 : 1);
   }
 

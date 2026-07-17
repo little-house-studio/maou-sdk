@@ -20,7 +20,6 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentCliConfig } from "../types.js";
 import { ensureApiConfigured } from "./setup.js";
-import { ensureDependencies } from "./deps-check.js";
 import { ensureProjectConsent } from "./project-gate.js";
 import { resolveProduct, type MaouProduct } from "./products.js";
 
@@ -98,10 +97,20 @@ async function resolveLaunchConfig(
 
 /** 启动 Ink TUI（需先装好 exit guard / console 重定向） */
 export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> {
-  // 0) 依赖分档：Core 必须；Terminal/Optional 仅警告
+  // 0) 依赖：Core 必须；缺则自动修复一次再查
   if (!opts.skipDeps && process.env.MAOU_SKIP_DEPS !== "1") {
-    const dep = await ensureDependencies({ autoInstall: true });
-    if (!dep.tiers?.core && !dep.ok) {
+    const { ensureDependencies, autoFixDependencies } = await import("./deps-check.js");
+    let dep = await ensureDependencies({ autoInstall: false, quiet: true });
+    if (!dep.tiers.core || !dep.tiers.dcg || !dep.tiers.terminal) {
+      process.stderr.write("[maou] 依赖不完整，尝试自动修复…\n");
+      const fix = await autoFixDependencies({
+        jsOnly: process.env.MAOU_FIX_JS_ONLY === "1",
+        quiet: false,
+      });
+      for (const e of fix.errors) process.stderr.write(`  ⚠ ${e}\n`);
+      dep = await ensureDependencies({ autoInstall: false, quiet: true });
+    }
+    if (!dep.tiers.core) {
       process.stderr.write(
         "❌ Core 未就绪，无法启动。请运行：maou doctor\n" +
           dep.errors.map((e) => `   - ${e}`).join("\n") +
@@ -109,23 +118,13 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
       );
       process.exit(1);
     }
-    if (dep.tiers && !dep.tiers.terminal) {
+    if (!dep.tiers.terminal) {
       process.stderr.write(
-        "△ Terminal 能力未完整（terminal-engine 未构建）。\n" +
-          "  兜底: 降级 PTY；完整终端请运行 scripts/build-native\n" +
-          "  详情: maou doctor\n",
+        "△ Terminal 未完整 — 降级 PTY。可再执行: maou doctor\n",
       );
     }
-    if (dep.tiers && !dep.tiers.dcg) {
-      process.stderr.write(
-        "△ dcg 未安装 — 危险命令门可能异常。可: node scripts/ensure-dcg.mjs --user\n",
-      );
-    }
-    if (dep.missingOptional.length > 0) {
-      process.stderr.write(
-        `△ 可选依赖缺失: ${dep.missingOptional.join(", ")}\n` +
-          `  运行 maou doctor 查看与修复建议。\n`,
-      );
+    if (!dep.tiers.dcg) {
+      process.stderr.write("△ dcg 未就绪 — 危险命令门可能异常。maou doctor\n");
     }
   }
 

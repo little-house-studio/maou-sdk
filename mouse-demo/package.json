@@ -1,9 +1,0 @@
-{
-  "name": "mouse-demo",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "ink": "7.1.0",
-    "react": "^19.0.0"
-  }
-}

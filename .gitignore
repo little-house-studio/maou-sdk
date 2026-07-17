@@ -29,14 +29,13 @@ yarn-debug.log*
 yarn-error.log*
 *.tgz
 
-# ─── Rust / Cargo（tui-ratatui、term-raster、terminal-engine 等）───
+# ─── Rust / Cargo ───
 **/target/
-# terminal-engine napi 生成物（源码外）
 terminal-engine/index.js
 terminal-engine/index.d.ts
 terminal-engine/*.node
 
-# ─── CLI 基准 / 压测输出（体积巨大）───
+# ─── CLI 基准 / 压测输出 ───
 cli/scroll-bench-result.txt
 **/scroll-bench-result.txt
 **/scroll-bench*.txt
@@ -45,7 +44,7 @@ cli/bench-out/
 cli/bench-results/
 cli/scripts/*.out.txt
 
-# ─── MCP 本地配置（可能含路径/密钥）───
+# ─── MCP 本地配置 ───
 .mcp.json
 **/.mcp.json
 
@@ -75,3 +74,55 @@ logs/
 *.log.*
 coverage/
 .nyc_output/
+
+# ═══════════════════════════════════════════════════════════
+# 不面向终端用户：实验 / 历史 / 内部文档 / 本地 demo
+# （用户从 GitHub 拉代码装 coding agent 不需要这些）
+# ═══════════════════════════════════════════════════════════
+
+# 实验与临时工程
+mouse-demo/
+_toolinit_test/
+
+# 旧 TUI / 迁移遗留
+cli/legacy/
+
+# 内部 parity / 研究文档
+cli/docs/
+cli/RESEARCH.md
+cli/RESEARCH-rust-pi.md
+cli/CHECKLIST-UI.md
+cli/DESIGN.md
+GLOSSARY.md
+CLAUDE.md
+docs/WINDOWS-TEST-ON-MAC.md
+
+# 过时 SDK 设计稿（包名仍写 maou-agent/*）
+SDK/
+
+# 开发用 demo / 压测脚本（保留 build 需要的 copy-sounds 等）
+cli/scripts/*demo*
+cli/scripts/*bench*
+cli/scripts/*probe*
+cli/scripts/test-*
+cli/scripts/pty-*
+cli/scripts/smoke-*
+cli/scripts/tui-interact.mjs
+cli/scripts/tui-pty.mjs
+cli/scripts/tui-stream.mjs
+cli/scripts/tui-test.mjs
+cli/scripts/render-smoke.mjs
+cli/scripts/sgr-test.mjs
+cli/scripts/xterm-bridge.mjs
+cli/scripts/key-probe.tsx
+cli/scripts/vram-extract-demo.tsx
+cli/scripts/osc52-select-demo.mjs
+cli/scripts/hover-scroll-demo.mjs
+cli/scripts/input-mouse-demo.mjs
+cli/scripts/ctrlc-overlay-demo.mjs
+
+# coding-agent 本地联调脚本
+agent/coding-agent/scripts/
+
+# 最小示例（非 coding 产品必需；需要可从文档链到单独示例仓）
+example/

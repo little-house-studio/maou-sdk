@@ -43,7 +43,7 @@ export const PRODUCT_ALIASES: Record<string, string> = {
 };
 
 /** 系统子命令（非产品） */
-export const SYSTEM_COMMANDS = new Set(["setup", "help", "doctor"]);
+export const SYSTEM_COMMANDS = new Set(["setup", "help", "doctor", "update"]);
 
 export function resolveProduct(token: string): MaouProduct | null {
   const name = PRODUCT_ALIASES[token] ?? token;

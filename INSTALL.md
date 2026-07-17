@@ -85,16 +85,41 @@ maou coding
 
 ---
 
-## doctor 分档
+## 更新（Git clone 用户）
 
-```text
-maou doctor
-── Core（必须）     → 失败 exit 1，不能启动
-── Terminal（建议） → △ 可启动，终端/安全降级
-── Optional         → △ find_code 等
+`maou update` **自动使用当前安装对应 clone 的 `origin` remote**（不必再填仓库 URL）。
+
+```bash
+maou update --check      # fetch + 显示 ahead/behind（允许脏工作区）
+maou update              # 干净工作区 → pull(若落后) → build-native
+maou update --force      # stash -u 后 pull（之后自行 git stash pop）
+maou update --no-build   # 只 git，不构建
+maou update --js-only    # pull + 仅 JS
+maou update --full       # pull + 含 ratatui
 ```
 
-启动时：Core 不过直接退出；Terminal/dcg 缺失只警告。
+成功后**手动退出** `maou coding` 再开（不自动杀进程）。
+
+要求：`.git` + `pnpm-workspace.yaml`，且 `maou` 指向该 monorepo 的 `cli/dist`。
+
+## doctor / 自动修复
+
+```bash
+maou doctor              # 诊断 + 自动修复（pnpm build / ensure-dcg / build-native）
+maou doctor --check      # 只诊断
+maou doctor --js-only    # 修复时跳过 terminal-engine 原生编译
+maou doctor --full       # 修复时含 ratatui
+```
+
+分档：
+
+```text
+Core      必须 → 失败不能启动
+Terminal  建议 → 缺则降级 PTY
+Optional  可选 → find_code 等
+```
+
+启动 `maou coding` 时若 Core/终端/dcg 不全，会**先自动修一次**再决定是否启动。
 
 ---
 
