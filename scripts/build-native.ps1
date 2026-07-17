@@ -1,8 +1,3 @@
-# 用户本机 Windows 构建。编完默认清理 Rust target，控制工作区 <1GB。
-#   powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1 -SkipRatatui
-#   powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1 -JsOnly
-#   powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1 -KeepTarget
-
 param(
   [switch]$SkipRatatui,
   [switch]$JsOnly,
@@ -31,7 +26,7 @@ function Cleanup-RustCaches {
     Log "[build-native] -KeepTarget: keep cargo caches"
     return
   }
-  Log "[build-native] cleaning Rust intermediate artifacts…"
+  Log "[build-native] cleaning Rust intermediate artifacts..."
   @(
     (Join-Path $Root "terminal-engine\target"),
     (Join-Path $Root "cli\tui-ratatui\target"),
@@ -49,14 +44,14 @@ function Report-Size {
     $bytes = (Get-ChildItem -Path $Root -Recurse -Force -ErrorAction SilentlyContinue |
       Measure-Object -Property Length -Sum).Sum
     $mb = [math]::Round($bytes / 1MB, 0)
-    Log "[build-native] workspace ~${mb} MB (goal <1000 MB; pnpm global store separate)"
+    Log "[build-native] workspace ~${mb} MB (goal less than 1000 MB; pnpm global store separate)"
   } catch {}
 }
 
 Log "[build-native] root=$Root"
 Log "[build-native] CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
 
-Log "[build-native] pnpm install + build (Core)…"
+Log "[build-native] pnpm install + build (Core)..."
 pnpm install
 pnpm -r run build
 $cliDist = Join-Path $Root "cli\dist\index.js"
@@ -71,23 +66,21 @@ if ($JsOnly) {
   exit 0
 }
 
-# DCG
 $ensure = Join-Path $Root "scripts\ensure-dcg.mjs"
 if (Test-Path $ensure) {
-  Log "[build-native] dcg…"
+  Log "[build-native] dcg..."
   try { node $ensure } catch { Log "[build-native] dcg failed (non-fatal)" }
 }
 
-# terminal-engine
 $te = Join-Path $Root "terminal-engine"
 if (Test-Path $te) {
   if (Get-Command cargo -ErrorAction SilentlyContinue) {
-    Log "[build-native] terminal-engine (napi, release)…"
+    Log "[build-native] terminal-engine (napi, release)..."
     Push-Location $te
     try {
       npx --yes @napi-rs/cli build --release --platform
     } catch {
-      Log "[build-native] terminal-engine failed — VS Build Tools + rustup MSVC"
+      Log "[build-native] terminal-engine failed - VS Build Tools + rustup MSVC"
     }
     Pop-Location
   } else {
@@ -98,9 +91,9 @@ if (Test-Path $te) {
 if (-not $SkipRatatui) {
   $rt = Join-Path $Root "cli\tui-ratatui"
   if ((Test-Path $rt) -and (Get-Command cargo -ErrorAction SilentlyContinue)) {
-    Log "[build-native] maou-tui-ratatui (release)…"
+    Log "[build-native] maou-tui-ratatui (release)..."
     Push-Location (Join-Path $Root "cli")
-    try { npm run build:tui-ratatui } catch { Log "[build-native] ratatui failed — use MAOU_TUI=ink" }
+    try { npm run build:tui-ratatui } catch { Log "[build-native] ratatui failed - use MAOU_TUI=ink" }
     Pop-Location
   }
 }

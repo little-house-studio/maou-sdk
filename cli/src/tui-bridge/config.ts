@@ -38,8 +38,6 @@ export function resolveTuiBackend(flag?: string | null): TuiBackend {
   const fromCfg = readConfigTui();
   if (fromCfg) return fromCfg;
 
-  // Windows 原生无 /dev/tty，默认 Ink；macOS/Linux 默认 ratatui
-  if (process.platform === "win32") return "ink";
   return "ratatui";
 }
 

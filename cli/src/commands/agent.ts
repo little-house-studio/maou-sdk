@@ -164,13 +164,17 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
     process.stderr.write(
       `[maou] tui=ratatui · 回退 Ink：MAOU_TUI=ink 或 --tui ink\n`,
     );
-    const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
-    await runAgentWithRatatui({
-      config,
-      productName: product.name,
-      themePath,
-    });
-    return;
+    try {
+      const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
+      await runAgentWithRatatui({
+        config,
+        productName: product.name,
+        themePath,
+      });
+      return;
+    } catch (err) {
+      process.stderr.write(`[maou] ratatui 启动失败，回退 Ink：${(err as Error).message}\n`);
+    }
   }
   process.stderr.write(`[maou] tui=ink\n`);
 

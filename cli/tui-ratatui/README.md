@@ -1,6 +1,6 @@
 # maou-tui-ratatui
 
-可选 **Ratatui** TUI 后端。默认 **Ink 版不变**。
+可选 **Ratatui** TUI 后端。默认 **Ratatui**。
 
 ## 编译
 

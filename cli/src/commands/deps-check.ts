@@ -249,7 +249,7 @@ function detectApiConfig(): string {
 
 function detectTui(mono: string | null): string {
   const forced = process.env.MAOU_TUI || "";
-  const def = platform() === "win32" ? "ink" : "ratatui";
+  const def = "ratatui";
   const active = forced || def;
   const exe = platform() === "win32" ? ".exe" : "";
   const bins = [

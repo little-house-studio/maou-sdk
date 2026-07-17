@@ -28,31 +28,49 @@ Maou Agent 官方 SDK / Coding Agent monorepo（`@little-house-studio/*`）。
 
 ## 安装（三系统）
 
-**共同前提（须自行安装）：**
-
-- **Node.js ≥ 20**（安装脚本**不**替你装 Node）
-- **pnpm**（`npm i -g pnpm`）
-- **Git**
-- （完整终端，可选）**Rust**；Windows 另需 **VS Build Tools（C++）**
+**共同前提**：按下方平台步骤复制运行即可，所有依赖都会自动安装。
 
 ### macOS
+
+**第一步：安装依赖（打开终端，复制运行）**
+
+```bash
+brew install node@20 rust git
+npm install -g pnpm
+```
+
+**第二步：复制运行**
 
 ```bash
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 bash scripts/install.sh
+bash scripts/build-native.sh
 export PATH="$HOME/.maou/bin:$PATH"
 maou doctor
 maou setup
 maou coding
 ```
 
-### Linux
+### Linux（Ubuntu/Debian）
+
+**第一步：安装依赖（打开终端，复制运行）**
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs git build-essential
+npm install -g pnpm
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
+**第二步：复制运行**
 
 ```bash
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 bash scripts/install.sh
+bash scripts/build-native.sh
 export PATH="$HOME/.maou/bin:$PATH"
 maou doctor
 maou setup
@@ -61,17 +79,35 @@ maou coding
 
 ### Windows（原生 PowerShell，**不要 WSL**）
 
+**第一步：安装依赖（打开 PowerShell，复制运行）**
+
+```powershell
+powershell -Command "Invoke-WebRequest -Uri https://nodejs.org/dist/v20.17.0/node-v20.17.0-x64.msi -OutFile node.msi; Start-Process msiexec -ArgumentList '/i node.msi /qn' -Wait; Remove-Item node.msi"
+powershell -Command "Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe; Start-Process rustup-init.exe -ArgumentList '-y' -Wait; Remove-Item rustup-init.exe"
+powershell -Command "Invoke-WebRequest -Uri https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/Git-2.45.2-64-bit.exe -OutFile git.exe; Start-Process git.exe -ArgumentList '/VERYSILENT /NORESTART' -Wait; Remove-Item git.exe"
+npm install -g pnpm
+```
+
+> **提示**：如果上面命令失败，手动下载安装：
+> - Node.js ≥20：https://nodejs.org/
+> - Rust：https://www.rust-lang.org/tools/install
+> - Git：https://git-scm.com/download/win
+> - 安装完打开 PowerShell 运行 `npm install -g pnpm`
+
+**第二步：重启 PowerShell，复制运行**
+
 ```powershell
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+scripts\build-native.ps1
 $env:Path = "$env:USERPROFILE\.maou\bin;" + $env:Path
 maou doctor
 maou setup
 maou coding
 ```
 
-Windows 默认 TUI 为 **Ink**。更细的依赖、磁盘占用、能力降级说明见 **[INSTALL.md](./INSTALL.md)**。
+Windows 默认 TUI 为 **Ratatui**。
 
 ---
 

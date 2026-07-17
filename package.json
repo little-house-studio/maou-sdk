@@ -15,5 +15,12 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "node-pty",
+      "@lydell/node-pty"
+    ]
   }
 }

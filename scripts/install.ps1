@@ -1,8 +1,3 @@
-# Maou installer (Windows native, no WSL). Does NOT install Node.
-# Fail-closed: Core JS build must succeed or exit 1 (no fake "success").
-#
-#   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-
 $ErrorActionPreference = "Stop"
 
 function Log([string]$msg) { Write-Host $msg }
@@ -42,16 +37,16 @@ if (-not (Test-Path (Join-Path $repoRoot "pnpm-workspace.yaml")) -or -not (Test-
 }
 
 Log "[maou] monorepo: $repoRoot"
-Log "[maou] building Core (fail-closed)…"
+Log "[maou] building Core (fail-closed)..."
 
 $buildNative = Join-Path $repoRoot "scripts\build-native.ps1"
 $coreOk = $false
 if (Test-Path $buildNative) {
   try {
-    powershell -ExecutionPolicy Bypass -File $buildNative -SkipRatatui
+    powershell -ExecutionPolicy Bypass -File $buildNative -JsOnly
     $coreOk = $true
   } catch {
-    Log "[maou] native incomplete — requiring JS-only success…"
+    Log "[maou] native incomplete - requiring JS-only success..."
     try {
       powershell -ExecutionPolicy Bypass -File $buildNative -JsOnly
       $coreOk = $true
@@ -74,25 +69,25 @@ if (Test-Path $buildNative) {
 
 $cliDist = Join-Path $repoRoot "cli\dist\index.js"
 if (-not (Test-Path $cliDist)) {
-  Die "cli\dist\index.js missing after build — Core incomplete"
+  Die "cli\dist\index.js missing after build - Core incomplete"
 }
 
 $wrapCmd = Join-Path $binDir "maou.cmd"
+New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 @"
 @echo off
 node "$cliDist" %*
 "@ | Set-Content -Encoding ASCII $wrapCmd
 Log "[maou] wrapper: $wrapCmd"
 
-# dcg — loud non-fatal
 $ensure = Join-Path $repoRoot "scripts\ensure-dcg.mjs"
 if (Test-Path $ensure) {
-  Log "[maou] ensuring dcg…"
+  Log "[maou] ensuring dcg..."
   try {
     node $ensure --user
   } catch {
     try { node $ensure } catch {
-      Log "[maou] WARNING: dcg failed — Terminal security degraded. Later: node scripts\ensure-dcg.mjs --user"
+      Log "[maou] WARNING: dcg failed - Terminal security degraded. Later: node scripts\ensure-dcg.mjs --user"
     }
   }
 }
@@ -105,9 +100,9 @@ if ($pathParts -notcontains $binDir) {
 }
 
 Log ""
-Log "Install finished with Core ready. Default TUI on Windows is Ink."
+Log "Install finished with Core ready. Default TUI on Windows is Ratatui."
 Log "  maou doctor"
 Log "  maou setup"
 Log "  maou coding"
-Log "If Terminal tier is △: scripts\build-native.ps1 (needs Rust + VS Build Tools)"
+Log "If Terminal tier is triangle: scripts\build-native.ps1 (needs Rust + VS Build Tools)"
 Log "Done. (Node was not installed by this script.)"

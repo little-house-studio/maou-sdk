@@ -178,7 +178,6 @@ export async function runUpdate(opts: UpdateOptions = {}): Promise<boolean> {
     }
     const args = ["-ExecutionPolicy", "Bypass", "-File", ps1];
     if (opts.jsOnly) args.push("-JsOnly");
-    else if (!opts.full) args.push("-SkipRatatui");
     if (opts.keepTarget) args.push("-KeepTarget");
     log(`[update] build: powershell ${args.filter((a) => a !== "-ExecutionPolicy" && a !== "Bypass" && a !== "-File").join(" ")}`);
     buildOk = runInherit("powershell", args, root);
@@ -190,7 +189,6 @@ export async function runUpdate(opts: UpdateOptions = {}): Promise<boolean> {
     }
     const args = [sh];
     if (opts.jsOnly) args.push("--js-only");
-    else if (!opts.full) args.push("--skip-ratatui");
     if (opts.keepTarget) args.push("--keep-target");
     log(`[update] build: bash ${args.join(" ")}`);
     buildOk = runInherit("bash", args, root);

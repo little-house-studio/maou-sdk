@@ -31,8 +31,6 @@ yarn-error.log*
 
 # ─── Rust / Cargo ───
 **/target/
-terminal-engine/index.js
-terminal-engine/index.d.ts
 terminal-engine/*.node
 
 # ─── CLI 基准 / 压测输出 ───
