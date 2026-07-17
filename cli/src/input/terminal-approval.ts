@@ -101,6 +101,10 @@ export function cancelAllTerminalApprovals(reason = "cancelled"): void {
 /**
  * 创建并注册 CLI 审批器（进程内单例）。
  * App 挂载时调用一次即可。
+ *
+ * 重要：不要用 store 默认 normal 去覆写磁盘 terminal-policy。
+ * 用户上次选的 yolo 写在 terminal-policy.json；若 boot 时 store 仍是
+ * 默认 normal 却 setTerminalMode(normal)，会把 YOLO 冲掉，下一轮又弹审批。
  */
 export function installCliTerminalApprover(): void {
   // 策略文件根：userMaouRoot()/agents/<agent>/terminal-policy.json
@@ -153,16 +157,26 @@ export function installCliTerminalApprover(): void {
 
   setTerminalApprover(approver);
 
-  // 把 UI 当前审核模式写进 policy 文件，避免只改了 store 而 tools 仍读旧 mode
-  try {
-    const s = useStore.getState();
-    const mode = s.approvalMode;
-    if (mode === "normal" || mode === "auto" || mode === "yolo") {
-      void import("@little-house-studio/tools").then((m) => {
-        m.setTerminalMode(resolveAgentName(s.agentName, DEFAULT_AGENT_NAME), mode);
-      });
-    }
-  } catch { /* ignore */ }
+  // 磁盘 → UI：恢复用户上次审核模式（yolo/auto/normal）
+  void import("@little-house-studio/tools")
+    .then((m) => {
+      const agent = resolveAgentName(
+        useStore.getState().agentName,
+        DEFAULT_AGENT_NAME,
+      );
+      const diskMode = m.getTerminalMode?.(agent) as
+        | "normal"
+        | "auto"
+        | "yolo"
+        | undefined;
+      if (diskMode === "normal" || diskMode === "auto" || diskMode === "yolo") {
+        // 只改 UI，不再写回磁盘（避免把 yolo 冲成 normal 再写回）
+        useStore.setState({ approvalMode: diskMode });
+      }
+    })
+    .catch(() => {
+      /* ignore */
+    });
 }
 
 /** 卸载（测试 / 退出） */

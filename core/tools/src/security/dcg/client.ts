@@ -263,7 +263,7 @@ export async function evaluateWithDcg(
     };
   }
 
-  const timeoutMs = opts.timeoutMs ?? 400;
+  const timeoutMs = opts.timeoutMs ?? 2000;
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     // 注意：不要设 DCG_QUIET=1 —— quiet 会吞掉 test 的 JSON stdout

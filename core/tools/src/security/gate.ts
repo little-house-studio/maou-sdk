@@ -7,7 +7,7 @@
  * ├────────────┼──────────────────────────────────────────────────────────┤
  * │ 危险 dang. │ 需确认。normal→用户审批或「相同命令再执行一次」；         │
  * │            │ auto→审核 Agent，拒绝后仍可用二次执行确认；               │
- * │            │ yolo→仍要求二次执行确认（不静默放行危险指令）。           │
+ * │            │ yolo→静默放行（不问）。致命级仍硬拦。                     │
  * │            │ 来源：DCG high/medium deny（且未进安全白名单）。           │
  * ├────────────┼──────────────────────────────────────────────────────────┤
  * │ 安全 safe  │ 无顾虑放行（仍可走用户白名单/普通 ask 管未知命令）。       │
@@ -110,7 +110,7 @@ export async function assessCommandSecurity(
     opts?.dcgOverride ??
     (opts?.skipDcg
       ? { decision: "allow" as const, command }
-      : await evaluateWithDcg(command, { required: true, timeoutMs: 400 }));
+      : await evaluateWithDcg(command, { required: true, timeoutMs: 2500 }));
 
   if (dcg.maouSafeAllow) {
     return {
@@ -226,8 +226,26 @@ export async function gateTerminalCommand(
       };
     }
 
-    // yolo：仍不静默放行危险指令，要求二次确认
-    // auto：可先交审核 Agent；此处统一用「登记 + 拦截」，审核在 tool 层可选叠加
+    // yolo = 全放（不问）：危险级静默放行；致命级仍在上方硬拦。
+    // 与 UI 文案「全放（不问）」对齐；用户黑名单仍在下方 safe 分支用 normal 名单检查。
+    if (mode === "yolo") {
+      return {
+        assessment: {
+          ...assessment,
+          reason: `${assessment.reason || "dangerous"} + yolo`,
+        },
+        action: "allow",
+        payload: {
+          policy: "dangerous-yolo",
+          tier: "dangerous",
+          command,
+          rule_id: assessment.ruleId,
+          severity: assessment.severity,
+        },
+      };
+    }
+
+    // auto / normal：登记二次确认窗口，并走审批 UI / 审核 Agent
     markCommandForRepeatConfirm(agent, norm);
 
     const msg =

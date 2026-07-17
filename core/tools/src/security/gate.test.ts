@@ -101,6 +101,24 @@ describe("three-tier gate", () => {
     expect(g2.action).toBe("allow");
   });
 
+  it("dangerous: yolo allows without second confirm", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "maou-sec-yolo-"));
+    setTerminalPolicyRoot(tmp);
+    setMode("ag", "yolo");
+
+    setDcgEvaluatorForTest(async (cmd) => ({
+      decision: "deny",
+      command: cmd,
+      severity: "high",
+      ruleId: "core.git:clean-force",
+      reason: "git clean -f",
+    }));
+
+    const g = await gateTerminalCommand("git clean -fd", "ag", "yolo");
+    expect(g.action).toBe("allow");
+    expect(g.assessment.tier).toBe("dangerous");
+  });
+
   it("safe: yolo allows ordinary command", async () => {
     setDcgEvaluatorForTest(async (cmd) => ({
       decision: "allow",
