@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "高性能终端引擎 — Rust + napi-rs",
   "type": "module",
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "./terminal_engine.js",
+  "types": "./terminal_engine.d.ts",
   "napi": {
     "name": "terminal-engine",
     "triples": {
@@ -12,10 +12,17 @@
     }
   },
   "scripts": {
-    "build": "node -e \"if(require('fs').existsSync('./index.js')){console.log('skip napi build - using JS mock');}else{process.exit(1);}\" || napi build --release --platform",
+    "build": "napi build --release --platform",
     "build:debug": "napi build --platform",
     "prepublishOnly": "napi prepublish -t npm"
   },
-  "files": ["index.js", "index.d.ts", "*.node"],
-  "license": "MIT"
+  "files": [
+    "*.node",
+    "*.d.ts",
+    "terminal_engine.js"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@napi-rs/cli": "^3.7.3"
+  }
 }

@@ -45,7 +45,6 @@ npm install -g pnpm
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 bash scripts/install.sh
-bash scripts/build-native.sh
 export PATH="$HOME/.maou/bin:$PATH"
 maou doctor
 maou setup
@@ -70,7 +69,6 @@ source "$HOME/.cargo/env"
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 bash scripts/install.sh
-bash scripts/build-native.sh
 export PATH="$HOME/.maou/bin:$PATH"
 maou doctor
 maou setup
@@ -100,14 +98,13 @@ npm install -g pnpm
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-scripts\build-native.ps1
 $env:Path = "$env:USERPROFILE\.maou\bin;" + $env:Path
 maou doctor
 maou setup
 maou coding
 ```
 
-Windows 默认 TUI 为 **Ratatui**。
+**默认 TUI 为 Ratatui（Rust 编译），完整功能需要 Rust + VS Build Tools。**
 
 ---
 
@@ -131,10 +128,9 @@ maou coding              # 启动 Coding Agent
 ```bash
 pnpm install
 pnpm -r build
-# 可选原生
-bash scripts/build-native.sh          # macOS / Linux
-# 或
-powershell -File scripts/build-native.ps1 -SkipRatatui   # Windows
+# 必须编译原生组件
+bash scripts/build-native.sh              # macOS / Linux
+powershell -File scripts/build-native.ps1  # Windows
 ```
 
 ---

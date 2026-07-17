@@ -19,6 +19,9 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
 if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
   Die "pnpm required. Install: npm i -g pnpm"
 }
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+  Die "Rust required. Install: winget install Rustlang.Rustup (then restart terminal)"
+}
 
 $homeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $env:HOME }
 $maouHome = if ($env:MAOU_HOME) { $env:MAOU_HOME } else { Join-Path $homeDir ".maou" }
@@ -40,26 +43,16 @@ Log "[maou] monorepo: $repoRoot"
 Log "[maou] building Core (fail-closed)..."
 
 $buildNative = Join-Path $repoRoot "scripts\build-native.ps1"
-$coreOk = $false
 if (Test-Path $buildNative) {
-  try {
-    powershell -ExecutionPolicy Bypass -File $buildNative -JsOnly
-    $coreOk = $true
-  } catch {
-    Log "[maou] native incomplete - requiring JS-only success..."
-    try {
-      powershell -ExecutionPolicy Bypass -File $buildNative -JsOnly
-      $coreOk = $true
-    } catch {
-      Die "JS build failed. Fix errors and re-run. $($_.Exception.Message)"
-    }
+  $buildProcess = Start-Process -FilePath "powershell" -ArgumentList @("-ExecutionPolicy", "Bypass", "-File", $buildNative) -NoNewWindow -PassThru -Wait
+  if ($buildProcess.ExitCode -ne 0) {
+    Die "build-native.ps1 failed with exit code $($buildProcess.ExitCode)"
   }
 } else {
   Push-Location $repoRoot
   try {
     pnpm install
     pnpm -r run build
-    $coreOk = $true
   } catch {
     Die "pnpm build failed"
   } finally {
@@ -83,12 +76,9 @@ Log "[maou] wrapper: $wrapCmd"
 $ensure = Join-Path $repoRoot "scripts\ensure-dcg.mjs"
 if (Test-Path $ensure) {
   Log "[maou] ensuring dcg..."
-  try {
-    node $ensure --user
-  } catch {
-    try { node $ensure } catch {
-      Log "[maou] WARNING: dcg failed - Terminal security degraded. Later: node scripts\ensure-dcg.mjs --user"
-    }
+  $dcgProcess = Start-Process -FilePath "node" -ArgumentList @($ensure, "--user") -NoNewWindow -PassThru -Wait
+  if ($dcgProcess.ExitCode -ne 0) {
+    Log "[maou] WARNING: dcg failed - Terminal security degraded. Later: node scripts\ensure-dcg.mjs --user"
   }
 }
 
@@ -100,9 +90,8 @@ if ($pathParts -notcontains $binDir) {
 }
 
 Log ""
-Log "Install finished with Core ready. Default TUI on Windows is Ratatui."
+Log "Install finished. Default TUI is Ratatui."
 Log "  maou doctor"
 Log "  maou setup"
 Log "  maou coding"
-Log "If Terminal tier is triangle: scripts\build-native.ps1 (needs Rust + VS Build Tools)"
-Log "Done. (Node was not installed by this script.)"
+Log "Done."

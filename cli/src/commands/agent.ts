@@ -155,28 +155,21 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
 
   const themePath = opts.themePath;
 
-  // ── TUI 后端分流：默认 ratatui；ink 仍可 --tui ink ──
+  // ── TUI 后端分流：默认 ratatui ──
   const { resolveTuiBackend, markRatatuiActive } = await import("../tui-bridge/config.js");
   const tui = resolveTuiBackend(opts.tui);
   if (tui === "ratatui") {
-    // Before any shared module can write CSI to stdout
     markRatatuiActive();
-    process.stderr.write(
-      `[maou] tui=ratatui · 回退 Ink：MAOU_TUI=ink 或 --tui ink\n`,
-    );
-    try {
-      const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
-      await runAgentWithRatatui({
-        config,
-        productName: product.name,
-        themePath,
-      });
-      return;
-    } catch (err) {
-      process.stderr.write(`[maou] ratatui 启动失败，回退 Ink：${(err as Error).message}\n`);
-    }
+    process.stderr.write(`[maou] tui=ratatui\n`);
+    const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
+    await runAgentWithRatatui({
+      config,
+      productName: product.name,
+      themePath,
+    });
+    return;
   }
-  process.stderr.write(`[maou] tui=ink\n`);
+  throw new Error(`不支持的 TUI：${tui}。请安装 Rust 编译 Ratatui。`);
 
   // 画廊：catalog / 源图变更时自动重烘焙 ASCII（用户自定义友好）
   try {
