@@ -72,9 +72,29 @@ if [[ -f scripts/ensure-dcg.mjs ]]; then
 fi
 
 if [[ -d terminal-engine ]]; then
-  log "[build-native] terminal-engine (napi, release)…"
-  if ! (cd terminal-engine && npx --yes @napi-rs/cli build --release --platform); then
+  log "[build-native] terminal-engine (cargo build, release)…"
+  if ! (cd terminal-engine && cargo build --release); then
     die "terminal-engine build failed. Check Rust installation."
+  fi
+  _dll="${CARGO_TARGET_DIR}/release/"
+  case "$(uname -s)" in
+    Darwin*) _dll="${_dll}libterminal_engine.dylib" ;;
+    Linux*)  _dll="${_dll}libterminal_engine.so" ;;
+    *)       die "unsupported OS for terminal-engine" ;;
+  esac
+  _node=""
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-x86_64) _node="terminal_engine.darwin-x64.node" ;;
+    Darwin-arm64)  _node="terminal_engine.darwin-arm64.node" ;;
+    Linux-x86_64)  _node="terminal_engine.linux-x64-gnu.node" ;;
+    Linux-aarch64) _node="terminal_engine.linux-arm64-gnu.node" ;;
+    *)             die "unsupported platform for terminal-engine" ;;
+  esac
+  if [[ -f "$_dll" ]]; then
+    cp "$_dll" "terminal-engine/$_node"
+  fi
+  if [[ ! -f "terminal-engine/$_node" ]]; then
+    die "terminal-engine .node missing: terminal-engine/$_node"
   fi
 fi
 
@@ -83,6 +103,15 @@ if [[ -d cli/tui-ratatui ]]; then
   if ! (cd cli && npm run build:tui-ratatui); then
     die "ratatui build failed. Check Rust installation."
   fi
+  _ratatui_bin="${CARGO_TARGET_DIR}/release/maou-tui-ratatui"
+  if [[ ! -f "$_ratatui_bin" ]]; then
+    die "ratatui binary missing: $_ratatui_bin"
+  fi
+  _maou_bin="${MAOU_HOME:-$HOME/.maou}/bin"
+  mkdir -p "$_maou_bin"
+  cp "$_ratatui_bin" "$_maou_bin/maou-tui-ratatui"
+  chmod +x "$_maou_bin/maou-tui-ratatui"
+  log "[build-native] ratatui binary copied to $_maou_bin"
 fi
 
 if command -v npm >/dev/null 2>&1; then

@@ -56,9 +56,23 @@ fi
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *)
-    log ""
-    log "Add to PATH:"
-    log "  export PATH=\"$BIN_DIR:\$PATH\""
+    _shell_rc=""
+    case "$(basename "$SHELL")" in
+      zsh)  _shell_rc="$HOME/.zshrc" ;;
+      bash) _shell_rc="$HOME/.bashrc" ;;
+      fish) _shell_rc="$HOME/.config/fish/config.fish" ;;
+    esac
+    if [[ -n "$_shell_rc" ]]; then
+      if ! grep -q "$BIN_DIR" "$_shell_rc" 2>/dev/null; then
+        echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$_shell_rc"
+        log "[maou] Added $BIN_DIR to PATH in $_shell_rc"
+      fi
+    else
+      log ""
+      log "Add to PATH:"
+      log "  export PATH=\"$BIN_DIR:\$PATH\""
+    fi
+    export PATH="$BIN_DIR:$PATH"
     ;;
 esac
 

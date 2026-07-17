@@ -43,7 +43,7 @@ describe("cli-ui-prefs", () => {
       setPreferredPerfHud,
     } = await import("./cli-ui-prefs.js");
 
-    expect(resolvePerfHudDefault()).toBe(true);
+    expect(resolvePerfHudDefault()).toBe(false);
     setPreferredPerfHud(false);
     expect(resolvePerfHudDefault()).toBe(false);
     const p = cliUiConfigPath();

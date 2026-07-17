@@ -84,9 +84,12 @@ if (Test-Path $ensure) {
 
 $pathParts = $env:Path -split ";"
 if ($pathParts -notcontains $binDir) {
-  Log ""
-  Log "Add to PATH for this session:"
-  Log "  `$env:Path = `"$binDir;`" + `$env:Path"
+  $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+  if ($userPath -notlike "*$binDir*") {
+    [Environment]::SetEnvironmentVariable("Path", "$binDir;$userPath", "User")
+    Log "[maou] Added $binDir to User PATH (restart terminal to take effect)"
+  }
+  $env:Path = "$binDir;$env:Path"
 }
 
 Log ""

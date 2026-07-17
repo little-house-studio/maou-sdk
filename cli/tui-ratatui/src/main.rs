@@ -69,7 +69,33 @@ fn open_tty_writer() -> anyhow::Result<std::fs::File> {
     }
 }
 
+/// Windows: 设置控制台代码页为 UTF-8 (CP65001)，避免中文乱码导致视觉爆闪
+#[cfg(windows)]
+fn set_console_utf8() {
+    use std::ffi::c_int;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleOutputCP() -> c_int;
+        fn SetConsoleOutputCP(wCodePageID: c_int) -> c_int;
+        fn GetConsoleCP() -> c_int;
+        fn SetConsoleCP(wCodePageID: c_int) -> c_int;
+    }
+    unsafe {
+        let cp_out = GetConsoleOutputCP();
+        let cp_in = GetConsoleCP();
+        if cp_out != 65001 {
+            SetConsoleOutputCP(65001);
+        }
+        if cp_in != 65001 {
+            SetConsoleCP(65001);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn set_console_utf8() {}
+
 fn main() -> anyhow::Result<()> {
+    set_console_utf8();
     if !io::stdin().is_terminal() {
         eprintln!(
             "{}",
@@ -107,8 +133,8 @@ fn main() -> anyhow::Result<()> {
 
     let rx = spawn_protocol_reader();
     let mut app = App::new(rx);
-    // 16ms idle poll → ~60fps 上限（与 09bd0cc 一致）
-    let tick = Duration::from_millis(16);
+    // 33ms tick → ~30fps（减少闪烁，终端不需要 60fps）
+    let tick = Duration::from_millis(33);
     let res = run_loop(&mut terminal, &mut app, tick);
 
     let _ = disable_raw_mode();
@@ -166,6 +192,7 @@ fn run_loop(
     app: &mut App,
     tick: Duration,
 ) -> anyhow::Result<()> {
+    let mut draw_errors: u32 = 0;
     while !app.should_quit {
         app.tick_input();
         app.note_frame();
@@ -187,12 +214,19 @@ fn run_loop(
         match draw_res {
             Ok(completed) => {
                 app.capture_vram(completed.buffer);
+                draw_errors = 0;
             }
             Err(e) => {
-                emit(&OutMsg::Log {
-                    text: format!("draw: {e}"),
-                });
-                app.request_full_redraw();
+                draw_errors = draw_errors.saturating_add(1);
+                if draw_errors <= 3 {
+                    emit(&OutMsg::Log {
+                        text: format!("draw: {e}"),
+                    });
+                }
+                // 连续错误超过 5 次时停止 full redraw，避免爆闪循环
+                if draw_errors <= 5 {
+                    app.request_full_redraw();
+                }
             }
         }
         sync_update_end(terminal);
@@ -207,7 +241,7 @@ fn run_loop(
         }
         let _ = pin_hardware_cursor_for_ime(terminal, app);
 
-        // 批量 drain 输入（最多 16），超时 tick 保持 idle ~60fps
+        // 批量 drain 输入（最多 16），超时 tick 保持 idle ~30fps
         if let Err(e) = poll_events(app, tick) {
             emit(&OutMsg::Log {
                 text: format!("poll_events: {e}"),

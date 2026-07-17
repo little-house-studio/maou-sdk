@@ -4,7 +4,10 @@ use super::App;
 use crate::protocol::{emit, InMsg, OutMsg};
 use crossterm::event::{self, Event};
 use std::io::{BufRead, BufReader};
-use std::os::fd::FromRawFd;
+#[cfg(unix)]
+use std::os::unix::io::FromRawFd;
+#[cfg(windows)]
+use std::os::windows::io::{FromRawHandle, RawHandle};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -40,8 +43,17 @@ fn open_protocol_reader() -> Box<dyn BufRead + Send> {
     if let Ok(fd_str) = std::env::var("MAOU_TUI_IPC_FD") {
         if let Ok(fd) = fd_str.parse::<i32>() {
             if fd >= 0 {
-                let file = unsafe { std::fs::File::from_raw_fd(fd) };
-                return Box::new(BufReader::new(file));
+                #[cfg(unix)]
+                {
+                    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+                    return Box::new(BufReader::new(file));
+                }
+                #[cfg(windows)]
+                {
+                    let handle = unsafe { libc::get_osfhandle(fd) as RawHandle };
+                    let file = unsafe { std::fs::File::from_raw_handle(handle) };
+                    return Box::new(BufReader::new(file));
+                }
             }
         }
     }

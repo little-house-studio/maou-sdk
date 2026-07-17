@@ -104,7 +104,6 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
     if (!dep.tiers.core || !dep.tiers.dcg || !dep.tiers.terminal) {
       process.stderr.write("[maou] 依赖不完整，尝试自动修复…\n");
       const fix = await autoFixDependencies({
-        jsOnly: process.env.MAOU_FIX_JS_ONLY === "1",
         quiet: false,
       });
       for (const e of fix.errors) process.stderr.write(`  ⚠ ${e}\n`);
@@ -155,22 +154,6 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
 
   const themePath = opts.themePath;
 
-  // ── TUI 后端分流：默认 ratatui ──
-  const { resolveTuiBackend, markRatatuiActive } = await import("../tui-bridge/config.js");
-  const tui = resolveTuiBackend(opts.tui);
-  if (tui === "ratatui") {
-    markRatatuiActive();
-    process.stderr.write(`[maou] tui=ratatui\n`);
-    const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
-    await runAgentWithRatatui({
-      config,
-      productName: product.name,
-      themePath,
-    });
-    return;
-  }
-  throw new Error(`不支持的 TUI：${tui}。请安装 Rust 编译 Ratatui。`);
-
   // 画廊：catalog / 源图变更时自动重烘焙 ASCII（用户自定义友好）
   try {
     const { syncGalleryOnStartup } = await import("../gallery/sync-gallery.js");
@@ -192,6 +175,22 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
       `△ 画廊同步跳过：${e instanceof Error ? e.message : String(e)}\n`,
     );
   }
+
+  // ── TUI 后端分流：默认 ratatui ──
+  const { resolveTuiBackend, markRatatuiActive } = await import("../tui-bridge/config.js");
+  const tui = resolveTuiBackend(opts.tui);
+  if (tui === "ratatui") {
+    markRatatuiActive();
+    process.stderr.write(`[maou] tui=ratatui\n`);
+    const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
+    await runAgentWithRatatui({
+      config,
+      productName: product.name,
+      themePath,
+    });
+    return;
+  }
+  throw new Error(`不支持的 TUI：${tui}。请安装 Rust 编译 Ratatui。`);
 
   const { autoEnablePerfFromEnv, perfInc } = await import("../hooks/perf.js");
   autoEnablePerfFromEnv();

@@ -18,8 +18,6 @@ import { findSdkGitRoot } from "./repo-root.js";
 
 export interface UpdateOptions {
   force?: boolean;
-  full?: boolean;
-  jsOnly?: boolean;
   keepTarget?: boolean;
   check?: boolean;
   /** 只 git，不跑 build-native */
@@ -163,7 +161,7 @@ export async function runUpdate(opts: UpdateOptions = {}): Promise<boolean> {
 
   if (opts.noBuild) {
     log("（--no-build：跳过构建）");
-    log("✓ Git 步骤完成。若需构建: maou update --js-only 或去掉 --no-build");
+    log("✓ Git 步骤完成。若需构建: 去掉 --no-build 重新 maou update");
     return true;
   }
 
@@ -177,9 +175,8 @@ export async function runUpdate(opts: UpdateOptions = {}): Promise<boolean> {
       return false;
     }
     const args = ["-ExecutionPolicy", "Bypass", "-File", ps1];
-    if (opts.jsOnly) args.push("-JsOnly");
     if (opts.keepTarget) args.push("-KeepTarget");
-    log(`[update] build: powershell ${args.filter((a) => a !== "-ExecutionPolicy" && a !== "Bypass" && a !== "-File").join(" ")}`);
+    log(`[update] build: build-native.ps1`);
     buildOk = runInherit("powershell", args, root);
   } else {
     const sh = join(root, "scripts", "build-native.sh");
@@ -188,9 +185,8 @@ export async function runUpdate(opts: UpdateOptions = {}): Promise<boolean> {
       return false;
     }
     const args = [sh];
-    if (opts.jsOnly) args.push("--js-only");
     if (opts.keepTarget) args.push("--keep-target");
-    log(`[update] build: bash ${args.join(" ")}`);
+    log(`[update] build: build-native.sh`);
     buildOk = runInherit("bash", args, root);
   }
 

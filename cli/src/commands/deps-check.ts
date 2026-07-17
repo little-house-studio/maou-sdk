@@ -261,7 +261,7 @@ function detectTui(mono: string | null): string {
   if (active === "ratatui" || active === "rust" || active === "rt") {
     return hasRt
       ? `✓ ratatui（有二进制） default=${def}`
-      : `△ 配置倾向 ratatui 但无二进制 — 用 MAOU_TUI=ink 或 build --full`;
+      : `△ 配置倾向 ratatui 但无二进制 — 运行 maou doctor 修复`;
   }
   return `✓ ink（或默认） effective=${active}`;
 }
@@ -410,10 +410,6 @@ export interface DoctorOptions {
    * `maou doctor --check` / MAOU_DOCTOR_NO_INSTALL=1 → 只检查。
    */
   noInstall?: boolean;
-  /** 修复时跳过 terminal-engine 原生构建（更快，只保证 Core + dcg） */
-  jsOnly?: boolean;
-  /** 修复时编 ratatui */
-  full?: boolean;
 }
 
 export interface AutoFixResult {
@@ -429,11 +425,9 @@ export interface AutoFixResult {
  * 自动修复依赖（monorepo 主路径）：
  *   1. pnpm install + pnpm -r build（Core）
  *   2. node scripts/ensure-dcg.mjs --user（dcg）
- *   3. build-native（Terminal，可 --js-only 跳过）
+ *   3. build-native（Terminal + Ratatui）
  */
 export async function autoFixDependencies(opts: {
-  jsOnly?: boolean;
-  full?: boolean;
   quiet?: boolean;
 } = {}): Promise<AutoFixResult> {
   const actions: string[] = [];
@@ -455,7 +449,7 @@ export async function autoFixDependencies(opts: {
 
   let needCore = !before.tiers.core;
   let needDcg = !before.tiers.dcg;
-  let needTerminal = !before.tiers.terminal && !opts.jsOnly;
+  let needTerminal = !before.tiers.terminal;
 
   // 已全绿
   if (!needCore && !needDcg && !needTerminal) {
@@ -515,21 +509,15 @@ export async function autoFixDependencies(opts: {
       }
     }
 
-    // Terminal / 完整 native：Core 已好但缺 engine，或刚修完 Core 且非 jsOnly
-    const runNative = needTerminal || (needCore && !opts.jsOnly);
+    // Terminal / 完整 native：Core 已好但缺 engine，或刚修完 Core
+    const runNative = needTerminal || needCore;
     if (runNative) {
       const isWin = platform() === "win32";
       if (isWin) {
         const ps1 = join(mono, "scripts", "build-native.ps1");
         if (existsSync(ps1)) {
           const args = ["-ExecutionPolicy", "Bypass", "-File", ps1];
-          if (opts.jsOnly) args.push("-JsOnly");
-          else if (!opts.full) args.push("-SkipRatatui");
-          if (!opts.quiet) {
-            log(
-              `[fix] build-native.ps1${opts.jsOnly ? " -JsOnly" : opts.full ? "" : " -SkipRatatui"}…`,
-            );
-          }
+          if (!opts.quiet) log(`[fix] build-native.ps1…`);
           actions.push("build-native.ps1");
           if (!runInherit("powershell", args, mono)) {
             if (needTerminal || !needCore) {
@@ -541,8 +529,6 @@ export async function autoFixDependencies(opts: {
         const sh = join(mono, "scripts", "build-native.sh");
         if (existsSync(sh)) {
           const args = [sh];
-          if (opts.jsOnly) args.push("--js-only");
-          else if (!opts.full) args.push("--skip-ratatui");
           if (!opts.quiet) log(`[fix] bash ${args.join(" ")}…`);
           actions.push("build-native.sh");
           if (!runInherit("bash", args, mono)) {
@@ -645,12 +631,10 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   printDoctorReport(r);
 
   const needsFix =
-    !r.tiers.core || !r.tiers.dcg || (!r.tiers.terminal && !opts.jsOnly);
+    !r.tiers.core || !r.tiers.dcg || !r.tiers.terminal;
 
   if (!noInstall && needsFix && r.nodeOk) {
     const fix = await autoFixDependencies({
-      jsOnly: opts.jsOnly,
-      full: opts.full,
       quiet: false,
     });
     if (fix.attempted) {

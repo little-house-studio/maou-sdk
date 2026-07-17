@@ -30,14 +30,10 @@ const HELP = `Maou CLI — 终端 AI agent 多产品入口
   maou setup --from-env   从环境变量写入 API
   maou doctor             诊断并自动修复依赖（pnpm/build/dcg/native）
   maou doctor --check     只诊断，不修复
-  maou doctor --js-only   修复时只保证 Core（跳过 terminal-engine）
-  maou doctor --full      修复时含 ratatui
   maou update             Git pull + 本机构建（仅 clone 安装）
   maou update --check     只 fetch 看 ahead/behind
   maou update --force     脏工作区先 stash 再 pull
   maou update --no-build  只 pull 不构建
-  maou update --js-only   仅 JS 构建
-  maou update --full      含 ratatui
   maou coding --yes       新路径免确认
   maou <path|pkg>         自定义配置
 
@@ -178,8 +174,6 @@ async function main(): Promise<void> {
     // 默认自动修复；--check 只诊断
     const ok = await runDoctor({
       noInstall: argv.includes("--check") || argv.includes("--no-fix"),
-      jsOnly: argv.includes("--js-only"),
-      full: argv.includes("--full"),
     });
     process.exit(ok ? 0 : 1);
   }
@@ -194,8 +188,6 @@ async function main(): Promise<void> {
     const { runUpdate } = await import("./commands/update.js");
     const ok = await runUpdate({
       force: setupForce || argv.includes("--force"),
-      full: argv.includes("--full"),
-      jsOnly: argv.includes("--js-only"),
       keepTarget: argv.includes("--keep-target"),
       check: argv.includes("--check"),
       noBuild: argv.includes("--no-build"),

@@ -9,7 +9,7 @@ Maou Agent 官方 SDK / Coding Agent monorepo（`@little-house-studio/*`）。
 > **本仓库目前处于内部测试（alpha）阶段。**  
 > **不建议**外部用户下载、安装或用于生产 / 重要项目。  
 > 接口、安装方式、行为随时可能变更；文档与能力矩阵可能不完整。  
-> 若你仍自行尝试，请自担风险，并优先阅读 [INSTALL.md](./INSTALL.md)。
+> 若你仍自行尝试，请自担风险。
 
 ---
 
@@ -35,6 +35,7 @@ Maou Agent 官方 SDK / Coding Agent monorepo（`@little-house-studio/*`）。
 **第一步：安装依赖（打开终端，复制运行）**
 
 ```bash
+xcode-select --install
 brew install node@20 rust git
 npm install -g pnpm
 ```
@@ -45,7 +46,6 @@ npm install -g pnpm
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 bash scripts/install.sh
-export PATH="$HOME/.maou/bin:$PATH"
 maou doctor
 maou setup
 maou coding
@@ -69,7 +69,6 @@ source "$HOME/.cargo/env"
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 bash scripts/install.sh
-export PATH="$HOME/.maou/bin:$PATH"
 maou doctor
 maou setup
 maou coding
@@ -83,6 +82,7 @@ maou coding
 powershell -Command "Invoke-WebRequest -Uri https://nodejs.org/dist/v20.17.0/node-v20.17.0-x64.msi -OutFile node.msi; Start-Process msiexec -ArgumentList '/i node.msi /qn' -Wait; Remove-Item node.msi"
 powershell -Command "Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe; Start-Process rustup-init.exe -ArgumentList '-y' -Wait; Remove-Item rustup-init.exe"
 powershell -Command "Invoke-WebRequest -Uri https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/Git-2.45.2-64-bit.exe -OutFile git.exe; Start-Process git.exe -ArgumentList '/VERYSILENT /NORESTART' -Wait; Remove-Item git.exe"
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
 npm install -g pnpm
 ```
 
@@ -90,15 +90,15 @@ npm install -g pnpm
 > - Node.js ≥20：https://nodejs.org/
 > - Rust：https://www.rust-lang.org/tools/install
 > - Git：https://git-scm.com/download/win
+> - VS Build Tools（C++ 工作负载）：https://visualstudio.microsoft.com/visual-cpp-build-tools/
 > - 安装完打开 PowerShell 运行 `npm install -g pnpm`
 
-**第二步：重启 PowerShell，复制运行**
+**第二步：重启 PowerShell（让 Rust 和 Node 的 PATH 生效），复制运行**
 
 ```powershell
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
-$env:Path = "$env:USERPROFILE\.maou\bin;" + $env:Path
 maou doctor
 maou setup
 maou coding

@@ -12,17 +12,13 @@
     }
   },
   "scripts": {
-    "build": "napi build --release --platform",
-    "build:debug": "napi build --platform",
-    "prepublishOnly": "napi prepublish -t npm"
+    "build": "cargo build --release",
+    "build:debug": "cargo build"
   },
   "files": [
     "*.node",
     "*.d.ts",
     "terminal_engine.js"
   ],
-  "license": "MIT",
-  "devDependencies": {
-    "@napi-rs/cli": "^3.7.3"
-  }
+  "license": "MIT"
 }

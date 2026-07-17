@@ -52,7 +52,6 @@ Log "[build-native] CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR"
 
 Log "[build-native] pnpm install + build (Core)..."
 pnpm install
-pnpm add @napi-rs/cli --save-dev
 pnpm -r run build
 $cliDist = Join-Path $Root "cli\dist\index.js"
 if (-not (Test-Path $cliDist)) {
@@ -67,19 +66,19 @@ if (Test-Path $ensure) {
 
 $te = Join-Path $Root "terminal-engine"
 if (Test-Path $te) {
-  Log "[build-native] terminal-engine (napi, release)..."
+  Log "[build-native] terminal-engine (cargo build, release)..."
   Push-Location $te
   try {
-    if (-not (Test-Path "node_modules")) {
-      npm init -y 2>$null | Out-Null
-    }
-    npm install @napi-rs/cli --save-dev 2>$null | Out-Null
-    npx @napi-rs/cli build --release --platform
+    cargo build --release
   } catch {
     Die "terminal-engine build failed. Install VS Build Tools: winget install Microsoft.VisualStudio.2022.BuildTools --override --wait --add Microsoft.VisualStudio.Workload.VCTools"
   }
   Pop-Location
+  $dll = Join-Path $env:CARGO_TARGET_DIR "release\terminal_engine.dll"
   $teNode = Join-Path $te "terminal_engine.win32-x64-msvc.node"
+  if (Test-Path $dll) {
+    Copy-Item $dll $teNode -Force
+  }
   if (-not (Test-Path $teNode)) {
     Die "terminal-engine .node missing: $teNode"
   }
@@ -95,10 +94,14 @@ if (Test-Path $rt) {
     Die "ratatui build failed"
   }
   Pop-Location
-  $ratatuiBin = Join-Path $Root "cli\dist\maou-tui-ratatui.exe"
+  $ratatuiBin = Join-Path $env:CARGO_TARGET_DIR "release\maou-tui-ratatui.exe"
   if (-not (Test-Path $ratatuiBin)) {
     Die "ratatui binary missing: $ratatuiBin"
   }
+  $maouBin = Join-Path $env:USERPROFILE ".maou\bin"
+  if (-not (Test-Path $maouBin)) { New-Item -ItemType Directory -Force -Path $maouBin | Out-Null }
+  Copy-Item $ratatuiBin (Join-Path $maouBin "maou-tui-ratatui.exe") -Force
+  Log "[build-native] ratatui binary copied to $maouBin"
 }
 
 Push-Location (Join-Path $Root "cli")

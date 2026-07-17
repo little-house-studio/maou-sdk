@@ -42,7 +42,7 @@ export const CLI_UI_DEFAULTS: CliUiPrefs = {
   version: CLI_UI_PREFS_VERSION,
   /** 默认 Braun 灰阶 + 酸性机能（assets/themes/tau-ceti.json） */
   theme: "tau-ceti",
-  perfHud: true,
+  perfHud: false,
   mouseCapture: true,
 };
 
