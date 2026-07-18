@@ -19,7 +19,8 @@
   "scripts": {
     "ensure-dcg": "node ../../scripts/ensure-dcg.mjs",
     "ensure-rg": "node ../../scripts/ensure-rg.mjs",
-    "prebuild": "node ../../scripts/ensure-dcg.mjs || true; node ../../scripts/ensure-rg.mjs || true",
+    "ensure-sqry": "node ../../scripts/ensure-sqry.mjs",
+    "prebuild": "node ../../scripts/ensure-dcg.mjs || true; node ../../scripts/ensure-rg.mjs || true; node ../../scripts/ensure-sqry.mjs || true",
     "build": "tsc -p tsconfig.json && node scripts/copy-tool-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

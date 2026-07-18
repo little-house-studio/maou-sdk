@@ -57,6 +57,24 @@ if [[ -f "$ENSURE_RG" ]]; then
   log "[maou] ensuring rg (ripgrep)…"
   node "$ENSURE_RG" --user || log "[maou] ⚠ rg install failed — grep 将降级为 Node.js（可稍后: node scripts/ensure-rg.mjs）"
 fi
+# sqry：Coding Agent find_code 必选（结构/符号搜索）
+ENSURE_SQRY="$REPO_ROOT/scripts/ensure-sqry.mjs"
+if [[ -f "$ENSURE_SQRY" ]]; then
+  log "[maou] ensuring sqry (find_code)…"
+  if ! node "$ENSURE_SQRY" --user; then
+    if command -v cargo >/dev/null 2>&1; then
+      log "[maou] ensure-sqry 失败，回退 cargo install sqry-cli…"
+      cargo install sqry-cli || die "sqry install failed — find_code 不可用。手动: node scripts/ensure-sqry.mjs --user"
+      # cargo 装到 ~/.cargo/bin，复制到 MAOU bin 便于 PATH
+      if [[ -x "${CARGO_HOME:-$HOME/.cargo}/bin/sqry" ]]; then
+        cp "${CARGO_HOME:-$HOME/.cargo}/bin/sqry" "$BIN_DIR/sqry"
+        chmod +x "$BIN_DIR/sqry"
+      fi
+    else
+      die "sqry install failed and no cargo. 手动: node scripts/ensure-sqry.mjs --user"
+    fi
+  fi
+fi
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
@@ -83,7 +101,7 @@ esac
 
 log ""
 log "Install finished."
-log "  maou doctor     # Core / Terminal / Optional tiers"
+log "  maou doctor     # Core / Terminal / Coding 依赖（含 sqry）"
 log "  maou setup"
 log "  maou coding"
 log "Done."

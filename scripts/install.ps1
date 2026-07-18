@@ -73,12 +73,44 @@ node "$cliDist" %*
 "@ | Set-Content -Encoding ASCII $wrapCmd
 Log "[maou] wrapper: $wrapCmd"
 
-$ensure = Join-Path $repoRoot "scripts\ensure-dcg.mjs"
-if (Test-Path $ensure) {
+$ensureDcg = Join-Path $repoRoot "scripts\ensure-dcg.mjs"
+if (Test-Path $ensureDcg) {
   Log "[maou] ensuring dcg..."
-  $dcgProcess = Start-Process -FilePath "node" -ArgumentList @($ensure, "--user") -NoNewWindow -PassThru -Wait
+  $dcgProcess = Start-Process -FilePath "node" -ArgumentList @($ensureDcg, "--user") -NoNewWindow -PassThru -Wait
   if ($dcgProcess.ExitCode -ne 0) {
     Log "[maou] WARNING: dcg failed - Terminal security degraded. Later: node scripts\ensure-dcg.mjs --user"
+  }
+}
+
+$ensureRg = Join-Path $repoRoot "scripts\ensure-rg.mjs"
+if (Test-Path $ensureRg) {
+  Log "[maou] ensuring rg (ripgrep)..."
+  $rgProcess = Start-Process -FilePath "node" -ArgumentList @($ensureRg, "--user") -NoNewWindow -PassThru -Wait
+  if ($rgProcess.ExitCode -ne 0) {
+    Log "[maou] WARNING: rg failed - grep falls back to Node.js. Later: node scripts\ensure-rg.mjs --user"
+  }
+}
+
+# sqry: required for Coding Agent find_code
+$ensureSqry = Join-Path $repoRoot "scripts\ensure-sqry.mjs"
+if (Test-Path $ensureSqry) {
+  Log "[maou] ensuring sqry (find_code)..."
+  $sqryProcess = Start-Process -FilePath "node" -ArgumentList @($ensureSqry, "--user") -NoNewWindow -PassThru -Wait
+  if ($sqryProcess.ExitCode -ne 0) {
+    Log "[maou] ensure-sqry failed, try cargo install sqry-cli..."
+    $cargo = Get-Command cargo -ErrorAction SilentlyContinue
+    if ($cargo) {
+      & cargo install sqry-cli
+      if ($LASTEXITCODE -ne 0) {
+        throw "sqry install failed — find_code unavailable. Manual: node scripts\ensure-sqry.mjs --user"
+      }
+      $cargoSqry = Join-Path $env:USERPROFILE ".cargo\bin\sqry.exe"
+      if (Test-Path $cargoSqry) {
+        Copy-Item $cargoSqry (Join-Path $binDir "sqry.exe") -Force
+      }
+    } else {
+      throw "sqry install failed and no cargo. Manual: node scripts\ensure-sqry.mjs --user"
+    }
   }
 }
 
@@ -94,7 +126,7 @@ if ($pathParts -notcontains $binDir) {
 
 Log ""
 Log "Install finished. Default TUI is Ratatui."
-Log "  maou doctor"
+Log "  maou doctor     # Core / Terminal / Coding (sqry required)"
 Log "  maou setup"
 Log "  maou coding"
 Log "Done."

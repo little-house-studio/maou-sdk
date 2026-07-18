@@ -119,10 +119,10 @@ maou setup               # 配置 API
 maou coding              # 启动 Coding Agent
 ```
 
-`maou doctor` 会自动补齐：
+`maou doctor` / `install.sh` 会自动补齐：
 - **Core**：pnpm build
-- **Terminal**：build-native（terminal-engine + Ratatui）、dcg、rg；`use_terminal` 默认全平台管道，不依赖 node-pty
-- **Optional**：`sqry`（预编译）、`typescript-language-server`；`ddgr` 仅提示
+- **Terminal / Coding**：build-native（terminal-engine + Ratatui）、dcg、rg、**sqry**（`find_code` 必选）；`use_terminal` 默认全平台管道，不依赖 node-pty
+- **Optional**：`typescript-language-server`；`ddgr` 仅提示
 
 更新后请**手动退出**正在运行的 TUI，再执行 `maou coding`（不会自动杀进程）。
 

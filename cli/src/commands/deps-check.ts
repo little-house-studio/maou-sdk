@@ -529,7 +529,7 @@ export async function assertCoreReady(): Promise<{ ok: boolean; message?: string
 export interface DoctorOptions {
   /**
    * 禁止自动 install（仅诊断）。
-   * 默认 false：会 **自动修复**（monorepo: pnpm + build-native/ensure-dcg/ensure-rg）。
+   * 默认 false：会 **自动修复**（monorepo: pnpm + build-native/ensure-dcg/rg/sqry）。
    * `maou doctor --check` / MAOU_DOCTOR_NO_INSTALL=1 → 只检查。
    */
   noInstall?: boolean;
@@ -815,10 +815,11 @@ function printDoctorReport(r: DepCheckResult): void {
   log(`  合计:       ${r.tiers.core ? "✓ 可启动" : "✗ 不可启动"}`);
 
   log("");
-  log("── Terminal / 工具依赖（建议）──");
+  log("── Terminal / Coding 依赖（建议必选）──");
   log(`  engine:   ${r.details.terminalEngine}`);
   log(`  dcg:      ${r.details.dcg}`);
   log(`  rg:       ${r.details.rg}`);
+  log(`  sqry:     ${r.details.sqry}（find_code 必选）`);
   log(`  node-pty: ${r.details.nodePty}（遗留，use_terminal 已不依赖）`);
   if (!r.tiers.terminal) {
     log("  兜底: 无 terminal-engine 时 use_terminal 不可用 — scripts/build-native");
@@ -831,10 +832,12 @@ function printDoctorReport(r: DepCheckResult): void {
   if (!r.tiers.rg) {
     log("  兜底: grep 降级为 Node.js（速度较慢）— node scripts/ensure-rg.mjs");
   }
+  if (!r.tiers.sqry) {
+    log("  缺失: find_code 不可用 — node scripts/ensure-sqry.mjs 或 maou doctor");
+  }
 
   log("");
   log("── Optional ──");
-  log(`  sqry:             ${r.details.sqry}`);
   log(`  typescript-ls:    ${r.details.lspTS}`);
   log(`  ddgr:             ${r.details.ddgr}`);
   if (r.missingOptional.length) {
@@ -842,7 +845,6 @@ function printDoctorReport(r: DepCheckResult): void {
   } else {
     log("  其它:             ✓");
   }
-  if (!r.tiers.sqry) log("  兜底: find_code 不可用；grep/glob 仍可用");
   if (!r.tiers.lspTS) log("  兜底: LSP 诊断/跳转不可用（TS/JS）");
   if (!r.tiers.ddgr) log("  兜底: search_internet 走 HTTP fallback");
 
@@ -881,7 +883,8 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   let r = await ensureDependencies({ autoInstall: false, quiet: false });
   printDoctorReport(r);
 
-  // node-pty 已非 use_terminal 主路径（引擎默认管道），不作为自动修复门槛
+  // Coding 必选：engine + dcg + rg + sqry；lspTS 仍自动修但非「Coding 完整」硬门槛文案
+  // node-pty 已非 use_terminal 主路径，不作为门槛
   const needsFix =
     !r.tiers.core ||
     !r.tiers.dcg ||
@@ -941,24 +944,26 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   log("── 下一步 ──");
   if (!r.tiers.core) {
     log("  Core 仍失败。检查 Node/pnpm，或手动: scripts/build-native");
-  } else if (!r.tiers.terminal || !r.tiers.dcg || !r.tiers.rg) {
-    log("  可启动 maou coding（部分能力降级）");
+  } else if (!r.tiers.terminal || !r.tiers.dcg || !r.tiers.rg || !r.tiers.sqry) {
+    log("  可启动 maou coding（Coding 依赖不完整）");
     if (!r.tiers.terminal) log("  terminal-engine: scripts/build-native 或 cd terminal-engine && npm run build");
     if (!r.tiers.rg) log("  rg: node scripts/ensure-rg.mjs 或 winget install BurntSushi.ripgrep");
+    if (!r.tiers.sqry) log("  sqry: node scripts/ensure-sqry.mjs 或 maou doctor（find_code 必选）");
     if (r.details.apiConfig.includes("△")) log("  API: maou setup");
-  } else if (!r.tiers.sqry || !r.tiers.lspTS) {
-    log("  可启动 maou coding（部分 Optional 降级）");
-    if (!r.tiers.sqry) log("  sqry: maou doctor（ensure-sqry / cargo install sqry-cli）");
-    if (!r.tiers.lspTS) log("  ts-ls: maou doctor（npm i -g typescript-language-server typescript）");
+  } else if (!r.tiers.lspTS) {
+    log("  Coding 依赖就绪；Optional 降级");
+    log("  ts-ls: maou doctor（npm i -g typescript-language-server typescript）");
   } else {
     log("  就绪 → maou coding（默认 Ratatui）");
     if (!r.details.git.includes("非 git")) log("  更新: maou update");
   }
 
   log("");
-  // 就绪判定：engine + dcg + rg；node-pty 不再作为主路径门槛
-  if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.rg) {
-    log("✓ Core+Terminal 就绪");
+  // Coding 完整就绪：engine + dcg + rg + sqry（node-pty 不计入）
+  if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.rg && r.tiers.sqry) {
+    log("✓ Core+Terminal+Coding 就绪（含 find_code/sqry）");
+  } else if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.rg) {
+    log("△ Core+Terminal 就绪，缺 sqry — find_code 不可用");
   } else if (r.tiers.core) {
     log("△ Core 就绪，有降级");
   } else {
