@@ -1,3 +1,5 @@
+<img width="1080" height="338" alt="image" src="https://github.com/user-attachments/assets/c2bf78c1-7b66-49ab-95b5-cb3b2c911997" />
+
 # maou-sdk
 
 Maou Agent 官方 SDK / Coding Agent monorepo（`@little-house-studio/*`）。
