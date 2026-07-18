@@ -4,7 +4,8 @@
   "description": "Maou Agent 官方 SDK — 可复用组件集合",
   "scripts": {
     "ensure-dcg": "node scripts/ensure-dcg.mjs",
-    "postinstall": "node scripts/ensure-dcg.mjs || true",
+    "ensure-rg": "node scripts/ensure-rg.mjs",
+    "postinstall": "node scripts/ensure-dcg.mjs; node scripts/ensure-rg.mjs; true",
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck",

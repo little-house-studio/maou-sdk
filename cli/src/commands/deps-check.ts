@@ -105,6 +105,7 @@ export type CapabilityTier = {
   core: boolean;
   terminal: boolean;
   dcg: boolean;
+  rg: boolean;
   sqry: boolean;
   nodePty: boolean;
   lspTS: boolean;
@@ -127,6 +128,7 @@ export interface DepCheckResult {
   details: {
     terminalEngine: string;
     dcg: string;
+    rg: string;
     sqry: string;
     nodePty: string;
     lspTS: string;
@@ -239,6 +241,25 @@ function detectDcg(mono: string | null): { ok: boolean; detail: string } {
     return { ok: true, detail: "on PATH" };
   }
   return { ok: false, detail: "缺失 — node scripts/ensure-dcg.mjs --user" };
+}
+
+function detectRg(mono: string | null = null): { ok: boolean; detail: string } {
+  const names = platform() === "win32" ? ["rg.exe", "rg"] : ["rg"];
+  const dirs = [
+    mono ? join(mono, "vendor", "bin") : "",
+    join(homedir(), ".maou", "bin"),
+    join(homedir(), ".local", "bin"),
+  ].filter(Boolean) as string[];
+  for (const n of names) {
+    for (const d of dirs) {
+      const p = join(d, n);
+      if (existsSync(p)) return { ok: true, detail: p };
+    }
+  }
+  if (commandOnPath("rg") || commandOnPath("rg.exe")) {
+    return { ok: true, detail: "on PATH" };
+  }
+  return { ok: false, detail: "未安装（grep 降级为 Node.js）— node scripts/ensure-rg.mjs" };
 }
 
 function detectSqry(mono: string | null = null): { ok: boolean; detail: string } {
@@ -441,6 +462,7 @@ export async function ensureDependencies(
 
   const te = detectTerminalEngine(cliRoot, monoRoot);
   const dcg = detectDcg(monoRoot);
+  const rg = detectRg(monoRoot);
   const sqry = detectSqry(monoRoot);
   const nodePty = detectNodePty();
   const lspTS = detectLspTS();
@@ -454,6 +476,7 @@ export async function ensureDependencies(
     core: node.ok && missingCritical.length === 0 && distOk,
     terminal: te.ok,
     dcg: dcg.ok,
+    rg: rg.ok,
     sqry: sqry.ok,
     nodePty: nodePty.ok,
     lspTS: lspTS.ok,
@@ -476,6 +499,7 @@ export async function ensureDependencies(
     details: {
       terminalEngine: `${te.ok ? "✓" : "△"} ${te.detail}`,
       dcg: `${dcg.ok ? "✓" : "△"} ${dcg.detail}`,
+      rg: `${rg.ok ? "✓" : "△"} ${rg.detail}`,
       sqry: `${sqry.ok ? "✓" : "△"} ${sqry.detail}`,
       nodePty: `${nodePty.ok ? "✓" : "△"} ${nodePty.detail}`,
       lspTS: `${lspTS.ok ? "✓" : "△"} ${lspTS.detail}`,
@@ -505,7 +529,7 @@ export async function assertCoreReady(): Promise<{ ok: boolean; message?: string
 export interface DoctorOptions {
   /**
    * 禁止自动 install（仅诊断）。
-   * 默认 false：会 **自动修复**（monorepo: pnpm + build-native/ensure-dcg）。
+   * 默认 false：会 **自动修复**（monorepo: pnpm + build-native/ensure-dcg/ensure-rg）。
    * `maou doctor --check` / MAOU_DOCTOR_NO_INSTALL=1 → 只检查。
    */
   noInstall?: boolean;
@@ -516,6 +540,7 @@ export interface AutoFixResult {
   coreFixed: boolean;
   terminalFixed: boolean;
   dcgFixed: boolean;
+  rgFixed: boolean;
   sqryFixed: boolean;
   lspTSFixed: boolean;
   nodePtyFixed: boolean;
@@ -527,7 +552,8 @@ export interface AutoFixResult {
  * 自动修复依赖（monorepo 主路径）：
  *   1. pnpm install + pnpm -r build（Core）
  *   2. node scripts/ensure-dcg.mjs --user（dcg）
- *   3. build-native（Terminal + Ratatui）
+ *   3. node scripts/ensure-rg.mjs --user（rg / ripgrep）
+ *   4. build-native（Terminal + Ratatui）
  */
 export async function autoFixDependencies(opts: {
   quiet?: boolean;
@@ -544,6 +570,7 @@ export async function autoFixDependencies(opts: {
       coreFixed: false,
       terminalFixed: false,
       dcgFixed: false,
+      rgFixed: false,
       sqryFixed: false,
       lspTSFixed: false,
       nodePtyFixed: false,
@@ -554,18 +581,20 @@ export async function autoFixDependencies(opts: {
 
   let needCore = !before.tiers.core;
   let needDcg = !before.tiers.dcg;
+  let needRg = !before.tiers.rg;
   let needTerminal = !before.tiers.terminal;
   let needSqry = !before.tiers.sqry;
   let needLspTS = !before.tiers.lspTS;
   let needNodePty = !before.tiers.nodePty;
 
   // 已全绿
-  if (!needCore && !needDcg && !needTerminal && !needSqry && !needLspTS && !needNodePty) {
+  if (!needCore && !needDcg && !needRg && !needTerminal && !needSqry && !needLspTS && !needNodePty) {
     return {
       attempted: false,
       coreFixed: true,
       terminalFixed: before.tiers.terminal,
       dcgFixed: before.tiers.dcg,
+      rgFixed: before.tiers.rg,
       sqryFixed: before.tiers.sqry,
       lspTSFixed: before.tiers.lspTS,
       nodePtyFixed: before.tiers.nodePty,
@@ -587,6 +616,7 @@ export async function autoFixDependencies(opts: {
         coreFixed: false,
         terminalFixed: false,
         dcgFixed: false,
+        rgFixed: false,
         sqryFixed: before.tiers.sqry,
         lspTSFixed: before.tiers.lspTS,
         nodePtyFixed: before.tiers.nodePty,
@@ -620,6 +650,19 @@ export async function autoFixDependencies(opts: {
           runInherit(process.execPath, [ensure, "--user"], mono) ||
           runInherit(process.execPath, [ensure], mono);
         if (!ok) errors.push("ensure-dcg 失败（可稍后手动）");
+      }
+    }
+
+    // rg (ripgrep)
+    if (needRg || needCore) {
+      const ensure = join(mono, "scripts", "ensure-rg.mjs");
+      if (existsSync(ensure)) {
+        if (!opts.quiet) log("[fix] ensure-rg…");
+        actions.push("ensure-rg");
+        const ok =
+          runInherit(process.execPath, [ensure, "--user"], mono) ||
+          runInherit(process.execPath, [ensure], mono);
+        if (!ok) errors.push("ensure-rg 失败（grep 将降级为 Node.js）");
       }
     }
 
@@ -748,6 +791,7 @@ export async function autoFixDependencies(opts: {
     coreFixed: after.tiers.core,
     terminalFixed: after.tiers.terminal,
     dcgFixed: after.tiers.dcg,
+    rgFixed: after.tiers.rg,
     sqryFixed: after.tiers.sqry,
     lspTSFixed: after.tiers.lspTS,
     nodePtyFixed: after.tiers.nodePty,
@@ -774,6 +818,7 @@ function printDoctorReport(r: DepCheckResult): void {
   log("── Terminal（建议）──");
   log(`  engine:   ${r.details.terminalEngine}`);
   log(`  dcg:      ${r.details.dcg}`);
+  log(`  rg:       ${r.details.rg}`);
   log(`  node-pty: ${r.details.nodePty}`);
   if (!r.tiers.terminal) {
     log("  兜底: child_process 弱 PTY");
@@ -783,6 +828,9 @@ function printDoctorReport(r: DepCheckResult): void {
   }
   if (!r.tiers.dcg) {
     log("  兜底: 危险命令门不可靠");
+  }
+  if (!r.tiers.rg) {
+    log("  兜底: grep 降级为 Node.js（速度较慢）");
   }
 
   log("");
@@ -835,7 +883,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   printDoctorReport(r);
 
   const needsFix =
-    !r.tiers.core || !r.tiers.dcg || !r.tiers.terminal ||
+    !r.tiers.core || !r.tiers.dcg || !r.tiers.rg || !r.tiers.terminal ||
     !r.tiers.nodePty || !r.tiers.sqry || !r.tiers.lspTS;
 
   if (!noInstall && needsFix && r.nodeOk) {
@@ -851,7 +899,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
       log("");
       log("── 修复后 ──");
       log(
-        `  Core: ${r.tiers.core ? "✓" : "✗"}  Terminal: ${r.tiers.terminal ? "✓" : "△"}  dcg: ${r.tiers.dcg ? "✓" : "△"}  node-pty: ${r.tiers.nodePty ? "✓" : "△"}  sqry: ${r.tiers.sqry ? "✓" : "△"}  ts-ls: ${r.tiers.lspTS ? "✓" : "△"}`,
+        `  Core: ${r.tiers.core ? "✓" : "✗"}  Terminal: ${r.tiers.terminal ? "✓" : "△"}  dcg: ${r.tiers.dcg ? "✓" : "△"}  rg: ${r.tiers.rg ? "✓" : "△"}  node-pty: ${r.tiers.nodePty ? "✓" : "△"}  sqry: ${r.tiers.sqry ? "✓" : "△"}  ts-ls: ${r.tiers.lspTS ? "✓" : "△"}`,
       );
     }
   } else if (noInstall && needsFix) {
@@ -889,9 +937,10 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   log("── 下一步 ──");
   if (!r.tiers.core) {
     log("  Core 仍失败。检查 Node/pnpm，或手动: scripts/build-native");
-  } else if (!r.tiers.terminal || !r.tiers.dcg || !r.tiers.nodePty) {
+  } else if (!r.tiers.terminal || !r.tiers.dcg || !r.tiers.nodePty || !r.tiers.rg) {
     log("  可启动 maou coding（部分能力降级）");
     if (!r.tiers.nodePty) log("  node-pty: 检查 Visual Studio Build Tools / Windows SDK");
+    if (!r.tiers.rg) log("  rg: node scripts/ensure-rg.mjs 或 winget install BurntSushi.ripgrep");
     if (r.details.apiConfig.includes("△")) log("  API: maou setup");
   } else if (!r.tiers.sqry || !r.tiers.lspTS) {
     log("  可启动 maou coding（部分 Optional 降级）");
@@ -903,7 +952,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   }
 
   log("");
-  if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.nodePty) {
+  if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.nodePty && r.tiers.rg) {
     log("✓ Core+Terminal 就绪");
   } else if (r.tiers.core) {
     log("△ Core 就绪，有降级");

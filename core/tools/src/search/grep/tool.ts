@@ -5,9 +5,10 @@
  */
 
 import { execFile, spawnSync } from "node:child_process";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { resolve, relative, join, extname, sep } from "node:path";
-import { platform } from "node:os";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { resolve, relative, join, extname, sep, dirname } from "node:path";
+import { platform, homedir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
@@ -45,24 +46,102 @@ const BINARY_EXTENSIONS = new Set([
   ".woff", ".woff2", ".ttf", ".eot",
 ]);
 
-/** 跨平台检测 PATH 上的命令（Win 用 where，Unix 用 which） */
-function commandOnPath(name: string): boolean {
-  const cmd = platform() === "win32" ? "where" : "which";
-  const r = spawnSync(cmd, [name], { encoding: "utf-8", windowsHide: true });
-  return r.status === 0 && Boolean(r.stdout?.trim());
+// ─── ripgrep 二进制发现 ─────────────────────────────────────
+
+const IS_WIN = platform() === "win32";
+const RG_BIN = IS_WIN ? "rg.exe" : "rg";
+
+/** 缓存已找到的 rg 路径，避免重复搜索 */
+let cachedRgBinary: string | null | undefined;
+
+/**
+ * 猜测 monorepo 根目录（向上找含 pnpm-workspace.yaml 或 vendor/bin 的目录）
+ */
+function guessRepoRoot(): string | null {
+  try {
+    // .../core/tools/src/search/grep → 上 5 层到 sdk root
+    const here = dirname(fileURLToPath(import.meta.url));
+    let dir = here;
+    for (let i = 0; i < 8; i++) {
+      if (
+        existsSync(join(dir, "pnpm-workspace.yaml")) ||
+        existsSync(join(dir, "vendor", "bin", RG_BIN)) ||
+        existsSync(join(dir, "scripts", "ensure-rg.mjs"))
+      ) {
+        return dir;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * 检查 ripgrep 是否可用
+ * 解析 rg 二进制路径。
+ * 顺序：MAOU_RG_PATH → vendor/bin/rg → ~/.maou/bin/rg → PATH which/where
+ * 与 DCG 的 resolveDcgBinary() 同模式。
  */
-function hasRg(): Promise<boolean> {
-  return Promise.resolve(commandOnPath("rg") || commandOnPath("rg.exe"));
+export function resolveRgBinary(): string | null {
+  if (cachedRgBinary !== undefined) return cachedRgBinary;
+
+  // 1. 环境变量
+  const env = process.env.MAOU_RG_PATH || process.env.RG_PATH || "";
+  if (env && existsSync(env)) {
+    cachedRgBinary = env;
+    return env;
+  }
+
+  const name = RG_BIN;
+  const roots: string[] = [];
+
+  // 2. vendor/bin（monorepo 开发）
+  const repo = guessRepoRoot();
+  if (repo) roots.push(join(repo, "vendor", "bin", name));
+
+  // 3. ~/.maou/bin（用户安装）
+  roots.push(join(homedir(), ".maou", "bin", name));
+
+  // 4. ~/.local/bin
+  roots.push(join(homedir(), ".local", "bin", name));
+
+  for (const p of roots) {
+    if (existsSync(p)) {
+      cachedRgBinary = p;
+      return p;
+    }
+  }
+
+  // 5. 系统 PATH
+  const cmd = IS_WIN ? "where" : "which";
+  try {
+    const r = spawnSync(cmd, [name], { encoding: "utf-8", windowsHide: true });
+    if (r.status === 0 && r.stdout?.trim()) {
+      // where 可能返回多行，取第一个
+      const first = r.stdout.trim().split(/\r?\n/)[0]!.trim();
+      if (first && existsSync(first)) {
+        cachedRgBinary = first;
+        return first;
+      }
+    }
+  } catch {
+    /* not on PATH */
+  }
+
+  cachedRgBinary = null;
+  return null;
 }
+
+// ─── rg 搜索 ────────────────────────────────────────────────
 
 /** rg 搜索参数 */
 interface RgOptions {
   pattern: string;
   searchDir: string;
+  rgBinary: string;
   glob?: string;
   type?: string;
   outputMode: "files_with_matches" | "content" | "count";
@@ -110,8 +189,8 @@ function searchWithRg(opts: RgOptions): Promise<string> {
 
     args.push(opts.pattern, opts.searchDir);
 
-    // execFile 避免 shell 引号在 Windows 上炸；rg 在 PATH 即可
-    execFile("rg", args, { maxBuffer: 5 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
+    // 用解析到的二进制路径，而非硬编码 "rg"
+    execFile(opts.rgBinary, args, { maxBuffer: 5 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
       if (err && !stdout) {
         resolve("");
         return;
@@ -124,6 +203,8 @@ function searchWithRg(opts: RgOptions): Promise<string> {
     });
   });
 }
+
+// ─── Node.js 降级搜索 ───────────────────────────────────────
 
 /**
  * Node.js 原生搜索实现（降级方案，当 rg 不可用时）
@@ -150,6 +231,44 @@ function searchWithNode(
     return { lines: [`无效的正则表达式: ${pattern}`], fileCount: 0, matchCount: 0 };
   }
 
+  /** 搜索单个文件 */
+  function searchFile(fullPath: string, relPath: string): void {
+    const ext = extname(fullPath).toLowerCase();
+    if (BINARY_EXTENSIONS.has(ext)) return;
+    if (glob && !matchSimpleGlob(relPath, glob)) return;
+
+    try {
+      const content = readFileSync(fullPath, "utf-8");
+      const lines = content.split("\n");
+
+      for (let i = 0; i < lines.length; i++) {
+        if (results.length >= headLimit) break;
+        if (regex.test(lines[i]!)) {
+          regex.lastIndex = 0;
+          totalMatches++;
+          matchedFiles.add(relPath);
+
+          if (outputMode === "files_with_matches") {
+            if (!results.includes(relPath)) results.push(relPath);
+          } else if (outputMode === "content") {
+            // 上下文行
+            const start = Math.max(0, i - contextB);
+            const end = Math.min(lines.length - 1, i + contextA);
+            for (let j = start; j <= end; j++) {
+              const marker = j === i ? ":" : "-";
+              results.push(`${relPath}:${j + 1}${marker}${lines[j]}`);
+            }
+            if (end < i + contextA) results.push("--");
+          }
+          // count 模式在外层处理
+        }
+        regex.lastIndex = 0;
+      }
+    } catch {
+      // 跳过读取失败的文件
+    }
+  }
+
   function walkDir(dir: string): void {
     if (results.length >= headLimit) return;
     let entries: string[];
@@ -174,45 +293,21 @@ function searchWithNode(
         continue;
       }
 
-      if (glob && !matchSimpleGlob(entry, glob)) continue;
-      const ext = extname(entry).toLowerCase();
-      if (BINARY_EXTENSIONS.has(ext)) continue;
-
-      try {
-        const content = readFileSync(fullPath, "utf-8");
-        const lines = content.split("\n");
-        const relPath = relative(projectRoot, fullPath);
-
-        for (let i = 0; i < lines.length; i++) {
-          if (results.length >= headLimit) break;
-          if (regex.test(lines[i]!)) {
-            regex.lastIndex = 0;
-            totalMatches++;
-            matchedFiles.add(relPath);
-
-            if (outputMode === "files_with_matches") {
-              if (!results.includes(relPath)) results.push(relPath);
-            } else if (outputMode === "content") {
-              // 上下文行
-              const start = Math.max(0, i - contextB);
-              const end = Math.min(lines.length - 1, i + contextA);
-              for (let j = start; j <= end; j++) {
-                const marker = j === i ? ":" : "-";
-                results.push(`${relPath}:${j + 1}${marker}${lines[j]}`);
-              }
-              if (end < i + contextA) results.push("--");
-            }
-            // count 模式在外层处理
-          }
-          regex.lastIndex = 0;
-        }
-      } catch {
-        // 跳过读取失败的文件
-      }
+      // 文件：直接搜索
+      const relPath = relative(projectRoot, fullPath);
+      searchFile(fullPath, relPath);
     }
   }
 
-  walkDir(searchDir);
+  // 关键修复：searchDir 可能是文件而非目录
+  const dirStat = statSync(searchDir);
+  if (dirStat.isFile()) {
+    // 直接搜索单个文件
+    const relPath = relative(projectRoot, searchDir);
+    searchFile(searchDir, relPath);
+  } else {
+    walkDir(searchDir);
+  }
 
   if (outputMode === "count") {
     for (const f of matchedFiles) {
@@ -240,6 +335,8 @@ function matchSimpleGlob(filename: string, glob: string): boolean {
   }
   return new RegExp(`^${regex}$`, "i").test(filename);
 }
+
+// ─── GrepTool 类 ─────────────────────────────────────────────
 
 export class GrepTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
@@ -350,13 +447,14 @@ export class GrepTool extends Tool {
     const contextB = params.context_before != null ? Number(params.context_before) : (contextC ?? 0);
     const headLimit = Math.max(0, Math.min(500, Number(params.head_limit ?? 250) || 250));
 
-    // 优先使用 ripgrep
-    const useRg = await hasRg();
-    if (useRg) {
+    // 优先使用 ripgrep（通过 resolveRgBinary 发现二进制）
+    const rgBinary = resolveRgBinary();
+    if (rgBinary) {
       try {
         const output = await searchWithRg({
           pattern,
           searchDir,
+          rgBinary,
           glob: globFilter,
           type: typeFilter,
           outputMode: validOutputMode,

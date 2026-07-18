@@ -18,7 +18,8 @@
   ],
   "scripts": {
     "ensure-dcg": "node ../../scripts/ensure-dcg.mjs",
-    "prebuild": "node ../../scripts/ensure-dcg.mjs || true",
+    "ensure-rg": "node ../../scripts/ensure-rg.mjs",
+    "prebuild": "node ../../scripts/ensure-dcg.mjs; node ../../scripts/ensure-rg.mjs; true",
     "build": "tsc -p tsconfig.json && node scripts/copy-tool-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
