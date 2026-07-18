@@ -1,6 +1,4 @@
-<img width="1080" height="225" alt="image" src="https://github.com/user-attachments/assets/4afa79f9-4a13-41c5-8db7-222068893bbc" />
-
-
+<img width="1080" height="225" alt="image" src="https://github.com/user-attachments/assets/d345ef4c-9e7c-4503-a347-9f3461fdc726" />
 
 # maou-sdk
 
