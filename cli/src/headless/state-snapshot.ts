@@ -41,11 +41,21 @@ function systemPromptForAgent(agentName: string | undefined): string {
   return cachedSystemPromptText;
 }
 
+/** 协议侧 duration 用整数 ms；流式中可推算 elapsed */
+function msInt(v: number | undefined | null): number | undefined {
+  if (v == null || !Number.isFinite(v) || v <= 0) return undefined;
+  return Math.max(1, Math.round(v));
+}
+
 export function toProtoTool(
   t: NonNullable<ChatMessage["toolCalls"]>[number],
   expandedIds: Set<string>,
 ): ProtoToolCard {
   // 默认折叠：仅用户点开 expandedIds 才展开（执行中也不自动撑开）
+  let duration = t.callDuration;
+  if ((duration == null || duration <= 0) && t.callStartTs) {
+    duration = Date.now() - t.callStartTs;
+  }
   return {
     id: t.id,
     name: t.name,
@@ -53,7 +63,7 @@ export function toProtoTool(
     result: t.result,
     is_error: t.isError,
     done: t.done,
-    duration_ms: t.callDuration,
+    duration_ms: msInt(duration),
     expanded: expandedIds.has(t.id),
   };
 }
@@ -64,11 +74,15 @@ export function toProtoThinking(
 ): ProtoThinking {
   // 流式中展开看过程；结束后默认收成一行标识（仅用户点开才 expandedIds）
   const collapsed = !t.streaming && !expandedIds.has(t.id);
+  let duration = t.duration;
+  if ((duration == null || duration <= 0) && t.startTs) {
+    duration = Date.now() - t.startTs;
+  }
   return {
     id: t.id,
     content: t.content,
     streaming: t.streaming,
-    duration_ms: t.duration,
+    duration_ms: msInt(duration),
     collapsed,
   };
 }
@@ -108,6 +122,12 @@ export function toProtoMessage(
   else if (expandedMsgs.has(m.id)) open = true;
   else open = inLatestRound === true;
   const baseKind = (m.kind ?? "").replace(/\|expanded/g, "");
+  // 消息耗时：已落库 duration 优先；流式/工具轮中用 ts 推算，避免「(dur) 缺失」
+  let msgDur = m.duration;
+  if ((msgDur == null || msgDur <= 0) && m.ts) {
+    const end = m.doneTs ?? Date.now();
+    msgDur = end - m.ts;
+  }
   return {
     id: m.id,
     role: m.role,
@@ -117,7 +137,7 @@ export function toProtoMessage(
     tools: toolCards.map((t) => t.name),
     tool_cards: toolCards,
     thinking: (m.thinkingBlocks ?? []).map((t) => toProtoThinking(t, expandedThinking)),
-    duration_ms: m.duration,
+    duration_ms: msInt(msgDur),
     round: m.round,
     kind: open ? `${baseKind}|expanded` : baseKind || undefined,
     author_label: authorLabel(m.author, m.role),

@@ -69,13 +69,31 @@ pub fn compact(n: u64) -> String {
     }
 }
 
-/// Ink `durationStr`: ms → 350ms / 1.2s / 2.5min
+/// 执行耗时：ms → 完整可读串（不截成只有 min）
+/// 例：350ms · 1.2s · 2m05s · 1h02m03s
 fn duration_str(ms: Option<u64>) -> String {
     match ms {
         None | Some(0) => String::new(),
         Some(d) if d < 1000 => format!("{d}ms"),
-        Some(d) if d < 60_000 => format!("{:.1}s", d as f64 / 1000.0),
-        Some(d) => format!("{:.1}min", d as f64 / 60_000.0),
+        Some(d) if d < 60_000 => {
+            let s = d as f64 / 1000.0;
+            if (s - s.round()).abs() < 0.05 {
+                format!("{}s", s.round() as u64)
+            } else {
+                format!("{s:.1}s")
+            }
+        }
+        Some(d) if d < 3_600_000 => {
+            let m = d / 60_000;
+            let s = (d % 60_000) / 1000;
+            format!("{m}m{s:02}s")
+        }
+        Some(d) => {
+            let h = d / 3_600_000;
+            let m = (d % 3_600_000) / 60_000;
+            let s = (d % 60_000) / 1000;
+            format!("{h}h{m:02}m{s:02}s")
+        }
     }
 }
 
@@ -1264,7 +1282,8 @@ mod tests {
     fn duration_and_short_id_match_ink() {
         assert_eq!(duration_str(Some(350)), "350ms");
         assert_eq!(duration_str(Some(1200)), "1.2s");
-        assert_eq!(duration_str(Some(150_000)), "2.5min");
+        assert_eq!(duration_str(Some(150_000)), "2m30s");
+        assert_eq!(duration_str(Some(3_725_000)), "1h02m05s");
         assert_eq!(short_id("muabc123xyz"), "abc123");
         assert_eq!(short_id("msg01"), "sg01");
         assert_eq!(loop_mark(3), "↺3");

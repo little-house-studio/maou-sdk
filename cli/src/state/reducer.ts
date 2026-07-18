@@ -470,7 +470,17 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
         if (next === m.toolCalls) return m;
         // 本消息上所有工具都结束 → 收口 streaming，避免下一条又叠 LIVE
         const allDone = next.every((t) => t.done);
-        return { ...m, toolCalls: next, streaming: allDone ? false : m.streaming };
+        // 工具全部结束时若尚未收到 done，先用 ts 填 duration，避免头栏 (dur) 空白
+        const duration =
+          allDone && m.ts
+            ? (m.duration ?? now - m.ts)
+            : m.duration;
+        return {
+          ...m,
+          toolCalls: next,
+          streaming: allDone ? false : m.streaming,
+          ...(allDone && duration != null ? { duration, doneTs: m.doneTs ?? now } : {}),
+        };
       });
       if (!matched && (toolCallId || name)) {
         // 优先挂到最近 assistant，不新开空消息

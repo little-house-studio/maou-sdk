@@ -279,15 +279,35 @@ export class TerminalTool extends Tool {
     aiMeta: { description?: string; reason?: string } = {},
   ): Promise<ToolResponse | null> {
     const agent = ctx.agentName || "main";
-    // sandboxMode 可覆盖 agent 持久化 mode（HTTP yolo 场景）
-    const mode =
-      ctx.sandboxMode === "yolo" || ctx.sandboxMode === "auto" || ctx.sandboxMode === "normal"
-        ? ctx.sandboxMode
-        : getMode(agent);
+    // sandboxMode 可覆盖 agent 持久化 mode（HTTP / CLI yolo 场景）
+    // 统一小写，避免 UI 传 "Yolo" 等导致门禁落到 normal
+    const rawMode = String(ctx.sandboxMode ?? getMode(agent) ?? "normal")
+      .trim()
+      .toLowerCase();
+    const mode: "yolo" | "auto" | "normal" =
+      rawMode === "yolo" || rawMode === "auto" || rawMode === "normal"
+        ? rawMode
+        : "normal";
 
+    // yolo：不弹审批 UI。gate 内 fatal 仍硬拦；危险级 yolo 已 allow；
+    // 用户黑名单在 yolo 下仍可拦截（deny，无 UI）。
     const gate = await gateTerminalCommand(command, agent, mode);
 
     if (gate.action === "allow") return null;
+
+    // 防御：yolo 下绝不调用 TerminalApprover（避免 UI 与「全放」文案矛盾）
+    if (mode === "yolo") {
+      if (gate.action === "ask" || gate.action === "review") {
+        // 理论不应出现；放行以符合 yolo
+        return null;
+      }
+      // deny_dangerous_pending / deny_fatal：无 UI，直接拒绝（黑名单 / 致命）
+      if (gate.action === "deny_dangerous_pending") {
+        return createToolResponse(false, gate.message || "命令被策略拦截", {
+          payload: gate.payload,
+        });
+      }
+    }
 
     if (gate.action === "deny_fatal") {
       return createToolResponse(false, gate.message || "致命指令已拦截", {
@@ -365,6 +385,14 @@ export class TerminalTool extends Tool {
     }
 
     if (gate.action === "ask") {
+      // 仅 normal 弹交互审批；auto/yolo 不应落到此分支
+      if (mode !== "normal") {
+        if (mode === "yolo") return null;
+        // auto 无 review 结果时拒绝（不弹 UI）
+        return createToolResponse(false,
+          `🔐 [安全层] auto 模式下命令未过策略：\`${command}\``,
+          { payload: gate.payload });
+      }
       const approver = getTerminalApprover();
       if (approver) {
         try {
