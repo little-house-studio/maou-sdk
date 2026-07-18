@@ -120,10 +120,9 @@ if command -v npm >/dev/null 2>&1; then
   (cd cli && npm rebuild node-pty 2>/dev/null) || node_pty_ok=0
   (cd cli && npm rebuild @lydell/node-pty 2>/dev/null) || node_pty_ok=0
   if [[ "$node_pty_ok" -ne 0 ]]; then
-    log "[build-native] node-pty rebuild: ✓"
+    log "[build-native] node-pty rebuild: ✓（遗留依赖；use_terminal 主路径为 terminal-engine 管道）"
   else
-    log "[build-native] ⚠ node-pty rebuild 失败 — use_terminal 将降级为无 PTY spawn（Windows 易因 VS Build Tools / Windows SDK 缺失）"
-    log "[build-native]   修复: winget install Microsoft.VisualStudio.2022.BuildTools --override --add Microsoft.VisualStudio.Workload.VCTools"
+    log "[build-native] ⚠ node-pty rebuild 失败 — 可忽略；use_terminal 由 terminal-engine 驱动，不依赖 node-pty"
   fi
 fi
 

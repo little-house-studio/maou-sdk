@@ -4,10 +4,10 @@
   "description": "高性能终端引擎 — Rust + napi-rs",
   "type": "module",
   "main": "./load.mjs",
-  "types": "./index.d.ts",
+  "types": "./terminal_engine.d.ts",
   "exports": {
     ".": {
-      "types": "./index.d.ts",
+      "types": "./terminal_engine.d.ts",
       "import": "./load.mjs",
       "require": "./load.mjs",
       "default": "./load.mjs"

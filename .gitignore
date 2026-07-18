@@ -32,6 +32,10 @@ yarn-error.log*
 # ─── Rust / Cargo ───
 **/target/
 terminal-engine/*.node
+# napi 本地生成（入口以 load.mjs 为准；构建产物勿提交）
+terminal-engine/index.cjs
+terminal-engine/index.js
+terminal-engine/index.d.ts
 
 # ─── CLI 基准 / 压测输出 ───
 cli/scroll-bench-result.txt

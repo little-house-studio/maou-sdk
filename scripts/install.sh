@@ -47,10 +47,15 @@ EOF
 chmod +x "$WRAP"
 log "[maou] wrapper: $WRAP"
 
-ENSURE="$REPO_ROOT/scripts/ensure-dcg.mjs"
-if [[ -f "$ENSURE" ]]; then
+ENSURE_DCG="$REPO_ROOT/scripts/ensure-dcg.mjs"
+if [[ -f "$ENSURE_DCG" ]]; then
   log "[maou] ensuring dcg…"
-  node "$ENSURE" --user || die "dcg install failed"
+  node "$ENSURE_DCG" --user || die "dcg install failed"
+fi
+ENSURE_RG="$REPO_ROOT/scripts/ensure-rg.mjs"
+if [[ -f "$ENSURE_RG" ]]; then
+  log "[maou] ensuring rg (ripgrep)…"
+  node "$ENSURE_RG" --user || log "[maou] ⚠ rg install failed — grep 将降级为 Node.js（可稍后: node scripts/ensure-rg.mjs）"
 fi
 
 case ":$PATH:" in

@@ -678,7 +678,7 @@ export async function autoFixDependencies(opts: {
           actions.push("build-native.ps1");
           if (!runInherit("powershell", args, mono)) {
             if (needTerminal || needNodePty || !needCore) {
-              errors.push("build-native 失败 — Terminal/node-pty 可能仍降级");
+              errors.push("build-native 失败 — terminal-engine 可能仍不可用");
             }
           }
         }
@@ -690,7 +690,7 @@ export async function autoFixDependencies(opts: {
           actions.push("build-native.sh");
           if (!runInherit("bash", args, mono)) {
             if (needTerminal || needNodePty || !needCore) {
-              errors.push("build-native 失败 — Terminal/node-pty 可能仍降级");
+              errors.push("build-native 失败 — terminal-engine 可能仍不可用");
             }
           }
         }
@@ -815,22 +815,21 @@ function printDoctorReport(r: DepCheckResult): void {
   log(`  合计:       ${r.tiers.core ? "✓ 可启动" : "✗ 不可启动"}`);
 
   log("");
-  log("── Terminal（建议）──");
+  log("── Terminal / 工具依赖（建议）──");
   log(`  engine:   ${r.details.terminalEngine}`);
   log(`  dcg:      ${r.details.dcg}`);
   log(`  rg:       ${r.details.rg}`);
-  log(`  node-pty: ${r.details.nodePty}`);
+  log(`  node-pty: ${r.details.nodePty}（遗留，use_terminal 已不依赖）`);
   if (!r.tiers.terminal) {
-    log("  兜底: child_process 弱 PTY");
-  }
-  if (!r.tiers.nodePty) {
-    log("  兜底: node-pty 加载失败 → use_terminal 退化为无 PTY spawn（Windows 易 DLL 缺失）");
+    log("  兜底: 无 terminal-engine 时 use_terminal 不可用 — scripts/build-native");
+  } else {
+    log("  说明: use_terminal 默认全平台管道（Rust engine）；MAOU_PTY_FORCE=1 才开真 PTY");
   }
   if (!r.tiers.dcg) {
     log("  兜底: 危险命令门不可靠");
   }
   if (!r.tiers.rg) {
-    log("  兜底: grep 降级为 Node.js（速度较慢）");
+    log("  兜底: grep 降级为 Node.js（速度较慢）— node scripts/ensure-rg.mjs");
   }
 
   log("");
@@ -882,9 +881,14 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   let r = await ensureDependencies({ autoInstall: false, quiet: false });
   printDoctorReport(r);
 
+  // node-pty 已非 use_terminal 主路径（引擎默认管道），不作为自动修复门槛
   const needsFix =
-    !r.tiers.core || !r.tiers.dcg || !r.tiers.rg || !r.tiers.terminal ||
-    !r.tiers.nodePty || !r.tiers.sqry || !r.tiers.lspTS;
+    !r.tiers.core ||
+    !r.tiers.dcg ||
+    !r.tiers.rg ||
+    !r.tiers.terminal ||
+    !r.tiers.sqry ||
+    !r.tiers.lspTS;
 
   if (!noInstall && needsFix && r.nodeOk) {
     const fix = await autoFixDependencies({
@@ -899,7 +903,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
       log("");
       log("── 修复后 ──");
       log(
-        `  Core: ${r.tiers.core ? "✓" : "✗"}  Terminal: ${r.tiers.terminal ? "✓" : "△"}  dcg: ${r.tiers.dcg ? "✓" : "△"}  rg: ${r.tiers.rg ? "✓" : "△"}  node-pty: ${r.tiers.nodePty ? "✓" : "△"}  sqry: ${r.tiers.sqry ? "✓" : "△"}  ts-ls: ${r.tiers.lspTS ? "✓" : "△"}`,
+        `  Core: ${r.tiers.core ? "✓" : "✗"}  Terminal: ${r.tiers.terminal ? "✓" : "△"}  dcg: ${r.tiers.dcg ? "✓" : "△"}  rg: ${r.tiers.rg ? "✓" : "△"}  sqry: ${r.tiers.sqry ? "✓" : "△"}  ts-ls: ${r.tiers.lspTS ? "✓" : "△"}`,
       );
     }
   } else if (noInstall && needsFix) {
@@ -937,9 +941,9 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   log("── 下一步 ──");
   if (!r.tiers.core) {
     log("  Core 仍失败。检查 Node/pnpm，或手动: scripts/build-native");
-  } else if (!r.tiers.terminal || !r.tiers.dcg || !r.tiers.nodePty || !r.tiers.rg) {
+  } else if (!r.tiers.terminal || !r.tiers.dcg || !r.tiers.rg) {
     log("  可启动 maou coding（部分能力降级）");
-    if (!r.tiers.nodePty) log("  node-pty: 检查 Visual Studio Build Tools / Windows SDK");
+    if (!r.tiers.terminal) log("  terminal-engine: scripts/build-native 或 cd terminal-engine && npm run build");
     if (!r.tiers.rg) log("  rg: node scripts/ensure-rg.mjs 或 winget install BurntSushi.ripgrep");
     if (r.details.apiConfig.includes("△")) log("  API: maou setup");
   } else if (!r.tiers.sqry || !r.tiers.lspTS) {
@@ -952,7 +956,8 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   }
 
   log("");
-  if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.nodePty && r.tiers.rg) {
+  // 就绪判定：engine + dcg + rg；node-pty 不再作为主路径门槛
+  if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.rg) {
     log("✓ Core+Terminal 就绪");
   } else if (r.tiers.core) {
     log("△ Core 就绪，有降级");

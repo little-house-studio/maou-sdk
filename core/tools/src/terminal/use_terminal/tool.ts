@@ -6,13 +6,13 @@
  *   2. manage — 终端管理 (list/rm/stop/logs)
  *   3. write — 键盘输入模拟（交互式命令支持）
  *
- * 底层由 Rust terminal-engine 驱动：
- * - 跨平台 PTY（portable-pty: Unix openpty + Windows ConPTY）
- * - 命令过滤（自定义黑白名单；破坏性规则改由 DCG）
- * - 200 并行上限
- * - 原子持久化 + ring buffer
- * - 结构化日志
- * - V1 沙箱（路径限制）
+ * 底层由 Rust terminal-engine 驱动（对齐 Grok 思路的跨平台执行层）：
+ * - 默认全平台管道（shell_command_argv + capture_env）
+ * - ProcessGroup 杀进程树（Unix killpg / Windows Job Object）
+ * - 可选 MAOU_PTY_FORCE=1 真 PTY（write 键盘交互）
+ * - 命令过滤 + DCG 三层安全（TS gate）
+ * - 200 并行上限、ring buffer、V1 路径沙箱
+ * 勿再使用 terminal/registry.ts / pty.ts（已弃用，见 LEGACY.md）
  *
  * 安全三层（run 前，见 terminal-security.ts）：
  *   致命 fatal  — 硬拦（DCG critical/灾难规则 + maou-hard-deny），不可二次执行绕过

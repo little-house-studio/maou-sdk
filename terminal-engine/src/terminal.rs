@@ -1,25 +1,107 @@
 /**
  * terminal.rs — 终端实例管理
  *
- * 封装 portable-pty，管理单个终端的生命周期：
- * - 创建 PTY + spawn 进程
- * - 读取输出流 → ring buffer + callback
- * - 写入（键盘输入模拟）
- * - 停止（SIGTERM → SIGKILL）
- * - 复用（退出后重新创建 PTY）
+ * 默认：全平台管道模式（stdout/stderr pipe），跨平台行为一致、输出抓取稳定。
+ * 可选：MAOU_PTY_FORCE=1 时走 portable-pty（Unix openpty / Windows ConPTY），
+ *       用于 write 键盘交互等真 TTY 场景。
+ *
+ * - spawn 命令（pipe 默认 / PTY 可选）
+ * - 读取输出流 → ring buffer
+ * - 写入（仅 PTY 模式）
+ * - 停止（kill 子进程）
  * - 跨平台 shell 选择
  */
 
 use crate::error::{TerminalError, TerminalResult};
-use portable_pty::{
-    CommandBuilder, MasterPty, NativePtySystem, PtyPair, PtySize, PtySystem, SlavePty,
-    native_pty_system,
-};
+use crate::process_group::{self, ProcessGroup};
+use crate::shell;
+use portable_pty::{CommandBuilder, PtyPair, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, BufReader};
+use std::io::Read;
+use std::process::{Child as StdChild, Command as StdCommand, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// 子进程句柄：管道（默认）或 PTY（MAOU_PTY_FORCE）
+enum ChildHandle {
+    Std(StdChild),
+    Pty(Box<dyn portable_pty::Child + Send + Sync>),
+}
+
+impl ChildHandle {
+    fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
+        match self {
+            Self::Std(c) => Ok(c.try_wait()?.map(|s| s.code().unwrap_or(1))),
+            Self::Pty(c) => Ok(c.try_wait()?.map(|s| s.exit_code() as i32)),
+        }
+    }
+
+    fn wait(&mut self) -> std::io::Result<i32> {
+        match self {
+            Self::Std(c) => Ok(c.wait()?.code().unwrap_or(1)),
+            Self::Pty(c) => Ok(c.wait()?.exit_code() as i32),
+        }
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Std(c) => c.kill(),
+            Self::Pty(c) => c
+                .kill()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+        }
+    }
+}
+
+/// 是否强制真 PTY（交互调试 / write 键盘）。默认 false = 全平台管道。
+fn pty_force_enabled() -> bool {
+    matches!(
+        std::env::var("MAOU_PTY_FORCE").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes")
+    )
+}
+
+/// 把输出块写入 ring（按行切分，截断到 RING_MAX_LINES）
+fn append_output_chunk(
+    ring: &Mutex<Vec<String>>,
+    line_buf: &Mutex<String>,
+    total_chars: &Mutex<usize>,
+    data: &str,
+) {
+    if data.is_empty() {
+        return;
+    }
+    {
+        let mut tc = total_chars.lock().unwrap();
+        *tc += data.len();
+    }
+    let mut lb = line_buf.lock().unwrap();
+    lb.push_str(data);
+    let mut ring_guard = ring.lock().unwrap();
+    while let Some(pos) = lb.find('\n') {
+        let mut line = lb.drain(..=pos).collect::<String>();
+        // 统一换行风格
+        if line.ends_with("\r\n") {
+            line.pop();
+            line.pop();
+            line.push('\n');
+        } else if line.ends_with('\r') {
+            line.pop();
+            line.push('\n');
+        }
+        ring_guard.push(line);
+    }
+    // 无换行的长缓冲也落一份，避免长时间无输出可见
+    if lb.len() > 4096 {
+        let chunk = std::mem::take(&mut *lb);
+        ring_guard.push(chunk);
+    }
+    if ring_guard.len() > RING_MAX_LINES {
+        let drain = ring_guard.len() - RING_MAX_LINES;
+        ring_guard.drain(0..drain);
+    }
+}
 
 /// 终端状态
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -82,7 +164,7 @@ pub struct Terminal {
     line_buf: Arc<Mutex<String>>,
     /// 输出字符总量（用于截断）
     total_chars: Arc<Mutex<usize>>,
-    /// PTY master writer
+    /// PTY master writer（仅 PTY 模式；管道模式为 None）
     writer: Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>>,
     /// 必须保活：Windows ConPTY 在 MasterPty drop 时 ClosePseudoConsole，
     /// 子进程会立刻以 0xC0000135 退出。
@@ -91,12 +173,16 @@ pub struct Terminal {
     /// slave 端同样保活（与 master 共享 ConPTY 内部状态）
     #[allow(dead_code)]
     slave: Option<Box<dyn portable_pty::SlavePty + Send>>,
-    /// 子进程
-    child: Arc<Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>>,
+    /// 子进程（管道 StdChild 或 PTY Child）
+    child: Arc<Mutex<Option<ChildHandle>>>,
+    /// 进程树 teardown（Unix killpg / Windows Job Object）
+    process_group: Option<ProcessGroup>,
     /// 是否正在运行
     running: Arc<AtomicBool>,
     /// 启动时间
     started_at: Option<Instant>,
+    /// 当前是否为真 PTY 会话（write 仅在此模式下可用）
+    is_pty: bool,
 }
 
 /// 持久化结构
@@ -127,212 +213,130 @@ pub struct CreateOptions {
     pub description: String,
 }
 
-/// Windows 下解析 SystemRoot（缺省 C:\Windows）
-#[cfg(windows)]
-fn windows_system_root() -> String {
-    std::env::var("SystemRoot")
-        .or_else(|_| std::env::var("SYSTEMROOT"))
-        .or_else(|_| std::env::var("windir"))
-        .unwrap_or_else(|_| r"C:\Windows".to_string())
-}
-
-/// 跨平台 shell 选择（Windows 使用绝对路径，避免 PATH 被污染时找不到 shell / DLL）
-fn get_platform_shell() -> (String, Vec<String>) {
-    if cfg!(target_os = "windows") {
-        #[cfg(windows)]
-        {
-            let root = windows_system_root();
-            // ConPTY 下 cmd 比 powershell 更稳；powershell 作为备选
-            let cmd = format!(r"{}\System32\cmd.exe", root);
-            if std::path::Path::new(&cmd).exists() {
-                return (cmd, vec!["/D".to_string(), "/S".to_string()]);
-            }
-            let ps = format!(
-                r"{}\System32\WindowsPowerShell\v1.0\powershell.exe",
-                root
-            );
-            return (ps, vec!["-NoLogo".to_string(), "-NoProfile".to_string()]);
-        }
-        #[cfg(not(windows))]
-        {
-            ("cmd.exe".to_string(), vec!["/D".to_string()])
-        }
-    } else {
-        // Unix: 优先 $SHELL，回退 /bin/bash
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        (shell, vec!["-l".to_string()])
-    }
-}
-
-/// 规范化 Windows PATH：去掉伪路径 / MSYS 路径，并确保 System32 在前。
-/// 污染的 PATH（如 Git Bash 混入、Agent 注入垃圾段）会导致 ConPTY 子进程
-/// STATUS_DLL_NOT_FOUND (0xC0000135 / -1073741502)。
-#[cfg(windows)]
-fn sanitize_windows_path(raw: &str) -> String {
-    let root = windows_system_root();
-    let system32 = format!(r"{}\System32", root);
-    let mut segs: Vec<String> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    let push = |segs: &mut Vec<String>, seen: &mut std::collections::HashSet<String>, s: String| {
-        let key = s.to_ascii_lowercase();
-        if s.is_empty() || seen.contains(&key) {
-            return;
-        }
-        seen.insert(key);
-        segs.push(s);
-    };
-
-    // 关键系统目录优先
-    push(&mut segs, &mut seen, system32.clone());
-    push(&mut segs, &mut seen, root.clone());
-    push(
-        &mut segs,
-        &mut seen,
-        format!(r"{}\System32\Wbem", root),
-    );
-    push(
-        &mut segs,
-        &mut seen,
-        format!(r"{}\System32\WindowsPowerShell\v1.0", root),
-    );
-
-    for seg in raw.split(';') {
-        let s = seg.trim();
-        if s.is_empty() {
-            continue;
-        }
-        // 丢弃明显无效段（含换行、Agent 注入、Unix/MSYS 风格）
-        if s.contains('\n') || s.contains('\r') {
-            continue;
-        }
-        if s.starts_with("/c/")
-            || s.starts_with("/C/")
-            || s.starts_with(r"\c\")
-            || s.starts_with(r"\C\")
-            || s.starts_with("/usr/")
-            || s.starts_with("/mingw")
-        {
-            continue;
-        }
-        // 必须以盘符路径或 UNC 开头才保留
-        let bytes = s.as_bytes();
-        let is_drive = bytes.len() >= 3
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && (bytes[2] == b'\\' || bytes[2] == b'/');
-        let is_unc = s.starts_with(r"\\");
-        if !(is_drive || is_unc) {
-            continue;
-        }
-        push(&mut segs, &mut seen, s.replace('/', r"\"));
-    }
-
-    segs.join(";")
-}
-
-/// 构建子进程环境。
-/// Windows：在 portable-pty 默认基境上只覆写关键项（PATH 净化、SystemRoot/ComSpec、TERM）。
-/// 不要重建整个 env block——漏变量会导致 ConPTY 子进程 STATUS_DLL_NOT_FOUND。
-/// Unix：白名单过滤（与历史行为一致）。
-fn build_safe_env() -> Vec<(String, String)> {
-    #[cfg(windows)]
-    {
-        let root = windows_system_root();
-        let system32 = format!(r"{}\System32", root);
-        let raw_path = std::env::var("Path")
-            .or_else(|_| std::env::var("PATH"))
-            .unwrap_or_default();
-        let clean_path = sanitize_windows_path(&raw_path);
-        vec![
-            ("Path".to_string(), clean_path),
-            (
-                "PATHEXT".to_string(),
-                std::env::var("PATHEXT").unwrap_or_else(|_| {
-                    ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC".to_string()
-                }),
-            ),
-            ("SystemRoot".to_string(), root.clone()),
-            ("windir".to_string(), root.clone()),
-            ("ComSpec".to_string(), format!(r"{}\cmd.exe", system32)),
-            (
-                "SystemDrive".to_string(),
-                root.get(..2).unwrap_or("C:").to_string(),
-            ),
-            ("TERM".to_string(), "xterm-256color".to_string()),
-        ]
-    }
-
-    #[cfg(not(windows))]
-    {
-        const ENV_WHITELIST: &[&str] = &[
-            "PATH", "HOME", "USER", "USERNAME", "USERPROFILE", "SHELL",
-            "LANG", "LC_ALL", "LC_CTYPE",
-            "TERM", "COLORTERM", "TMPDIR", "TMP", "TEMP",
-            "APPDATA", "LOCALAPPDATA", "SystemRoot", "SYSTEMROOT", "COMSPEC", "PATHEXT",
-            "JAVA_HOME", "NODE_PATH", "PYTHONPATH", "GOPATH", "GOROOT",
-            "RUSTUP_HOME", "CARGO_HOME", "NVM_DIR", "CONDA_PREFIX",
-            "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
-        ];
-
-        let mut env: Vec<(String, String)> = ENV_WHITELIST
-            .iter()
-            .filter_map(|&key| std::env::var(key).ok().map(|v| (key.to_string(), v)))
-            .collect();
-        env.push(("TERM".to_string(), "xterm-256color".to_string()));
-        env
-    }
-}
-
-/// 规范化 cwd：空/相对路径落到当前目录；Windows 统一反斜杠。
-fn normalize_cwd(cwd: &str) -> String {
-    let trimmed = cwd.trim();
-    if trimmed.is_empty() {
-        return std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| {
-                if cfg!(windows) {
-                    r"C:\".to_string()
-                } else {
-                    "/".to_string()
-                }
-            });
-    }
-    #[cfg(windows)]
-    {
-        let p = trimmed.replace('/', r"\");
-        if std::path::Path::new(&p).is_dir() {
-            p
-        } else {
-            // 非法 cwd 时回退，避免 CreateProcess ERROR_DIRECTORY(267)
-            std::env::current_dir()
-                .map(|d| d.to_string_lossy().into_owned())
-                .unwrap_or(p)
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        trimmed.to_string()
-    }
-}
-
 impl Terminal {
-    /// 创建并启动终端
+    /// 创建并启动终端。默认管道；`MAOU_PTY_FORCE=1` 时真 PTY。
     pub fn spawn(opts: CreateOptions, command: &str) -> TerminalResult<Self> {
-        let cwd = normalize_cwd(&opts.cwd);
+        let cwd = shell::normalize_cwd(&opts.cwd);
+        if pty_force_enabled() {
+            Self::spawn_pty(opts, command, cwd)
+        } else {
+            Self::spawn_pipe(opts, command, cwd)
+        }
+    }
 
-        // Windows 一次性命令：默认走 std::process 捕获 stdout/stderr。
-        // ConPTY 在本机/Agent 环境下读输出不稳定（CSI 6n、无输出 exit 1），
-        // 而 use_terminal 的主路径是 run 一条命令拿结果——不必强上 PTY。
-        // 设 MAOU_PTY_FORCE=1 可强制 ConPTY（交互调试用）。
-        #[cfg(windows)]
-        {
-            let force_pty = std::env::var("MAOU_PTY_FORCE").ok().as_deref() == Some("1");
-            if !force_pty {
-                return Self::spawn_windows_oneshot(opts, command, cwd);
-            }
+    /// 全平台管道模式：shell -c / cmd /c，stdout+stderr 管道异步读入 ring。
+    /// 支持后台长任务与超时 kill；不提供键盘 write（需 PTY）。
+    fn spawn_pipe(opts: CreateOptions, command: &str, cwd: String) -> TerminalResult<Self> {
+        let mut cmd = Self::build_pipe_command(command, &cwd)?;
+
+        let mut child = cmd.spawn().map_err(|e| {
+            TerminalError::PtySpawnFailed(format!("pipe spawn in `{}`: {}", cwd, e))
+        })?;
+
+        // 跨平台进程树：Unix 组 / Windows Job Object
+        let mut pg = ProcessGroup::new().ok();
+        if let Some(ref mut g) = pg {
+            let _ = g.attach_std(&child);
         }
 
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| TerminalError::PtySpawnFailed("stdout pipe missing".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| TerminalError::PtySpawnFailed("stderr pipe missing".into()))?;
+
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let ring = Arc::new(Mutex::new(Vec::with_capacity(RING_MAX_LINES)));
+        let line_buf = Arc::new(Mutex::new(String::new()));
+        let total_chars = Arc::new(Mutex::new(0usize));
+        let running = Arc::new(AtomicBool::new(true));
+
+        let terminal = Self {
+            id: opts.id,
+            agent_name: opts.agent_name,
+            command: command.to_string(),
+            description: opts.description,
+            cwd,
+            state: TerminalState::Running,
+            exit_code: None,
+            created_at: now.clone(),
+            updated_at: now,
+            last_viewed_at: None,
+            ring: ring.clone(),
+            line_buf: line_buf.clone(),
+            total_chars: total_chars.clone(),
+            writer: Arc::new(Mutex::new(None)),
+            master: None,
+            slave: None,
+            child: Arc::new(Mutex::new(Some(ChildHandle::Std(child)))),
+            process_group: pg,
+            running: running.clone(),
+            started_at: Some(Instant::now()),
+            is_pty: false,
+        };
+
+        // 分别读 stdout / stderr，合并进同一 ring
+        let spawn_reader = |mut reader: Box<dyn Read + Send>,
+                            ring: Arc<Mutex<Vec<String>>>,
+                            line_buf: Arc<Mutex<String>>,
+                            total_chars: Arc<Mutex<usize>>| {
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 8192];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            let chunk = String::from_utf8_lossy(&buf[..n]);
+                            append_output_chunk(&ring, &line_buf, &total_chars, &chunk);
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+        };
+
+        spawn_reader(
+            Box::new(stdout),
+            ring.clone(),
+            line_buf.clone(),
+            total_chars.clone(),
+        );
+        spawn_reader(Box::new(stderr), ring, line_buf, total_chars);
+
+        Ok(terminal)
+    }
+
+    /// 构造跨平台管道 Command（shell + env 统一走 shell 模块）
+    fn build_pipe_command(command: &str, cwd: &str) -> TerminalResult<StdCommand> {
+        let inv = shell::shell_command_argv(command);
+        let mut cmd = StdCommand::new(&inv.program);
+        shell::apply_invocation_to_std(&mut cmd, &inv);
+        shell::apply_env_list(&mut cmd, &shell::capture_env());
+        cmd.current_dir(cwd);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Unix: 新进程组 → ProcessGroup::killpg
+        process_group::configure_new_process_group(&mut cmd);
+
+        // Windows: 无控制台窗口 + 新进程组（Job Object 在 attach 时登记）
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+        }
+
+        Ok(cmd)
+    }
+
+    /// 真 PTY 路径（MAOU_PTY_FORCE=1）：Unix openpty / Windows ConPTY
+    fn spawn_pty(opts: CreateOptions, command: &str, cwd: String) -> TerminalResult<Self> {
         let pty_system = native_pty_system();
 
         let pair = pty_system
@@ -344,80 +348,45 @@ impl Terminal {
             })
             .map_err(|e| TerminalError::PtySpawnFailed(e.to_string()))?;
 
-        // 跨平台 shell（Windows 绝对路径）
-        let (shell, _shell_args) = get_platform_shell();
-        let envs = build_safe_env();
-
-        // 命令注入（平台特定）—— 一次构建，避免重复 new 丢 env
-        let mut cmd = CommandBuilder::new(&shell);
-        if cfg!(target_os = "windows") {
-            // Windows ConPTY 路径（MAOU_PTY_FORCE=1）
-            if shell.to_ascii_lowercase().contains("powershell") {
-                cmd.args(&[
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    command,
-                ]);
-            } else {
-                cmd.args(&["/D", "/C", command]);
-            }
-
-            // 净化含换行的 env（破坏 CREATE_UNICODE_ENVIRONMENT 块）
-            let raw = std::env::var("MAOU_PTY_RAW_ENV").ok().as_deref() == Some("1");
-            if !raw {
-                for (k, v) in std::env::vars() {
-                    if v.contains('\n') || v.contains('\r') || v.contains('\0') || k.contains('\0') {
-                        if k.eq_ignore_ascii_case("Path") || k.eq_ignore_ascii_case("PATH") {
-                            cmd.env("Path", sanitize_windows_path(&v));
-                        } else {
-                            cmd.env_remove(&k);
-                        }
-                    }
-                }
-                let raw_path = std::env::var("Path")
-                    .or_else(|_| std::env::var("PATH"))
-                    .unwrap_or_default();
-                cmd.env("Path", sanitize_windows_path(&raw_path));
-                if let Ok(root) =
-                    std::env::var("SystemRoot").or_else(|_| std::env::var("SYSTEMROOT"))
-                {
-                    cmd.env("SystemRoot", root);
-                }
-                if let Ok(cs) = std::env::var("ComSpec").or_else(|_| std::env::var("COMSPEC")) {
-                    cmd.env("ComSpec", cs);
-                }
-                cmd.env("TERM", "xterm-256color");
-            }
-        } else {
-            // Unix: bash -c "command"
-            cmd.arg("-c");
-            cmd.arg(command);
-            for (k, v) in &envs {
-                cmd.env(k, v);
-            }
+        // 与管道共用 shell_command_argv，避免两套拼装
+        let inv = shell::shell_command_argv(command);
+        let mut cmd = CommandBuilder::new(&inv.program);
+        for a in &inv.args {
+            cmd.arg(a);
+        }
+        // portable-pty CommandBuilder 无 raw_arg：Windows 把 /c 载荷作为普通 arg
+        // （ConPTY 路径本就少用；引号完整度略逊于管道 raw_arg）
+        if let Some(ref raw) = inv.windows_cmd_raw_c {
+            // 去掉外包一层引号再交给 /c（CommandBuilder 会再处理）
+            let inner = raw
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .unwrap_or(raw.as_str());
+            cmd.arg(inner);
+        }
+        for (k, v) in shell::interactive_env() {
+            cmd.env(k, v);
+        }
+        for (k, v) in &inv.extra_env {
+            cmd.env(k, v);
         }
         cmd.cwd(&cwd);
 
-        // spawn（Windows ConPTY 走 SlavePty::spawn_command → CreateProcessW + ConPTY attr）
         let child = match pair.slave.spawn_command(cmd) {
             Ok(c) => c,
             Err(e) => {
                 return Err(TerminalError::PtySpawnFailed(format!(
                     "spawn `{}` in `{}`: {}",
-                    shell, cwd, e
+                    inv.program, cwd, e
                 )));
             }
         };
 
-        // 获取 reader
         let reader = pair
             .master
             .try_clone_reader()
             .map_err(|e| TerminalError::PtySpawnFailed(format!("clone reader: {}", e)))?;
 
-        // 获取 writer
         let writer = pair
             .master
             .take_writer()
@@ -425,7 +394,6 @@ impl Terminal {
         let writer: Arc<Mutex<Option<Box<dyn std::io::Write + Send>>>> =
             Arc::new(Mutex::new(Some(writer)));
 
-        // 拆开 pair：master 必须活过整个 Terminal 生命周期（ClosePseudoConsole）
         let PtyPair { master, slave } = pair;
         drop(slave);
 
@@ -448,13 +416,16 @@ impl Terminal {
             writer: writer.clone(),
             master: Some(master),
             slave: None,
-            child: Arc::new(Mutex::new(Some(child))),
+            child: Arc::new(Mutex::new(Some(ChildHandle::Pty(child)))),
+            // PTY 子进程树杀除依赖 portable-pty kill；Job/pg 对 ConPTY 孙进程不完全可靠
+            process_group: None,
             running: Arc::new(AtomicBool::new(true)),
             started_at: Some(Instant::now()),
+            is_pty: true,
         };
 
-        // 在独立线程读取输出（按字节块；自动应答 CSI 6n）
         let ring = terminal.ring.clone();
+        let line_buf = terminal.line_buf.clone();
         let total_chars = terminal.total_chars.clone();
         let running = terminal.running.clone();
         let writer_for_dsr = writer;
@@ -465,10 +436,10 @@ impl Terminal {
             let mut pending = Vec::<u8>::new();
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) => break, // EOF
+                    Ok(0) => break,
                     Ok(n) => {
                         pending.extend_from_slice(&buf[..n]);
-                        // 应答 CSI 6 n（光标位置查询），避免 ConPTY host 卡住
+                        // 应答 CSI 6 n，避免 ConPTY host 卡住
                         let mut i = 0;
                         while i + 3 < pending.len() {
                             if pending[i] == 0x1b
@@ -491,15 +462,7 @@ impl Terminal {
                         if !pending.is_empty() {
                             let chunk = String::from_utf8_lossy(&pending).into_owned();
                             pending.clear();
-                            let mut ring_guard = ring.lock().unwrap();
-                            ring_guard.push(chunk.clone());
-                            if ring_guard.len() > RING_MAX_LINES {
-                                let drain_count = ring_guard.len() - RING_MAX_LINES;
-                                ring_guard.drain(0..drain_count);
-                            }
-                            drop(ring_guard);
-                            let mut tc = total_chars.lock().unwrap();
-                            *tc += chunk.len();
+                            append_output_chunk(&ring, &line_buf, &total_chars, &chunk);
                         }
                     }
                     Err(_) => break,
@@ -511,133 +474,14 @@ impl Terminal {
         Ok(terminal)
     }
 
-    /// Windows 一次性命令：std::process 捕获输出，绕过 ConPTY 读输出问题。
-    /// 命令结束后 ring buffer 已有完整输出，try_wait_exit 立即返回。
-    ///
-    /// 引号语义对齐 Node `child_process` shell:true：
-    ///   cmd.exe /d /s /c "<user-command>"
-    /// 并用 `raw_arg` 禁止 Rust 二次转义。否则 `node -p "1+1"` 会变成输出 `1+1`，
-    /// `type cli\package.json` 的反斜杠也会被吞掉——表现为「审批通过后命令全挂」。
-    #[cfg(windows)]
-    fn spawn_windows_oneshot(
-        opts: CreateOptions,
-        command: &str,
-        cwd: String,
-    ) -> TerminalResult<Self> {
-        use std::os::windows::process::CommandExt;
-        use std::process::{Command, Stdio};
-
-        let root = windows_system_root();
-        let comspec = std::env::var("ComSpec")
-            .or_else(|_| std::env::var("COMSPEC"))
-            .unwrap_or_else(|_| format!(r"{}\System32\cmd.exe", root));
-
-        let raw_path = std::env::var("Path")
-            .or_else(|_| std::env::var("PATH"))
-            .unwrap_or_default();
-        let clean_path = sanitize_windows_path(&raw_path);
-
-        // 始终用 cmd.exe 一次性执行：/d 禁 AutoRun，/s 保留 /c 参数内部引号
-        let mut cmd = Command::new(&comspec);
-        cmd.arg("/d").arg("/s").arg("/c");
-        // 整段用户命令包一层引号；/S 会剥掉首尾引号后原样执行中间内容
-        let mut wrapped = String::with_capacity(command.len() + 2);
-        wrapped.push('"');
-        wrapped.push_str(command);
-        wrapped.push('"');
-        cmd.raw_arg(wrapped);
-
-        cmd.current_dir(&cwd);
-        cmd.env("Path", &clean_path);
-        cmd.env("PATH", &clean_path);
-        cmd.env("SystemRoot", &root);
-        cmd.env("windir", &root);
-        cmd.env("ComSpec", &comspec);
-        if let Ok(v) = std::env::var("PATHEXT") {
-            cmd.env("PATHEXT", v);
-        }
-        if let Ok(v) = std::env::var("USERPROFILE") {
-            cmd.env("USERPROFILE", v);
-        }
-        if let Ok(v) = std::env::var("USERNAME") {
-            cmd.env("USERNAME", v);
-        }
-        if let Ok(v) = std::env::var("APPDATA") {
-            cmd.env("APPDATA", v);
-        }
-        if let Ok(v) = std::env::var("LOCALAPPDATA") {
-            cmd.env("LOCALAPPDATA", v);
-        }
-        if let Ok(v) = std::env::var("TEMP") {
-            cmd.env("TEMP", &v);
-            cmd.env("TMP", &v);
-        } else if let Ok(v) = std::env::var("TMP") {
-            cmd.env("TEMP", &v);
-            cmd.env("TMP", &v);
-        }
-
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let output = cmd.output().map_err(|e| {
-            TerminalError::PtySpawnFailed(format!(
-                "spawn `{}` /d /s /c `{}`: {}",
-                comspec, command, e
-            ))
-        })?;
-
-        let mut text = String::new();
-        text.push_str(&String::from_utf8_lossy(&output.stdout));
-        if !output.stderr.is_empty() {
-            if !text.is_empty() && !text.ends_with('\n') {
-                text.push('\n');
-            }
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
-        }
-        // 统一换行
-        text = text.replace("\r\n", "\n").replace('\r', "\n");
-
-        let code = output.status.code().unwrap_or(1);
-        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-
-        // 把输出按行放进 ring，便于 tail_chars / logs
-        let mut ring_lines: Vec<String> = Vec::new();
-        if text.is_empty() {
-            // 保持空
-        } else if text.contains('\n') {
-            for line in text.split_inclusive('\n') {
-                ring_lines.push(line.to_string());
-            }
-        } else {
-            ring_lines.push(text.clone());
-        }
-
-        Ok(Self {
-            id: opts.id,
-            agent_name: opts.agent_name,
-            command: command.to_string(),
-            description: opts.description,
-            cwd,
-            state: TerminalState::Exited,
-            exit_code: Some(code),
-            created_at: now.clone(),
-            updated_at: now,
-            last_viewed_at: None,
-            ring: Arc::new(Mutex::new(ring_lines)),
-            line_buf: Arc::new(Mutex::new(String::new())),
-            total_chars: Arc::new(Mutex::new(text.len())),
-            writer: Arc::new(Mutex::new(None)),
-            master: None,
-            slave: None,
-            child: Arc::new(Mutex::new(None)),
-            running: Arc::new(AtomicBool::new(false)),
-            started_at: Some(Instant::now()),
-        })
-    }
-
-    /// 写入（键盘输入模拟）
+    /// 写入（键盘输入模拟）—— 仅真 PTY 模式
     pub fn write(&self, data: &str) -> TerminalResult<()> {
+        if !self.is_pty {
+            return Err(TerminalError::PtyWriteFailed(
+                "当前为管道模式，不支持 write 键盘输入。需要交互时请设置环境变量 MAOU_PTY_FORCE=1 后重启 agent"
+                    .into(),
+            ));
+        }
         if !self.running.load(Ordering::SeqCst) {
             return Err(TerminalError::NotRunning(self.id.clone()));
         }
@@ -657,15 +501,20 @@ impl Terminal {
         }
     }
 
-    /// 停止终端（SIGTERM → 等待 → SIGKILL）
+    /// 停止终端：先 ProcessGroup（整树），再 kill 直接 child
     pub fn kill(&mut self) -> TerminalResult<()> {
         self.running.store(false, Ordering::SeqCst);
 
+        if let Some(ref pg) = self.process_group {
+            let _ = pg.terminate();
+            // 短延迟后强制
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let _ = pg.kill();
+        }
+
         let mut child_guard = self.child.lock().unwrap();
         if let Some(ref mut child) = *child_guard {
-            child
-                .kill()
-                .map_err(|e| TerminalError::PtyKillFailed(e.to_string()))?;
+            let _ = child.kill();
         }
 
         self.state = TerminalState::Killed;
@@ -677,27 +526,31 @@ impl Terminal {
     pub fn wait_exit(&self) -> TerminalResult<Option<i32>> {
         let mut child_guard = self.child.lock().unwrap();
         if let Some(ref mut child) = *child_guard {
-            let status = child
+            let code = child
                 .wait()
                 .map_err(|e| TerminalError::PtyReadFailed(format!("wait exit: {}", e)))?;
-            Ok(Some(status.exit_code() as i32))
+            Ok(Some(code))
         } else {
-            Ok(None)
+            Ok(self.exit_code)
         }
     }
 
     /// 非阻塞检查是否已退出
     pub fn try_wait_exit(&self) -> TerminalResult<Option<i32>> {
-        // oneshot（Windows std::process）路径：spawn 时已结束
-        if !self.running.load(Ordering::SeqCst) {
-            if let Some(code) = self.exit_code {
+        if let Some(code) = self.exit_code {
+            if !self.running.load(Ordering::SeqCst) {
                 return Ok(Some(code));
             }
         }
         let mut child_guard = self.child.lock().unwrap();
         if let Some(ref mut child) = *child_guard {
             match child.try_wait() {
-                Ok(Some(status)) => Ok(Some(status.exit_code() as i32)),
+                Ok(Some(code)) => {
+                    // 冲刷行缓冲残余
+                    drop(child_guard);
+                    self.flush_line_buf();
+                    Ok(Some(code))
+                }
                 Ok(None) => Ok(None),
                 Err(e) => Err(TerminalError::PtyReadFailed(format!("try_wait: {}", e))),
             }
@@ -705,6 +558,21 @@ impl Terminal {
             Ok(Some(code))
         } else {
             Ok(None)
+        }
+    }
+
+    fn flush_line_buf(&self) {
+        let mut lb = self.line_buf.lock().unwrap();
+        if lb.is_empty() {
+            return;
+        }
+        let rest = std::mem::take(&mut *lb);
+        drop(lb);
+        let mut ring = self.ring.lock().unwrap();
+        ring.push(rest);
+        if ring.len() > RING_MAX_LINES {
+            let drain = ring.len() - RING_MAX_LINES;
+            ring.drain(0..drain);
         }
     }
 
@@ -803,8 +671,10 @@ impl Terminal {
             master: None,
             slave: None,
             child: Arc::new(Mutex::new(None)),
+            process_group: None,
             running: Arc::new(AtomicBool::new(false)),
             started_at: None,
+            is_pty: false,
         }
     }
 }

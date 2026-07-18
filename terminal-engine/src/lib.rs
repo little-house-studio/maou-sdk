@@ -8,8 +8,10 @@ mod error;
 mod filter;
 mod logger;
 mod persistence;
+mod process_group;
 mod registry;
 mod sandbox;
+mod shell;
 mod terminal;
 
 use napi::bindgen_prelude::*;

@@ -18,7 +18,18 @@ const cliRoot = join(__dirname, "..");
 const isWin = process.platform === "win32";
 const name = isWin ? "maou-tui-ratatui.exe" : "maou-tui-ratatui";
 
+// build-native.sh 会把 CARGO_TARGET_DIR 指到临时目录；必须优先查找该路径，
+// 否则 cargo 编出来了但这里仍去 tui-ratatui/target 找 → 误报失败。
+const cargoTarget = process.env.CARGO_TARGET_DIR?.trim() || "";
 const candidates = [
+  ...(cargoTarget
+    ? [
+        join(cargoTarget, "release", name),
+        join(cargoTarget, "release", "maou-tui-ratatui"),
+        join(cargoTarget, "debug", name),
+        join(cargoTarget, "debug", "maou-tui-ratatui"),
+      ]
+    : []),
   join(cliRoot, "tui-ratatui", "target", "release", name),
   join(cliRoot, "tui-ratatui", "target", "release", "maou-tui-ratatui"),
   join(cliRoot, "tui-ratatui", "target", "debug", name),
@@ -30,6 +41,10 @@ if (!src) {
   console.error(
     "[install-tui-bin] 未找到编译产物。先: npm run build:tui-ratatui（或 cargo build --release）",
   );
+  if (cargoTarget) {
+    console.error(`[install-tui-bin] CARGO_TARGET_DIR=${cargoTarget}`);
+  }
+  console.error("[install-tui-bin] 已搜索:\n  " + candidates.join("\n  "));
   process.exit(1);
 }
 
