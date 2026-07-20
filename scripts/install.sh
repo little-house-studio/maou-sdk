@@ -39,13 +39,8 @@ fi
 CLI_DIST="$REPO_ROOT/cli/dist/index.js"
 [[ -f "$CLI_DIST" ]] || die "cli/dist/index.js missing after build — Core incomplete"
 
-WRAP="$BIN_DIR/maou"
-cat > "$WRAP" <<EOF
-#!/usr/bin/env bash
-exec node "$CLI_DIST" "\$@"
-EOF
-chmod +x "$WRAP"
-log "[maou] wrapper: $WRAP"
+# Install launcher into ~/.maou/bin + Homebrew/local PATH dirs (no manual PATH setup)
+bash "$REPO_ROOT/scripts/install-cli-launcher.sh" "$REPO_ROOT" "$CLI_DIST"
 
 ENSURE_DCG="$REPO_ROOT/scripts/ensure-dcg.mjs"
 if [[ -f "$ENSURE_DCG" ]]; then
@@ -76,31 +71,16 @@ if [[ -f "$ENSURE_SQRY" ]]; then
   fi
 fi
 
-case ":$PATH:" in
-  *":$BIN_DIR:"*) ;;
-  *)
-    _shell_rc=""
-    case "$(basename "$SHELL")" in
-      zsh)  _shell_rc="$HOME/.zshrc" ;;
-      bash) _shell_rc="$HOME/.bashrc" ;;
-      fish) _shell_rc="$HOME/.config/fish/config.fish" ;;
-    esac
-    if [[ -n "$_shell_rc" ]]; then
-      if ! grep -q "$BIN_DIR" "$_shell_rc" 2>/dev/null; then
-        echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$_shell_rc"
-        log "[maou] Added $BIN_DIR to PATH in $_shell_rc"
-      fi
-    else
-      log ""
-      log "Add to PATH:"
-      log "  export PATH=\"$BIN_DIR:\$PATH\""
-    fi
-    export PATH="$BIN_DIR:$PATH"
-    ;;
-esac
+# PATH / multi-shell wiring already handled by install-cli-launcher.sh
+export PATH="$BIN_DIR:${PATH:-}"
 
 log ""
 log "Install finished."
+if command -v maou >/dev/null 2>&1; then
+  log "  maou is ready: $(command -v maou)"
+else
+  log "  Open a NEW terminal (or: export PATH=\"\$HOME/.maou/bin:\$PATH\")"
+fi
 log "  maou doctor     # Core / Terminal / Coding 依赖（含 sqry）"
 log "  maou setup"
 log "  maou coding"

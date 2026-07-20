@@ -19,7 +19,8 @@ Maou Agent 官方 SDK / Coding Agent monorepo（`@little-house-studio/*`）。
 
 | 组件 | 说明 |
 |------|------|
-| `@little-house-studio/cli`（`maou`） | 终端入口 |
+| `@little-house-studio/cli`（`maou`） | 终端入口（Ratatui） |
+| `@little-house-studio/webui`（`maou-web`） | Web 入口：对话 + 内置终端 |
 | `@little-house-studio/coding-agent` | 编程 Agent 产品 |
 | `@little-house-studio/agent` / `context` / `tools` / `llm` / `types` … | 运行时与工具层 |
 
@@ -48,6 +49,9 @@ npm install -g pnpm
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 bash scripts/install.sh
+# 安装脚本会把 `maou` 链到 Homebrew / ~/.local/bin 等已在 PATH 的目录，
+# 并写入 zsh/bash 配置；一般无需再手动 export PATH。
+# 若当前终端仍找不到：开一个新终端，或执行 hash -r
 maou doctor
 maou setup
 maou coding
