@@ -74,18 +74,29 @@ node "$cliDist" %*
 "@ | Set-Content -Encoding ASCII $wrapCmd
 Log "[maou] wrapper: $wrapCmd"
 
-# Also install to locations Windows User PATH often already has
-$extraBins = @(
-  (Join-Path $homeDir ".local\bin"),
-  (Join-Path $homeDir ".cargo\bin")
-)
+# Also install to locations Windows often already has on PATH (zero manual PATH when possible)
+$extraBins = [System.Collections.Generic.List[string]]::new()
+$extraBins.Add((Join-Path $homeDir ".local\bin")) | Out-Null
+$extraBins.Add((Join-Path $homeDir ".cargo\bin")) | Out-Null
+# npm global prefix\bin is almost always on PATH after Node install
+try {
+  $npmPrefix = (npm config get prefix 2>$null)
+  if ($npmPrefix -and (Test-Path $npmPrefix)) {
+    $npmBin = Join-Path $npmPrefix "bin"
+    if (-not (Test-Path $npmBin)) { $npmBin = $npmPrefix } # Windows npm often uses prefix itself
+    $extraBins.Add($npmBin) | Out-Null
+  }
+} catch { }
+# pnpm home (if set)
+if ($env:PNPM_HOME) { $extraBins.Add($env:PNPM_HOME) | Out-Null }
+
 foreach ($d in $extraBins) {
   try {
     New-Item -ItemType Directory -Force -Path $d | Out-Null
     Copy-Item $wrapCmd (Join-Path $d "maou.cmd") -Force
     Log "[maou] copied: $(Join-Path $d 'maou.cmd')"
   } catch {
-    # ignore
+    # ignore unwritable dirs
   }
 }
 
@@ -130,7 +141,7 @@ if (Test-Path $ensureSqry) {
   }
 }
 
-# Always ensure User PATH has ~/.maou/bin and ~/.local/bin (no manual setup)
+# Always ensure User PATH has ~/.maou/bin and ~/.local/bin (no manual GUI setup)
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (-not $userPath) { $userPath = "" }
 $need = @($binDir, (Join-Path $homeDir ".local\bin"))
@@ -143,16 +154,30 @@ foreach ($d in $need) {
 }
 if ($changed) {
   [Environment]::SetEnvironmentVariable("Path", $userPath, "User")
-  Log "[maou] Updated User PATH (new terminals pick this up automatically)"
+  # Notify Windows that User PATH changed (helps some shells/apps pick it up)
+  try {
+    Add-Type -Namespace Win32 -Name Native -MemberDefinition @"
+[DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+"@ -ErrorAction SilentlyContinue
+    $HWND_BROADCAST = [IntPtr]0xffff
+    $WM_SETTINGCHANGE = 0x1a
+    $result = [UIntPtr]::Zero
+    [void][Win32.Native]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result)
+  } catch { }
+  Log "[maou] Updated User PATH (new PowerShell/CMD windows pick this up automatically)"
 }
+# Current session: prepend so `maou` works immediately after install
 $env:Path = "$binDir;$(Join-Path $homeDir '.local\bin');$env:Path"
 
 Log ""
 Log "Install finished. Default TUI is Ratatui."
 if (Get-Command maou -ErrorAction SilentlyContinue) {
-  Log "  maou is ready: $((Get-Command maou).Source)"
+  Log "  maou is ready NOW: $((Get-Command maou).Source)"
+  Log "  try: maou doctor"
 } else {
-  Log "  Open a NEW terminal, then: maou doctor"
+  Log "  Open a NEW PowerShell window, then: maou doctor"
+  Log "  (or this session: `$env:Path = `"$binDir;`$env:Path`")"
 }
 Log "  maou doctor     # Core / Terminal / Coding (sqry required)"
 Log "  maou setup"

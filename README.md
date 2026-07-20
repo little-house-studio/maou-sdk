@@ -99,18 +99,23 @@ npm install -g pnpm
 > - VS Build Tools（C++ 工作负载）：https://visualstudio.microsoft.com/visual-cpp-build-tools/
 > - 安装完打开 PowerShell 运行 `npm install -g pnpm`
 
-**第二步：重启 PowerShell（让 Rust 和 Node 的 PATH 生效），复制运行**
+**第二步：重启 PowerShell（让 Rust / Node 的 PATH 生效），复制运行**
 
 ```powershell
 git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+# install.ps1 会：
+#   - 生成 %USERPROFILE%\.maou\bin\maou.cmd
+#   - 复制到 npm 全局目录 / .local\bin / .cargo\bin（若存在）
+#   - 写入用户级 PATH（新开终端一般直接可用；当前窗口已注入）
 maou doctor
 maou setup
 maou coding
 ```
 
-**默认 TUI 为 Ratatui（Rust 编译），完整功能需要 Rust + VS Build Tools。**
+**默认 TUI 为 Ratatui（Rust 编译），完整功能需要 Rust + VS Build Tools。**  
+若装完仍提示找不到 `maou`：关开一个新的 PowerShell 再试（Windows 不会给**已经打开**的窗口自动刷新用户 PATH）。
 
 ---
 
