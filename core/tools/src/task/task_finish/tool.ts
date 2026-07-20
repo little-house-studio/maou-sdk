@@ -8,7 +8,7 @@
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
-import { errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { errToString } from "../../util/common.js";
 
 export class TodoFinishTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
@@ -76,8 +76,9 @@ export class TodoFinishTool extends Tool {
     }
 
     try {
-      const { TODO_ORCHESTRATOR } = await import("../todo-orchestrator.js");
-      const rendered = TODO_ORCHESTRATOR.finish(ctx.sessionId, {
+      const { getTodoOrchestrator } = await import("../todo-orchestrator-host.js");
+      const orch = getTodoOrchestrator();
+      const rendered = orch.finish(ctx.sessionId, {
         taskId,
         status: status as "completed" | "failed",
         summary,
@@ -85,8 +86,8 @@ export class TodoFinishTool extends Tool {
         reason,
         actorSessionId: ctx.sessionId,
       });
-      const notices = TODO_ORCHESTRATOR.drainNotices(ctx.sessionId);
-      const allTasks = TODO_ORCHESTRATOR.getTasks(ctx.sessionId);
+      const notices = orch.drainNotices(ctx.sessionId);
+      const allTasks = orch.getTasks(ctx.sessionId);
       const remaining = allTasks.filter(
         (t) => t.status === "pending" || t.status === "in_progress",
       ).length;
@@ -98,7 +99,7 @@ export class TodoFinishTool extends Tool {
           status,
           remaining,
           todo_notices: notices,
-          lanes: TODO_ORCHESTRATOR.getLanes(ctx.sessionId),
+          lanes: orch.getLanes(ctx.sessionId),
         },
         displayEvents: [
           {

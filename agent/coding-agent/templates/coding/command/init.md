@@ -52,6 +52,7 @@ description: 初始化本项目的 .maou/project/ 说明文件（USER/PROJECT/RU
 - 必须流程（如改 SDK 要 rebuild、PR 前 typecheck）
 - 安全边界
 - 测试要求
+- **What / How / Dispatch**（见下方骨架）：agent 写 hook/规则/维护代码时必须用此命名
 
 ### 4) `DESIGN.md` — 设计偏好（精简 ADR）
 - 设计原则
@@ -113,6 +114,17 @@ description: 初始化本项目的 .maou/project/ 说明文件（USER/PROJECT/RU
 ## 安全
 
 ## 测试
+
+## What / How / Dispatch（agent 写维护代码时必守）
+
+让模型写 hook / 规则 / 判定代码时：**主题（What）在前，手段（How）在后**，场景用 case 拆开。
+
+- **What**：在拦/处理什么（如 `doc_extract`、`block_write_tools`）
+- **How**：怎么判定（如 `name_in_blocked_set`、`regex_path`）
+- **Case / Dispatch**：具体分支与单测场景（如 `case_py_script`）
+
+推荐：`what_how` 函数名；单测 `what_how__case_*`。  
+一大坨 if-else 混多种主题 → 拆成多个 What。改 bug 只动对应 How/Case，避免误伤。
 ```
 
 ### DESIGN.md

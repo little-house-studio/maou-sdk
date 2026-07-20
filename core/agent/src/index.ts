@@ -49,10 +49,13 @@ export * from "./agent_factory/types.js";
 // 动态上下文编译（团队 Agent 状态 + 终端状态面板）
 export { compileDynamicContext, formatAgentStatus } from "./dynamic-context.js";
 
-// Todo 编排（实现在 tools；agent 再导出便于应用层）
+// Todo 编排（权威实现在 agent/todo；加载时 bind 到 tools 宿主桥）
 export {
   TODO_ORCHESTRATOR,
   TodoOrchestrator,
+} from "./agent/todo/index.js";
+export type { TodoForkRunner } from "./agent/todo/index.js";
+export {
   TASK_MANAGER,
   TODO_MANAGER,
 } from "@little-house-studio/tools";

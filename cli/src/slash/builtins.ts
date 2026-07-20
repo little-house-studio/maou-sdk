@@ -41,6 +41,17 @@ export const BUILTIN_CLI_COMMANDS: readonly CliCommandSpec[] = [
     palette: true,
     local: { kind: "overlay", overlay: "sessions" },
   },
+  {
+    id: "analyze",
+    name: "analyze",
+    aliases: ["session-analyze"],
+    label: "会话诊断",
+    description: "诊断当前会话：token / cache / 浪费启发式（写 .analyze.md）",
+    scope: "local",
+    category: "debug",
+    palette: true,
+    local: { kind: "action", action: "analyze_session" },
+  },
   // ── ui · model ──
   {
     id: "model",

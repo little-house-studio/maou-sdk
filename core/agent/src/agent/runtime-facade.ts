@@ -23,10 +23,10 @@ import type { LLMPostLogRecord } from "@little-house-studio/llm";
 import {
   ToolExecutor,
   TASK_MANAGER,
-  TODO_ORCHESTRATOR,
   formatTodoNoticeMessage,
   initTerminalEngine,
 } from "@little-house-studio/tools";
+import { TODO_ORCHESTRATOR } from "./todo/index.js";
 import { appendSessionEvent, authorSystem } from "@little-house-studio/context";
 import type { ToolRegistry, Task } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
@@ -41,6 +41,7 @@ import { createDefaultSubagentRunFn } from "./default-subagent-run-fn.js";
 import { McpConnectionManager } from "./mcp/manager.js";
 import { GitWatcher } from "../agent_factory/git-watcher.js";
 import { createAppLogger } from "./app-logger.js";
+import type { Hooks } from "./hooks.js";
 import { join } from "node:path";
 
 // ─── Runtime 门面 ──────────────────────────────────────────────────────────
@@ -91,6 +92,11 @@ export interface AppRuntimeOptions {
     maxChangeNoticesWithoutTouch?: number;
     touchTools?: readonly string[];
   };
+  /**
+   * 生命周期钩子（pre_tool_use 可拦截工具等）。
+   * coding-agent 在 MAOU_DOC_EXTRACT=1 时注入 doc_extract 策略。
+   */
+  hooks?: Hooks;
 }
 
 /**
@@ -110,6 +116,7 @@ export class Runtime {
   private callMainAgentFn?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
   private skillOptions?: import("../bootstrap/skills.js").AgentSkillOptions;
   private fileDiffWatchOpt?: AppRuntimeOptions["fileDiffWatch"];
+  private hooks?: Hooks;
   private agentRuntime: AgentRuntime | null = null;
   private appLogger = createAppLogger();
   private customLog?: (level: string, message: string) => void;
@@ -132,6 +139,7 @@ export class Runtime {
     this.callMainAgentFn = options.callMainAgent;
     this.skillOptions = options.skillOptions;
     this.fileDiffWatchOpt = options.fileDiffWatch;
+    this.hooks = options.hooks;
     this.maouRoot = options.maouRoot ?? resolveUserMaouRoot();
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.summarizer = options.summarizer;
@@ -368,6 +376,7 @@ export class Runtime {
         callMainAgent: this.callMainAgentFn,
         skillOptions: this.skillOptions,
         fileDiffWatch: this.fileDiffWatchOpt,
+        hooks: this.hooks,
       });
 
       // ── 装配默认 SubagentExecutor（与 harness 共享 createDefaultSubagentRunFn）──

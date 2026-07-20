@@ -1,45 +1,19 @@
 /**
  * Token 估算 —— 本地启发式，不依赖厂商 tokenizer。
  *
- * 目标：中英混合误差约 10–20%，足够触发压缩阈值。
- * 比纯 chars/3 更稳：CJK≈1 token/字，ASCII≈4 chars/token，
- * 并计入消息/工具调用结构开销与 JSON 膨胀。
+ * 文本级权威实现：`@little-house-studio/types` 的 `estimateTokensFromText`。
+ * 本文件叠加 MaouMessage / 全量 prompt 结构开销。
  */
 
+import { estimateTokensFromText } from "@little-house-studio/types";
 import type { MaouMessage } from "./types/message.js";
 
-const CJK_RANGES =
-  /[⺀-鿿豈-﫿︰-﹏\u{20000}-\u{2FA1F}]/u;
+export { estimateTokensFromText };
 
 /** 每条消息的结构开销（role/分隔等，近似 OpenAI 计费） */
 const MSG_OVERHEAD = 4;
 /** tool_call 名 + args 封装开销 */
 const TOOL_CALL_OVERHEAD = 8;
-
-/**
- * 文本 → token 估算。
- * CJK 1 字 ≈ 1 token；拉丁约 4 字符 ≈ 1 token；数字/标点计入 ascii 桶。
- */
-export function estimateTokensFromText(text: string): number {
-  if (!text) return 0;
-  let cjk = 0;
-  let ascii = 0;
-  let other = 0;
-  for (const ch of text) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (CJK_RANGES.test(ch)) {
-      cjk++;
-    } else if (code <= 0x7f) {
-      ascii++;
-    } else {
-      // 其它非 ASCII（emoji、西里尔等）：偏保守按 1 token
-      other++;
-    }
-  }
-  // JSON/代码里空白多：ascii 略加压
-  const asciiTokens = Math.ceil(ascii / 4);
-  return cjk + asciiTokens + other;
-}
 
 /** 任意消息列表（session wire / LLM message）粗算 */
 export function estimateTokensFromStrings(

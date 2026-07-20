@@ -7,7 +7,7 @@ import { dirname } from "node:path";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
-import { errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { errToString } from "../../util/common.js";
 import { resolveToolPath } from "../../path-guard.js";
 import { verifyAfterWrite } from "../../code/lsp_verify.js";
 import { atomicWrite } from "../atomic-write.js";

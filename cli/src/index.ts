@@ -34,6 +34,8 @@ const HELP = `Maou CLI — 终端 AI agent 多产品入口
   maou update --check     只 fetch 看 ahead/behind
   maou update --force     脏工作区先 stash 再 pull
   maou update --no-build  只 pull 不构建
+  maou session analyze    诊断会话：轮次/token/cache/浪费启发式
+  maou session analyze <id> [--write] [--md] [--json]
   maou coding --yes       新路径免确认
   maou <path|pkg>         自定义配置
 
@@ -65,6 +67,11 @@ ${formatProductList()}
   MAOU_TUI_BIN=path        ratatui 二进制（默认 ~/.maou/bin/maou-tui-ratatui）
   MAOU_TUI=ratatui         仅 ratatui（ink 已删除）
   MAOU_DCG_PATH            dcg 二进制绝对路径
+  MAOU_DOC_EXTRACT=1       文档抽取模式：拦截 write_file/edit_file
+  MAOU_PIPELINE_ISOLATE=1  拒读 gold/management/previous_runs 路径段
+  MAOU_DENY_PATH_SEGMENTS  额外 deny 段（逗号分隔）
+  MAOU_MINIMAL_CONTEXT=1   项目上下文仅注入 RULE.md
+  MAOU_PROJECT_CONTEXT     full|minimal|off（项目说明注入）
 `;
 
 function printHelp(): void {
@@ -155,7 +162,7 @@ async function main(): Promise<void> {
         process.stderr.write(
           `❌ 未知子命令或产品「${resolved.token}」\n\n` +
             `可用产品:\n${formatProductList()}\n\n` +
-            `系统命令: setup, doctor, update, help\n` +
+            `系统命令: setup, doctor, update, session, help\n` +
             `自定义配置: maou <path-or-package>\n` +
             `运行 maou --help 查看完整帮助。\n`,
         );
@@ -191,6 +198,23 @@ async function main(): Promise<void> {
       check: argv.includes("--check"),
       noBuild: argv.includes("--no-build"),
     });
+    process.exit(ok ? 0 : 1);
+  }
+
+  if (systemCmd === "session") {
+    // maou session analyze [id] [--write] [--md] [--json]
+    const rest = argv.filter((a) => a !== "session");
+    const sub = rest.find((a) => !a.startsWith("-")) ?? "analyze";
+    if (sub !== "analyze") {
+      process.stderr.write(
+        `❌ 未知 session 子命令「${sub}」\n` +
+          `   用法: maou session analyze [sessionId] [--write] [--md] [--json]\n`,
+      );
+      process.exit(1);
+    }
+    const afterSub = rest.filter((a) => a !== "analyze");
+    const { runSessionAnalyze } = await import("./commands/session-analyze.js");
+    const ok = runSessionAnalyze({ argv: afterSub });
     process.exit(ok ? 0 : 1);
   }
 

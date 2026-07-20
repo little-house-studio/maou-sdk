@@ -134,7 +134,12 @@ export type { ContextEngineOptions, CompressReport } from "./context-engine.js";
 //     SkillScanner / SkillContextManager 已下放到 @little-house-studio/tools。
 
 // 项目上下文注入
-export { loadProjectContext, compileProjectContext } from "./project-context.js";
+export {
+  loadProjectContext,
+  compileProjectContext,
+  resolveProjectContextMode,
+} from "./project-context.js";
+export type { ProjectContext, ProjectContextMode } from "./project-context.js";
 
 // 平台上下文（插件可注册平台特定上下文）
 export { PlatformContextRegistry, platformContextRegistry, buildPlatformContext } from "./platform-context.js";

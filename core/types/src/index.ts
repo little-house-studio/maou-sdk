@@ -80,6 +80,54 @@ export interface ToolDefinition {
    */
   timeoutMs?: number
 }
+/**
+ * Agent 运行时注入给工具的编排端口（收口服务定位器）。
+ * 新代码优先读 `ctx.runtimePorts` 或 `resolveToolRuntimePorts(ctx)`。
+ * 顶层同名字段仍保留，便于旧工具与测试兼容（双写）。
+ */
+export interface ToolRuntimePorts {
+  /** 子 Agent 真并行执行器；缺省 → agent_message 等退回 stub */
+  subagentExecutor?: SubagentExecutorLike
+  /** 监督模式：把消息派给主 Agent */
+  callMainAgent?: (message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>
+  /** 当前 session 是否为监督 Agent */
+  isSupervisorSession?: boolean
+  /** 监督绑定管理器 */
+  supervisorManager?: SupervisorManagerLike
+  /** 辅助模型调用器（llm_judge 等） */
+  auxModelCaller?: AuxModelCallerLike
+  /** 当前 run 主模型 preset */
+  mainPreset?: unknown
+  /** 辅助模型 preset 解析 */
+  resolveHelperPreset?: (agentName: string, mainPreset: unknown) => unknown
+  /** 运行时 agent 名（解析 helper preset 用） */
+  runtimeAgentName?: string
+  /** 子 Agent yield 回调 */
+  yieldResult?: (result: string, summary?: string) => void
+  /** Agent 间消息总线 */
+  messageBus?: MessageBusLike
+}
+
+/**
+ * 合并 `runtimePorts` 与顶层遗留字段（ports 优先）。
+ * 工具侧应通过此函数读取编排能力，避免散落探测。
+ */
+export function resolveToolRuntimePorts(ctx: ToolContext): ToolRuntimePorts {
+  const p = ctx.runtimePorts
+  return {
+    subagentExecutor: p?.subagentExecutor ?? ctx.subagentExecutor,
+    callMainAgent: p?.callMainAgent ?? ctx.callMainAgent,
+    isSupervisorSession: p?.isSupervisorSession ?? ctx.isSupervisorSession,
+    supervisorManager: p?.supervisorManager ?? ctx.supervisorManager,
+    auxModelCaller: p?.auxModelCaller ?? ctx.auxModelCaller,
+    mainPreset: p?.mainPreset ?? ctx.mainPreset,
+    resolveHelperPreset: p?.resolveHelperPreset ?? ctx.resolveHelperPreset,
+    runtimeAgentName: p?.runtimeAgentName ?? ctx.runtimeAgentName,
+    yieldResult: p?.yieldResult ?? ctx.yieldResult,
+    messageBus: p?.messageBus ?? ctx.messageBus,
+  }
+}
+
 export interface ToolContext {
   sessionId: string
   projectRoot: string
@@ -98,6 +146,8 @@ export interface ToolContext {
     mode: "inherit" | "hard" | "audit"
     roots: string[]
     auditRoots?: string[]
+    /** 禁止访问的路径段（整段匹配）；防读 gold/management 等 */
+    denySegments?: string[]
   }
   /** 工具输出压缩级别：off=不压；normal=保守(默认)；aggressive=更激进。由 AgentRuntime 从 agent.json 注入。 */
   compressionLevel?: "off" | "normal" | "aggressive"
@@ -116,80 +166,48 @@ export interface ToolContext {
     enabledSkills?: string[]
   }
   /**
+   * 编排端口收口（推荐）。与下方顶层字段双写，能力不变。
+   */
+  runtimePorts?: ToolRuntimePorts
+  /**
+   * @deprecated 使用 `runtimePorts.subagentExecutor` 或 `resolveToolRuntimePorts(ctx)`
    * 子 Agent 真并行执行器（由 AgentRuntime 注入；harness 提供 runFn）。
-   *
-   * agent_message 工具调此函数 fork 子 Agent 执行独立任务。
-   * 缺省（undefined）→ agent_message 退回原 stub 行为（"暂未开放"）。
    */
   subagentExecutor?: SubagentExecutorLike
   /**
-   * 调用主 Agent（监督模式专用）—— 由 harness 注入。
-   *
-   * supervisor_chat_main 工具调此函数把消息派给主 Agent，
-   * 主 Agent 执行一轮 loop 后把最终输出通过 AsyncGenerator yield 事件，
-   * 最后 return 主 Agent 的最终文本输出。
-   *
-   * 缺省（undefined）→ supervisor_chat_main 工具返回错误。
+   * @deprecated 使用 `runtimePorts.callMainAgent` 或 `resolveToolRuntimePorts(ctx)`
    */
   callMainAgent?: (message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>
   /**
-   * 当前 session 是否处于监督模式（由 AgentRuntime 注入）。
-   * supervisor 工具据此判断调用上下文是否合法。
+   * @deprecated 使用 `runtimePorts.isSupervisorSession` 或 `resolveToolRuntimePorts(ctx)`
    */
   isSupervisorSession?: boolean
   /**
-   * 监督模式管理器（由 AgentRuntime 注入）。
-   *
-   * supervisor_task_control / supervisor_chat_main 工具通过它查询/更新绑定。
-   * 用最小契约接口避免 tools → agent 的循环依赖；agent 包实现并注入 SUPERVISOR_MANAGER 单例。
+   * @deprecated 使用 `runtimePorts.supervisorManager` 或 `resolveToolRuntimePorts(ctx)`
    */
   supervisorManager?: SupervisorManagerLike
   /**
-   * 辅助模型调用器（由 AgentRuntime 注入；harness 提供 AuxModelCaller）。
-   *
-   * llm_judge 工具调此函数让 agent 在循环中调用辅助 LLM 做判断
-   * （安全检查 / 代码审查 / 路由判定 / 二次确认等）。
-   *
-   * 缺省（undefined）→ llm_judge 工具返回错误提示未启用。
-   * 用最小契约接口避免 types → llm 的循环依赖；@little-house-studio/llm 的
-   * AuxModelCaller 实现此契约，由 AgentRuntime 在 processToolCalls 中注入。
+   * @deprecated 使用 `runtimePorts.auxModelCaller` 或 `resolveToolRuntimePorts(ctx)`
    */
   auxModelCaller?: AuxModelCallerLike
   /**
-   * 当前 run 的主模型 preset（由 AgentRuntime 注入）。
-   * llm_judge 工具在未单独配置辅助模型时回退用它调用主模型。
+   * @deprecated 使用 `runtimePorts.mainPreset` 或 `resolveToolRuntimePorts(ctx)`
    */
   mainPreset?: unknown
   /**
-   * 辅助模型 preset 解析函数（由 AgentRuntime 注入）。
-   * 返回当前 agent 应使用的辅助模型 preset；未注入时 llm_judge 回退 mainPreset。
+   * @deprecated 使用 `runtimePorts.resolveHelperPreset` 或 `resolveToolRuntimePorts(ctx)`
    */
   resolveHelperPreset?: (agentName: string, mainPreset: unknown) => unknown
   /**
-   * 当前 agent 名称（由 AgentRuntime 注入）。
-   * llm_judge 工具用它在调用 resolveHelperPreset 时传入。
+   * @deprecated 使用 `runtimePorts.runtimeAgentName` 或 `resolveToolRuntimePorts(ctx)`
    */
   runtimeAgentName?: string
   /**
-   * yield 结果回调（由 SubagentExecutor.fork 注入到子 Agent 的 ToolContext）。
-   *
-   * 子 Agent 完成任务后调 yield 工具提交结构化结果，yield 工具通过此回调把
-   * result + summary 上交给 fork；fork 检测到 yield 后结束子 Agent 循环。
-   *
-   * 仅在子 Agent 上下文中注入（主 Agent 为 undefined）。
-   * yield 工具在未注入时返回错误提示（说明当前不是子 Agent 上下文）。
-   * 用最小契约接口避免 types → tools 的循环依赖。
+   * @deprecated 使用 `runtimePorts.yieldResult` 或 `resolveToolRuntimePorts(ctx)`
    */
   yieldResult?: (result: string, summary?: string) => void
   /**
-   * Agent 间消息总线（由 AgentRuntime 注入 MessageBus 单例）。
-   *
-   * agent_manage 工具的 message/interrupt/insert action 通过它向队友投递消息
-   * （带 from 说话人），主 Agent 循环通过 inbox 轮询收取。这是 agent 间通信的
-   * 统一通道——替代原 TeamManager.sendMessage 的"入数组无消费端"实现。
-   *
-   * 缺省（undefined）→ agent_manage 退回原 TeamManager 内存队列行为。
-   * 用最小契约接口避免 types → agent 的循环依赖。
+   * @deprecated 使用 `runtimePorts.messageBus` 或 `resolveToolRuntimePorts(ctx)`
    */
   messageBus?: MessageBusLike
 }
@@ -235,6 +253,20 @@ export interface AuxModelCallerLike {
  * SupervisorManager 的最小契约（types 包不依赖 agent 包）。
  * 真实实现见 @little-house-studio/agent 的 SUPERVISOR_MANAGER。
  */
+export interface SupervisorStageLike {
+  id: string
+  title?: string
+  success?: string
+  check_command?: string
+}
+
+export interface SupervisorStageResultLike {
+  id: string
+  pass: boolean
+  at: number
+  reason?: string
+}
+
 export interface SupervisorManagerLike {
   getBySupervisor(supervisorSessionId: string): SupervisorBindingLike | undefined
   getByMain(mainSessionId: string): SupervisorBindingLike | undefined
@@ -245,6 +277,13 @@ export interface SupervisorManagerLike {
   isSupervisorSession(sessionId: string): boolean
   isSupervisorMode(mainSessionId: string): boolean
   list(): SupervisorBindingLike[]
+  /** 分阶段 goal（可选实现；旧 binding 无 stages 时视为单阶段） */
+  setStages?(mainSessionId: string, stages: SupervisorStageLike[]): SupervisorBindingLike | undefined
+  advanceStage?(
+    mainSessionId: string,
+    result: SupervisorStageResultLike,
+  ): SupervisorBindingLike | undefined
+  allStagesPassed?(mainSessionId: string): boolean
 }
 
 export type SupervisorState =
@@ -268,6 +307,9 @@ export interface SupervisorBindingLike {
   sameReasonStreak: number
   lastVerifiedReportFingerprint?: string
   lastVerdict?: "pass" | "fail" | "loop"
+  stages?: SupervisorStageLike[]
+  currentStageIndex?: number
+  stageResults?: SupervisorStageResultLike[]
 }
 
 /**
@@ -796,3 +838,5 @@ export {
 export { detectExpression } from './expression.js'
 export { Profiler } from './profiler.js'
 export type { SpanRecord, SpanSummary, ProfileReport } from './profiler.js'
+// 共享 token 文本启发式（llm / context 共用，避免双公式）
+export { estimateTokensFromText } from './token-estimate.js'

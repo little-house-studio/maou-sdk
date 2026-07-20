@@ -27,7 +27,7 @@ import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { compressTerminalOutput, compressOutput } from "../../compress/output-compressor.js";
 import { createToolResponse } from "../../base.js";
-import { truncateMiddle, formatMetadata, errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { truncateMiddle, formatMetadata, errToString } from "../../util/common.js";
 import {
   getTerminalReviewer,
   getTerminalApprover,

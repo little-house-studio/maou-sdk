@@ -70,4 +70,44 @@ describe("path-guard", () => {
     expect(g?.roots[0]).toContain("app");
     expect(g?.auditRoots?.[0]).toContain("shared");
   });
+
+  it("denySegments 拒绝 gold 路径", () => {
+    const root = mkdtempSync(join(tmpdir(), "pg-deny-"));
+    try {
+      mkdirSync(join(root, "runtime"), { recursive: true });
+      mkdirSync(join(root, "gold"), { recursive: true });
+      writeFileSync(join(root, "runtime", "a.txt"), "x");
+      writeFileSync(join(root, "gold", "answer.txt"), "cheat");
+      const ctx = {
+        projectRoot: root,
+        workingDir: root,
+        pathGuard: {
+          mode: "inherit" as const,
+          roots: [root],
+          denySegments: ["gold"],
+        },
+      };
+      expect(resolveToolPath(ctx, "runtime/a.txt").path).toContain("a.txt");
+      expect(() => resolveToolPath(ctx, "gold/answer.txt")).toThrow(/拒绝|deny/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("MAOU_PIPELINE_ISOLATE=1 默认禁 gold", () => {
+    const root = mkdtempSync(join(tmpdir(), "pg-iso-"));
+    const prev = process.env.MAOU_PIPELINE_ISOLATE;
+    process.env.MAOU_PIPELINE_ISOLATE = "1";
+    try {
+      mkdirSync(join(root, "gold"), { recursive: true });
+      writeFileSync(join(root, "gold", "x.txt"), "x");
+      expect(() =>
+        resolveToolPath({ projectRoot: root, workingDir: root }, "gold/x.txt"),
+      ).toThrow(/gold/);
+    } finally {
+      if (prev === undefined) delete process.env.MAOU_PIPELINE_ISOLATE;
+      else process.env.MAOU_PIPELINE_ISOLATE = prev;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

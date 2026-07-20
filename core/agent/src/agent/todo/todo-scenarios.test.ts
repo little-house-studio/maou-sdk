@@ -2,16 +2,17 @@
  * Todo 编排多场景回归：设计文档 §16 验收 + 边界/异常
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { TASK_MANAGER } from "./task_manage/tool.js";
-import { TodoManageTool } from "./task_manage/tool.js";
-import { TodoFinishTool } from "./task_finish/tool.js";
-import { TodoOrchestrator } from "./todo-orchestrator.js";
 import {
+  TASK_MANAGER,
+  TodoManageTool,
+  TodoFinishTool,
   preprocessTodoSlash,
   formatTodoNoticeMessage,
   buildPlanRequiredNotice,
-} from "./todo-notice.js";
-import type { ToolContext } from "../base.js";
+  bindTodoOrchestratorHost,
+} from "@little-house-studio/tools";
+import type { ToolContext } from "@little-house-studio/tools";
+import { TodoOrchestrator } from "./todo-orchestrator.js";
 
 function ctx(sessionId: string): ToolContext {
   return {
@@ -385,10 +386,14 @@ describe("Todo scenarios — DAG / locks / chain", () => {
 describe("Todo tools via Tool.execute", () => {
   let sid: string;
   let n = 0;
+  let orch: TodoOrchestrator;
 
   beforeEach(() => {
     sid = `tool-${++n}`;
     TASK_MANAGER.manage(sid, "delete", null);
+    // tools 宿主桥：测试不加载完整 agent 入口时也要 bind
+    orch = new TodoOrchestrator();
+    bindTodoOrchestratorHost(orch);
   });
 
   it("T1 manage+finish tool path end-to-end", async () => {
@@ -442,12 +447,11 @@ describe("Todo tools via Tool.execute", () => {
 
   it("T4 manage list when empty", async () => {
     const manage = new TodoManageTool();
-    // ensure clean orchestrator state — manage list goes through TODO_ORCHESTRATOR singleton
-    const { TODO_ORCHESTRATOR } = await import("./todo-orchestrator.js");
-    // use unique session
+    // manage list 走 tools 宿主桥上的全局编排器
+    const orch = new TodoOrchestrator();
+    bindTodoOrchestratorHost(orch);
     const r = await manage.execute({ action: "list", reason: "x" }, ctx(sid));
     expect(r.ok).toBe(true);
-    void TODO_ORCHESTRATOR;
   });
 });
 

@@ -5,7 +5,7 @@
  * 创建克隆子 Agent 处理独立任务。继承 ROLE 模板，注册为项目专属 Agent。
  */
 
-import { Tool, toolDir } from "../../base.js";
+import { Tool, toolDir, resolveToolRuntimePorts } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { TASK_MANAGER, TaskScheduler } from "../../task/task_manage/tool.js";
@@ -199,7 +199,8 @@ export class SubagentTool extends Tool {
     forkOptions: ForkOptions,
   ): Promise<ToolResponse> {
     if (!task) return createToolResponse(false, "请提供 task（分配给子 Agent 的任务描述）。");
-    if (!ctx.subagentExecutor) {
+    const ports = resolveToolRuntimePorts(ctx);
+    if (!ports.subagentExecutor) {
       return createToolResponse(
         false,
         "子 Agent 执行器未注入。harness 需通过 runtime.setSubagentExecutor() 注入。" +
@@ -210,7 +211,7 @@ export class SubagentTool extends Tool {
     const taskId = name || `task-${Date.now().toString(36)}`;
     const detached = forkOptions.detached === true;
     try {
-      const result = await ctx.subagentExecutor.fork(taskId, task, forkOptions);
+      const result = await ports.subagentExecutor.fork(taskId, task, forkOptions);
       const status = result.ok ? "✅" : "❌";
       const lines = [
         detached
@@ -243,7 +244,8 @@ export class SubagentTool extends Tool {
     ctx: ToolContext,
     forkOptions: ForkOptions,
   ): Promise<ToolResponse> {
-    if (!ctx.subagentExecutor) {
+    const ports = resolveToolRuntimePorts(ctx);
+    if (!ports.subagentExecutor) {
       return createToolResponse(
         false,
         "子 Agent 执行器未注入。harness 需通过 runtime.setSubagentExecutor() 注入。",
@@ -258,7 +260,7 @@ export class SubagentTool extends Tool {
     }
 
     try {
-      const results = await ctx.subagentExecutor.forkLayer(
+      const results = await ports.subagentExecutor.forkLayer(
         ready.map((t) => ({ id: t.id, desc: t.desc })),
         forkOptions,
       );

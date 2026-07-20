@@ -8,6 +8,7 @@
 
 import { Tool } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
+import { resolveToolRuntimePorts } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 
 export class SupervisorChatMainTool extends Tool {
@@ -43,8 +44,9 @@ export class SupervisorChatMainTool extends Tool {
   };
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
+    const ports = resolveToolRuntimePorts(ctx);
     // 仅监督 Agent session 可用
-    if (!ctx.isSupervisorSession) {
+    if (!ports.isSupervisorSession) {
       return createToolResponse(
         false,
         "此工具仅在 /goal 监督模式下可用。用 /goal 指令启动监督模式。",
@@ -59,7 +61,7 @@ export class SupervisorChatMainTool extends Tool {
     }
 
     // 查监督绑定（必须 state=started 才能跟主 Agent 沟通）
-    const mgr = ctx.supervisorManager;
+    const mgr = ports.supervisorManager;
     if (!mgr) {
       return createToolResponse(false, "未注入 supervisorManager（harness 配置错误）。");
     }
@@ -72,7 +74,8 @@ export class SupervisorChatMainTool extends Tool {
     }
 
     // 必须有 callMainAgent 函数（由 harness 注入）
-    if (!ctx.callMainAgent) {
+    const callMain = ports.callMainAgent;
+    if (!callMain) {
       return createToolResponse(
         false,
         "未注入 callMainAgent 函数。harness 需在 ToolContext 注入此函数。",
@@ -86,7 +89,7 @@ export class SupervisorChatMainTool extends Tool {
         `\n\n[环境信息·系统注入] 当前 sandboxMode=yolo，你可以自由使用 use_terminal 跑任何命令` +
         `（npm install / npm run build / node / tsc 等），无需用户确认，不会被拦截。` +
         `请放心执行 build/test/install 等操作来验证你的代码。`;
-      const gen = ctx.callMainAgent(message + envHint);
+      const gen = callMain(message + envHint);
       let finalOutput = "";
       while (true) {
         const { value, done } = await gen.next();

@@ -24,6 +24,7 @@ import type { ConfigStore } from "@little-house-studio/types";
 import { resolveUserMaouRoot } from "@little-house-studio/types";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createCodingHooks } from "./hooks/doc-extract.js";
 
 /**
  * 解析包内 coding 模板目录的绝对路径。
@@ -79,6 +80,11 @@ export interface CodingAgentOptions {
   summarizer?: Summarizer;
   log?: (level: string, message: string) => void;
   enablePostLogger?: boolean;
+  /**
+   * 文档抽取模式：pre_tool_use 拦截 write_file/edit_file。
+   * 默认跟随环境变量 MAOU_DOC_EXTRACT=1。
+   */
+  docExtractMode?: boolean;
   configStore: ConfigStore;
   sessionStore: SessionStore;
   toolRegistry: ToolRegistry;
@@ -110,6 +116,9 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
 
   const runtimeContainer: { ref: Runtime | null } = { ref: null };
 
+  // P1: doc_extract hooks（默认关；MAOU_DOC_EXTRACT=1 或 docExtractMode:true）
+  const hooks = createCodingHooks({ docExtractMode: opts.docExtractMode });
+
   const runtime = new Runtime({
     configStore: opts.configStore,
     sessionStore: opts.sessionStore,
@@ -122,6 +131,7 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     summarizer: opts.summarizer,
     // coding 产品默认开启会话文件 diff 监听（DESIGN.md 变更感知）
     fileDiffWatch: true,
+    hooks,
     log:
       opts.log ??
       ((level, msg) =>
@@ -170,3 +180,12 @@ export type {
 
 export { runCodingAgentCli } from "./cli/index.js";
 export type { CodingCliOptions } from "./cli/index.js";
+
+export {
+  createCodingHooks,
+  registerDocExtractHooks,
+  isDocExtractEnabled,
+  shouldBlockDocExtractTool,
+  DOC_EXTRACT_BLOCKED_TOOLS,
+  DOC_EXTRACT_TOOL_WHITELIST,
+} from "./hooks/doc-extract.js";

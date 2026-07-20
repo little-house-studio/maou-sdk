@@ -27,6 +27,12 @@ import {
   registerBuiltinCliCommands,
 } from "../slash/index.js";
 import type { UIState } from "../state/types.js";
+import {
+  analyzeSessionFile,
+  formatAnalyzeSummaryLine,
+  resolveLatestSessionId,
+  writeAnalyzeReport,
+} from "../lib/session-analyze.js";
 
 export interface CliSessionOpts {
   config: AgentCliConfig;
@@ -269,6 +275,25 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
           case "usage_hint":
             store.toastMsg(a.hint, "warn");
             return true;
+          case "analyze_session": {
+            try {
+              const id =
+                store.sessionId ?? resolveLatestSessionId(cwd) ?? null;
+              if (!id) {
+                store.toastMsg("无会话可诊断", "warn");
+                return true;
+              }
+              const report = analyzeSessionFile(id, cwd);
+              const path = writeAnalyzeReport(report, cwd);
+              store.toastMsg(
+                `${formatAnalyzeSummaryLine(report)} → ${path}`,
+                "info",
+              );
+            } catch (e) {
+              store.toastMsg(`诊断失败: ${String(e).slice(0, 80)}`, "err");
+            }
+            return true;
+          }
           default:
             return true;
         }

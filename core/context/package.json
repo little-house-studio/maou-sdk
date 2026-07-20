@@ -20,7 +20,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@little-house-studio/prompt": "workspace:*"
+    "@little-house-studio/prompt": "workspace:*",
+    "@little-house-studio/types": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

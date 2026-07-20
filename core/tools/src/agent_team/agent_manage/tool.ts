@@ -6,6 +6,7 @@
 
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
+import { resolveToolRuntimePorts } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { AgentTeamManager } from "../team-manager.js";
 import { loadSubagentKindOptionsFromCtx } from "../subagent-kind-options.js";
@@ -159,9 +160,10 @@ export class TeamManageTool extends Tool {
 
     const from = ctx.agentName || "main";
     // 优先走 MessageBus（带 from 说话人，主 Agent 循环可 poll 收取）
-    if (ctx.messageBus) {
-      ctx.messageBus.register(to); // 允许向尚未注册的队友预投递
-      const receipt = ctx.messageBus.send(to, content, from);
+    const bus = resolveToolRuntimePorts(ctx).messageBus;
+    if (bus) {
+      bus.register(to); // 允许向尚未注册的队友预投递
+      const receipt = bus.send(to, content, from);
       if (receipt.outcome === "failed") {
         return createToolResponse(false, `消息投递失败: ${receipt.error ?? "未知"}`);
       }
@@ -190,7 +192,8 @@ export class TeamManageTool extends Tool {
     const task = String(params.task ?? params.content ?? "").trim();
     if (!to) return createToolResponse(false, "请提供 to（目标队友名称）。");
     if (!task) return createToolResponse(false, "请提供 task（派给队友的任务描述）。");
-    if (!ctx.subagentExecutor) {
+    const exec = resolveToolRuntimePorts(ctx).subagentExecutor;
+    if (!exec) {
       return createToolResponse(
         false,
         "子 Agent 执行器未注入。harness 需通过 runtime.setSubagentExecutor() 注入，" +
@@ -212,7 +215,7 @@ export class TeamManageTool extends Tool {
     }
 
     try {
-      const result = await ctx.subagentExecutor.fork(to, task, {
+      const result = await exec.fork(to, task, {
         forkMode: "context_and_config",
         agentName: to,
         detached: true,

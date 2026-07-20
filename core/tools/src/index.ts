@@ -3,14 +3,27 @@
  * 工具基础类型从 @little-house-studio/types 引入（见 base.ts）。
  */
 
-export { Tool, createToolResponse, toolDir } from './base.js'
-export type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult } from './base.js'
+export { Tool, createToolResponse, toolDir, resolveToolRuntimePorts } from './base.js'
+export type {
+  JsonSchema,
+  ToolDefinition,
+  ToolContext,
+  ToolResponse,
+  ToolCall,
+  ToolResult,
+  ToolRuntimePorts,
+} from './base.js'
 
 // 路径沙箱（subagent project / task scoped）
 export {
   resolveToolPath,
   safePath,
   pathGuardFromPolicy,
+  pipelineIsolateGuard,
+  effectiveDenySegments,
+  pathHitsDenySegments,
+  parseEnvDenySegments,
+  DEFAULT_PIPELINE_DENY_SEGMENTS,
 } from './path-guard.js'
 export type {
   PathGuard,
@@ -63,7 +76,14 @@ export {
   evaluateWithDcg,
   checkLocalSecurityRules,
   checkMaouHardDeny,
+  parseHardCheckCommand,
+  runHardCheck,
 } from './security/index.js'
+export type { HardCheckResult, HardCheckOptions } from './security/index.js'
+
+// /goal plan 分阶段解析
+export { parsePlanStages, formatStageStatus } from './agent_team/plan-stages.js'
+export type { PlanStage, ParsedPlanMeta } from './agent_team/plan-stages.js'
 export type {
   TerminalMode,
   TerminalReviewer,
@@ -110,14 +130,20 @@ export {
 } from './compress/output-compressor.js'
 export type { CompressOptions, CompressLevel } from './compress/output-compressor.js'
 
-// ── 会话级 Todo 清单 + 编排（TaskManager + TodoOrchestrator）──
-// 注：TaskManager 通过 setPersistCallback 解耦持久化（由调用方注入回调）
-// 内部仍写 task_plan.json；调度见 core/agent/docs/TODO_ORCHESTRATOR.md
+// ── 会话级 Todo 清单 + 编排宿主桥 ──
+// 编排实现（TodoOrchestrator 类）在 @little-house-studio/agent；
+// tools 仅导出工具 + 宿主桥（bind / TODO_ORCHESTRATOR 代理）。
+// TaskManager 通过 setPersistCallback 解耦持久化；调度见 core/agent/docs/TODO_ORCHESTRATOR.md
 export { TASK_MANAGER, TODO_MANAGER, TaskManager, TaskScheduler, TodoManageTool, TaskManageTool } from './task/task_manage/tool.js'
 export type { Task, TodoItem } from './task/task_manage/tool.js'
 export { TodoFinishTool, TaskFinishTool } from './task/task_finish/tool.js'
-export { TodoOrchestrator, TODO_ORCHESTRATOR } from './task/todo-orchestrator.js'
-export type { TodoForkRunner } from './task/todo-orchestrator.js'
+export {
+  TODO_ORCHESTRATOR,
+  bindTodoOrchestratorHost,
+  getTodoOrchestrator,
+  setTodoOrchestratorFallbackFactory,
+} from './task/todo-orchestrator-host.js'
+export type { TodoForkRunner, TodoOrchestratorHost } from './task/todo-orchestrator-host.js'
 export type {
   TodoEvent,
   TodoEventType,

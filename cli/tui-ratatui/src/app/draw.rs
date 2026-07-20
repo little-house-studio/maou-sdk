@@ -69,7 +69,22 @@ fn pad_line_to_width(line: Line<'static>, width: usize, pad_style: Style) -> Lin
     Line::from(spans)
 }
 
+/// Chat right scrollbar width (cols). Wider = easier to grab with mouse.
+pub(crate) const CHAT_SCROLLBAR_W: u16 = 2;
+
+/// Geometry of the last painted chat scrollbar (for hit-test / drag).
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ChatScrollbarGeom {
+    pub rect: Rect,
+    pub thumb_top: u16,
+    pub thumb_h: u16,
+    pub travel: u16,
+    pub max_scroll: usize,
+    pub track_h: u16,
+}
+
 /// Right-edge vertical scrollbar for chat (track + thumb).
+/// Returns geometry for mouse hit-testing (None if not painted).
 fn paint_chat_scrollbar(
     f: &mut Frame,
     area: Rect,
@@ -80,13 +95,15 @@ fn paint_chat_scrollbar(
     track_fg: Color,
     thumb_fg: Color,
     bg: Color,
-) {
+    bar_w: u16,
+) -> Option<ChatScrollbarGeom> {
     if area.width == 0 || area.height == 0 || total_lines <= body_h || max_scroll == 0 {
-        return;
+        return None;
     }
+    let bar_w = bar_w.max(1).min(area.width);
     let track_h = area.height as usize;
     let thumb_h = ((body_h * track_h) / total_lines.max(1))
-        .max(1)
+        .max(2) // min height so the thick bar stays easy to grab
         .min(track_h);
     // from_bottom=0 → thumb at bottom; from_bottom=max → thumb at top
     let travel = track_h.saturating_sub(thumb_h);
@@ -96,25 +113,41 @@ fn paint_chat_scrollbar(
         let from_top = max_scroll.saturating_sub(from_bottom);
         ((from_top * travel) / max_scroll).min(travel)
     };
-    let bar_x = area.x.saturating_add(area.width.saturating_sub(1));
+    let bar_x0 = area.x.saturating_add(area.width.saturating_sub(bar_w));
     for i in 0..track_h {
         let y = area.y.saturating_add(i as u16);
         let on = i >= thumb_top && i < thumb_top + thumb_h;
-        let ch = if on { "▐" } else { "│" };
+        // Solid blocks read thicker than half-block glyphs on most terminals
+        let ch = if on { "█" } else { "░" };
         let fg = if on { thumb_fg } else { track_fg };
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                ch,
-                Style::default().fg(fg).bg(bg),
-            ))),
-            Rect {
-                x: bar_x,
-                y,
-                width: 1,
-                height: 1,
-            },
-        );
+        for dx in 0..bar_w {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    ch,
+                    Style::default().fg(fg).bg(bg),
+                ))),
+                Rect {
+                    x: bar_x0.saturating_add(dx),
+                    y,
+                    width: 1,
+                    height: 1,
+                },
+            );
+        }
     }
+    Some(ChatScrollbarGeom {
+        rect: Rect {
+            x: bar_x0,
+            y: area.y,
+            width: bar_w,
+            height: area.height,
+        },
+        thumb_top: thumb_top as u16,
+        thumb_h: thumb_h as u16,
+        travel: travel as u16,
+        max_scroll,
+        track_h: track_h as u16,
+    })
 }
 
 impl App {
@@ -316,11 +349,14 @@ impl App {
         let chat = solved.get(Slot::Chat).unwrap_or(area);
         self.chat_rect = chat;
         let chat_full = solved.get(Slot::ChatInner).unwrap_or(chat);
-        // Reserve 1 col for scrollbar when content can scroll (computed after layout;
-        // first paint uses full width; after max_scroll known we shrink — use sticky
-        // last-frame flag so width stays stable while scrolling).
+        // Reserve CHAT_SCROLLBAR_W cols for scrollbar when content can scroll
+        // (sticky last-frame flag so width stays stable while scrolling).
         let show_sb = self.max_scroll_lines > 0 || self.scroll_from_bottom > 0;
-        let sb_w: u16 = if show_sb && chat_full.width > 4 { 1 } else { 0 };
+        let sb_w: u16 = if show_sb && chat_full.width > 6 {
+            CHAT_SCROLLBAR_W
+        } else {
+            0
+        };
         self.chat_inner = if sb_w > 0 {
             Rect {
                 x: chat_full.x,
@@ -487,8 +523,10 @@ impl App {
         );
         f.render_widget(Paragraph::new(visible), self.chat_inner);
         // Right scrollbar (when content overflows viewport)
+        self.chat_sb_geom = None;
         if max_scroll > 0 && chat_full.width > self.chat_inner.width {
-            paint_chat_scrollbar(
+            let bar_w = chat_full.width.saturating_sub(self.chat_inner.width);
+            self.chat_sb_geom = paint_chat_scrollbar(
                 f,
                 chat_full,
                 from_bottom,
@@ -498,6 +536,7 @@ impl App {
                 th.dim,
                 th.accent,
                 th.bg,
+                bar_w.max(1),
             );
         }
         // Jump bar only when show_jump（上滚）；贴底时不占顶行

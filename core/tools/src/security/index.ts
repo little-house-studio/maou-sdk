@@ -32,6 +32,9 @@ export {
 export { checkMaouHardDeny } from "./hard-deny.js";
 export type { MaouHardDenyHit } from "./hard-deny.js";
 
+export { parseHardCheckCommand, runHardCheck } from "./hard-check.js";
+export type { HardCheckResult, HardCheckOptions } from "./hard-check.js";
+
 export { checkLocalSecurityRules, listLocalSecurityRules } from "./local-rules.js";
 export type { LocalRuleHit } from "./local-rules.js";
 

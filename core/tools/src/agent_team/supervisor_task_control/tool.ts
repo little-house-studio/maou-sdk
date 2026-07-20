@@ -6,11 +6,18 @@
  *   - start: 启动监督（绑定 plan，进入工作状态）
  *   - confirm_end: 向用户发起验收（第一次确认）
  *   - end: 完全结束监督模式（清除绑定，切回主 Agent）
+ *
+ * P3 扩展：
+ *   - plan 内可含 ```json:plan stages``` 分阶段
+ *   - verify 支持 check_command 硬指标（安全子集，见 hard-check）
  */
 
 import { Tool } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
+import { resolveToolRuntimePorts } from "../../base.js";
 import { createToolResponse } from "../../base.js";
+import { runHardCheck } from "../../security/hard-check.js";
+import { parsePlanStages, formatStageStatus } from "../plan-stages.js";
 
 export class SupervisorTaskControlTool extends Tool {
   readonly definition: ToolDefinition = {
@@ -21,7 +28,7 @@ export class SupervisorTaskControlTool extends Tool {
       "监督 Agent 生命周期控制（仅 /goal 监督模式下可用）。" +
       "action=submit_plan: 写完任务计划后提交给用户确认（进入 confirming_plan）；" +
       "action=start: 用户确认后启动监督（绑定 plan，进入 started，主 Agent 开始持续干活）；" +
-      "action=verify: 主 Agent 每轮 loop 完成后自动验收（对照 plan 验收标准 + 本轮汇报判断 pass/fail）；" +
+      "action=verify: 主 Agent 每轮 loop 完成后自动验收（硬指标 check_command 优先，再对照 plan；支持分阶段）；" +
       "action=confirm_end: 验收合格，向用户发起最终验收；" +
       "action=end: 用户最终确认通过，完全结束监督模式。" +
       "必须在监督 Agent session 内调用。",
@@ -36,8 +43,8 @@ export class SupervisorTaskControlTool extends Tool {
         plan: {
           type: "string",
           description:
-            "任务计划 MD（action=submit_plan 时必填）—— 包含任务要求、细节、验收标准等。" +
-            "用户确认后，这份计划会绑定到主 Agent 作为任务文件，verify 据此验收。",
+            "任务计划 MD（action=submit_plan 时必填）—— 含验收标准；可选 ```json:plan {\"stages\":[...]} ``` 分阶段。" +
+            "用户确认后绑定；verify 据此验收。",
         },
         summary: {
           type: "string",
@@ -50,6 +57,12 @@ export class SupervisorTaskControlTool extends Tool {
             "主 Agent 本轮 loop 的汇报内容（action=verify 时填，通常来自 MessageBus 推送的 loop_report）。" +
             "verify 会对照 plan 验收标准 + 此汇报判断是否合格。",
         },
+        check_command: {
+          type: "string",
+          description:
+            "可选硬指标命令（action=verify）。仅允许白名单解释器+项目内脚本，无 shell 元字符。" +
+            "例：node scripts/check-stage1.mjs 。退出码 0=pass。若 plan 当前阶段已带 check_command 可省略。",
+        },
       },
       required: ["action"],
       additionalProperties: false,
@@ -58,14 +71,15 @@ export class SupervisorTaskControlTool extends Tool {
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
     // 仅监督 Agent session 可用
-    if (!ctx.isSupervisorSession) {
+    const ports = resolveToolRuntimePorts(ctx);
+    if (!ports.isSupervisorSession) {
       return createToolResponse(
         false,
         "此工具仅在 /goal 监督模式下可用。用 /goal 指令启动监督模式。",
       );
     }
 
-    const mgr = ctx.supervisorManager;
+    const mgr = ports.supervisorManager;
     if (!mgr) {
       return createToolResponse(false, "未注入 supervisorManager（harness 配置错误）。");
     }
@@ -89,16 +103,43 @@ export class SupervisorTaskControlTool extends Tool {
         if (binding.state !== "planning" && binding.state !== "confirming_plan") {
           return createToolResponse(false, `当前状态为 ${binding.state}，不能 submit_plan（只能从 planning 提交）。`);
         }
+        const parsed = parsePlanStages(plan);
         mgr.updatePlan(binding.mainSessionId, plan);
+        if (mgr.setStages) {
+          if (parsed.stages.length > 0) {
+            mgr.setStages(
+              binding.mainSessionId,
+              parsed.stages.map((s) => ({
+                id: s.id,
+                title: s.title,
+                success: s.success,
+                check_command: s.check_command,
+              })),
+            );
+          } else {
+            // 清除旧阶段（重新 submit 时）
+            mgr.setStages(binding.mainSessionId, []);
+          }
+        }
         mgr.updateState(binding.mainSessionId, "confirming_plan");
+        const stageHint =
+          parsed.stages.length > 0
+            ? `\n\n${formatStageStatus({ stages: parsed.stages, currentStageIndex: 0 })}\n`
+            : "";
         const userMsg =
-          `📋 **任务计划待确认**\n\n${plan}\n\n` +
+          `📋 **任务计划待确认**\n\n${plan}${stageHint}\n` +
           `---\n请审阅上面的任务计划与验收标准。回复"确认"开始监督（主 Agent 将持续执行，supervisor 自动验收）；` +
           `或直接说明需要修改的地方。`;
         return createToolResponse(
           true,
           userMsg,
-          { payload: { state: "confirming_plan", planLength: plan.length } },
+          {
+            payload: {
+              state: "confirming_plan",
+              planLength: plan.length,
+              stages: parsed.stages.length,
+            },
+          },
         );
       }
       case "start": {
@@ -121,14 +162,17 @@ export class SupervisorTaskControlTool extends Tool {
       }
       case "verify": {
         // 步骤2+4: 自动验收本轮 loop 汇报，对照 plan 验收标准判断 pass/fail
+        // P3: 硬指标 check_command 优先；分阶段门禁
         if (binding.state !== "started") {
           return createToolResponse(false, `当前状态为 ${binding.state}，只能在 started 状态验收。`);
         }
         const roundReport = String(params.round_report ?? "").trim();
         const planRef = binding.plan ?? "(未绑定 plan)";
-        // 去重：主 Agent 的 loop_report 推送 与 chat_main 工具返回值 会带来同一轮汇报的两份副本。
-        // 若本次 round_report 与上次验收的内容指纹相同，直接复用上次结论，不重复调辅助模型、不累加计数。
-        const fingerprint = roundReport.slice(0, 200);
+        const fingerprint = [
+          roundReport.slice(0, 200),
+          String(params.check_command ?? ""),
+          String(binding.currentStageIndex ?? 0),
+        ].join("|");
         if (roundReport && binding.lastVerifiedReportFingerprint === fingerprint && binding.lastVerdict) {
           return createToolResponse(
             true,
@@ -136,25 +180,174 @@ export class SupervisorTaskControlTool extends Tool {
             { payload: { state: "started", deduplicated: true, verdict: binding.lastVerdict } },
           );
         }
-        // 复用 auxModelCaller（同 llm_judge 机制）做独立验收判断
-        const aux = ctx.auxModelCaller;
-        const mainPreset = ctx.mainPreset;
-        if (!aux || !mainPreset) {
-          // 无辅助模型 → 退化为提示 supervisor 自己判断
+
+        const stages = binding.stages ?? [];
+        const stageIdx = binding.currentStageIndex ?? 0;
+        const currentStage = stages.length > 0 ? stages[stageIdx] : undefined;
+        const checkCmd = String(
+          params.check_command ?? currentStage?.check_command ?? "",
+        ).trim();
+
+        // ── 硬指标（可选，安全子集）──
+        if (checkCmd) {
+          const projectRoot = ctx.workingDir || ctx.projectRoot || process.cwd();
+          const hard = await runHardCheck({
+            projectRoot,
+            command: checkCmd,
+            timeoutMs: 60_000,
+          });
+          binding.verifyRounds += 1;
+          binding.lastVerifiedReportFingerprint = fingerprint;
+
+          if (!hard.ok) {
+            const reason =
+              hard.error ||
+              `硬指标失败 exit=${hard.code} cmd=${hard.commandLine}\nstdout: ${hard.stdout.slice(0, 500)}\nstderr: ${hard.stderr.slice(0, 500)}`;
+            binding.lastVerdict = "fail";
+            if (binding.lastFailReason === reason) binding.sameReasonStreak += 1;
+            else {
+              binding.lastFailReason = reason;
+              binding.sameReasonStreak = 1;
+            }
+            const stageLine = currentStage
+              ? `当前阶段 **${currentStage.id}** 未通过硬指标。\n`
+              : "";
+            return createToolResponse(
+              true,
+              `❌ 硬指标不合格（第 ${binding.verifyRounds} 轮）。${stageLine}原因：${reason}\n` +
+                `请调 supervisor_chat_main 派新需求；**不得**进入下一阶段。\n` +
+                (stages.length
+                  ? formatStageStatus({
+                      stages,
+                      currentStageIndex: stageIdx,
+                      stageResults: binding.stageResults,
+                    })
+                  : ""),
+              {
+                payload: {
+                  state: "started",
+                  verdict: "fail",
+                  hardCheck: true,
+                  verifyRounds: binding.verifyRounds,
+                  stageId: currentStage?.id,
+                },
+              },
+            );
+          }
+
+          // 硬指标通过
+          if (currentStage && mgr.advanceStage) {
+            mgr.advanceStage(binding.mainSessionId, {
+              id: currentStage.id,
+              pass: true,
+              at: Date.now(),
+              reason: `hard check ok: ${hard.commandLine}`,
+            });
+            const allDone = mgr.allStagesPassed
+              ? mgr.allStagesPassed(binding.mainSessionId)
+              : true;
+            binding.sameReasonStreak = 0;
+            binding.lastFailReason = undefined;
+            if (allDone) {
+              binding.lastVerdict = "pass";
+              return createToolResponse(
+                true,
+                `✅ 硬指标通过，且全部分阶段已完成（第 ${binding.verifyRounds} 轮）。\n` +
+                  `请调 supervisor_task_control action=confirm_end 向用户发起最终验收。\n` +
+                  formatStageStatus({
+                    stages,
+                    currentStageIndex: binding.currentStageIndex ?? stages.length,
+                    stageResults: binding.stageResults,
+                  }),
+                {
+                  payload: {
+                    state: "started",
+                    verdict: "pass",
+                    hardCheck: true,
+                    stagesComplete: true,
+                    verifyRounds: binding.verifyRounds,
+                  },
+                },
+              );
+            }
+            // 还有下一阶段：不算总 pass，要求主 Agent 继续
+            binding.lastVerdict = "fail";
+            const next = stages[binding.currentStageIndex ?? stageIdx + 1];
+            return createToolResponse(
+              true,
+              `✅ 阶段 **${currentStage.id}** 硬指标通过，进入下一阶段 **${next?.id ?? "?"}**。\n` +
+                `请用 supervisor_chat_main 派发下一阶段任务（勿 confirm_end）。\n` +
+                formatStageStatus({
+                  stages,
+                  currentStageIndex: binding.currentStageIndex ?? 0,
+                  stageResults: binding.stageResults,
+                }),
+              {
+                payload: {
+                  state: "started",
+                  verdict: "stage_pass",
+                  hardCheck: true,
+                  nextStageId: next?.id,
+                  verifyRounds: binding.verifyRounds,
+                },
+              },
+            );
+          }
+
+          // 无分阶段 + 硬指标通过 → 可直接视为合格（仍建议 confirm_end）
+          binding.lastVerdict = "pass";
+          binding.sameReasonStreak = 0;
           return createToolResponse(
             true,
-            `⚠️ 未注入辅助模型，无法自动验收。请 supervisor 对照 plan 验收标准人工判断本轮汇报：\n${roundReport || "(无汇报)"}\n\n` +
-              `判断合格 → 调 confirm_end；不合格 → 调 supervisor_chat_main 派新需求。`,
+            `✅ 硬指标通过（第 ${binding.verifyRounds} 轮）：${hard.commandLine}\n` +
+              `请调 supervisor_task_control action=confirm_end 向用户发起最终验收。`,
+            {
+              payload: {
+                state: "started",
+                verdict: "pass",
+                hardCheck: true,
+                verifyRounds: binding.verifyRounds,
+              },
+            },
+          );
+        }
+
+        // ── 无硬指标：LLM 验收（原逻辑）──
+        const aux = ports.auxModelCaller;
+        const mainPreset = ports.mainPreset;
+        const stageBlock =
+          stages.length > 0
+            ? `\n\n${formatStageStatus({
+                stages,
+                currentStageIndex: stageIdx,
+                stageResults: binding.stageResults,
+              })}\n` +
+              (currentStage
+                ? `请只判断**当前阶段 ${currentStage.id}** 是否达标；未完成当前阶段不得判定总任务完成。\n`
+                : "")
+            : "";
+
+        if (!aux || !mainPreset) {
+          return createToolResponse(
+            true,
+            `⚠️ 未注入辅助模型，无法自动验收。请 supervisor 对照 plan 验收标准人工判断本轮汇报：\n${roundReport || "(无汇报)"}${stageBlock}\n\n` +
+              `判断合格 → 调 confirm_end（或进入下一阶段）；不合格 → 调 supervisor_chat_main 派新需求。` +
+              (checkCmd ? "" : "\n提示：可在 verify 时传 check_command 做硬指标。"),
             { payload: { state: "started", autoVerify: false } },
           );
         }
-        const helperPreset = ctx.resolveHelperPreset ? ctx.resolveHelperPreset(ctx.agentName, mainPreset) : mainPreset;
+        const helperPreset = ports.resolveHelperPreset
+          ? ports.resolveHelperPreset(ctx.agentName, mainPreset)
+          : mainPreset;
         const systemPrompt =
           "你是独立的验收判断模型。supervisor 把主 Agent 一轮 loop 的汇报 + 任务计划的验收标准交给你。" +
           "请严格对照验收标准判断本轮是否合格。输出 JSON：{\"pass\": true/false, \"reason\": \"...\", \"next_requirement\": \"不合格时派给主 Agent 的新需求\"}。" +
+          (stages.length
+            ? "若存在分阶段，仅判断当前阶段；当前阶段合格才 pass=true。"
+            : "") +
           "不要输出 JSON 以外的文字。";
         const userPrompt =
-          `## 任务计划与验收标准\n${planRef}\n\n## 主 Agent 本轮 loop 汇报\n${roundReport || "(无汇报)"}`;
+          `## 任务计划与验收标准\n${planRef}${stageBlock}\n\n## 主 Agent 本轮 loop 汇报\n${roundReport || "(无汇报)"}`;
         try {
           const result = await aux.callJson(
             {
@@ -169,15 +362,51 @@ export class SupervisorTaskControlTool extends Tool {
             return createToolResponse(false, `验收模型调用失败${result.error ? `：${result.error}` : ""}（preset=${result.presetName}）。`);
           }
           const verdict = result.json as { pass?: boolean; reason?: string; next_requirement?: string };
-          const passed = verdict.pass === true;
+          let passed = verdict.pass === true;
           const reason = String(verdict.reason ?? "").trim();
           const nextReq = String(verdict.next_requirement ?? "").trim();
 
-          // 记录本次验收的指纹（供下次去重）
           binding.lastVerifiedReportFingerprint = fingerprint;
-          // 步骤4: 防死循环 —— 记录验收轮数 + 同因连续命中
           binding.verifyRounds += 1;
           const MAX_STREAK = 5;
+
+          // 分阶段：LLM pass → 推进阶段；未全部完成则不算总 pass
+          if (passed && currentStage && mgr.advanceStage) {
+            mgr.advanceStage(binding.mainSessionId, {
+              id: currentStage.id,
+              pass: true,
+              at: Date.now(),
+              reason: reason || "llm pass",
+            });
+            const stagesDone = mgr.allStagesPassed
+              ? mgr.allStagesPassed(binding.mainSessionId)
+              : true;
+            if (!stagesDone) {
+              passed = false;
+              const next = stages[binding.currentStageIndex ?? 0];
+              binding.lastVerdict = "fail";
+              binding.sameReasonStreak = 0;
+              return createToolResponse(
+                true,
+                `✅ 阶段 **${currentStage.id}** 验收通过，进入 **${next?.id ?? "?"}**。\n` +
+                  `请 supervisor_chat_main 派下一阶段任务（勿 confirm_end）。\n` +
+                  formatStageStatus({
+                    stages,
+                    currentStageIndex: binding.currentStageIndex ?? 0,
+                    stageResults: binding.stageResults,
+                  }),
+                {
+                  payload: {
+                    state: "started",
+                    verdict: "stage_pass",
+                    nextStageId: next?.id,
+                    verifyRounds: binding.verifyRounds,
+                  },
+                },
+              );
+            }
+          }
+
           if (passed) {
             binding.sameReasonStreak = 0;
             binding.lastFailReason = undefined;
@@ -189,8 +418,6 @@ export class SupervisorTaskControlTool extends Tool {
               binding.sameReasonStreak = 1;
             }
           }
-          // 同因连续 fail 达上限 → 不改状态，提示 supervisor 转人工（让 supervisor 主动调 confirm_end）
-          // 不在这里偷偷改状态：所有状态流转都由 supervisor 主动调工具完成，状态机语义保持一致。
           if (binding.sameReasonStreak >= MAX_STREAK) {
             binding.lastVerdict = "loop";
             return createToolResponse(
@@ -202,8 +429,6 @@ export class SupervisorTaskControlTool extends Tool {
             );
           }
 
-          // 总打回次数上限（防死循环硬兜底）：不管同因不同因，打回 MAX_VERIFY_ROUNDS 次还不合格就强制转人工。
-          // 避免主 agent 反复改不对、supervisor 反复打回的无限循环（不同因所以同因检测识别不出来）。
           const MAX_VERIFY_ROUNDS = 30;
           if (binding.verifyRounds >= MAX_VERIFY_ROUNDS && !passed) {
             binding.lastVerdict = "loop";
@@ -217,7 +442,6 @@ export class SupervisorTaskControlTool extends Tool {
           }
 
           if (passed) {
-            // 合格 → 提示 supervisor 调 confirm_end 发起最终验收
             binding.lastVerdict = "pass";
             return createToolResponse(
               true,
@@ -226,7 +450,6 @@ export class SupervisorTaskControlTool extends Tool {
               { payload: { state: "started", verdict: "pass", verifyRounds: binding.verifyRounds } },
             );
           }
-          // 不合格 → 提示 supervisor 用 chat_main 派新需求给主 Agent
           binding.lastVerdict = "fail";
           const dispatchHint = nextReq
             ? `建议派发的新需求：${nextReq}`

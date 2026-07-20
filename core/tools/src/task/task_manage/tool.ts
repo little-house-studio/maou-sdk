@@ -454,15 +454,16 @@ export class TodoManageTool extends Tool {
     const tasksRaw = params.tasks as Record<string, unknown>[] | null;
 
     try {
-      // 延迟 import 避免循环：orchestrator → task_manage
-      const { TODO_ORCHESTRATOR } = await import("../todo-orchestrator.js");
-      const rendered = TODO_ORCHESTRATOR.manage(ctx.sessionId, action, tasksRaw);
-      const notices = TODO_ORCHESTRATOR.drainNotices(ctx.sessionId);
+      // 延迟 import 宿主桥：编排实现在 agent，经 bindTodoOrchestratorHost 挂接
+      const { getTodoOrchestrator } = await import("../todo-orchestrator-host.js");
+      const orch = getTodoOrchestrator();
+      const rendered = orch.manage(ctx.sessionId, action, tasksRaw);
+      const notices = orch.drainNotices(ctx.sessionId);
       return createToolResponse(true, rendered, {
         payload: {
           todo_notices: notices,
-          plan: TODO_ORCHESTRATOR.getPlan(ctx.sessionId) ?? null,
-          lanes: TODO_ORCHESTRATOR.getLanes(ctx.sessionId),
+          plan: orch.getPlan(ctx.sessionId) ?? null,
+          lanes: orch.getLanes(ctx.sessionId),
         },
         displayEvents: [
           { type: "terminal", stream: "info", text: `[todo] ${action}` },

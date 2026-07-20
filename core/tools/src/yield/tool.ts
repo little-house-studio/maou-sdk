@@ -20,7 +20,7 @@
  * 检测 yield，故用 abort + 事件而非 endsLoop 标记。
  */
 
-import { Tool, toolDir } from "../base.js";
+import { Tool, toolDir, resolveToolRuntimePorts } from "../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../base.js";
 import { createToolResponse } from "../base.js";
 
@@ -73,7 +73,7 @@ export class YieldTool extends Tool {
     }
 
     // 依赖 fork 注入 yieldResult；未注入说明当前不是子 Agent 上下文
-    const submit = ctx.yieldResult;
+    const submit = resolveToolRuntimePorts(ctx).yieldResult;
     if (!submit) {
       return createToolResponse(
         false,

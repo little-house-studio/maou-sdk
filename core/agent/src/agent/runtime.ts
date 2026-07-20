@@ -70,12 +70,18 @@ import {
   setTerminalMode,
   SkillContextManager,
   TASK_MANAGER,
-  TODO_ORCHESTRATOR,
   createSubagentDelegateTool,
   formatTodoNoticeMessage,
   preprocessTodoSlash,
   buildPlanRequiredNotice,
 } from "@little-house-studio/tools";
+import { TODO_ORCHESTRATOR } from "./todo/index.js";
+import { buildToolContext } from "./runtime-tool-context.js";
+import {
+  isTodoPlanSettled as isTodoPlanSettledHelper,
+  flushTodoNotices as flushTodoNoticesHelper,
+  afterTodoTools as afterTodoToolsHelper,
+} from "./runtime-todo.js";
 import {
   appendSessionEvent,
   authorHuman,
@@ -2606,59 +2612,26 @@ export class AgentRuntime {
       );
     }
 
-    const context = {
+    const context = buildToolContext({
       sessionId,
-      projectRoot: this.projectRoot,  // 始终用 maou-agent 安装目录（skill/tool 资源发现）
+      projectRoot: this.projectRoot,
       promptRoot: this.compiler.promptRoot,
-      sandboxRoot: join(this.maouRoot, 'sandbox', sessionId),
+      maouRoot: this.maouRoot,
       sandboxMode,
       agentName,
-      agentMode: "execute",
-      pluginSettings: {},
-      workingDir: workingDir ?? this.projectRoot,  // agent 工作目录（终端、文件读写）
-      // project/task subagent 路径沙箱（工具层 resolveToolPath 强制）
+      workingDir: workingDir ?? this.projectRoot,
       pathGuard: this.getSessionPathGuard(sessionId ?? ""),
       compressionLevel,
-      // skill 扫描与 bake 同口径（use_skill / find_skill 读取）
-      maouRoot: this.maouRoot,
       skillOptions: this.skillOptions,
-      // 注入 SubagentExecutor（若 harness 配置了 runFn）—— agent_message 工具据此真并行 fork
-      // 同时设置 parentSessionId，让 fork 时生成的子 sessionId 关联到当前 session
-      subagentExecutor: this.subagentExecutor
-        ? (Object.assign(this.subagentExecutor, { parentSessionId: sessionId ?? "" }), this.subagentExecutor)
-        : undefined,
-      // 监督模式：注入 callMainAgent 函数 + 标记当前 session 是否是监督 Agent
-      // supervisor_chat_main / supervisor_task_control 工具据此判断调用上下文
-      // callMainAgent 闭包绑定当前 sessionId 对应的 mainSessionId（多用户场景不串台）
-      callMainAgent: (() => {
-        if (!this.callMainAgentFn) return undefined;
-        const currentSessionId = sessionId ?? "";
-        const binding = SUPERVISOR_MANAGER.getBySupervisor(currentSessionId);
-        if (!binding) return undefined; // 当前 session 不是监督 Agent → 不注入
-        return (message: string, abortSignal?: AbortSignal) =>
-          this.callMainAgentFn!(binding.mainSessionId, message, abortSignal);
-      })(),
-      isSupervisorSession: SUPERVISOR_MANAGER.isSupervisorSession(sessionId ?? ""),
-      // 注入 SUPERVISOR_MANAGER 单例（supervisor 工具通过它查询/更新绑定）
-      supervisorManager: SUPERVISOR_MANAGER,
-      // 注入 MessageBus 单例（agent_manage message action 走总线投递，带 from 说话人）
-      messageBus: MessageBus.global(),
-      // ── llm_judge 工具注入：辅助模型调用器 + preset 解析 ──
-      // llm_judge 工具通过 ctx.auxModelCaller 调用辅助 LLM 做独立判断
-      // （安全检查/代码审查/路由判定等）。auxModelCaller / resolveHelperPresetFn
-      // 由 RuntimeOptions 注入（runtime-facade 创建）。未注入时 llm_judge 返回未启用提示。
+      subagentExecutor: this.subagentExecutor as never,
+      callMainAgentFn: this.callMainAgentFn,
       auxModelCaller: this.auxModelCaller as never | undefined,
-      mainPreset: (currentPreset ?? this.currentPreset) as unknown,
-      resolveHelperPreset: this.resolveHelperPresetFn
+      currentPreset: currentPreset ?? this.currentPreset ?? undefined,
+      resolveHelperPresetFn: this.resolveHelperPresetFn
         ? (this.resolveHelperPresetFn as (agentName: string, mainPreset: unknown) => unknown)
         : undefined,
-      runtimeAgentName: agentName,
-      // ── P2-1 yield 工具注入：per-session yield 回调（子 Agent 上下文才注入）──
-      // SubagentExecutor.fork 运行子 Agent 前调 setYieldHandler 注册回调。
-      // 子 Agent 调 yield 工具 → 回调触发 → fork 检测到 → 结束子 Agent 循环。
-      // 主 Agent session 无注册回调 → yieldResult 为 undefined → yield 工具返回未启用提示。
       yieldResult: this.getYieldHandler(sessionId ?? ""),
-    };
+    });
 
     // ── 按 parallelSafe / blocking 分组执行 ──
     // 连续的 parallelSafe（只读）工具合并为并发组并行执行；其余串行。
@@ -2957,20 +2930,7 @@ export class AgentRuntime {
    * 没有 task 表时返回 false（不能触发 after_task_complete 投递）。
    */
   private checkAllTasksComplete(sessionId: string): boolean {
-    try {
-      const root = TODO_ORCHESTRATOR.resolveRootSession(sessionId);
-      const tasks = TASK_MANAGER.getTasks(root);
-      if (tasks.length === 0) return false;
-      // 全部终态（含 failed）即 plan settled
-      return tasks.every(
-        (t) =>
-          t.status === "completed" ||
-          t.status === "failed" ||
-          t.status === "cancelled",
-      );
-    } catch {
-      return false;
-    }
+    return isTodoPlanSettledHelper(sessionId);
   }
 
   /**
@@ -2978,43 +2938,12 @@ export class AgentRuntime {
    * 仅注入 targetSessionId === 当前 session 的条目；其余 requeue。
    */
   private flushTodoNotices(sessionId: string): number {
-    try {
-      const notices = TODO_ORCHESTRATOR.drainNotices(sessionId);
-      if (notices.length === 0) return 0;
-      let n = 0;
-      const requeue: typeof notices = [];
-      for (const notice of notices) {
-        const target = notice.targetSessionId || sessionId;
-        if (target === sessionId) {
-          const body = formatTodoNoticeMessage(notice);
-          appendSessionEvent(this.sessions, sessionId, {
-            kind: "system_notice",
-            content: body,
-            source: "todo_notice",
-            author: authorSystem("todo", "todo"),
-            meta: { notice_kind: notice.kind, plan_id: notice.planId, lane_id: notice.laneId },
-          });
-          n++;
-        } else {
-          requeue.push(notice);
-        }
-      }
-      TODO_ORCHESTRATOR.requeueNotices(sessionId, requeue);
-      return n;
-    } catch {
-      return 0;
-    }
+    return flushTodoNoticesHelper(this.sessions, sessionId);
   }
 
   /** 工具轮次后：flush notice + 空转催促 */
   private afterTodoTools(sessionId: string, hadToolCalls: boolean): void {
-    this.flushTodoNotices(sessionId);
-    try {
-      TODO_ORCHESTRATOR.evaluateNudge(sessionId, sessionId, hadToolCalls);
-      this.flushTodoNotices(sessionId);
-    } catch {
-      /* ignore */
-    }
+    afterTodoToolsHelper(this.sessions, sessionId, hadToolCalls);
   }
 
   /**
@@ -3183,7 +3112,9 @@ export class AgentRuntime {
       }
 
       if (blocked) {
-        const blockedMsg = `工具 ${toolCall.name} 被钩子拦截`;
+        const blockedMsg =
+          this.hooks?.lastBlockReason?.trim() ||
+          `工具 ${toolCall.name} 被钩子拦截`;
         this.sessions.appendRawEntry(sessionId, {
           type: "tool_result", round, created_at: now(),
           data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: blockedMsg, ok: false, background },

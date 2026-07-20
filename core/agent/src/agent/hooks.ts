@@ -8,8 +8,11 @@
 
 import type { Message, ToolCall, ToolResult } from "../agent_factory/types.js";
 
-/** 钩子处理函数 */
-export type HookHandler = (...args: unknown[]) => boolean | void;
+/**
+ * 钩子处理函数。
+ * pre_tool_use：返回 false 或非空 string 可拦截（string = 拦截原因，回传给模型）。
+ */
+export type HookHandler = (...args: unknown[]) => boolean | string | void;
 
 // ── 全部 18 种 Hook 事件 ────────────────────────────────────────────────────
 
@@ -61,6 +64,11 @@ export type HookName = typeof ALL_HOOKS extends Set<infer T> ? T : never;
  */
 export class Hooks {
   private _hooks: Map<string, HookHandler[]>;
+  /**
+   * 最近一次 pre_tool_use 拦截原因（handler 返回 string 时写入）。
+   * Runtime 写 tool_result 时优先使用。
+   */
+  lastBlockReason?: string;
 
   constructor() {
     this._hooks = new Map();
@@ -102,15 +110,24 @@ export class Hooks {
    */
   trigger(hookName: string, kwargs: Record<string, unknown> = {}): boolean {
     let allowed = true;
+    if (hookName === "pre_tool_use") {
+      this.lastBlockReason = undefined;
+    }
     const handlers = this._hooks.get(hookName);
     if (!handlers) return allowed;
 
     for (const handler of handlers) {
       try {
         const result = handler(kwargs);
-        if (result === false && hookName === "pre_tool_use") {
-          allowed = false;
-          console.log(`[sdk] 钩子 '${hookName}' 拦截了工具调用`);
+        if (hookName === "pre_tool_use") {
+          if (typeof result === "string" && result.trim()) {
+            allowed = false;
+            this.lastBlockReason = result.trim();
+            console.log(`[sdk] 钩子 '${hookName}' 拦截了工具调用: ${this.lastBlockReason.slice(0, 80)}`);
+          } else if (result === false) {
+            allowed = false;
+            console.log(`[sdk] 钩子 '${hookName}' 拦截了工具调用`);
+          }
         }
       } catch (e) {
         console.error(`[sdk] 钩子 '${hookName}' 执行异常:`, e);

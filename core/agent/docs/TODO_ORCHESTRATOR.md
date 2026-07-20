@@ -450,7 +450,7 @@ POST /api/todo/debug/fail
 ### P0 — 契约与 Scheduler 骨架 ✅
 
 1. ✅ 扩展节点状态 `failed|cancelled` + `todo_finish` 的 `status/report/reason`  
-2. ✅ `TodoOrchestrator`（`core/tools/src/task/todo-orchestrator.ts`）：create 调度、ready、assign、事件、notice 队列  
+2. ✅ `TodoOrchestrator`（`core/agent/src/agent/todo/todo-orchestrator.ts`；tools 经 `bindTodoOrchestratorHost` 挂接）：create 调度、ready、assign、事件、notice 队列  
 3. ✅ 执行中禁 replace；R3 root 占 1 + fork；R4-C exclusive 链合并  
 4. ✅ 单测：`todo-orchestrator.test.ts`  
 5. ⚠ P0 fork 为**逻辑分身**（session 仍同 root）；真 SubagentExecutor 接线在 P1
@@ -518,7 +518,7 @@ POST /api/todo/debug/fail
 
 | 入口 | 说明 |
 |------|------|
-| `TODO_ORCHESTRATOR` | `core/tools/src/task/todo-orchestrator.ts` |
+| `TODO_ORCHESTRATOR` | `core/agent/src/agent/todo/`（tools 经 `bindTodoOrchestratorHost`） |
 | 工具 | `todo_manage` / `todo_finish`（别名 task_*） |
 | Runtime | `/todo` 预处理、notice flush、nudge、endsLoop+未完成强制继续 |
 | 真 fork | `runtime-facade` `setForkRunner` + SubagentExecutor |

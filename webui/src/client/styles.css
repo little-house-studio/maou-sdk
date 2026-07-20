@@ -1,0 +1,364 @@
+:root {
+  color-scheme: dark;
+  --bg: #0c0c0e;
+  --panel: #141418;
+  --border: #2a2a32;
+  --fg: #e8e6e0;
+  --muted: #8a8890;
+  --accent: #c7ff20;
+  --accent-dim: #7a9a18;
+  --user: #a8c8ff;
+  --err: #ff6b4a;
+  --ok: #5eead4;
+  font-family: "SF Mono", "Menlo", "Consolas", "Noto Sans SC", monospace;
+  font-size: 13px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.app {
+  display: grid;
+  grid-template-rows: 40px 1fr;
+  height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.topbar .brand {
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.topbar .meta {
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Markdown 全宽：必须压过上面的 1fr 1fr（main.tsx 后加载 styles 时也能生效） */
+.main.main-editor {
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+}
+
+.main.main-editor > * {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+}
+
+.main.main-split {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .main {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+  .main.main-editor {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 1fr;
+  }
+  .main.main-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+}
+
+.panel:last-child {
+  border-right: none;
+}
+
+.panel-header {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.chat-log {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bubble {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #101014;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+}
+
+.bubble.user {
+  border-color: #2a3a55;
+  color: var(--user);
+}
+
+.bubble.assistant {
+  border-color: #2a3520;
+}
+
+.bubble.system {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.bubble .tag {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.bubble.err {
+  border-color: var(--err);
+  color: #ffb4a4;
+}
+
+.tool-line {
+  font-size: 12px;
+  color: var(--accent-dim);
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.composer textarea {
+  flex: 1;
+  resize: none;
+  min-height: 56px;
+  max-height: 160px;
+  background: #0a0a0c;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font: inherit;
+}
+
+.composer button {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #111;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.composer button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.composer button.ghost {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.term-panel .term-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 200px 1fr;
+}
+
+.term-list {
+  border-right: 1px solid var(--border);
+  overflow: auto;
+  background: #0e0e12;
+  display: flex;
+  flex-direction: column;
+}
+
+.term-list-head {
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.linkish {
+  background: none;
+  border: none;
+  color: var(--accent-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 0;
+}
+
+.linkish.danger {
+  color: var(--err);
+}
+
+.term-empty {
+  padding: 12px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.term-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg);
+  padding: 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.term-item:hover {
+  background: #1a1a22;
+}
+
+.term-item.active {
+  background: #1e2410;
+  border-left: 2px solid var(--accent);
+}
+
+.term-item.done {
+  opacity: 0.7;
+}
+
+.term-item-id {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.term-item-desc {
+  font-size: 11px;
+  color: var(--fg);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-item-meta {
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.term-active-label {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--accent-dim);
+}
+
+.term-wrap {
+  min-height: 0;
+  padding: 4px;
+  background: #000;
+  overflow: hidden;
+}
+
+.term-wrap .xterm {
+  height: 100%;
+  padding: 4px;
+}
+
+.term-wrap .xterm-viewport {
+  overflow-y: auto !important;
+}
+
+.bubble.clickable {
+  cursor: pointer;
+}
+
+.bubble.clickable:hover {
+  border-color: var(--accent-dim);
+}
+
+.panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+/* ── View tabs ── */
+.view-tabs {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.view-tabs button {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.view-tabs button:hover {
+  color: var(--fg);
+  border-color: var(--border);
+}
+
+.view-tabs button.active {
+  color: #111;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+

@@ -2,5 +2,6 @@ packages:
   - 'core/*'
   - 'example/*'
   - 'cli'
+  - 'webui'
   - 'agent/*'
   - '*-engine'

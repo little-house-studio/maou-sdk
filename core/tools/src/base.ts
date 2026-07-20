@@ -8,8 +8,10 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 // 工具基础类型权威源在 @little-house-studio/types（最底层），此处 import + 重导出
-import type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult } from "@little-house-studio/types";
-export type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult };
+import type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult, ToolRuntimePorts } from "@little-house-studio/types";
+import { resolveToolRuntimePorts } from "@little-house-studio/types";
+export type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult, ToolRuntimePorts };
+export { resolveToolRuntimePorts };
 
 /**
  * 从 import.meta.url 推算工具目录路径。

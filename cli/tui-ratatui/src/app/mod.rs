@@ -100,6 +100,10 @@ pub struct App {
     pub(crate) goal_rect: Option<Rect>,
     pub(crate) chat_rect: Rect,
     pub(crate) chat_inner: Rect,
+    /// Last painted chat scrollbar hit-box / thumb metrics (None if hidden).
+    pub(crate) chat_sb_geom: Option<draw::ChatScrollbarGeom>,
+    /// Dragging the chat scrollbar: grab offset within thumb (row - thumb_top at press).
+    pub(crate) chat_sb_drag: Option<u16>,
     pub(crate) input_rect: Rect,
     pub(crate) nav_rect: Rect,
     pub(crate) completion_rect: Option<Rect>,
@@ -198,6 +202,8 @@ impl App {
             goal_rect: None,
             chat_rect: Rect::default(),
             chat_inner: Rect::default(),
+            chat_sb_geom: None,
+            chat_sb_drag: None,
             input_rect: Rect::default(),
             nav_rect: Rect::default(),
             completion_rect: None,

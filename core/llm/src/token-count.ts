@@ -1,18 +1,17 @@
 /**
  * Token 计数 —— 轻量估算（无需 tiktoken 依赖）
  *
+ * 文本启发式权威实现：`@little-house-studio/types` 的 `estimateTokensFromText`
+ *（与 context 包共用，避免 CLI / Runtime 数字漂移）。
+ *
  * 用途：发送前估算 token、UI 显示"X/上下文窗口"、压缩阈值决策。
- * 精度：启发式（中英混合约 1 token ≈ 2.5 字符英文 / 1 字符中文），误差 ±10%。
- * 如需精确，可注入 countTokens: (text, model) => number 覆盖。
  */
 
-/** 启发式 token 估算 */
+import { estimateTokensFromText } from "@little-house-studio/types";
+
+/** 启发式 token 估算（文本）—— 与 types/context 同一公式 */
 export function estimateTokens(text: string): number {
-  if (!text) return 0;
-  const cjk = (text.match(/[一-鿿぀-ヿ가-힯]/g) || []).length;
-  const ascii = text.length - cjk;
-  // 中文约 1 字/token，英文约 4 字符/token
-  return Math.ceil(cjk * 1.0 + ascii / 4);
+  return estimateTokensFromText(text);
 }
 
 /** 估算一个 Context 的总输入 token（system + messages + tools schema） */

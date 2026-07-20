@@ -103,6 +103,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@little-house-studio/types": "workspace:*",
     "@sinclair/typebox": "^0.34.0",
     "partial-json": "^0.1.7"
   },

@@ -10,7 +10,7 @@ import * as sqry from "@little-house-studio/sqry-engine";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
-import { errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { errToString } from "../../util/common.js";
 
 // ─── 结果格式化（薄）──────────────────────────────────────────────────────
 

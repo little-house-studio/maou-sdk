@@ -332,7 +332,15 @@ export type { AgentStatus, AdoptOptions } from "./agent-lifecycle.js";
 // ── 监督模式管理器（/goal 模式：主 Agent ↔ 监督 Agent 绑定）─────────────────
 
 export { SUPERVISOR_MANAGER } from "./supervisor-manager.js";
-export type { SupervisorBinding, SupervisorState } from "./supervisor-manager.js";
+export type {
+  SupervisorBinding,
+  SupervisorState,
+  SupervisorStage,
+  SupervisorStageResult,
+} from "./supervisor-manager.js";
+// plan stages 权威在 tools（避免 tools↔agent 循环依赖）；此处再导出便于应用层
+export { parsePlanStages, formatStageStatus } from "@little-house-studio/tools";
+export type { PlanStage, ParsedPlanMeta } from "@little-house-studio/tools";
 
 // ── defineEval API + EvalRunner ─────────────────────────────────────────────
 

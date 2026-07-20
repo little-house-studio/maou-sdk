@@ -74,4 +74,17 @@ describe("compileProjectContext", () => {
 
     rmSync(root, { recursive: true, force: true });
   });
+
+  it("minimal mode only injects RULE.md", () => {
+    const root = join(tmpdir(), `maou-proj-ctx-min-${Date.now()}`);
+    const dir = join(root, ".maou", "project");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "USER.md"), "user secret prefs");
+    writeFileSync(join(dir, "RULE.md"), "only rules");
+    const text = compileProjectContext(root, { mode: "minimal" });
+    expect(text).toContain("only rules");
+    expect(text).not.toContain("user secret prefs");
+    expect(compileProjectContext(root, { mode: "off" })).toBe("");
+    rmSync(root, { recursive: true, force: true });
+  });
 });

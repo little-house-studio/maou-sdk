@@ -43,7 +43,8 @@ export type CliLocalAction =
       /**
        * 内置动作 id：
        * new_session | clear_session | quit | thinking_cycle |
-       * screenshot | switch_model | stop | open_help_via_runtime
+       * screenshot | switch_model | stop | open_help_via_runtime |
+       * analyze_session
        */
       action: string;
     };

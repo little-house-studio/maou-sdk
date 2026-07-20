@@ -12,7 +12,8 @@ import * as lsp from "@little-house-studio/lsp-engine";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
-import { safePath, errToString } from "../../browser/god_tool/use_browser/_util.js";
+import { errToString } from "../../util/common.js";
+import { safePath } from "../../path-guard.js";
 
 function relFile(file: string, root: string): string {
   return file.startsWith(root) ? file.slice(root.length).replace(/^\//, "") : file;

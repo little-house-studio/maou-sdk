@@ -17,6 +17,21 @@ export type SupervisorState =
   | "confirming" // supervisor 判定合格，向用户发起最终验收
   | "ended"; // 监督结束
 
+/** 分阶段 goal（来自 plan JSON） */
+export interface SupervisorStage {
+  id: string;
+  title?: string;
+  success?: string;
+  check_command?: string;
+}
+
+export interface SupervisorStageResult {
+  id: string;
+  pass: boolean;
+  at: number;
+  reason?: string;
+}
+
 /** 监督绑定记录 */
 export interface SupervisorBinding {
   /** 主 Agent session ID（用户原始 session） */
@@ -47,6 +62,13 @@ export interface SupervisorBinding {
   lastVerifiedReportFingerprint?: string;
   /** 最近一次验收的结论（pass/fail/loop），供重复验收时复用 */
   lastVerdict?: "pass" | "fail" | "loop";
+  // ── 分阶段 goal（P3，可选）──
+  /** 从 plan 解析的阶段列表；空 = 不分阶段 */
+  stages?: SupervisorStage[];
+  /** 当前阶段下标（0-based） */
+  currentStageIndex?: number;
+  /** 已完成阶段结果 */
+  stageResults?: SupervisorStageResult[];
 }
 
 class SupervisorManagerImpl {
@@ -110,6 +132,44 @@ class SupervisorManagerImpl {
     if (!binding) return undefined;
     binding.plan = plan;
     return binding;
+  }
+
+  /**
+   * 绑定分阶段元数据（submit_plan 时调用）。
+   * 不推进状态；仅写 stages / 重置进度。
+   */
+  setStages(
+    mainSessionId: string,
+    stages: SupervisorStage[],
+  ): SupervisorBinding | undefined {
+    const binding = this.mainToSupervisor.get(mainSessionId);
+    if (!binding) return undefined;
+    binding.stages = stages;
+    binding.currentStageIndex = 0;
+    binding.stageResults = [];
+    return binding;
+  }
+
+  /** 推进到下一阶段（当前阶段已 pass 后） */
+  advanceStage(
+    mainSessionId: string,
+    result: SupervisorStageResult,
+  ): SupervisorBinding | undefined {
+    const binding = this.mainToSupervisor.get(mainSessionId);
+    if (!binding) return undefined;
+    if (!binding.stageResults) binding.stageResults = [];
+    binding.stageResults.push(result);
+    const idx = binding.currentStageIndex ?? 0;
+    binding.currentStageIndex = idx + 1;
+    return binding;
+  }
+
+  /** 是否所有阶段已通过 */
+  allStagesPassed(mainSessionId: string): boolean {
+    const binding = this.mainToSupervisor.get(mainSessionId);
+    if (!binding?.stages?.length) return true;
+    const idx = binding.currentStageIndex ?? 0;
+    return idx >= binding.stages.length;
   }
 
   /** 判断 session 是否是监督 Agent session */

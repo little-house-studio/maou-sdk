@@ -72,14 +72,49 @@ export function loadProjectContext(projectRoot: string): ProjectContext {
 }
 
 /**
+ * 项目上下文注入模式。
+ * - full：默认，注入全部 .maou/project 文件
+ * - minimal：仅 RULE.md（流水线任务少污染）
+ * - off：不注入
+ *
+ * 环境变量（安全默认 full）：
+ *   MAOU_PROJECT_CONTEXT=full|minimal|off
+ *   MAOU_MINIMAL_CONTEXT=1  → 等同 minimal
+ */
+export type ProjectContextMode = "full" | "minimal" | "off";
+
+export function resolveProjectContextMode(
+  explicit?: ProjectContextMode | null,
+): ProjectContextMode {
+  if (explicit === "full" || explicit === "minimal" || explicit === "off") {
+    return explicit;
+  }
+  const env = (process.env.MAOU_PROJECT_CONTEXT ?? "").trim().toLowerCase();
+  if (env === "full" || env === "minimal" || env === "off") return env;
+  if (env === "0" || env === "false" || env === "none") return "off";
+  const mini = (process.env.MAOU_MINIMAL_CONTEXT ?? "").trim().toLowerCase();
+  if (mini === "1" || mini === "true" || mini === "yes" || mini === "on") {
+    return "minimal";
+  }
+  return "full";
+}
+
+/**
  * 编译项目上下文为注入文本（xml 包裹）。
  * @returns 注入文本；无内容时返回空串
  */
-export function compileProjectContext(projectRoot: string): string {
+export function compileProjectContext(
+  projectRoot: string,
+  opts?: { mode?: ProjectContextMode | null },
+): string {
+  const mode = resolveProjectContextMode(opts?.mode);
+  if (mode === "off") return "";
+
   const context = loadProjectContext(projectRoot);
   const parts: string[] = [];
 
   for (const { key, tag } of CONTEXT_FILES) {
+    if (mode === "minimal" && key !== "ruleContext") continue;
     const body = context[key];
     if (!body) continue;
     parts.push(`<${tag}>\n${body}\n</${tag}>`);
@@ -87,9 +122,14 @@ export function compileProjectContext(projectRoot: string): string {
 
   if (parts.length === 0) return "";
 
+  const hint =
+    mode === "minimal"
+      ? "以下是本项目的最小说明（仅 rules；流水线/skill 隔离模式）。"
+      : "以下是本项目的持久说明（.maou/project/）。请遵守 rules；user/project/design/experience 作为工作背景。";
+
   return (
     `<project_info>\n` +
-    `以下是本项目的持久说明（.maou/project/）。请遵守 rules；user/project/design/experience 作为工作背景。\n\n` +
+    `${hint}\n\n` +
     `${parts.join("\n\n")}\n` +
     `</project_info>`
   );

@@ -69,10 +69,78 @@ impl App {
         );
     }
 
+    /// True if (col,row) is on the chat scrollbar track.
+    fn hit_chat_scrollbar(&self, col: u16, row: u16) -> bool {
+        self.chat_sb_geom
+            .map(|g| mouse::point_in_rect(col, row, g.rect))
+            .unwrap_or(false)
+    }
+
+    /// Map a track-relative thumb_top (0..=travel) to scroll_from_bottom.
+    fn apply_scrollbar_thumb_top(&mut self, thumb_top: u16) {
+        let Some(g) = self.chat_sb_geom else {
+            return;
+        };
+        let travel = g.travel as usize;
+        let max_scroll = g.max_scroll;
+        let thumb_top = (thumb_top as usize).min(travel);
+        let from_bottom = if travel == 0 || max_scroll == 0 {
+            0
+        } else {
+            // invert paint: from_top = (thumb_top * max_scroll) / travel
+            let from_top = (thumb_top * max_scroll) / travel;
+            max_scroll.saturating_sub(from_top)
+        };
+        self.scroll_from_bottom = from_bottom as u16;
+        if from_bottom == 0 {
+            self.auto_follow = true;
+            self.follow_tail_boost = true;
+        } else {
+            self.auto_follow = false;
+            self.follow_tail_boost = false;
+        }
+        // keep geom thumb in sync until next paint
+        if let Some(g) = self.chat_sb_geom.as_mut() {
+            g.thumb_top = thumb_top as u16;
+        }
+    }
+
+    /// Begin or continue scrollbar drag from absolute mouse row.
+    fn scrollbar_drag_to_row(&mut self, row: u16) {
+        let Some(g) = self.chat_sb_geom else {
+            return;
+        };
+        let grab = self.chat_sb_drag.unwrap_or(0);
+        let rel = row.saturating_sub(g.rect.y);
+        let thumb_top = rel.saturating_sub(grab).min(g.travel);
+        self.apply_scrollbar_thumb_top(thumb_top);
+    }
+
     pub fn on_mouse(&mut self, m: MouseEvent) {
         let col = m.column;
         let row = m.row;
         self.sel.tick_phase();
+
+        // Chat scrollbar drag takes priority while active
+        if self.chat_sb_drag.is_some() {
+            match m.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    self.scrollbar_drag_to_row(row);
+                    set_pointer_shape("grabbing");
+                    return;
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.chat_sb_drag = None;
+                    set_pointer_shape(if self.hit_chat_scrollbar(col, row) {
+                        "grab"
+                    } else {
+                        "default"
+                    });
+                    return;
+                }
+                _ => {}
+            }
+        }
 
         // Ink: fullEditorInitial first — never let stale overlay_rect steal wheel/click
         if mouse::mouse_preempts_overlay(self.full_editor) {
@@ -433,6 +501,25 @@ impl App {
             }
 
             MouseEventKind::Down(MouseButton::Left) => {
+                // Chat scrollbar: grab thumb or jump track then drag
+                if let Some(g) = self.chat_sb_geom {
+                    if mouse::point_in_rect(col, row, g.rect) {
+                        self.sel.clear();
+                        let rel = row.saturating_sub(g.rect.y);
+                        let on_thumb = rel >= g.thumb_top && rel < g.thumb_top.saturating_add(g.thumb_h);
+                        if on_thumb {
+                            self.chat_sb_drag = Some(rel.saturating_sub(g.thumb_top));
+                        } else {
+                            // click track: jump so thumb center (approx) lands under cursor
+                            let half = g.thumb_h / 2;
+                            let thumb_top = rel.saturating_sub(half).min(g.travel);
+                            self.chat_sb_drag = Some(half.min(g.thumb_h.saturating_sub(1)));
+                            self.apply_scrollbar_thumb_top(thumb_top);
+                        }
+                        set_pointer_shape("grabbing");
+                        return;
+                    }
+                }
                 // EventBlock click → toggle expand (Ink toggleEventBlockExpanded)
                 if let Some(er) = self.event_rect {
                     if point_in_rect(col, row, er) {
@@ -875,7 +962,11 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Moved => {
                 let is_drag = matches!(m.kind, MouseEventKind::Drag(MouseButton::Left));
                 if !is_drag && self.sel.drag.is_none() {
-                    self.update_hover(col, row);
+                    if self.hit_chat_scrollbar(col, row) {
+                        set_pointer_shape("grab");
+                    } else {
+                        self.update_hover(col, row);
+                    }
                     return;
                 }
                 let Some(d) = self.sel.drag.as_mut() else {

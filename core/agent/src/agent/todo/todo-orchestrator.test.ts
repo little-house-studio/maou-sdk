@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { TASK_MANAGER } from "./task_manage/tool.js";
+import { TASK_MANAGER } from "@little-house-studio/tools";
 import { TodoOrchestrator } from "./todo-orchestrator.js";
 
 function planParallelJoin() {

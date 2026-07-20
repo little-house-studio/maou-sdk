@@ -5,7 +5,7 @@
  * （SubagentRegistry 扫描 agents/<name>/subagents/<child>/ 目录），就调用
  * createSubagentDelegateTool(child, description) 生成一个工具实例，
  * 注册到 ToolRegistry，工具名 = `subagent_<child>`。LLM 调用此工具时，
- * 工具内部调 ctx.subagentExecutor.fork() 把任务委派给对应子 Agent。
+ * 工具内部调 resolveToolRuntimePorts(ctx).subagentExecutor.fork() 把任务委派给对应子 Agent。
  *
  * 与 agent_message 的区别：
  *   - agent_message：fork 克隆子 Agent（context_only 继承主 Agent 配置，
@@ -19,6 +19,7 @@
 
 import { Tool } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
+import { resolveToolRuntimePorts } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { loadSubagentKindOptionsFromCtx } from "../subagent-kind-options.js";
 
@@ -65,7 +66,8 @@ export function createSubagentDelegateTool(
       if (!task) {
         return createToolResponse(false, "请提供 task（要委托给子 Agent 的任务描述）。");
       }
-      if (!ctx.subagentExecutor) {
+      const exec = resolveToolRuntimePorts(ctx).subagentExecutor;
+      if (!exec) {
         return createToolResponse(
           false,
           `子 Agent 执行器未注入，无法委托任务给「${subagentName}」。` +
@@ -77,7 +79,7 @@ export function createSubagentDelegateTool(
       try {
         // 从 agent.json 读取 kind / path / tools 等（explore/reviewer/tester 模板已带 subagent_kind）
         const kindOpts = loadSubagentKindOptionsFromCtx(ctx, subagentName, "task");
-        const result = await ctx.subagentExecutor.fork(taskId, task, {
+        const result = await exec.fork(taskId, task, {
           // 委托给文件即子 Agent：用独立 agent 配置
           forkMode: "context_and_config",
           agentName: subagentName,

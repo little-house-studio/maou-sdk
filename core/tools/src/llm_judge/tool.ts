@@ -15,7 +15,7 @@
  * 未注入时返回错误（说明 runtime 未配置 AuxModelCaller）。
  */
 
-import { Tool, toolDir } from "../base.js";
+import { Tool, toolDir, resolveToolRuntimePorts } from "../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../base.js";
 import { createToolResponse } from "../base.js";
 
@@ -79,7 +79,8 @@ export class LlmJudgeTool extends Tool {
     }
 
     // 依赖 runtime 注入 auxModelCaller；未注入说明 runtime 未配置辅助模型
-    const aux = ctx.auxModelCaller;
+    const ports = resolveToolRuntimePorts(ctx);
+    const aux = ports.auxModelCaller;
     if (!aux) {
       return createToolResponse(
         false,
@@ -91,15 +92,15 @@ export class LlmJudgeTool extends Tool {
 
     // 解析辅助模型 preset：优先用 resolveHelperPreset（agent 专属辅助模型），
     // 回退 mainPreset（未配置辅助模型时用主模型）
-    const mainPreset = ctx.mainPreset;
+    const mainPreset = ports.mainPreset;
     if (!mainPreset) {
       return createToolResponse(
         false,
         "⚠️ llm_judge 无法调用：ToolContext.mainPreset 未注入（runtime 配置异常）。",
       );
     }
-    const agentName = ctx.runtimeAgentName ?? ctx.agentName ?? "main";
-    const resolveFn = ctx.resolveHelperPreset;
+    const agentName = ports.runtimeAgentName ?? ctx.agentName ?? "main";
+    const resolveFn = ports.resolveHelperPreset;
     const helperPreset = resolveFn ? resolveFn(agentName, mainPreset) : mainPreset;
 
     // 构建提示词：system 说明角色，user 是 question + context
