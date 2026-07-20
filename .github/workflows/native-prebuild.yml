@@ -35,24 +35,29 @@ jobs:
         include:
           - name: darwin-arm64
             os: macos-14
+            rust_target: ""
             te_asset: terminal_engine.darwin-arm64.node
             tui_asset: maou-tui-ratatui-darwin-arm64
             te_lib: libterminal_engine.dylib
             tui_bin: maou-tui-ratatui
+          # macos-13 runners often stuck queued; cross-compile Intel from arm64 host
           - name: darwin-x64
-            os: macos-13
+            os: macos-14
+            rust_target: x86_64-apple-darwin
             te_asset: terminal_engine.darwin-x64.node
             tui_asset: maou-tui-ratatui-darwin-x64
             te_lib: libterminal_engine.dylib
             tui_bin: maou-tui-ratatui
           - name: linux-x64
             os: ubuntu-22.04
+            rust_target: ""
             te_asset: terminal_engine.linux-x64-gnu.node
             tui_asset: maou-tui-ratatui-linux-x64
             te_lib: libterminal_engine.so
             tui_bin: maou-tui-ratatui
           - name: win32-x64
             os: windows-latest
+            rust_target: ""
             te_asset: terminal_engine.win32-x64-msvc.node
             tui_asset: maou-tui-ratatui-win32-x64.exe
             te_lib: terminal_engine.dll
@@ -63,22 +68,29 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Build terminal-engine
         shell: bash
         run: |
           set -euo pipefail
           cd terminal-engine
-          cargo build --release
+          TARGET_FLAG=()
+          OUT_DIR="target/release"
+          if [[ -n "${{ matrix.rust_target }}" ]]; then
+            TARGET_FLAG=(--target "${{ matrix.rust_target }}")
+            OUT_DIR="target/${{ matrix.rust_target }}/release"
+          fi
+          cargo build --release "${TARGET_FLAG[@]}"
           mkdir -p ../dist-native
-          SRC="target/release/${{ matrix.te_lib }}"
+          SRC="${OUT_DIR}/${{ matrix.te_lib }}"
           if [[ ! -f "$SRC" ]]; then
             echo "missing $SRC"
-            ls -la target/release/ || true
+            ls -la "${OUT_DIR}" || true
             exit 1
           fi
           cp "$SRC" "../dist-native/${{ matrix.te_asset }}"
-          # hyphen twin for load.mjs
           HYPHEN=$(echo "${{ matrix.te_asset }}" | sed 's/terminal_engine/terminal-engine/')
           cp "$SRC" "../dist-native/${HYPHEN}"
           ls -la ../dist-native/
@@ -87,10 +99,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --release --manifest-path cli/tui-ratatui/Cargo.toml
-          SRC="cli/tui-ratatui/target/release/${{ matrix.tui_bin }}"
+          TARGET_FLAG=()
+          OUT_DIR="cli/tui-ratatui/target/release"
+          if [[ -n "${{ matrix.rust_target }}" ]]; then
+            TARGET_FLAG=(--target "${{ matrix.rust_target }}")
+            OUT_DIR="cli/tui-ratatui/target/${{ matrix.rust_target }}/release"
+          fi
+          cargo build --release --manifest-path cli/tui-ratatui/Cargo.toml "${TARGET_FLAG[@]}"
+          SRC="${OUT_DIR}/${{ matrix.tui_bin }}"
           if [[ ! -f "$SRC" ]]; then
             SRC="target/release/${{ matrix.tui_bin }}"
+          fi
+          if [[ ! -f "$SRC" && -n "${{ matrix.rust_target }}" ]]; then
+            SRC="target/${{ matrix.rust_target }}/release/${{ matrix.tui_bin }}"
           fi
           if [[ ! -f "$SRC" ]]; then
             echo "missing tui binary; searching..."
@@ -99,7 +120,6 @@ jobs:
           fi
           mkdir -p dist-native
           cp "$SRC" "dist-native/${{ matrix.tui_asset }}"
-          # unix: ensure not empty
           ls -la "dist-native/${{ matrix.tui_asset }}"
 
       - name: Upload artifacts
