@@ -1,3 +1,6 @@
+# Maou installer (Windows PowerShell). Does NOT install Node.
+# Default: Node/pnpm + prebuilt natives (no Rust / VS Build Tools required).
+# Dev local build: $env:MAOU_BUILD_NATIVE=1; .\scripts\install.ps1
 $ErrorActionPreference = "Stop"
 
 function Log([string]$msg) { Write-Host $msg }
@@ -19,9 +22,6 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
 if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
   Die "pnpm required. Install: npm i -g pnpm"
 }
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
-  Die "Rust required. Install: winget install Rustlang.Rustup (then restart terminal)"
-}
 
 $homeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $env:HOME }
 $maouHome = if ($env:MAOU_HOME) { $env:MAOU_HOME } else { Join-Path $homeDir ".maou" }
@@ -40,29 +40,50 @@ if (-not (Test-Path (Join-Path $repoRoot "pnpm-workspace.yaml")) -or -not (Test-
 }
 
 Log "[maou] monorepo: $repoRoot"
-Log "[maou] building Core (fail-closed)..."
+Log "[maou] building Core (JS)..."
 
-$buildNative = Join-Path $repoRoot "scripts\build-native.ps1"
-if (Test-Path $buildNative) {
-  $buildProcess = Start-Process -FilePath "powershell" -ArgumentList @("-ExecutionPolicy", "Bypass", "-File", $buildNative) -NoNewWindow -PassThru -Wait
-  if ($buildProcess.ExitCode -ne 0) {
-    Die "build-native.ps1 failed with exit code $($buildProcess.ExitCode)"
-  }
-} else {
-  Push-Location $repoRoot
-  try {
-    pnpm install
-    pnpm -r run build
-  } catch {
-    Die "pnpm build failed"
-  } finally {
-    Pop-Location
-  }
+Push-Location $repoRoot
+try {
+  pnpm install
+  if ($LASTEXITCODE -ne 0) { Die "pnpm install failed" }
+  pnpm -r run build
+  if ($LASTEXITCODE -ne 0) { Die "pnpm build failed" }
+} finally {
+  Pop-Location
 }
 
 $cliDist = Join-Path $repoRoot "cli\dist\index.js"
 if (-not (Test-Path $cliDist)) {
   Die "cli\dist\index.js missing after build - Core incomplete"
+}
+
+# Prebuilt natives (no Rust required)
+Log "[maou] ensuring prebuilt terminal-engine..."
+$te = Start-Process -FilePath "node" -ArgumentList @((Join-Path $repoRoot "scripts\ensure-terminal-engine.mjs")) -NoNewWindow -PassThru -Wait
+if ($te.ExitCode -ne 0) {
+  Log "[maou] WARNING: terminal-engine ensure had issues"
+}
+
+Log "[maou] ensuring prebuilt maou-tui..."
+$tui = Start-Process -FilePath "node" -ArgumentList @((Join-Path $repoRoot "scripts\ensure-maou-tui.mjs")) -NoNewWindow -PassThru -Wait
+if ($tui.ExitCode -ne 0) {
+  Log "[maou] WARNING: maou-tui ensure had issues"
+}
+
+# Optional full local native build for developers
+if ($env:MAOU_BUILD_NATIVE -eq "1" -or $env:MAOU_BUILD_NATIVE -eq "true") {
+  if (Get-Command cargo -ErrorAction SilentlyContinue) {
+    Log "[maou] MAOU_BUILD_NATIVE=1 -> build-native.ps1..."
+    $bn = Join-Path $repoRoot "scripts\build-native.ps1"
+    if (Test-Path $bn) {
+      $bp = Start-Process -FilePath "powershell" -ArgumentList @("-ExecutionPolicy", "Bypass", "-File", $bn) -NoNewWindow -PassThru -Wait
+      if ($bp.ExitCode -ne 0) {
+        Log "[maou] WARNING: build-native failed"
+      }
+    }
+  } else {
+    Log "[maou] MAOU_BUILD_NATIVE=1 but cargo not found; skip local build"
+  }
 }
 
 $wrapCmd = Join-Path $binDir "maou.cmd"
@@ -74,20 +95,17 @@ node "$cliDist" %*
 "@ | Set-Content -Encoding ASCII $wrapCmd
 Log "[maou] wrapper: $wrapCmd"
 
-# Also install to locations Windows often already has on PATH (zero manual PATH when possible)
 $extraBins = [System.Collections.Generic.List[string]]::new()
 $extraBins.Add((Join-Path $homeDir ".local\bin")) | Out-Null
 $extraBins.Add((Join-Path $homeDir ".cargo\bin")) | Out-Null
-# npm global prefix\bin is almost always on PATH after Node install
 try {
   $npmPrefix = (npm config get prefix 2>$null)
   if ($npmPrefix -and (Test-Path $npmPrefix)) {
     $npmBin = Join-Path $npmPrefix "bin"
-    if (-not (Test-Path $npmBin)) { $npmBin = $npmPrefix } # Windows npm often uses prefix itself
+    if (-not (Test-Path $npmBin)) { $npmBin = $npmPrefix }
     $extraBins.Add($npmBin) | Out-Null
   }
 } catch { }
-# pnpm home (if set)
 if ($env:PNPM_HOME) { $extraBins.Add($env:PNPM_HOME) | Out-Null }
 
 foreach ($d in $extraBins) {
@@ -95,9 +113,7 @@ foreach ($d in $extraBins) {
     New-Item -ItemType Directory -Force -Path $d | Out-Null
     Copy-Item $wrapCmd (Join-Path $d "maou.cmd") -Force
     Log "[maou] copied: $(Join-Path $d 'maou.cmd')"
-  } catch {
-    # ignore unwritable dirs
-  }
+  } catch { }
 }
 
 $ensureDcg = Join-Path $repoRoot "scripts\ensure-dcg.mjs"
@@ -105,7 +121,7 @@ if (Test-Path $ensureDcg) {
   Log "[maou] ensuring dcg..."
   $dcgProcess = Start-Process -FilePath "node" -ArgumentList @($ensureDcg, "--user") -NoNewWindow -PassThru -Wait
   if ($dcgProcess.ExitCode -ne 0) {
-    Log "[maou] WARNING: dcg failed - Terminal security degraded. Later: node scripts\ensure-dcg.mjs --user"
+    Log "[maou] WARNING: dcg failed - Terminal security degraded."
   }
 }
 
@@ -114,34 +130,33 @@ if (Test-Path $ensureRg) {
   Log "[maou] ensuring rg (ripgrep)..."
   $rgProcess = Start-Process -FilePath "node" -ArgumentList @($ensureRg, "--user") -NoNewWindow -PassThru -Wait
   if ($rgProcess.ExitCode -ne 0) {
-    Log "[maou] WARNING: rg failed - grep falls back to Node.js. Later: node scripts\ensure-rg.mjs --user"
+    Log "[maou] WARNING: rg failed - grep falls back to Node.js."
   }
 }
 
-# sqry: required for Coding Agent find_code
 $ensureSqry = Join-Path $repoRoot "scripts\ensure-sqry.mjs"
 if (Test-Path $ensureSqry) {
   Log "[maou] ensuring sqry (find_code)..."
   $sqryProcess = Start-Process -FilePath "node" -ArgumentList @($ensureSqry, "--user") -NoNewWindow -PassThru -Wait
   if ($sqryProcess.ExitCode -ne 0) {
-    Log "[maou] ensure-sqry failed, try cargo install sqry-cli..."
+    Log "[maou] ensure-sqry failed, try cargo install sqry-cli if cargo exists..."
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
     if ($cargo) {
       & cargo install sqry-cli
-      if ($LASTEXITCODE -ne 0) {
-        throw "sqry install failed — find_code unavailable. Manual: node scripts\ensure-sqry.mjs --user"
-      }
-      $cargoSqry = Join-Path $env:USERPROFILE ".cargo\bin\sqry.exe"
-      if (Test-Path $cargoSqry) {
-        Copy-Item $cargoSqry (Join-Path $binDir "sqry.exe") -Force
+      if ($LASTEXITCODE -eq 0) {
+        $cargoSqry = Join-Path $env:USERPROFILE ".cargo\bin\sqry.exe"
+        if (Test-Path $cargoSqry) {
+          Copy-Item $cargoSqry (Join-Path $binDir "sqry.exe") -Force
+        }
+      } else {
+        Log "[maou] WARNING: sqry install failed"
       }
     } else {
-      throw "sqry install failed and no cargo. Manual: node scripts\ensure-sqry.mjs --user"
+      Log "[maou] WARNING: sqry unavailable (no prebuild/cargo)"
     }
   }
 }
 
-# Always ensure User PATH has ~/.maou/bin and ~/.local/bin (no manual GUI setup)
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (-not $userPath) { $userPath = "" }
 $need = @($binDir, (Join-Path $homeDir ".local\bin"))
@@ -154,7 +169,6 @@ foreach ($d in $need) {
 }
 if ($changed) {
   [Environment]::SetEnvironmentVariable("Path", $userPath, "User")
-  # Notify Windows that User PATH changed (helps some shells/apps pick it up)
   try {
     Add-Type -Namespace Win32 -Name Native -MemberDefinition @"
 [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
@@ -165,21 +179,20 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
     $result = [UIntPtr]::Zero
     [void][Win32.Native]::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, "Environment", 2, 5000, [ref]$result)
   } catch { }
-  Log "[maou] Updated User PATH (new PowerShell/CMD windows pick this up automatically)"
+  Log "[maou] Updated User PATH"
 }
-# Current session: prepend so `maou` works immediately after install
 $env:Path = "$binDir;$(Join-Path $homeDir '.local\bin');$env:Path"
 
 Log ""
-Log "Install finished. Default TUI is Ratatui."
+Log "Install finished."
 if (Get-Command maou -ErrorAction SilentlyContinue) {
-  Log "  maou is ready NOW: $((Get-Command maou).Source)"
-  Log "  try: maou doctor"
+  Log "  maou is ready: $((Get-Command maou).Source)"
 } else {
-  Log "  Open a NEW PowerShell window, then: maou doctor"
-  Log "  (or this session: `$env:Path = `"$binDir;`$env:Path`")"
+  Log "  Open a NEW PowerShell, then: maou doctor"
 }
-Log "  maou doctor     # Core / Terminal / Coding (sqry required)"
-Log "  maou setup"
-Log "  maou coding"
+Log "  maou doctor / maou setup / maou coding"
+Log ""
+Log "Natives: downloaded from GitHub Release 'native-prebuilds' (no Rust required)."
+Log "Dev local build: `$env:MAOU_BUILD_NATIVE=1; .\scripts\install.ps1"
+Log "See docs/NATIVE_PREBUILD.md"
 Log "Done."

@@ -1,5 +1,6 @@
 param(
-  [switch]$KeepTarget
+  [switch]$KeepTarget,
+  [switch]$FromSource
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,7 +14,8 @@ function Die([string]$m) { Write-Host "error: $m" -ForegroundColor Red; exit 1 }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Die "need Node.js >= 20" }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Die "need npm" }
 if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { Die "need pnpm (npm i -g pnpm)" }
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { Die "need Rust (cargo not found)" }
+$PreferPrebuild = -not $FromSource
+$HasCargo = [bool](Get-Command cargo -ErrorAction SilentlyContinue)
 
 $cargoTmp = Join-Path $env:TEMP ("maou-cargo-target-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 $env:CARGO_TARGET_DIR = $cargoTmp
@@ -64,8 +66,21 @@ if (Test-Path $ensure) {
   node $ensure
 }
 
+$teOk = $false
+if ($PreferPrebuild) {
+  $ensureTe = Join-Path $Root "scripts\ensure-terminal-engine.mjs"
+  if (Test-Path $ensureTe) {
+    Log "[build-native] terminal-engine: try prebuild download..."
+    node $ensureTe
+    $teNode = Join-Path $Root "terminal-engine\terminal_engine.win32-x64-msvc.node"
+    if (Test-Path $teNode) { $teOk = $true }
+  }
+}
 $te = Join-Path $Root "terminal-engine"
-if (Test-Path $te) {
+if (-not $teOk -and (Test-Path $te)) {
+  if (-not $HasCargo) {
+    Die "terminal-engine missing and no cargo. Publish prebuilds (docs/NATIVE_PREBUILD.md) or install Rust + VS Build Tools."
+  }
   Log "[build-native] terminal-engine (cargo build, release)..."
   Push-Location $te
   try {
@@ -78,14 +93,28 @@ if (Test-Path $te) {
   $teNode = Join-Path $te "terminal_engine.win32-x64-msvc.node"
   if (Test-Path $dll) {
     Copy-Item $dll $teNode -Force
+    Copy-Item $dll (Join-Path $te "terminal-engine.win32-x64-msvc.node") -Force -ErrorAction SilentlyContinue
   }
   if (-not (Test-Path $teNode)) {
     Die "terminal-engine .node missing: $teNode"
   }
 }
 
+$tuiOk = $false
+if ($PreferPrebuild) {
+  $ensureTui = Join-Path $Root "scripts\ensure-maou-tui.mjs"
+  if (Test-Path $ensureTui) {
+    Log "[build-native] maou-tui: try prebuild download..."
+    node $ensureTui
+    $userTui = Join-Path $env:USERPROFILE ".maou\bin\maou-tui-ratatui.exe"
+    if (Test-Path $userTui) { $tuiOk = $true }
+  }
+}
 $rt = Join-Path $Root "cli\tui-ratatui"
-if (Test-Path $rt) {
+if (-not $tuiOk -and (Test-Path $rt)) {
+  if (-not $HasCargo) {
+    Die "maou-tui missing and no cargo. Publish prebuilds or install Rust."
+  }
   Log "[build-native] maou-tui-ratatui (release)..."
   Push-Location (Join-Path $Root "cli")
   try {

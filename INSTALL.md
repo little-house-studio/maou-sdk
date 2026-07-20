@@ -5,9 +5,10 @@
 **原则**：
 
 - **Core（必须）**：JS monorepo `pnpm -r build` + `cli/dist` — **失败则安装 exit 1**，不写假成功。
-- **Terminal / Optional**：用户本机构建；失败则 **降级运行**，`maou doctor` 标 `△`。
-- **不**发布 terminal-engine / node-pty / ratatui 等环境相关预编译。
-- **dcg** 从 GitHub Release 直链下载。
+- **Terminal / TUI（默认预编译）**：`ensure-terminal-engine` / `ensure-maou-tui` 从 GitHub Release **`native-prebuilds`** 下载；**普通用户无需 Rust / VS Build Tools**。
+- **本机构建（可选）**：`MAOU_BUILD_NATIVE=1` 或 `build-native.sh --from-source`（开发改引擎时）。
+- **dcg / rg / sqry** 仍从各自 Release / 脚本拉取。
+- 详见 [`docs/NATIVE_PREBUILD.md`](docs/NATIVE_PREBUILD.md)。
 
 ## 磁盘占用（Git 下载 + 构建后目标 &lt; 1GB）
 
@@ -73,7 +74,7 @@ bash scripts/build-native.sh
 
 ### Windows（原生 PowerShell，不要 WSL）
 
-建议先装：Node 20、pnpm、Git；完整终端再加 Rust(MSVC)+VS C++ Build Tools。
+建议先装：Node 20、pnpm、Git。**默认 install 不要求 Rust / VS Build Tools**（拉预编译）。
 
 ```powershell
 git clone <maou-sdk-url>
@@ -85,6 +86,8 @@ maou setup
 maou coding
 ```
 
+本机构建原生（可选）：`$env:MAOU_BUILD_NATIVE=1` 后再跑 install，或 `scripts\build-native.ps1 -FromSource`。
+
 ---
 
 ## 更新（Git clone 用户）
@@ -93,11 +96,11 @@ maou coding
 
 ```bash
 maou update --check      # fetch + 显示 ahead/behind（允许脏工作区）
-maou update              # 干净工作区 → pull(若落后) → build-native
+maou update              # 干净工作区 → pull(若落后) → 重建 / 拉预编译
 maou update --force      # stash -u 后 pull（之后自行 git stash pop）
 maou update --no-build   # 只 git，不构建
 maou update --js-only    # pull + 仅 JS
-maou update --full       # pull + 含 ratatui
+maou update --full       # pull + 含完整 native 路径
 ```
 
 成功后**手动退出** `maou coding` 再开（不自动杀进程）。

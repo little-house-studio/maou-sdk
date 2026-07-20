@@ -1,0 +1,170 @@
+# 多平台预编译 terminal-engine + maou-tui-ratatui，上传到 GitHub Release `native-prebuilds`
+#
+# 触发：
+#   - workflow_dispatch（手动）
+#   - push tags: native-v* / v*
+#   - push to develop（滚动更新 native-prebuilds，可选）
+#
+# 用户侧：node scripts/ensure-terminal-engine.mjs / ensure-maou-tui.mjs
+
+name: Native prebuilds
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "native-v*"
+      - "v*"
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: darwin-arm64
+            os: macos-14
+            te_asset: terminal_engine.darwin-arm64.node
+            tui_asset: maou-tui-ratatui-darwin-arm64
+            te_lib: libterminal_engine.dylib
+            tui_bin: maou-tui-ratatui
+          - name: darwin-x64
+            os: macos-13
+            te_asset: terminal_engine.darwin-x64.node
+            tui_asset: maou-tui-ratatui-darwin-x64
+            te_lib: libterminal_engine.dylib
+            tui_bin: maou-tui-ratatui
+          - name: linux-x64
+            os: ubuntu-22.04
+            te_asset: terminal_engine.linux-x64-gnu.node
+            tui_asset: maou-tui-ratatui-linux-x64
+            te_lib: libterminal_engine.so
+            tui_bin: maou-tui-ratatui
+          - name: win32-x64
+            os: windows-latest
+            te_asset: terminal_engine.win32-x64-msvc.node
+            tui_asset: maou-tui-ratatui-win32-x64.exe
+            te_lib: terminal_engine.dll
+            tui_bin: maou-tui-ratatui.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build terminal-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd terminal-engine
+          cargo build --release
+          mkdir -p ../dist-native
+          SRC="target/release/${{ matrix.te_lib }}"
+          if [[ ! -f "$SRC" ]]; then
+            echo "missing $SRC"
+            ls -la target/release/ || true
+            exit 1
+          fi
+          cp "$SRC" "../dist-native/${{ matrix.te_asset }}"
+          # hyphen twin for load.mjs
+          HYPHEN=$(echo "${{ matrix.te_asset }}" | sed 's/terminal_engine/terminal-engine/')
+          cp "$SRC" "../dist-native/${HYPHEN}"
+          ls -la ../dist-native/
+
+      - name: Build maou-tui-ratatui
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path cli/tui-ratatui/Cargo.toml
+          SRC="cli/tui-ratatui/target/release/${{ matrix.tui_bin }}"
+          if [[ ! -f "$SRC" ]]; then
+            SRC="target/release/${{ matrix.tui_bin }}"
+          fi
+          if [[ ! -f "$SRC" ]]; then
+            echo "missing tui binary; searching..."
+            find . -name 'maou-tui-ratatui*' -type f 2>/dev/null | head -30
+            exit 1
+          fi
+          mkdir -p dist-native
+          cp "$SRC" "dist-native/${{ matrix.tui_asset }}"
+          # unix: ensure not empty
+          ls -la "dist-native/${{ matrix.tui_asset }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.name }}
+          path: dist-native/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bundled
+          merge-multiple: true
+
+      - name: List + checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist-native
+          # artifacts may be nested per job
+          find bundled -type f -exec cp -v {} dist-native/ \;
+          cd dist-native
+          ls -la
+          sha256sum * > SHA256SUMS.txt || shasum -a 256 * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=native-prebuilds" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Native prebuilds (${{ steps.tag.outputs.name }})
+          prerelease: ${{ steps.tag.outputs.name == 'native-prebuilds' }}
+          generate_release_notes: true
+          files: dist-native/*
+          body: |
+            预编译原生组件（用户 **无需** 安装 Rust / VS Build Tools）。
+
+            安装端自动下载：
+            ```bash
+            node scripts/ensure-terminal-engine.mjs
+            node scripts/ensure-maou-tui.mjs
+            ```
+
+            或：`bash scripts/install.sh` / `scripts\install.ps1`
+
+            | 资产 | 说明 |
+            |------|------|
+            | `terminal_engine.*.node` | use_terminal 引擎 |
+            | `maou-tui-ratatui-*` | Ratatui CLI TUI |
+            | `SHA256SUMS.txt` | 校验和 |
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

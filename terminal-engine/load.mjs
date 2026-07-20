@@ -73,16 +73,21 @@ function tryLoad() {
 }
 
 function rebuildHint() {
-  return process.platform === "win32"
-    ? "powershell -ExecutionPolicy Bypass -File scripts\\build-native.ps1"
-    : "bash scripts/build-native.sh";
+  return (
+    "node scripts/ensure-terminal-engine.mjs\n" +
+    "  （预编译；无需 Rust。若 Release 尚无资产，维护者先跑 GitHub Actions「Native prebuilds」）\n" +
+    "  本机构建（需 Rust）: MAOU_BUILD_NATIVE=1 node scripts/ensure-terminal-engine.mjs --build\n" +
+    (process.platform === "win32"
+      ? "  或: powershell -ExecutionPolicy Bypass -File scripts\\build-native.ps1"
+      : "  或: bash scripts/build-native.sh")
+  );
 }
 
 function unavailable(name) {
   return (..._args) => {
     throw new Error(
       `[terminal-engine] 原生模块未加载，无法调用 ${name}（${process.platform}/${process.arch}）。\n` +
-        `  请在 maou-sdk 根目录执行: ${rebuildHint()}\n` +
+        `  请在 maou-sdk 根目录执行:\n  ${rebuildHint()}\n` +
         (loadError ? `  原因: ${loadError}` : ""),
     );
   };
@@ -109,7 +114,7 @@ export const initEngine =
     if (!nativeBinding) {
       console.warn(
         `[terminal-engine] 原生模块不可用（${process.platform}/${process.arch}）。` +
-          `终端工具将失败直到重新编译: ${rebuildHint()}`,
+          `请运行: node scripts/ensure-terminal-engine.mjs`,
       );
     }
   });

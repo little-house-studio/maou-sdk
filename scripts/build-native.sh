@@ -25,7 +25,14 @@ die() { log "error: $*"; exit 1; }
 
 command -v node >/dev/null || die "need Node.js >= 20"
 command -v npm >/dev/null || die "need npm"
-command -v cargo >/dev/null || die "Rust required. Install: https://www.rust-lang.org/tools/install"
+
+# 默认先尝试预编译；仅在需要本机构建时才强制 cargo
+PREFER_PREBUILD=1
+for a in "$@"; do
+  case "$a" in
+    --from-source|--force-build) PREFER_PREBUILD=0 ;;
+  esac
+done
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${TMPDIR:-/tmp}/maou-cargo-target-$$}"
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
@@ -71,7 +78,14 @@ if [[ -f scripts/ensure-dcg.mjs ]]; then
   node scripts/ensure-dcg.mjs || die "dcg install failed"
 fi
 
-if [[ -d terminal-engine ]]; then
+# ── terminal-engine：预编译优先 ──────────────────────────────────────────
+_te_ok=0
+if [[ "$PREFER_PREBUILD" -eq 1 && -f scripts/ensure-terminal-engine.mjs ]]; then
+  log "[build-native] terminal-engine：尝试预编译下载…"
+  node scripts/ensure-terminal-engine.mjs && _te_ok=1 || true
+fi
+if [[ "$_te_ok" -eq 0 && -d terminal-engine ]]; then
+  command -v cargo >/dev/null || die "Rust required for local terminal-engine build. Or publish prebuilds (docs/NATIVE_PREBUILD.md)."
   log "[build-native] terminal-engine (cargo build, release)…"
   if ! (cd terminal-engine && cargo build --release); then
     die "terminal-engine build failed. Check Rust installation."
@@ -92,18 +106,29 @@ if [[ -d terminal-engine ]]; then
   esac
   if [[ -f "$_dll" ]]; then
     cp "$_dll" "terminal-engine/$_node"
+    cp "$_dll" "terminal-engine/terminal-engine.${_node#terminal_engine.}" 2>/dev/null || true
   fi
   if [[ ! -f "terminal-engine/$_node" ]]; then
     die "terminal-engine .node missing: terminal-engine/$_node"
   fi
 fi
 
-if [[ -d cli/tui-ratatui ]]; then
+# ── maou-tui：预编译优先 ────────────────────────────────────────────────
+_tui_ok=0
+if [[ "$PREFER_PREBUILD" -eq 1 && -f scripts/ensure-maou-tui.mjs ]]; then
+  log "[build-native] maou-tui：尝试预编译下载…"
+  node scripts/ensure-maou-tui.mjs && _tui_ok=1 || true
+fi
+if [[ "$_tui_ok" -eq 0 && -d cli/tui-ratatui ]]; then
+  command -v cargo >/dev/null || die "Rust required for local ratatui build. Or publish prebuilds."
   log "[build-native] maou-tui-ratatui (release)…"
   if ! (cd cli && npm run build:tui-ratatui); then
     die "ratatui build failed. Check Rust installation."
   fi
   _ratatui_bin="${CARGO_TARGET_DIR}/release/maou-tui-ratatui"
+  if [[ ! -f "$_ratatui_bin" ]]; then
+    _ratatui_bin="cli/tui-ratatui/target/release/maou-tui-ratatui"
+  fi
   if [[ ! -f "$_ratatui_bin" ]]; then
     die "ratatui binary missing: $_ratatui_bin"
   fi
