@@ -109,6 +109,31 @@ export function completeApiUrl(url: string, protocol: APIProtocol = "openai"): s
     return base;
   }
 
+  // OpenAI Responses（新路径，模糊 URL 支持）
+  if (np === "responses") {
+    if (path.endsWith("/v1/responses")) return base;
+    if (/\/v1$/.test(path)) return base + "/responses";
+    if (!path.includes("/v1")) return base + "/v1/responses";
+    return base;
+  }
+
+  // OpenAI chat/completions（更鲁棒的模糊补全）
+  if (np === "openai") {
+    if (path.endsWith("/chat/completions")) return base;
+    if (/\/chat$/.test(path)) return base + "/chat/completions";
+    if (/\/v1$/.test(path)) return base + "/chat/completions";
+    if (!path.includes("/v1") && !path.includes("/chat")) return base + "/v1/chat/completions";
+    return base;
+  }
+
+  // OpenAI Responses（新路径，模糊 URL 支持）
+  if (np === "responses") {
+    if (path.endsWith("/v1/responses")) return base;
+    if (/\/v1$/.test(path)) return base + "/responses";
+    if (!path.includes("/v1")) return base + "/v1/responses";
+    return base;
+  }
+
   if (np === "mistral") {
     // Mistral: https://api.mistral.ai/v1/chat/completions
     if (path.includes("/chat")) return base;
