@@ -41,6 +41,38 @@ import { notePaintFrame } from "../hooks/process-stats.js";
 import { resolveKeyBinding } from "../config/keybindings.js";
 import { commandOpensOverlay } from "../config/cli-commands.js";
 import { userMaouRoot } from "../config/paths.js";
+import { rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import {
+  agentPresenceKey,
+  markAgentRunning,
+  markAgentDone,
+  markAgentViewed,
+  markAgentBlocked,
+  markAgentReplied,
+} from "../state/agent-presence.js";
+
+/** 删除项目子 agent 目录（防呆已在调用方完成） */
+async function deleteProjectSubAgent(switchId: string): Promise<void> {
+  // project:/abs/path:name 或 system:name
+  if (switchId.startsWith("system:")) {
+    throw new Error("系统 Agent 不可删除");
+  }
+  if (!switchId.startsWith("project:")) {
+    throw new Error("只能删除项目子 Agent");
+  }
+  const rest = switchId.slice("project:".length);
+  const lastColon = rest.lastIndexOf(":");
+  if (lastColon <= 0) throw new Error("无效 id");
+  const projectPath = rest.slice(0, lastColon);
+  const agentName = rest.slice(lastColon + 1);
+  if (!agentName || agentName === "coding" || agentName === "main") {
+    throw new Error("项目主 Agent 不可从此处删除");
+  }
+  const dir = join(projectPath, ".maou", "agents", agentName);
+  if (!existsSync(dir)) throw new Error("目录不存在");
+  rmSync(dir, { recursive: true, force: false });
+}
 
 export interface RunRatatuiOpts {
   config: AgentCliConfig;
@@ -337,6 +369,9 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     }
   });
 
+  process.stderr.write("[maou] spawning TUI…\n");
+  let tuiReady = false;
+  let stderrLines = 0;
   session = spawnRatatui(
     {
       cwd,
@@ -346,16 +381,29 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     },
     async (msg) => {
       const type = String(msg.type ?? "");
+      stderrLines += 1;
 
       if (type === "ready") {
-        // 子进程就绪：立刻推含 perf_lines 的完整 state（采样器已在 boot 时 tick）
+        tuiReady = true;
+        process.stderr.write("[maou] TUI ready\n");
+        // 子进程就绪：立刻推完整 state
         lastSig = "";
-        pushState(undefined, true);
+        try {
+          pushState(undefined, true);
+        } catch (e) {
+          process.stderr.write(
+            `[maou] pushState on ready failed: ${e instanceof Error ? e.message : e}\n`,
+          );
+        }
         // 再短延迟推一次，覆盖首个 2s 窗后的 mem/cpu
         setTimeout(() => {
           if (!session || session.isDead?.()) return;
           lastSig = "";
-          pushState(undefined, true);
+          try {
+            pushState(undefined, true);
+          } catch {
+            /* ignore */
+          }
         }, 100);
         return;
       }
@@ -732,11 +780,59 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         // optional: analytics only; scroll handled in Rust
         return;
       }
+      if (type === "clipboard") {
+        // Rust no longer links arboard/AppKit — Node writes system pasteboard.
+        const text = String(msg.text ?? "");
+        if (text) {
+          try {
+            const { copyToClipboard } = await import("../input/osc52.js");
+            copyToClipboard(text);
+          } catch {
+            /* ignore */
+          }
+        }
+        return;
+      }
       if (type === "log") {
         process.stderr.write(`[ratatui] ${String(msg.text ?? "")}\n`);
       }
     },
   );
+
+  // 不等 ready：spawn 后立刻推一帧，避免备用屏黑着像「卡住」
+  // （ready 到达后还会 force 再推）
+  setImmediate(() => {
+    if (!session || session.isDead?.()) return;
+    try {
+      lastSig = "";
+      pushState(undefined, true);
+      process.stderr.write("[maou] initial state pushed\n");
+    } catch (e) {
+      process.stderr.write(
+        `[maou] initial push failed: ${e instanceof Error ? e.message : e}\n`,
+      );
+    }
+  });
+  // ready 超时看门狗
+  const readyWatch = setTimeout(() => {
+    if (!session || session.isDead?.() || tuiReady) return;
+    const pid = session.child?.pid ?? "?";
+    const exitCode = session.child?.exitCode;
+    process.stderr.write(
+      `[maou] ⚠ 仍未收到 TUI ready（pid=${pid} exit=${exitCode ?? "running"} stderrMsgs=${stderrLines}）\n` +
+        "  若界面黑屏：在终端执行 reset；或 MAOU_SKIP_SESSION_RESTORE=1 maou\n" +
+        "  若系统里有大量僵死 maou-tui-ratatui（ps 里 UE 状态）：请重启终端或整机后再试\n" +
+        "  并确认二进制无 AppKit：otool -L ~/.maou/bin/maou-tui-ratatui | grep -i AppKit 应为空\n" +
+        "  重编：cd maou-sdk/cli && npm run build:tui-ratatui\n",
+    );
+    try {
+      lastSig = "";
+      pushState(undefined, true);
+    } catch {
+      /* ignore */
+    }
+  }, 2000);
+  session.child.on("exit", () => clearTimeout(readyWatch));
 
   // 子进程异常退出时立刻停掉后续 push，并提示退出码（避免干到一半只看到 EPIPE）
   session.child.on("exit", (code, signal) => {
@@ -793,6 +889,9 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     pushState(undefined, true);
   }
 
+  /** 删除子 agent 防呆：第一次 D 记下目标，第二次 D 同目标才删 */
+  let pendingDeleteTarget: string | null = null;
+
   async function handleOverlayAction(action: string, value: string) {
     const store = useStore.getState();
     const kind = store.overlay;
@@ -801,9 +900,38 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       store.setOverlay(null);
       modelProvider = null;
       promptSectionIndex = 0;
+      pendingDeleteTarget = null;
       pushState(undefined, true);
       return;
     }
+
+    // Agent 页：停止 / 删除（不经过 select）
+    if (kind === "agents" && action === "stop") {
+      cli.abort();
+      store.toastMsg("已请求停止当前 Agent", "warn");
+      pushState(undefined, true);
+      return;
+    }
+    if (kind === "agents" && action === "delete") {
+      if (!value || value.startsWith("__")) return;
+      if (pendingDeleteTarget !== value) {
+        pendingDeleteTarget = value;
+        store.toastMsg("再按一次 D 确认删除（不可恢复）", "warn");
+        pushState(undefined, true);
+        return;
+      }
+      pendingDeleteTarget = null;
+      try {
+        await deleteProjectSubAgent(value);
+        store.toastMsg(`已删除 ${value.split(":").pop() ?? value}`, "ok");
+      } catch (e) {
+        store.toastMsg(`删除失败: ${String(e).slice(0, 60)}`, "err");
+      }
+      lastSig = "";
+      pushState(undefined, true);
+      return;
+    }
+
     // prompt 分段切换
     if (kind === "prompt" && (action === "section_prev" || action === "section_next" || action === "section_goto")) {
       const ov = buildOverlay("prompt", opts.config, store.agentName, {
@@ -895,14 +1023,33 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         return;
       }
       if (kind === "agents") {
-        if (value === "__subs__") return;
+        if (value.startsWith("__hdr_") || value.startsWith("__sp_") || value.startsWith("__fold_") || value === "__subs__") {
+          return;
+        }
         if (value.startsWith("sub:")) {
           store.toastMsg("子 agent 由 main agent 调度，无法独立切换", "info");
           store.setOverlay(null);
           pushState(undefined, true);
           return;
         }
-        store.requestAgentSwitch(value);
+        // system:ops | project:/abs/path:coding | 裸名字
+        let agentName = value;
+        let projectRoot: string | null = null;
+        if (value.startsWith("system:")) {
+          agentName = value.slice("system:".length);
+          projectRoot = null;
+        } else if (value.startsWith("project:")) {
+          const rest = value.slice("project:".length);
+          const lastColon = rest.lastIndexOf(":");
+          if (lastColon > 0) {
+            projectRoot = rest.slice(0, lastColon);
+            agentName = rest.slice(lastColon + 1);
+          }
+        }
+        // 切换前标记当前已查看
+        const { agentPresenceKey, markAgentViewed } = await import("../state/agent-presence.js");
+        markAgentViewed(agentPresenceKey(store.agentName, store.agentProjectRoot));
+        store.requestAgentSwitch(agentName, projectRoot);
         // 不在 UI 选择瞬间中止当前工作；切换在本轮结束后由订阅器落地。
         store.setOverlay(null);
         pushState(undefined, true);
@@ -1001,19 +1148,27 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
 
   // agent 切换 nonce：send() 整段不中断（含 supervisor），待 agentBusy 结束后再切。
   let lastSwitch = useStore.getState().agentSwitchNonce;
-  let queuedSwitch: string | null = null;
-  const applyAgentSwitch = (name: string) => {
+  let queuedSwitch: { name: string; projectRoot: string | null } | null = null;
+  const applyAgentSwitch = (name: string, projectRoot: string | null = null) => {
     const s = useStore.getState();
     cli.resetAgent();
     const cur = s.agentName;
-    if (cur && cur !== name) s.saveCurrentSession(cur);
-    const restored = s.restoreSession(name);
+    // 缓存 key：项目 agent 带路径，避免不同项目同名 coding 撞车
+    const cacheKey = projectRoot ? `${projectRoot}::${name}` : name;
+    const curKey = s.agentProjectRoot ? `${s.agentProjectRoot}::${cur}` : cur;
+    if (cur && curKey !== cacheKey) s.saveCurrentSession(curKey);
+    // 离开当前 / 进入目标：更新已读态
+    markAgentViewed(agentPresenceKey(cur, s.agentProjectRoot));
+    s.setAgentProjectRoot(projectRoot);
+    markAgentViewed(agentPresenceKey(name, projectRoot));
+    const restored = s.restoreSession(cacheKey);
     if (!restored) s.clearMessages();
     s.clearPendingMessages();
     s.setAgentMeta(name, "", "", 0);
     if (!restored) {
       s.setSessionId(null);
-      s.toastMsg(`切换到 ${name}（新会话）`, "ok");
+      const where = projectRoot ? `项目 ${projectRoot.split("/").pop()}` : "系统";
+      s.toastMsg(`切换到 ${name}（${where}）`, "ok");
     }
     s.clearPendingAgentSwitch();
     s.setOverlay(null);
@@ -1023,19 +1178,20 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     if (s.agentSwitchNonce !== lastSwitch) {
       lastSwitch = s.agentSwitchNonce;
       const name = s.pendingAgentName;
+      const projectRoot = s.pendingAgentProjectRoot ?? null;
       if (name) {
         // agentBusy 覆盖 streaming：supervisor 间隙 streaming 可能短暂 false
         if (s.agentBusy || s.streaming) {
-          queuedSwitch = name;
+          queuedSwitch = { name, projectRoot };
           s.toastMsg(`当前任务继续运行，完成后切换到 ${name}`, "info");
         } else {
-          applyAgentSwitch(name);
+          applyAgentSwitch(name, projectRoot);
         }
       }
       return;
     }
     if (queuedSwitch && !s.agentBusy && !s.streaming) {
-      applyAgentSwitch(queuedSwitch);
+      applyAgentSwitch(queuedSwitch.name, queuedSwitch.projectRoot);
     }
   });
 

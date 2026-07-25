@@ -75,11 +75,16 @@ describe("themes/<name>.json", () => {
     expect(t.id).toBe("tau-ceti");
   });
 
-  it("Ops 内置主题使用橙红主色", () => {
+  it("Ops 内置主题：中性灰底 + 橙红重点色", () => {
     const t = resolveThemeArg("ops-ember");
     expect(t.id).toBe("ops-ember");
+    // 重点色橙红
     expect(t.tokens.accent.toUpperCase()).toBe("#FF5A36");
     expect(t.tokens.accent2.toUpperCase()).toBe("#FF8A3D");
+    // 底色与 coding 默认一致（不整屏泛红）
+    expect(t.tokens.bg.toUpperCase()).toBe("#1A1A1A");
+    expect(t.tokens.panelBg.toUpperCase()).toBe("#26241F");
+    expect(t.tokens.fg.toUpperCase()).toBe("#C8C4B6");
   });
 
   it("Nav 配色：agent 橙红 · 会话米黄 · 设置黄绿", () => {

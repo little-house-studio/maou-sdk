@@ -249,11 +249,11 @@ export function decideCommand(command: string, agent: string, modeOverride?: Ter
     return { action: "deny", matched: bl, reason: `命中黑名单条目「${bl}」` };
   }
 
-  // 非名单 —— auto 模式标记为待定（小模型审核 + "原样重试放行"语义）；
-  // normal 模式 ask 不标记：agent loop 里模型拿到 ask 后常原样重试，若 markBlocked 会自动入白名单，
-  // 绕过用户确认，安全语义被架空。normal 的放行只走 addToWhitelist 显式确认路径。
+  // 非名单 —— auto：交给小模型审核（不在此处 markBlocked）。
+  // 若先 markBlocked，AI 拒绝后再原样重试会走「重复放行→入白名单」，
+  // 直接绕过 recordReviewReject 的黑名单，安全语义失效。
+  // normal 的 ask 也不 markBlocked：agent loop 常原样重试，mark 会自动入白名单。
   if (mode === "auto") {
-    markBlocked(agent, norm);
     return { action: "review" };
   }
   return { action: "ask" };

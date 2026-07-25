@@ -1,14 +1,18 @@
 /**
  * CLI 终端命令交互审批 —— 注入 tools 的 setTerminalApprover。
  *
- * normal 模式下 use_terminal 遇到 ask / 危险待确认时会 await 本模块：
- * 弹出底部审批条，用户选允许/拒绝后 Promise resolve，agent loop 才继续。
+ * normal：弹出底部审批条，等人点允许/拒绝。
+ * auto：绝不弹人手卡；转交小模型审核器（helper），全自动。
+ * yolo：直接放行（致命级仍由 tools 门禁硬拦，不会进到本 approver）。
+ *
  * 未注入时（旧行为）工具立刻返回拦截文案，模型只会换姿势重试，永远停不下来。
  */
 
 import {
   setTerminalApprover,
   setTerminalPolicyRoot,
+  getTerminalReviewer,
+  getTerminalMode,
   type TerminalApprover,
 } from "@little-house-studio/tools";
 import { useStore } from "../state/store.js";
@@ -70,6 +74,15 @@ export function answerTerminalApproval(
   if (store.terminalApproval?.id === id) {
     store.setTerminalApproval(null);
   }
+  try {
+    void import("../state/agent-presence.js").then((m) => {
+      const st = useStore.getState();
+      m.markAgentBlocked(
+        m.agentPresenceKey(st.agentName, st.agentProjectRoot),
+        false,
+      );
+    });
+  } catch { /* ignore */ }
 
   switch (choice) {
     case "once":
@@ -106,14 +119,79 @@ export function cancelAllTerminalApprovals(reason = "cancelled"): void {
  * 用户上次选的 yolo 写在 terminal-policy.json；若 boot 时 store 仍是
  * 默认 normal 却 setTerminalMode(normal)，会把 YOLO 冲掉，下一轮又弹审批。
  */
+/**
+ * 解析当前应生效的审核模式。
+ * 优先 UI store（用户 Shift+Tab 刚切的），再回落磁盘 policy。
+ * 这样即便 tool 侧 sandboxMode 丢了/过期，auto 也不会误弹人手卡。
+ */
+function resolveEffectiveApprovalMode(agentName?: string): "normal" | "auto" | "yolo" {
+  const storeMode = useStore.getState().approvalMode;
+  if (storeMode === "auto" || storeMode === "yolo" || storeMode === "normal") {
+    return storeMode;
+  }
+  try {
+    const agent = resolveAgentName(agentName, DEFAULT_AGENT_NAME);
+    const disk = getTerminalMode(agent);
+    if (disk === "auto" || disk === "yolo" || disk === "normal") return disk;
+  } catch {
+    /* ignore */
+  }
+  return "normal";
+}
+
 export function installCliTerminalApprover(): void {
   // 策略文件根：userMaouRoot()/agents/<agent>/terminal-policy.json
   try {
     setTerminalPolicyRoot(userMaouRoot());
   } catch { /* ignore */ }
 
-  const approver: TerminalApprover = (command, ctx) =>
-    new Promise((resolve, reject) => {
+  const approver: TerminalApprover = async (command, ctx) => {
+    const mode = resolveEffectiveApprovalMode(ctx.agentName);
+
+    // ── auto：AI 审核，绝不弹人手卡 ──────────────────────────────
+    if (mode === "auto") {
+      const reviewer = getTerminalReviewer();
+      if (!reviewer) {
+        useStore.getState().toastMsg(
+          "auto 模式：未配置审核模型，已拒绝命令（不弹审批卡）",
+          "warn",
+        );
+        return { approve: false, persist: "none" };
+      }
+      try {
+        useStore.getState().toastMsg("auto 审核中…", "info");
+        const verdict = await reviewer(command, {
+          agentName: resolveAgentName(ctx.agentName, APPROVAL_AGENT_FALLBACK),
+          cwd: ctx.cwd,
+        });
+        useStore.getState().toastMsg(
+          verdict.approve
+            ? `auto 已放行：${(verdict.reason || "").slice(0, 40)}`
+            : `auto 已拒绝：${(verdict.reason || "").slice(0, 40)}`,
+          verdict.approve ? "ok" : "warn",
+        );
+        return {
+          approve: verdict.approve,
+          // AI 放行：按命令类写白名单，减少同类重复审核；拒绝不写黑名单
+          // （黑名单由 tools recordReviewReject 负责）
+          persist: verdict.approve ? "whitelist" : "none",
+        };
+      } catch (err) {
+        useStore.getState().toastMsg(
+          `auto 审核异常：${String(err).slice(0, 40)}`,
+          "err",
+        );
+        return { approve: false, persist: "none" };
+      }
+    }
+
+    // ── yolo：不问（致命级不会进到 approver）────────────────────
+    if (mode === "yolo") {
+      return { approve: true, persist: "none" };
+    }
+
+    // ── normal：人手审批卡 ──────────────────────────────────────
+    return new Promise((resolve, reject) => {
       const id = genId();
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -145,6 +223,16 @@ export function installCliTerminalApprover(): void {
         // 兼容旧 UI 字段
         hint: summary,
       });
+      try {
+        // 动态 import 会返回 Promise；此处用同步副作用包装避免把 approver 改成 async 链路
+        void import("../state/agent-presence.js").then((m) => {
+          const st = useStore.getState();
+          m.markAgentBlocked(
+            m.agentPresenceKey(st.agentName, st.agentProjectRoot),
+            true,
+          );
+        });
+      } catch { /* ignore */ }
       useStore
         .getState()
         .toastMsg(
@@ -154,29 +242,29 @@ export function installCliTerminalApprover(): void {
           risk === "high" ? "err" : "warn",
         );
     });
+  };
 
   setTerminalApprover(approver);
 
   // 磁盘 → UI：恢复用户上次审核模式（yolo/auto/normal）
-  void import("@little-house-studio/tools")
-    .then((m) => {
-      const agent = resolveAgentName(
-        useStore.getState().agentName,
-        DEFAULT_AGENT_NAME,
-      );
-      const diskMode = m.getTerminalMode?.(agent) as
-        | "normal"
-        | "auto"
-        | "yolo"
-        | undefined;
-      if (diskMode === "normal" || diskMode === "auto" || diskMode === "yolo") {
-        // 只改 UI，不再写回磁盘（避免把 yolo 冲成 normal 再写回）
-        useStore.setState({ approvalMode: diskMode });
-      }
-    })
-    .catch(() => {
-      /* ignore */
-    });
+  // 注意：agentName 在 boot 后应已写入；若仍空则回落 DEFAULT。
+  try {
+    const agent = resolveAgentName(
+      useStore.getState().agentName,
+      DEFAULT_AGENT_NAME,
+    );
+    const diskMode = getTerminalMode(agent) as
+      | "normal"
+      | "auto"
+      | "yolo"
+      | undefined;
+    if (diskMode === "normal" || diskMode === "auto" || diskMode === "yolo") {
+      // 只改 UI，不再写回磁盘（避免把 yolo 冲成 normal 再写回）
+      useStore.setState({ approvalMode: diskMode });
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 /** 卸载（测试 / 退出） */

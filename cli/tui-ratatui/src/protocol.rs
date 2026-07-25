@@ -317,6 +317,26 @@ pub struct SelectItem {
     pub label: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// agents 页：header | agent | sub | spacer
+    #[serde(default)]
+    pub row_kind: Option<String>,
+    #[serde(default)]
+    pub glyph: Option<String>,
+    /// idle | running | done_unread | done_read | blocked | needs_reply
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub depth: Option<u8>,
+    #[serde(default)]
+    pub overview: Option<String>,
+    #[serde(default)]
+    pub selectable: Option<bool>,
+    #[serde(default)]
+    pub can_stop: Option<bool>,
+    #[serde(default)]
+    pub can_delete: Option<bool>,
+    #[serde(default)]
+    pub stale: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -339,6 +359,9 @@ pub struct ProtoOverlay {
     /// 当前分段下标（0-based）
     #[serde(default)]
     pub section_index: Option<usize>,
+    /// agents 全屏页
+    #[serde(default)]
+    pub full_page: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -531,10 +554,15 @@ pub enum OutMsg {
     JumpPrevUser,
     Quit,
     Log { text: String },
+    /// Ask Node to write system clipboard (pbcopy / xclip / clip). Avoids AppKit in TUI.
+    Clipboard { text: String },
 }
 
 pub fn emit(msg: &OutMsg) {
+    use std::io::Write;
     if let Ok(line) = serde_json::to_string(msg) {
-        eprintln!("{line}");
+        let mut err = std::io::stderr();
+        let _ = writeln!(err, "{line}");
+        let _ = err.flush();
     }
 }

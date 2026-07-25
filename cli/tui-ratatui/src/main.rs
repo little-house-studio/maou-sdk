@@ -96,36 +96,60 @@ fn set_console_utf8() {}
 
 fn main() -> anyhow::Result<()> {
     set_console_utf8();
+    // Emit as early as possible so Node can see the process is alive even if
+    // later TTY setup stalls (previously hung before ready with AppKit/arboard).
+    emit(&OutMsg::Log {
+        text: "boot: main entered".into(),
+    });
+
     if !io::stdin().is_terminal() {
-        eprintln!(
-            "{}",
-            serde_json::json!({
-                "type": "log",
-                "text": "stdin is not a TTY — parent must spawn with stdio[0]=inherit and protocol on MAOU_TUI_IPC_FD."
-            })
-        );
+        emit(&OutMsg::Log {
+            text: "stdin is not a TTY — parent must spawn with stdio[0]=inherit and protocol on MAOU_TUI_IPC_FD.".into(),
+        });
         std::process::exit(1);
     }
 
     let tty = open_tty_writer().map_err(|e| {
-        eprintln!(
-            "{}",
-            serde_json::json!({"type":"log","text": format!("cannot open TTY: {e}")})
-        );
+        emit(&OutMsg::Log {
+            text: format!("cannot open TTY: {e}"),
+        });
         e
     })?;
+    emit(&OutMsg::Log {
+        text: "boot: tty open".into(),
+    });
 
-    enable_raw_mode()?;
+    enable_raw_mode().map_err(|e| {
+        emit(&OutMsg::Log {
+            text: format!("enable_raw_mode failed: {e}"),
+        });
+        e
+    })?;
+    emit(&OutMsg::Log {
+        text: "boot: raw mode".into(),
+    });
+
     let mut tty = tty;
     execute!(
         tty,
         EnterAlternateScreen,
         EnableMouseCapture,
         EnableBracketedPaste
-    )?;
+    )
+    .map_err(|e| {
+        emit(&OutMsg::Log {
+            text: format!("EnterAlternateScreen/mouse/paste failed: {e}"),
+        });
+        e
+    })?;
     let _ = execute!(tty, crossterm::cursor::Hide);
     let backend = CrosstermBackend::new(tty);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(backend).map_err(|e| {
+        emit(&OutMsg::Log {
+            text: format!("Terminal::new failed: {e}"),
+        });
+        e
+    })?;
 
     emit(&OutMsg::Ready {
         version: env!("CARGO_PKG_VERSION").into(),

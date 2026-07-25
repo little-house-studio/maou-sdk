@@ -9,6 +9,34 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::{Duration, Instant};
 
 impl App {
+    /// 在 overlay 列表中移动选择；agents 页跳过 header/spacer。
+    fn overlay_move_sel(&mut self, dir: i32, skip_headers: bool) {
+        let Some(o) = self.overlay.as_ref() else {
+            return;
+        };
+        let n = o.items.len();
+        if n == 0 {
+            return;
+        }
+        let mut i = self.overlay_sel as i32;
+        for _ in 0..n {
+            i += dir;
+            if i < 0 {
+                i = (n - 1) as i32;
+            } else if i >= n as i32 {
+                i = 0;
+            }
+            let it = &o.items[i as usize];
+            let selectable = it.selectable.unwrap_or(true);
+            let kind = it.row_kind.as_deref().unwrap_or("");
+            if skip_headers && (kind == "header" || kind == "spacer" || !selectable) {
+                continue;
+            }
+            self.overlay_sel = i as usize;
+            return;
+        }
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
         // full editor mode — expanded to match InputBar + FSE basics
         if self.full_editor {
@@ -156,21 +184,18 @@ impl App {
 
         // overlay
         if self.overlay.is_some() {
+            let is_agents = self.overlay.as_ref().map(|o| o.kind.as_str()) == Some("agents");
             match key.code {
                 KeyCode::Esc => {
                     emit(&OutMsg::Escape);
                     return;
                 }
                 KeyCode::Up => {
-                    self.overlay_sel = self.overlay_sel.saturating_sub(1);
+                    self.overlay_move_sel(-1, is_agents);
                     return;
                 }
                 KeyCode::Down => {
-                    if let Some(o) = &self.overlay {
-                        if !o.items.is_empty() {
-                            self.overlay_sel = (self.overlay_sel + 1).min(o.items.len() - 1);
-                        }
-                    }
+                    self.overlay_move_sel(1, is_agents);
                     return;
                 }
                 KeyCode::Enter => {
@@ -181,6 +206,10 @@ impl App {
                                 value: None,
                             });
                         } else if let Some(it) = o.items.get(self.overlay_sel) {
+                            let selectable = it.selectable.unwrap_or(true);
+                            if !selectable {
+                                return;
+                            }
                             emit(&OutMsg::OverlayAction {
                                 action: "select".into(),
                                 value: Some(it.value.clone()),
@@ -189,9 +218,33 @@ impl App {
                     }
                     return;
                 }
-                KeyCode::Right
-                    if self.overlay.as_ref().map(|o| o.kind.as_str()) == Some("agents") =>
-                {
+                KeyCode::Char('s') | KeyCode::Char('S') if is_agents => {
+                    if let Some(o) = &self.overlay {
+                        if let Some(it) = o.items.get(self.overlay_sel) {
+                            if it.can_stop.unwrap_or(false) {
+                                emit(&OutMsg::OverlayAction {
+                                    action: "stop".into(),
+                                    value: Some(it.value.clone()),
+                                });
+                            }
+                        }
+                    }
+                    return;
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') if is_agents => {
+                    if let Some(o) = &self.overlay {
+                        if let Some(it) = o.items.get(self.overlay_sel) {
+                            if it.can_delete.unwrap_or(false) {
+                                emit(&OutMsg::OverlayAction {
+                                    action: "delete".into(),
+                                    value: Some(it.value.clone()),
+                                });
+                            }
+                        }
+                    }
+                    return;
+                }
+                KeyCode::Right if is_agents => {
                     emit(&OutMsg::Escape);
                     return;
                 }

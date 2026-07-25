@@ -212,6 +212,11 @@ export interface UIState {
    */
   gallerySeed: string;
   agentName: string;
+  /**
+   * 当前绑定的项目根（ops 切到项目 coding agent 时设置）。
+   * 空/undefined = 使用产品默认 workspace（ops 固定 ~/.maou/ops，coding 用 invocation cwd）。
+   */
+  agentProjectRoot?: string | null;
   provider: string;
   model: string;
   maxContext: number;

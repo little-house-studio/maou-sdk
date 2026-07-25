@@ -20,6 +20,7 @@ import { existsSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { getTemplateRef } from "./template-ref.js";
 import { renderAgentPreview } from "./preview.js";
+import { ensureAgentOverview } from "./overview.js";
 
 // re-export 保持兼容
 export { renderAgentPreview, watchAgentPreview } from "./preview.js";
@@ -107,6 +108,16 @@ export function createAgentFromTemplate(name: string, maouRoot: string, opts: Cr
     custom.updated_at = new Date().toISOString();
     writeFileSync(join(target, "agent.custom.json"), JSON.stringify(custom, null, 2), "utf-8");
   }
+
+  // 首次实例化：写 OVERVIEW.md（Agent 列表灰色概述）
+  try {
+    ensureAgentOverview(target, {
+      name,
+      displayName: opts.displayName,
+      role: opts.role,
+      seed: opts.displayName ? `${opts.displayName} agent` : undefined,
+    });
+  } catch { /* ignore */ }
 
   // 渲染 PREVIEW（从模板读取，写入实例的 .cache/ 目录）
   try { renderAgentPreview(target, templateDir); } catch { /* 渲染失败不影响创建 */ }

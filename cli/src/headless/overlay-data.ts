@@ -12,6 +12,321 @@ import { useStore } from "../state/store.js";
 import { commandPaletteItems, helpKeyRows } from "../config/cli-commands.js";
 import { settingsForSurface } from "../config/cli-settings.js";
 import { getActiveTheme, listThemesMeta } from "../theme/load-theme.js";
+import {
+  agentPresenceKey,
+  resolvePresenceStatus,
+  reloadPresenceFromDisk,
+  getAgentPresence,
+  markAgentRunning,
+  markChildRunning,
+} from "../state/agent-presence.js";
+
+type AgentListEntry = {
+  name: string;
+  display_name?: string;
+  parent?: string;
+  role?: string;
+  status?: string;
+  description?: string;
+  notes?: string;
+  group?: string;
+  project_path?: string;
+  project_name?: string;
+  switch_id?: string;
+  stale?: boolean;
+};
+
+function syncLifecycleIntoPresence(): void {
+  try {
+    void import("@little-house-studio/agent")
+      .then((agentPkg) => {
+        const life = (
+          agentPkg as {
+            AgentLifecycleManager?: {
+              global: () => {
+                list: () => Array<{ sessionId: string; agentName: string; status: string }>;
+              };
+            };
+          }
+        ).AgentLifecycleManager?.global?.();
+        if (!life) return;
+        for (const row of life.list()) {
+          const key = agentPresenceKey(row.agentName, null);
+          if (row.status === "running") {
+            markAgentRunning(key);
+            if (row.sessionId.includes("::fork::") || row.sessionId.includes("sub")) {
+              markChildRunning(key, row.agentName, true);
+            }
+          }
+        }
+      })
+      .catch(() => {});
+  } catch { /* ignore */ }
+}
+
+function buildAgentsPage(
+  config: AgentCliConfig,
+  agentName?: string,
+): ProtoOverlay {
+  // 多窗口：先拉磁盘 presence，再合并本进程 lifecycle
+  try {
+    reloadPresenceFromDisk();
+  } catch { /* ignore */ }
+  syncLifecycleIntoPresence();
+
+  const store = useStore.getState();
+  const entries = (config.listAgents?.() ?? []) as AgentListEntry[];
+  const items: ProtoSelectItem[] = [];
+  const curName = agentName || store.agentName || config.name;
+  const curProject = store.agentProjectRoot ?? null;
+
+  const system = entries.filter((e) => (e.group ?? "system") === "system" && !e.parent);
+  const systemSubs = entries.filter((e) => (e.group ?? "system") === "system" && !!e.parent);
+  const projects = entries.filter((e) => e.group === "project" && !e.parent);
+  const projectSubs = entries.filter((e) => e.group === "project" && !!e.parent);
+  const freshProjects = projects.filter((e) => !e.stale);
+  const staleProjects = projects.filter((e) => e.stale);
+
+  const pushHeader = (label: string) => {
+    items.push({
+      value: `__hdr_${items.length}`,
+      label,
+      row_kind: "header",
+      selectable: false,
+    });
+  };
+
+  const pushSpacer = () => {
+    items.push({
+      value: `__sp_${items.length}`,
+      label: "",
+      row_kind: "spacer",
+      selectable: false,
+    });
+  };
+
+  const isCurrent = (name: string, projectPath?: string) => {
+    if (projectPath) {
+      return curName === name && curProject === projectPath;
+    }
+    return curName === name && !curProject;
+  };
+
+  const pushAgent = (opts: {
+    e: AgentListEntry;
+    glyph: string;
+    depth: number;
+    rowKind: "agent" | "sub";
+    title: string;
+    overview: string;
+    canDelete: boolean;
+  }) => {
+    const projectPath = opts.e.project_path;
+    const switchId = String(opts.e.switch_id || opts.e.name);
+    const key = agentPresenceKey(opts.e.name, projectPath ?? null);
+    const current = isCurrent(opts.e.name, projectPath);
+    const status = resolvePresenceStatus(key, {
+      isCurrent: current,
+      streaming: store.streaming,
+      agentBusy: store.agentBusy,
+      hasApproval: Boolean(store.terminalApproval),
+      stale: opts.e.stale,
+    });
+    items.push({
+      value: switchId,
+      label: opts.title,
+      description: opts.overview,
+      overview: opts.overview,
+      row_kind: opts.rowKind,
+      glyph: opts.glyph,
+      status: opts.e.stale ? "idle" : status,
+      depth: opts.depth,
+      selectable: true,
+      can_stop: current && (store.streaming || store.agentBusy),
+      can_delete: opts.canDelete && !current,
+      stale: Boolean(opts.e.stale),
+    });
+  };
+
+  // ── 系统主 agent（置顶）──
+  if (system.length > 0 || config.scope === "global") {
+    pushHeader("系统 Agent");
+    const sysList = system.length > 0
+      ? system
+      : [{
+          name: config.name,
+          display_name: config.name,
+          group: "system",
+          switch_id: `system:${config.name}`,
+          notes: "当前产品",
+        } as AgentListEntry];
+
+    for (const e of sysList) {
+      const pk = agentPresenceKey(e.name, null);
+      const cached = getAgentPresence(pk).overview;
+      const overview = String(
+        cached || e.notes || e.description || e.role || "机器级助手",
+      ).slice(0, 56);
+      pushAgent({
+        e,
+        glyph: "◆",
+        depth: 0,
+        rowKind: "agent",
+        title: e.display_name || e.name,
+        overview,
+        canDelete: false,
+      });
+      // 子 agent：默认折叠仅显示「有子」时的折叠提示；运行中的子列出
+      const subs = systemSubs.filter((x) => x.parent === e.name);
+      if (subs.length > 0) {
+        for (const s of subs) {
+          pushAgent({
+            e: s,
+            glyph: "◇",
+            depth: 1,
+            rowKind: "sub",
+            title: s.display_name || s.name,
+            overview: String(s.description || s.role || "").slice(0, 48),
+            canDelete: true,
+          });
+        }
+      }
+    }
+  }
+
+  // ── 项目 agent（7 天内活跃）──
+  if (freshProjects.length > 0) {
+    pushSpacer();
+    pushHeader("项目 Agent · 最近活跃");
+    for (const e of freshProjects) {
+      const title = e.project_name || e.display_name || e.name;
+      const overview = String(e.notes || e.project_path || e.description || "").slice(0, 64);
+      pushAgent({
+        e,
+        glyph: "●",
+        depth: 0,
+        rowKind: "agent",
+        title,
+        overview,
+        canDelete: false,
+      });
+      const subs = projectSubs.filter((x) => x.project_path === e.project_path);
+      // 有子 agent：运行中的列出；未运行折叠为一行提示
+      const runningSubs = subs.filter((s) => {
+        const st = resolvePresenceStatus(
+          agentPresenceKey(s.name, s.project_path ?? null),
+          { isCurrent: false, stale: false },
+        );
+        return st === "running" || st === "blocked";
+      });
+      if (runningSubs.length > 0) {
+        for (const s of runningSubs) {
+          pushAgent({
+            e: s,
+            glyph: "○",
+            depth: 1,
+            rowKind: "sub",
+            title: s.display_name || s.name,
+            overview: String(s.description || "").slice(0, 48),
+            canDelete: true,
+          });
+        }
+        const folded = subs.length - runningSubs.length;
+        if (folded > 0) {
+          items.push({
+            value: `__fold_${e.project_path}`,
+            label: `另有 ${folded} 个未运行子 agent`,
+            row_kind: "header",
+            depth: 1,
+            selectable: false,
+            status: "idle",
+          });
+        }
+      } else if (subs.length > 0) {
+        items.push({
+          value: `__fold_${e.project_path}`,
+          label: `${subs.length} 个子 agent（未运行，已折叠）`,
+          row_kind: "header",
+          depth: 1,
+          selectable: false,
+          status: "idle",
+        });
+      }
+    }
+  }
+
+  // ── 休眠项目（>7 天）仅主 agent，全灰 ──
+  if (staleProjects.length > 0) {
+    pushSpacer();
+    pushHeader("休眠项目 · 超过 7 天未运行");
+    for (const e of staleProjects) {
+      const title = e.project_name || e.display_name || e.name;
+      pushAgent({
+        e: { ...e, stale: true },
+        glyph: "●",
+        depth: 0,
+        rowKind: "agent",
+        title,
+        overview: String(e.project_path || "").slice(0, 64),
+        canDelete: false,
+      });
+    }
+  }
+
+  // 兼容：无 group 的旧 listAgents
+  if (items.length === 0) {
+    for (const e of entries.filter((x) => !x.parent)) {
+      items.push({
+        value: e.name,
+        label: e.display_name || e.name,
+        description: `${e.role || "agent"}`,
+        row_kind: "agent",
+        glyph: "●",
+        status: "idle",
+        depth: 0,
+        selectable: true,
+      });
+    }
+  }
+
+  if (items.length === 0) {
+    items.push({
+      value: `system:${config.name}`,
+      label: config.name,
+      row_kind: "agent",
+      glyph: "◆",
+      status: "idle",
+      selectable: true,
+      depth: 0,
+    });
+  }
+
+  let selected = items.findIndex((it) => it.selectable !== false);
+  if (selected < 0) selected = 0;
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]!;
+    if (it.selectable === false) continue;
+    const v = it.value;
+    if (
+      v === `system:${curName}` ||
+      (curProject && v === `project:${curProject}:${curName}`) ||
+      v === curName
+    ) {
+      selected = i;
+      break;
+    }
+  }
+
+  return {
+    kind: "agents",
+    title: "Agent",
+    footer:
+      "↑↓ 移动 · Enter 切换 · S 停止当前 · D 删除子agent（需确认）· Esc 关闭  |  ◆系统 ●项目  灰空闲 橙运行 绿未读 黄待操作 红待回复",
+    items,
+    selected,
+    full_page: true,
+  };
+}
 
 function settingsItems(): ProtoSelectItem[] {
   const s = useStore.getState();
@@ -173,37 +488,7 @@ export function buildOverlay(
       };
     }
     case "agents": {
-      const entries = config.listAgents?.() ?? [];
-      const items: ProtoSelectItem[] = [];
-      const main = entries.filter((e) => !e.parent);
-      const subs = entries.filter((e) => !!e.parent);
-      for (const e of main) {
-        items.push({
-          value: e.name,
-          label: `▌ ${e.display_name || e.name}`,
-          description: `${e.role || "agent"} · ${e.status || "idle"}`,
-        });
-      }
-      if (subs.length > 0) {
-        items.push({ value: "__subs__", label: "── 子 agent ──", description: "" });
-        for (const e of subs) {
-          items.push({
-            value: `sub:${e.name}`,
-            label: `  └ ${e.display_name || e.name}`,
-            description: `${e.role || ""} · parent:${e.parent}`,
-          });
-        }
-      }
-      if (items.length === 0) {
-        items.push({ value: config.name, label: config.name });
-      }
-      return {
-        kind,
-        title: "Agent",
-        footer: "↑↓ 选择 · Enter 切换 · →/Esc 关闭",
-        items,
-        selected: 0,
-      };
+      return buildAgentsPage(config, agentName);
     }
     case "prompt": {
       try {

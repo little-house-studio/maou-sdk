@@ -830,6 +830,8 @@ export class AgentRuntime {
     // ── 1. 确保 session 存在（新会话首条消息即绑定到 initAgentName，如 coding）──
     const session = prof.sync("ensure_session", () => this.sessions.ensure(sessionId ?? undefined, options.initAgentName));
     sessionId = session.id;
+    // 新一轮用户消息：允许「todo 全部完成后」再要一轮收尾
+    this._todoFinalReplyGranted.delete(sessionId);
     this.log("info", `[RUN] start session=${sessionId} msg_len=${activeUserMessage.length}`);
 
     // pathGuard：RunOptions 优先，否则用 per-session map
@@ -2776,6 +2778,11 @@ export class AgentRuntime {
     // 工具结果之后：注入 todo system_notice + 可能的 nudge（在 loop 判定前，保证下一轮可见）
     this.afterTodoTools(sessionId, toolCalls.length > 0);
 
+    // 有未完成 todo 时清掉「收尾轮」标记，确保整单做完后仍能再给一轮收尾
+    if (tasksIncomplete) {
+      this._todoFinalReplyGranted.delete(sessionId);
+    }
+
     // 优先：模板 loop.ts 脚本自定义判定
     const loopScript = await this._loadLoopScript(agentName);
     if (loopScript) {
@@ -2786,6 +2793,15 @@ export class AgentRuntime {
           tasksIncomplete,
           round: round,
         });
+        // 脚本返回 false 且全部 todo 完成时，仍给一轮用户可见收尾（脚本不知道此语义）
+        if (!cont && !tasksIncomplete && !endsLoopFailed) {
+          const allEndsLoop = !toolCallsCtx.some((tc) => !tc.endsLoop);
+          if (allEndsLoop && !this._todoFinalReplyGranted.has(sessionId)) {
+            this._todoFinalReplyGranted.add(sessionId);
+            this.log("info", "[Runtime] todo 已全部完成：再给一轮收尾回复，不强制继续工具 loop");
+            return true;
+          }
+        }
         return Boolean(cont);
       } catch (err) {
         this.log("warn", `[Runtime] loop.ts 脚本执行失败，回退内联判定: ${err}`);
@@ -2802,6 +2818,13 @@ export class AgentRuntime {
       if (tasksIncomplete) {
         return true; // 还有未完成 todo，强制继续 loop
       }
+      // 全部 todo 完成：再给一轮写用户可见收尾（dynamic-context 也提示「可回复用户收尾」）。
+      // 不再注入「请继续」类强制工具轮；下一轮若只再调 endsLoop 则真正结束。
+      if (!this._todoFinalReplyGranted.has(sessionId)) {
+        this._todoFinalReplyGranted.add(sessionId);
+        this.log("info", "[Runtime] todo 已全部完成：再给一轮收尾回复");
+        return true;
+      }
       return false;
     }
     return true;
@@ -2813,6 +2836,11 @@ export class AgentRuntime {
    * 失败/不存在返回 null（走内联判定）。
    */
   private _loopScriptCache = new Map<string, ((ctx: LoopScriptCtx) => boolean) | null>();
+  /**
+   * todo 全部完成后，允许「再跑一轮」写用户可见收尾。
+   * 消费一次后清除；新的未完成 todo 出现时会重置。
+   */
+  private _todoFinalReplyGranted = new Set<string>();
   private async _loadLoopScript(agentName: string): Promise<((ctx: LoopScriptCtx) => boolean) | null> {
     if (this._loopScriptCache.has(agentName)) return this._loopScriptCache.get(agentName)!;
     let script: ((ctx: LoopScriptCtx) => boolean) | null = null;

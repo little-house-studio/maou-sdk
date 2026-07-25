@@ -52,6 +52,23 @@ export interface ProtoSelectItem {
   value: string;
   label: string;
   description?: string;
+  /** agents 页：header | agent | sub | spacer */
+  row_kind?: string;
+  /** ◆ ◇ ● ○ */
+  glyph?: string;
+  /** idle | running | done_unread | done_read | blocked | needs_reply */
+  status?: string;
+  /** 缩进层级 0=主 1=子 */
+  depth?: number;
+  /** 概述（AI 写的短描述） */
+  overview?: string;
+  /** 是否可切换 */
+  selectable?: boolean;
+  /** 是否显示停止/删除 */
+  can_stop?: boolean;
+  can_delete?: boolean;
+  /** 超过 7 天休眠 */
+  stale?: boolean;
 }
 
 export interface ProtoCompletionItem {
@@ -214,6 +231,8 @@ export interface ProtoOverlay {
   sections?: ProtoSelectItem[];
   /** 当前分段下标（0-based） */
   section_index?: number;
+  /** agents 等全屏页：宽/高占比 0–100，缺省走小弹层 */
+  full_page?: boolean;
 }
 
 /** Node → TUI */

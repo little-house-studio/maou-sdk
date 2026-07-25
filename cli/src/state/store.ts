@@ -232,9 +232,12 @@ interface Store extends UIState {
   setHoverId: (id: string | null) => void;
   // agent 切换：AgentPanel 选择后触发，useAgent 监听 nonce 变化重建 handle
   pendingAgentName: string | null;
+  /** 与 pendingAgentName 配套：切到项目级 agent 时带项目路径 */
+  pendingAgentProjectRoot: string | null;
   agentSwitchNonce: number;
-  requestAgentSwitch: (name: string) => void;
+  requestAgentSwitch: (name: string, projectRoot?: string | null) => void;
   clearPendingAgentSwitch: () => void;
+  setAgentProjectRoot: (root: string | null) => void;
   // 会话按 agent 记忆：切 agent 前缓存当前，切回恢复
   saveCurrentSession: (agentName: string) => void;
   restoreSession: (agentName: string) => boolean;  // 返回是否有缓存
@@ -253,6 +256,7 @@ const initialState: UIState = {
   // 必须与 config.name / loadLastSession 过滤一致（旧值 "maou" 会导致
   // /new 写入 agentName=maou，启动用 coding 过滤时 miss → 回退到旧 jsonl）
   agentName: DEFAULT_AGENT_NAME,
+  agentProjectRoot: null,
   provider: "",
   model: "",
   maxContext: 0,
@@ -461,6 +465,7 @@ export const useStore = create<Store>((set, get) => ({
   setAgentMeta: (agentName, provider, model, maxContext) =>
     set((s) => {
       const nextAgent = agentName || s.agentName;
+      // projectRoot 绑定由 setAgentProjectRoot / switch 单独管理
       const nextModel = model || s.model;
       // 从 agent 层 ledger 恢复 (agent, session, model) 桶镜像（可恢复，非清空销毁）
       const { cacheHistory } = loadCacheHistoryFromLedger(nextAgent, s.sessionId, nextModel);
@@ -995,12 +1000,15 @@ export const useStore = create<Store>((set, get) => ({
 
   // agent 切换
   pendingAgentName: null,
+  pendingAgentProjectRoot: null,
   agentSwitchNonce: 0,
-  requestAgentSwitch: (name) => set((s) => ({
+  requestAgentSwitch: (name, projectRoot = null) => set(() => ({
     pendingAgentName: name,
-    agentSwitchNonce: s.agentSwitchNonce + 1,
+    pendingAgentProjectRoot: projectRoot ?? null,
+    agentSwitchNonce: (get().agentSwitchNonce) + 1,
   })),
-  clearPendingAgentSwitch: () => set({ pendingAgentName: null }),
+  clearPendingAgentSwitch: () => set({ pendingAgentName: null, pendingAgentProjectRoot: null }),
+  setAgentProjectRoot: (root) => set({ agentProjectRoot: root }),
 
   // 会话按 agent 记忆：缓存当前 agent 的会话（切走前调）
   saveCurrentSession: (agentName) => set((s) => ({

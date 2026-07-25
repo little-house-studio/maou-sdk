@@ -84,6 +84,12 @@ export { createAppLogger } from "./app-logger.js";
 export { createAgentFromTemplate, renderAgentPreview, resolvePromptRoot, resolveAgentConfig } from "./template.js";
 export { getTemplateRef } from "./template-ref.js";
 export type { CreateAgentOptions as CreateAgentFromTemplateOptions } from "./template.js";
+export {
+  ensureAgentOverview,
+  readAgentOverview,
+  refineAgentOverviewWithLlm,
+  overviewPath,
+} from "./overview.js";
 
 // ── Agent 注册表与工厂 ─────────────────────────────────────────────────────
 

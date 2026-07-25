@@ -1,15 +1,21 @@
-//! OSC52 clipboard + system clipboard (arboard) + terminal pointer shape.
+//! OSC52 clipboard + terminal pointer shape.
+//!
+//! No arboard/AppKit: linking AppKit made maou-tui hang in dyld on some macOS
+//! sessions (never emit ready; processes stuck UE). System pasteboard is handled
+//! by Node (`pbcopy` / xclip) when the protocol path is used.
 
 use std::io::Write;
 
 use base64::Engine;
+
+use crate::protocol::{emit, OutMsg};
 
 pub fn osc52_copy(text: &str) {
     if text.is_empty() {
         return;
     }
 
-    // 1) OSC52 — works over SSH / remote terminals (keep custom, not arboard).
+    // 1) OSC52 — works over SSH / remote terminals.
     let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
     let payload = format!("\x1b]52;c;{b64}\x07");
     let seq = if std::env::var_os("TMUX").is_some() {
@@ -24,11 +30,10 @@ pub fn osc52_copy(text: &str) {
         let _ = std::io::stdout().flush();
     }
 
-    // 2) System clipboard — arboard (macOS pasteboard / X11 / Wayland / Win).
-    //    Best-effort: headless or restricted envs may fail silently.
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        let _ = cb.set_text(text);
-    }
+    // 2) Ask Node to write system clipboard (pbcopy / xclip) — no AppKit in this binary.
+    emit(&OutMsg::Clipboard {
+        text: text.to_string(),
+    });
 }
 
 /// Ink `osc22Supported`: skip OSC 22 on known-broken TERM_PROGRAM / LITE.

@@ -338,23 +338,10 @@ export class TerminalTool extends Tool {
     };
 
     if (gate.action === "deny_dangerous_pending") {
-      // 危险级：优先尝试交互审批 / 审核 Agent，否则靠二次相同命令
-      const approver = getTerminalApprover();
-      if (approver && mode === "normal") {
-        try {
-          const verdict = await approver(command, buildApproverCtx("high"));
-          if (verdict.approve) {
-            if (verdict.persist === "whitelist") addToWhitelist(agent, commandPrefix(command));
-            return null;
-          }
-          if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
-          return createToolResponse(false,
-            `⛔ [危险] 用户拒绝了该危险命令：\`${command}\``,
-            { payload: { ...gate.payload, policy: "dangerous-user-denied" } });
-        } catch {
-          /* fall through to double-confirm message */
-        }
-      }
+      // 危险级：
+      // - normal → 人手审批（若注入）
+      // - auto → 只走 AI 审核，绝不弹人手卡
+      // - 否则 → 二次相同命令确认文案
       if (mode === "auto") {
         const reviewer = getTerminalReviewer();
         if (reviewer) {
@@ -364,10 +351,10 @@ export class TerminalTool extends Tool {
               cwd: ctx.workingDir || ctx.projectRoot,
             });
             if (verdict.approve) {
-              recordReviewApprove(agent, command);
+              // 危险级 AI 放行：本轮执行，但不永久入白名单
               return null;
             }
-            // 审核拒绝：保留二次执行窗口（已 mark）
+            // 审核拒绝：保留二次执行窗口（gate 已 mark）
             return createToolResponse(false,
               `⚠️ [危险·审核未通过] \`${command}\`\n理由：${verdict.reason}\n` +
                 `若仍需执行：在窗口期内再发送一次完全相同的命令以确认。`,
@@ -378,6 +365,28 @@ export class TerminalTool extends Tool {
               { payload: { ...gate.payload, policy: "dangerous-review-error" } });
           }
         }
+        return createToolResponse(false,
+          `⚠️ [危险·auto] 未配置审核器，无法自动审核：\`${command}\`\n` +
+            `可在窗口期内再执行一次相同命令确认，或切换 yolo / normal。`,
+          { payload: { ...gate.payload, policy: "dangerous-no-reviewer" } });
+      }
+      if (mode === "normal") {
+        const approver = getTerminalApprover();
+        if (approver) {
+          try {
+            const verdict = await approver(command, buildApproverCtx("high"));
+            if (verdict.approve) {
+              if (verdict.persist === "whitelist") addToWhitelist(agent, commandPrefix(command));
+              return null;
+            }
+            if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
+            return createToolResponse(false,
+              `⛔ [危险] 用户拒绝了该危险命令：\`${command}\``,
+              { payload: { ...gate.payload, policy: "dangerous-user-denied" } });
+          } catch {
+            /* fall through to double-confirm message */
+          }
+        }
       }
       return createToolResponse(false, gate.message || "危险指令需确认", {
         payload: gate.payload,
@@ -385,14 +394,35 @@ export class TerminalTool extends Tool {
     }
 
     if (gate.action === "ask") {
-      // 仅 normal 弹交互审批；auto/yolo 不应落到此分支
-      if (mode !== "normal") {
-        if (mode === "yolo") return null;
-        // auto 无 review 结果时拒绝（不弹 UI）
-        return createToolResponse(false,
-          `🔐 [安全层] auto 模式下命令未过策略：\`${command}\``,
-          { payload: gate.payload });
+      // auto 不应落到 ask；若落到此，强制走 AI review，绝不弹人手卡
+      if (mode === "auto") {
+        const reviewer = getTerminalReviewer();
+        if (!reviewer) {
+          return createToolResponse(false,
+            `🔐 [安全层] auto 模式未配置审核器：\`${command}\``,
+            { payload: { policy: "review-no-reviewer", command, tier: "safe" } });
+        }
+        try {
+          const verdict = await reviewer(command, {
+            agentName: agent,
+            cwd: ctx.workingDir || ctx.projectRoot,
+          });
+          if (verdict.approve) {
+            recordReviewApprove(agent, command);
+            return null;
+          }
+          recordReviewReject(agent, command);
+          return createToolResponse(false,
+            `⛔ 审核未通过：\`${command}\`\n理由：${verdict.reason}`,
+            { payload: { policy: "review-reject", command, reason: verdict.reason, tier: "safe" } });
+        } catch (err) {
+          return createToolResponse(false,
+            `🔐 审核异常：\`${command}\`（${errToString(err)}）`,
+            { payload: { policy: "review-error", command, tier: "safe" } });
+        }
       }
+      if (mode === "yolo") return null;
+      // normal：人手审批
       const approver = getTerminalApprover();
       if (approver) {
         try {

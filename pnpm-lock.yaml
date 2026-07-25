@@ -45,6 +45,9 @@ importers:
       '@little-house-studio/agent':
         specifier: workspace:*
         version: link:../../core/agent
+      '@little-house-studio/coding-agent':
+        specifier: workspace:*
+        version: link:../coding-agent
       '@little-house-studio/context':
         specifier: workspace:*
         version: link:../../core/context

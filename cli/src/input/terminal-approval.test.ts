@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 type TaReq = { id: string; command: string; agentName: string; cwd?: string } | null;
 const state: {
   terminalApproval: TaReq;
-  approvalMode: "normal";
+  approvalMode: "normal" | "auto" | "yolo";
   agentName: string;
   toastMsg: ReturnType<typeof vi.fn>;
   setTerminalApproval: (req: TaReq) => void;
@@ -18,9 +18,14 @@ const state: {
   },
 };
 
+const mockReviewer = vi.fn();
+
 vi.mock("../state/store.js", () => ({
   useStore: {
     getState: () => state,
+    setState: (partial: Partial<typeof state>) => {
+      Object.assign(state, partial);
+    },
   },
 }));
 
@@ -28,6 +33,8 @@ vi.mock("@little-house-studio/tools", () => ({
   setTerminalApprover: vi.fn(),
   setTerminalPolicyRoot: vi.fn(),
   setTerminalMode: vi.fn(),
+  getTerminalMode: vi.fn(() => "normal"),
+  getTerminalReviewer: vi.fn(() => mockReviewer),
 }));
 
 import {
@@ -44,7 +51,9 @@ let capturedApprover: ((cmd: string, ctx: { agentName: string; cwd?: string }) =
 describe("CLI terminal approval", () => {
   beforeEach(() => {
     state.terminalApproval = null;
+    state.approvalMode = "normal";
     capturedApprover = null;
+    mockReviewer.mockReset();
     vi.mocked(setTerminalApprover).mockImplementation((fn) => {
       capturedApprover = fn as typeof capturedApprover;
     });
@@ -87,5 +96,23 @@ describe("CLI terminal approval", () => {
     cancelAllTerminalApprovals("aborted");
     await expect(p).rejects.toThrow(/aborted/);
     expect(state.terminalApproval).toBeNull();
+  });
+
+  it("auto 模式不弹人手卡，走 AI reviewer", async () => {
+    state.approvalMode = "auto";
+    mockReviewer.mockResolvedValue({ approve: true, reason: "安全" });
+    const p = capturedApprover!("ls -la", { agentName: "coding" });
+    // 不应挂起 UI 审批
+    expect(state.terminalApproval).toBeNull();
+    await expect(p).resolves.toEqual({ approve: true, persist: "whitelist" });
+    expect(mockReviewer).toHaveBeenCalled();
+  });
+
+  it("yolo 模式直接放行且不弹卡", async () => {
+    state.approvalMode = "yolo";
+    const p = capturedApprover!("echo hi", { agentName: "coding" });
+    expect(state.terminalApproval).toBeNull();
+    await expect(p).resolves.toEqual({ approve: true, persist: "none" });
+    expect(mockReviewer).not.toHaveBeenCalled();
   });
 });

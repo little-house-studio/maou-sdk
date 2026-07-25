@@ -19,6 +19,7 @@ import {
 import { join } from "node:path";
 import { getTemplateRef } from "./template-ref.js";
 import { resolvePromptRoot, resolveAgentConfig } from "./template.js";
+import { ensureAgentOverview } from "./overview.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
@@ -935,6 +936,13 @@ export class AgentRegistry {
 
     // 幂等：已有 .agent.ref 或 agent.json → 跳过（绝不覆盖用户已编辑的内容）
     if (existsSync(projectRef) || existsSync(projectAgentJson)) {
+      try {
+        ensureAgentOverview(projectDir, {
+          name,
+          projectPath: this.projectRoot,
+          scope: "project",
+        });
+      } catch { /* ignore */ }
       return { created: false, dir: projectDir, reason: "项目级 agent 已存在" };
     }
 
@@ -954,6 +962,14 @@ export class AgentRegistry {
         JSON.stringify({ working_dir: this.projectRoot, ...custom }, null, 2),
         "utf-8",
       );
+      try {
+        ensureAgentOverview(projectDir, {
+          name,
+          displayName: typeof custom.display_name === "string" ? custom.display_name : name,
+          projectPath: this.projectRoot,
+          scope: "project",
+        });
+      } catch { /* ignore */ }
       return { created: true, dir: projectDir, reason };
     };
 
@@ -1023,6 +1039,17 @@ export class AgentRegistry {
       tool_whitelist: [...template.toolWhitelist],
     };
     writeFileSync(join(projectDir, "PERMISSION.jsonc"), JSON.stringify(permission, null, 2), "utf-8");
+
+    try {
+      ensureAgentOverview(projectDir, {
+        name,
+        displayName,
+        role,
+        scope: "project",
+        projectPath: this.projectRoot,
+        seed: description || undefined,
+      });
+    } catch { /* ignore */ }
   }
 }
 

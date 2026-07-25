@@ -180,7 +180,25 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
 
   async function boot() {
     await ensureAgentMeta();
-    restoreSessionIfAny();
+    // 可选跳过恢复：MAOU_SKIP_SESSION_RESTORE=1 解决坏会话导致 UI 假死
+    if (process.env.MAOU_SKIP_SESSION_RESTORE === "1") {
+      useStore.getState().setMessages([]);
+      useStore.getState().setSessionId(null);
+      useStore.getState().toastMsg("已跳过会话恢复（MAOU_SKIP_SESSION_RESTORE=1）", "info");
+    } else {
+      try {
+        restoreSessionIfAny();
+      } catch (e) {
+        useStore.getState().setMessages([]);
+        useStore.getState().toastMsg(
+          `会话恢复失败已跳过: ${String(e).slice(0, 60)}`,
+          "warn",
+        );
+      }
+    }
+    // 恢复后强制清 streaming/busy，避免假「仍在生成」
+    useStore.getState().setStreaming(false);
+    useStore.getState().setAgentBusy(false);
   }
 
   function applyProviderModel(provider: string, model: string): boolean {
@@ -334,7 +352,13 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
 
     if (!agent) {
       try {
-        agent = config.createAgent(cwd, maouRoot);
+        // ops 切到项目 coding 时用 agentProjectRoot；否则用产品 workspace
+        const bindRoot = store.agentProjectRoot || cwd;
+        agent = config.createAgent(bindRoot, maouRoot);
+        // 若列表切到了其它 agent 名，对齐 handle
+        if (store.agentName && agent.agentName && store.agentName !== agent.agentName) {
+          // createAgent 可能固定返回 ops/coding；initAgentName 在 run 时再绑定
+        }
       } catch (e) {
         store.toastMsg(`agent 创建失败: ${String(e).slice(0, 50)}`, "err");
         store.setStreaming(false);
@@ -345,6 +369,15 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
 
     store.pushUserMessage(text);
     store.setAgentBusy(true);
+    // Agent 页状态灯
+    try {
+      const { agentPresenceKey, markAgentRunning, markAgentReplied } = await import(
+        "../state/agent-presence.js"
+      );
+      const key = agentPresenceKey(store.agentName, store.agentProjectRoot);
+      markAgentReplied(key);
+      markAgentRunning(key);
+    } catch { /* ignore */ }
     sound.startIdleTimer();
     abortCtrl = new AbortController();
     setSupervisorAbortSignal(abortCtrl.signal);
@@ -428,9 +461,14 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
       useStore.getState().setAborting(false);
       useStore.getState().clearPendingMessages();
     } finally {
-      useStore.getState().setAgentBusy(false);
+      const st = useStore.getState();
+      st.setAgentBusy(false);
+      try {
+        const { agentPresenceKey, markAgentDone } = await import("../state/agent-presence.js");
+        markAgentDone(agentPresenceKey(st.agentName, st.agentProjectRoot));
+      } catch { /* ignore */ }
       // drain queue
-      const next = useStore.getState().drainPendingMessage();
+      const next = st.drainPendingMessage();
       if (next) {
         void send(next);
       }

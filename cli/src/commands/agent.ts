@@ -218,6 +218,45 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
 
   markRatatuiActive();
   process.stderr.write(`[maou] tui=ratatui binary=${bin}\n`);
+
+  // 多窗口 hub：默认关闭（MAOU_CLI_HUB=1 开启）。状态灯仍靠 ~/.maou/run/agent-presence.json 共享。
+  if (process.env.MAOU_CLI_HUB === "1") {
+    try {
+      const hub = await import("../hub/cli-hub.js");
+      const role = await hub.resolveHubRole(product.name);
+      if (role.role === "hub") {
+        const meta = await hub.startCliHub(product.name);
+        process.stderr.write(
+          `[maou] cli-hub 已启动 pid=${meta.pid} port=${meta.port}\n`,
+        );
+      } else if (role.role === "window" && role.meta) {
+        const reg = await hub.registerAsWindow(role.meta);
+        process.stderr.write(
+          `[maou] 已附加到 cli-hub（window ${reg.windowId} · 共 ${reg.windows} 窗）\n`,
+        );
+        process.env.MAOU_CLI_WINDOW = reg.windowId;
+      }
+    } catch (e) {
+      process.stderr.write(
+        `[maou] cli-hub 跳过: ${e instanceof Error ? e.message : String(e)}\n`,
+      );
+    }
+  }
+
+  // 清掉可能残留的僵死 hub 元数据（避免误判）
+  try {
+    const hubPath = `${process.env.MAOU_HOME?.trim() || `${process.env.HOME}/.maou`}/run/cli-hub.json`;
+    const { existsSync, readFileSync, unlinkSync } = await import("node:fs");
+    if (existsSync(hubPath) && process.env.MAOU_CLI_HUB !== "1") {
+      try {
+        const m = JSON.parse(readFileSync(hubPath, "utf-8")) as { pid?: number };
+        if (m.pid) {
+          try { process.kill(m.pid, 0); } catch { unlinkSync(hubPath); }
+        }
+      } catch { /* ignore */ }
+    }
+  } catch { /* ignore */ }
+
   const { runAgentWithRatatui } = await import("../tui-bridge/run-agent-ratatui.js");
   await runAgentWithRatatui({
     config,

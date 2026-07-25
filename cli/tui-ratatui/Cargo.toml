@@ -21,5 +21,6 @@ libc = "0.2"
 # Safe lib swaps (parse / clipboard only — paint & OSC52 stay custom):
 pulldown-cmark = "0.12"
 base64 = "0.22"
-# text-only (no image clipboard / image crate)
-arboard = { version = "3", default-features = false }
+# NOTE: do NOT depend on arboard. On macOS it links AppKit/Foundation and has been
+# observed to hang the process in dyld / WindowServer (UE, never emit ready).
+# Clipboard: OSC52 from Rust + Node pbcopy/xclip via protocol when needed.

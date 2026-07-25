@@ -8,6 +8,7 @@ use super::text_util::{center, trunc};
 use super::App;
 use crate::layout::{solve_shell, ShellMetrics, Slot};
 use crate::messages::{self, render_messages, select_row};
+use crate::protocol::SelectItem;
 use crate::mouse;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -67,6 +68,116 @@ fn pad_line_to_width(line: Line<'static>, width: usize, pad_style: Style) -> Lin
     let mut spans = line.spans;
     spans.push(Span::styled(" ".repeat(width - w), fill));
     Line::from(spans)
+}
+
+/// Agent 页一行：状态色 + 图形 + 名称 + 概述 + 右侧操作提示
+fn agent_page_row(
+    it: &SelectItem,
+    selected: bool,
+    pulse: bool,
+    th: &crate::theme::Theme,
+) -> Line<'static> {
+    let kind = it.row_kind.as_deref().unwrap_or("agent");
+    if kind == "spacer" {
+        return Line::from(Span::styled(" ", Style::default().fg(th.dim)));
+    }
+    if kind == "header" {
+        let label = if it.label.is_empty() {
+            "──".into()
+        } else {
+            format!("── {} ", it.label)
+        };
+        return Line::from(Span::styled(
+            label,
+            Style::default().fg(th.muted).add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let depth = it.depth.unwrap_or(0) as usize;
+    let indent = "  ".repeat(depth.min(3));
+    let glyph = it
+        .glyph
+        .clone()
+        .unwrap_or_else(|| if depth > 0 { "◇".into() } else { "◆".into() });
+    let status = it.status.as_deref().unwrap_or("idle");
+    let stale = it.stale.unwrap_or(false);
+
+    // 状态色：灰/橙运行脉冲/橙已读/绿未读/黄待操作/红待回复
+    let (glyph_fg, flash) = if stale {
+        (th.dim, false)
+    } else {
+        match status {
+            "running" => (th.accent, true),
+            "done_unread" => (th.ok, false),
+            "done_read" => (th.accent, false),
+            "blocked" => (th.warn, true),
+            "needs_reply" => (th.err, false),
+            _ => (th.dim, false),
+        }
+    };
+    let glyph_style = if flash && pulse {
+        Style::default().fg(th.dim)
+    } else if flash {
+        Style::default()
+            .fg(glyph_fg)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(glyph_fg).add_modifier(Modifier::BOLD)
+    };
+
+    let pointer = if selected { "❯ " } else { "  " };
+    let name = it.label.clone();
+    let overview = it
+        .overview
+        .clone()
+        .or_else(|| it.description.clone())
+        .unwrap_or_default();
+    let overview = if overview.chars().count() > 40 {
+        overview.chars().take(40).collect::<String>() + "…"
+    } else {
+        overview
+    };
+
+    let mut actions = String::new();
+    if it.can_stop.unwrap_or(false) {
+        actions.push_str(" [S停]");
+    }
+    if it.can_delete.unwrap_or(false) {
+        actions.push_str(" [D删]");
+    }
+
+    let name_style = if selected {
+        Style::default()
+            .fg(th.fg)
+            .bg(th.selected_bg)
+            .add_modifier(Modifier::BOLD)
+    } else if stale {
+        Style::default().fg(th.dim)
+    } else {
+        Style::default().fg(th.user)
+    };
+    let ov_style = if selected {
+        Style::default().fg(th.muted).bg(th.selected_bg)
+    } else {
+        Style::default().fg(th.muted)
+    };
+    let act_style = Style::default().fg(th.accent2);
+
+    Line::from(vec![
+        Span::styled(pointer.to_string(), Style::default().fg(th.accent)),
+        Span::raw(indent),
+        Span::styled(format!("{glyph} "), glyph_style),
+        Span::styled(name, name_style),
+        Span::styled(
+            if overview.is_empty() {
+                String::new()
+            } else {
+                format!("  {overview}")
+            },
+            ov_style,
+        ),
+        Span::styled(actions, act_style),
+    ])
 }
 
 /// Chat right scrollbar width (cols). Wider = easier to grab with mouse.
@@ -165,10 +276,16 @@ impl App {
                 }
             }
         }
-        // 流式 / 空开屏：每帧推进 spinner 相位
+        // 流式 / 空开屏 / Agent 页（状态灯脉冲）：每帧推进 spinner 相位
+        let agents_open = self
+            .overlay
+            .as_ref()
+            .map(|o| o.kind == "agents")
+            .unwrap_or(false);
         if self.streaming
             || self.messages.iter().any(|m| m.streaming)
             || self.messages.is_empty()
+            || agents_open
         {
             self.spinner_frame = self.spinner_frame.wrapping_add(1);
         }
@@ -252,8 +369,15 @@ impl App {
 
         // Overlay preferred size (absolute layer after flex)
         let (overlay_w, overlay_h) = if let Some(o) = &self.overlay {
-            let w = (area.width * 2 / 3).max(40).min(area.width.saturating_sub(4));
-            let h = if o.lines.as_ref().map(|l| !l.is_empty()).unwrap_or(false) {
+            let full = o.full_page.unwrap_or(false) || o.kind == "agents";
+            let w = if full {
+                area.width.saturating_sub(2).max(40)
+            } else {
+                (area.width * 2 / 3).max(40).min(area.width.saturating_sub(4))
+            };
+            let h = if full {
+                area.height.saturating_sub(2).max(12)
+            } else if o.lines.as_ref().map(|l| !l.is_empty()).unwrap_or(false) {
                 (o.lines.as_ref().map(|l| l.len()).unwrap_or(0) as u16 + 4)
                     .min(area.height.saturating_sub(4))
             } else {
@@ -1466,6 +1590,25 @@ impl App {
                         l.clone(),
                         Style::default().fg(th.fg),
                     )));
+                }
+            } else if o.kind == "agents" {
+                // Agent 独立页：层级 + 状态灯
+                let n = o.items.len();
+                let inner_h = h.saturating_sub(4) as usize;
+                let vis = inner_h.min(n).max(1);
+                let from = self
+                    .overlay_sel
+                    .saturating_sub(vis / 2)
+                    .min(n.saturating_sub(vis));
+                let to = (from + vis).min(n);
+                self.overlay_list_from = from;
+                self.overlay_list_count = to.saturating_sub(from);
+                let pulse = (self.spinner_frame / 4) % 2 == 0;
+                for i in from..to {
+                    let it = &o.items[i];
+                    let selected = i == self.overlay_sel;
+                    let hovered = self.overlay_hover == Some(i);
+                    body.push(agent_page_row(it, selected || hovered, pulse, &th));
                 }
             } else {
                 // Ink SelectList: windowed + ❯ pointer + hover highlight

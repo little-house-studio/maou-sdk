@@ -128,6 +128,10 @@ export function createDefaultSubagentRunFn(
 
     const agentMode = options?.agentMode !== false;
     const toolWhitelistOverride = options?.toolWhitelist;
+    // 子 Agent 默认 auto（AI 审核），避免继承缺失时落到 normal 弹人手审批卡。
+    // 显式 options.sandboxMode / 子 agent.json terminal_mode 仍可覆盖。
+    const sandboxMode =
+      (options as { sandboxMode?: string } | undefined)?.sandboxMode ?? "auto";
 
     let finalOutput = "";
     let ok = true;
@@ -140,6 +144,7 @@ export function createDefaultSubagentRunFn(
         stream: true,
         abortSignal: options?.abortSignal,
         agentMode,
+        sandboxMode,
         toolWhitelistOverride,
         mcpProxyToolNames:
           toolWhitelistOverride?.length === 0

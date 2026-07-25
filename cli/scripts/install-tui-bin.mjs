@@ -7,6 +7,8 @@ import {
   mkdirSync,
   copyFileSync,
   chmodSync,
+  renameSync,
+  unlinkSync,
   constants as fsConstants,
 } from "node:fs";
 import { join, dirname } from "node:path";
@@ -51,19 +53,61 @@ if (!src) {
 const destDir = join(homedir(), ".maou", "bin");
 const dest = join(destDir, name);
 mkdirSync(destDir, { recursive: true });
-copyFileSync(src, dest);
-if (!isWin) {
+// Always land on a new inode (tmp + rename). Overwriting in-place can leave
+// UE/zombie TUI processes mapped to a stale file and block new execs of dest.
+const tmp = join(destDir, `.${name}.${process.pid}.tmp`);
+try {
+  copyFileSync(src, tmp);
+  if (!isWin) {
+    try {
+      chmodSync(
+        tmp,
+        fsConstants.S_IRWXU |
+          fsConstants.S_IRGRP |
+          fsConstants.S_IXGRP |
+          fsConstants.S_IROTH |
+          fsConstants.S_IXOTH,
+      );
+    } catch {
+      /* ignore */
+    }
+  }
   try {
-    chmodSync(
-      dest,
-      fsConstants.S_IRWXU |
-        fsConstants.S_IRGRP |
-        fsConstants.S_IXGRP |
-        fsConstants.S_IROTH |
-        fsConstants.S_IXOTH,
-    );
+    renameSync(tmp, dest);
+  } catch {
+    // Windows may refuse replace-open; fall back to unlink+copy
+    try {
+      unlinkSync(dest);
+    } catch {
+      /* ignore */
+    }
+    copyFileSync(tmp, dest);
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+    if (!isWin) {
+      try {
+        chmodSync(
+          dest,
+          fsConstants.S_IRWXU |
+            fsConstants.S_IRGRP |
+            fsConstants.S_IXGRP |
+            fsConstants.S_IROTH |
+            fsConstants.S_IXOTH,
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+} catch (e) {
+  try {
+    unlinkSync(tmp);
   } catch {
     /* ignore */
   }
+  throw e;
 }
 console.log(`[install-tui-bin] ${src} → ${dest}`);
