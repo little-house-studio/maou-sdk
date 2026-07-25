@@ -5,11 +5,12 @@
  * 视图层只订阅 UIState 或通过协议推送快照，禁止自建第二套 stream 逻辑。
  */
 
+import { mkdirSync } from "node:fs";
 import { runAgentCli, setSupervisorAbortSignal } from "@little-house-studio/agent";
 import type { AgentHandle } from "@little-house-studio/agent";
 import type { AgentCliConfig } from "../types.js";
 import { useStore } from "../state/store.js";
-import { loadLastSession } from "../state/store.js";
+import { loadLastSession, setActiveWorkspaceRoot } from "../state/store.js";
 import { loadSessionMessages } from "../state/session-loader.js";
 import { SoundManager, loadSoundConfig } from "../hooks/useSound.js";
 import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
@@ -63,9 +64,22 @@ export interface CliSession {
 
 export function createCliSession(opts: CliSessionOpts): CliSession {
   const config = opts.config;
-  const cwd = opts.cwd ?? process.cwd();
+  const invocationCwd = opts.cwd ?? process.cwd();
   const maouRoot = opts.maouRoot ?? userMaouRoot();
+  const cwd = config.scope === "global"
+    ? (config.resolveWorkspaceRoot?.(maouRoot) ?? maouRoot)
+    : invocationCwd;
+  // global 产品的固定工作区（如 ~/.maou/ops）首次可能尚不存在；
+  // Node spawn(…, { cwd }) 在目录缺失时会报 ENOENT，误导为 TUI 二进制不存在。
+  if (config.scope === "global") {
+    try {
+      mkdirSync(cwd, { recursive: true });
+    } catch {
+      /* ignore — 创建失败时后续 spawn 会给出明确错误 */
+    }
+  }
   const enableSound = opts.sound !== false;
+  setActiveWorkspaceRoot(cwd);
 
   let agent: AgentHandle | null = null;
   let abortCtrl: AbortController | null = null;
@@ -157,8 +171,9 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
     }
     useStore.getState().setMessages(loaded.messages);
     useStore.getState().setAutoFollow(true);
+    const scopeHint = config.scope === "global" ? "全局会话" : "本项目会话";
     useStore.getState().toastMsg(
-      `已恢复本项目会话 ${last.sessionId.slice(0, 8)}（${loaded.messages.length} 条）`,
+      `已恢复${scopeHint} ${last.sessionId.slice(0, 8)}（${loaded.messages.length} 条）`,
       "info",
     );
   }
@@ -311,7 +326,7 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
     // 系统斜杠指令：/model /select /sessions … 本地执行，绝不发给 AI
     if (tryHandleSystemSlash(text)) return;
 
-    if (store.streaming) {
+    if (store.streaming || store.agentBusy) {
       store.enqueueMessage(text.trim());
       store.toastMsg("已排队，生成完发送", "info");
       return;
@@ -329,6 +344,7 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
     const handle = agent;
 
     store.pushUserMessage(text);
+    store.setAgentBusy(true);
     sound.startIdleTimer();
     abortCtrl = new AbortController();
     setSupervisorAbortSignal(abortCtrl.signal);
@@ -349,6 +365,7 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
         sessionId,
         preset,
         sandboxMode,
+        initAgentName: store.agentName || config.name,
         onEvent: (ev) => {
           if (ev.type === "done") {
             sound.play("done");
@@ -390,6 +407,8 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
 
       const sp = supervisorBox.pending;
       if (sp) {
+        // 主 agent done 后 streaming 可能已 false；保持 agentBusy 覆盖 supervisor 第二轮
+        useStore.getState().setAgentBusy(true);
         await runAgentCli(sp.initialMessage, {
           runtime: handle.runtime,
           sessionId: sp.sessionId,
@@ -409,6 +428,7 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
       useStore.getState().setAborting(false);
       useStore.getState().clearPendingMessages();
     } finally {
+      useStore.getState().setAgentBusy(false);
       // drain queue
       const next = useStore.getState().drainPendingMessage();
       if (next) {

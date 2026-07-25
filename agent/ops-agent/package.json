@@ -1,0 +1,42 @@
+{
+  "name": "@little-house-studio/ops-agent",
+  "version": "0.1.0",
+  "description": "Maou SDK 机器级 Ops Agent —— 固定全局数据路径、跨项目管理与电脑环境操作。",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cli-config": {
+      "types": "./dist/cli-config.d.ts",
+      "import": "./dist/cli-config.js"
+    }
+  },
+  "files": ["dist", "templates", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "start": "maou"
+  },
+  "dependencies": {
+    "@little-house-studio/types": "workspace:*",
+    "@little-house-studio/llm": "workspace:*",
+    "@little-house-studio/tools": "workspace:*",
+    "@little-house-studio/context": "workspace:*",
+    "@little-house-studio/agent": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -2,9 +2,9 @@
 /**
  * Maou CLI 入口 —— 多产品路由器
  *
- *   maou coding         启动编程 agent（主产品）
+ *   maou                启动机器级 Ops Agent（默认）
+ *   maou coding         启动当前目录的编程 agent
  *   maou agent          coding 兼容别名
- *   maou                默认 coding
  *   maou setup          配置全局 API（全系列产品共用）
  *   maou doctor         检查/补齐依赖
  *   maou <path|pkg>     加载自定义 AgentCliConfig
@@ -15,6 +15,7 @@
 import { installExitGuard } from "./hooks/useExitGuard.js";
 import { resolveMaouConfigPath } from "@little-house-studio/agent";
 import {
+  DEFAULT_PRODUCT,
   formatProductList,
   resolveCliToken,
 } from "./commands/products.js";
@@ -22,9 +23,10 @@ import {
 const HELP = `Maou CLI — 终端 AI agent 多产品入口
 
 用法:
-  maou coding             启动编程 agent（当前主产品）
+  maou                    启动机器级 Ops Agent（固定全局数据路径）
+  maou ops                同 maou
+  maou coding             启动当前目录的编程 Agent，并创建/复用 .maou
   maou agent              同 maou coding（兼容别名）
-  maou                    默认启动 coding
   maou setup              配置全局 API（全系列产品共用，首次必做）
   maou setup --force      强制重新配置
   maou setup --from-env   从环境变量写入 API
@@ -45,8 +47,9 @@ ${formatProductList()}
 启动产品时顺序：
   0. 依赖预检（缺则自动装）
   1. 首次系列产品 → maou setup
-  2. 新项目路径 → 确认后创建 .maou
-  3. 进入 Ratatui TUI
+  2. maou coding 新项目路径 → 确认后创建 .maou 并注册全局项目索引
+  3. maou 使用固定全局 Ops 数据路径；不改当前目录
+  4. 进入 Ratatui TUI
 
 全局 API 配置文件（所有 Maou 系列产品共用）:
   ${resolveMaouConfigPath()}
@@ -218,10 +221,10 @@ async function main(): Promise<void> {
     process.exit(ok ? 0 : 1);
   }
 
-  // 产品启动：默认 coding；显式 path 时仍挂默认产品元数据（project 标记）
+  // 产品启动：默认机器级 ops；显式 path 仍挂默认产品元数据。
   const { launchAgent } = await import("./commands/agent.js");
   await launchAgent({
-    product: productName ?? "coding",
+    product: productName ?? DEFAULT_PRODUCT,
     configTarget,
     themePath,
     yes,

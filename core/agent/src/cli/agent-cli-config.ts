@@ -18,6 +18,10 @@ import type { AgentEntry } from "../agent/registry.js";
 export interface AgentCliConfig {
   /** agent 名称（显示用，与 AgentHandle.agentName 互为校验） */
   name: string;
+  /** 运行范围；global 使用固定用户态数据目录，project 绑定当前工作目录。 */
+  scope?: "global" | "project";
+  /** 全局产品的固定 session/workspace 根。CLI 会用它代替调用时 cwd。 */
+  resolveWorkspaceRoot?: (maouRoot: string) => string;
   /**
    * 创建 agent 句柄（装配依赖 + 物化）。
    * @param projectRoot 绑定的项目根目录（cwd）

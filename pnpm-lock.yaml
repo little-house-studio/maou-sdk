@@ -40,6 +40,34 @@ importers:
         specifier: ^3.0.0
         version: 3.2.6(@types/node@22.20.0)(tsx@4.22.4)(yaml@2.9.0)
 
+  agent/ops-agent:
+    dependencies:
+      '@little-house-studio/agent':
+        specifier: workspace:*
+        version: link:../../core/agent
+      '@little-house-studio/context':
+        specifier: workspace:*
+        version: link:../../core/context
+      '@little-house-studio/llm':
+        specifier: workspace:*
+        version: link:../../core/llm
+      '@little-house-studio/tools':
+        specifier: workspace:*
+        version: link:../../core/tools
+      '@little-house-studio/types':
+        specifier: workspace:*
+        version: link:../../core/types
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.6(@types/node@22.20.0)(tsx@4.22.4)(yaml@2.9.0)
+
   cli:
     dependencies:
       '@alcalzone/ansi-tokenize':
@@ -57,6 +85,9 @@ importers:
       '@little-house-studio/llm':
         specifier: workspace:*
         version: link:../core/llm
+      '@little-house-studio/ops-agent':
+        specifier: workspace:*
+        version: link:../agent/ops-agent
       '@little-house-studio/tools':
         specifier: workspace:*
         version: link:../core/tools
@@ -291,6 +322,9 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.6(@types/node@22.20.0)(tsx@4.22.4)(yaml@2.9.0)
 
   lsp-engine:
     dependencies:

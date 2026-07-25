@@ -78,6 +78,17 @@ import {
   SCROLL_COALESCE_MS,
 } from "../config/ui-constants.js";
 
+let activeWorkspaceRoot = process.cwd();
+
+/** CLI 启动时设置；global 产品固定到用户态根，project 产品使用 invocation cwd。 */
+export function setActiveWorkspaceRoot(root: string): void {
+  activeWorkspaceRoot = resolve(root);
+}
+
+export function getActiveWorkspaceRoot(): string {
+  return activeWorkspaceRoot;
+}
+
 interface Store extends UIState {
   setAgentMeta: (agentName: string, provider: string, model: string, maxContext: number) => void;
   setThinking: (level: number) => void;
@@ -96,6 +107,8 @@ interface Store extends UIState {
   startNewSession: (opts?: { clearScreen?: boolean; toast?: string }) => void;
   onStream: (ev: StreamEvent) => void;
   setStreaming: (b: boolean) => void;
+  /** 标记 send() 整段占用（含 supervisor），供 deferred agent switch 等使用 */
+  setAgentBusy: (b: boolean) => void;
   setAborting: (b: boolean) => void;
   toastMsg: (text: string, kind?: Toast["kind"]) => void;
   // 全屏编辑器
@@ -233,6 +246,7 @@ const initialState: UIState = {
   systemEvents: [],
   currentAssistantId: null,
   streaming: false,
+  agentBusy: false,
   aborting: false,
   sessionId: null,
   gallerySeed: `boot-${Date.now().toString(36)}`,
@@ -487,7 +501,7 @@ export const useStore = create<Store>((set, get) => ({
     if (sessionId) {
       const an = resolveAgentName(get().agentName, DEFAULT_AGENT_NAME);
       try {
-        saveLastSession(an, sessionId, process.cwd());
+        saveLastSession(an, sessionId, activeWorkspaceRoot);
       } catch {
         /* 指针写失败不阻断 UI */
       }
@@ -537,6 +551,7 @@ export const useStore = create<Store>((set, get) => ({
       sessionId: null,
       toast: null,
       streaming: false,
+      agentBusy: false,
       aborting: false,
       chatScrollOffset: 0,
       maxChatScroll: 0,
@@ -552,7 +567,7 @@ export const useStore = create<Store>((set, get) => ({
     // 落盘空会话 + 更新 last-session，避免下次启动 fallback 到旧 jsonl
     let sessionId: string | null = null;
     try {
-      sessionId = persistEmptySession(agentName, process.cwd());
+      sessionId = persistEmptySession(agentName, activeWorkspaceRoot);
     } catch (e) {
       // 仍清空 UI，但提示落盘失败（否则用户以为已 /new，重启却回到旧会话）
       get().toastMsg(`新会话落盘失败: ${String(e).slice(0, 60)}`, "err");
@@ -567,6 +582,7 @@ export const useStore = create<Store>((set, get) => ({
       round: 0,
       sessionId,
       streaming: false,
+      agentBusy: false,
       aborting: false,
       chatScrollOffset: 0,
       maxChatScroll: 0,
@@ -597,6 +613,7 @@ export const useStore = create<Store>((set, get) => ({
     get().toastMsg(toast, "ok");
   },
   setStreaming: (streaming) => set({ streaming }),
+  setAgentBusy: (agentBusy) => set({ agentBusy }),
   setAborting: (aborting) => set({ aborting }),
   toastMsg: (text, kind = "info") => {
     const t = (text ?? "").trim();

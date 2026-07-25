@@ -1,0 +1,16 @@
+{
+  "name": "explore",
+  "display_name": "System Explorer",
+  "role": "explore",
+  "scope": "subagent",
+  "subagent_kind": "task",
+  "description": "只读搜索本机文件与信息，定位目标后返回结论，不修改文件。",
+  "status": "active",
+  "round_limit": 20,
+  "enable_loop": true,
+  "persist_context": true,
+  "permission": "readonly",
+  "tool_preset": "explore",
+  "tools": ["reader", "glob", "grep", "todo_finish"],
+  "list_in_manager": true
+}

@@ -810,6 +810,9 @@ export {
   resolveUserAgentsDir,
   resolveUserHistoryPath,
   resolveUserLastSessionPath,
+  resolveUserProjectsPath,
+  resolveUserOpsRoot,
+  resolveUserOpsSessionsDir,
   resolveProjectMaouRoot,
   resolveProjectSessionsDir,
 } from './maou-paths.js'
@@ -819,7 +822,15 @@ export {
   listConfiguredApiRoles,
 } from './api-roles.js'
 export type { ApiModelRole, PresetRef } from './api-roles.js'
-export { getProjectsList, addProject, removeProject, autoDiscover } from './project-manager.js'
+export {
+  resolveProjectsRegistryPath,
+  registerProject,
+  getProjectsList,
+  addProject,
+  removeProject,
+  removeProjectByPath,
+  autoDiscover,
+} from './project-manager.js'
 export type { ProjectEntry, ProjectListItem } from './project-manager.js'
 export {
   MAOU_VERSION,

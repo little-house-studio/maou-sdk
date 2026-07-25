@@ -1,0 +1,13 @@
+{
+  "name": "change_self",
+  "description": "把用户明确提出的 Agent 自身改造任务交给隔离的 self-maintainer 子 Agent。用于新增工具/MCP、修改模板或能力配置，不用于普通业务项目任务。",
+  "type": "object",
+  "properties": {
+    "task": {
+      "type": "string",
+      "description": "要对当前 Agent 做的改造目标、约束和验收条件。"
+    }
+  },
+  "required": ["task"],
+  "additionalProperties": false
+}

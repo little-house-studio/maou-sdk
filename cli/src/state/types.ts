@@ -198,6 +198,12 @@ export interface UIState {
   systemEvents: SystemEvent[];   // 系统事件行（压缩/中断/失败等）
   currentAssistantId: string | null;
   streaming: boolean;
+  /**
+   * send() 整段占用（含 supervisor 第二轮）。
+   * 比 streaming 更宽：主 agent done 后到 supervisor 启动之间 streaming 可能短暂 false，
+   * 但 agentBusy 仍 true，避免 deferred agent switch / 排队误放行。
+   */
+  agentBusy: boolean;
   aborting: boolean;
   sessionId: string | null;
   /**

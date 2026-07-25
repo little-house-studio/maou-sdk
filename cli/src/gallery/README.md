@@ -13,7 +13,7 @@
 
 ## 自行加画
 
-1. 编辑 `assets/gallery-images.json` 增加 `works` 条目  
+1. 编辑 `assets/gallery/gallery-images.json` 增加 `works` 条目  
 2. 放入 `src/gallery/works/<id>/source.jpg`（或 `assets/gallery/<id>.jpg`）  
 3. 重启 `maou coding` → 自动 bake `sm/md/lg.txt`  
 

@@ -278,6 +278,7 @@ export function toProtoChrome(s: UIState): ProtoChrome {
         };
       }
       const agentBusy =
+        s.agentBusy ||
         s.streaming ||
         s.eventBlock.mode === "tool_pending" ||
         s.eventBlock.mode === "thinking" ||

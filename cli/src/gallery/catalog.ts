@@ -1,5 +1,5 @@
 /**
- * 古典画廊 catalog —— 元数据来自 assets/gallery-images.json（可自定义）。
+ * 古典画廊 catalog —— 元数据来自 assets/gallery/gallery-images.json（可自定义）。
  * ASCII 正文预烘焙在 works/<id>/{sm,md,lg}.txt。
  */
 
@@ -10,7 +10,7 @@ export type { GallerySize, GalleryWork } from "./catalog-types.js";
 
 /**
  * 策展清单：运行时从 JSON 加载。
- * - 包内默认：cli/assets/gallery-images.json
+ * - 包内默认：cli/assets/gallery/gallery-images.json
  * - 用户覆盖：~/.maou/gallery-images.json
  * - 项目覆盖：<cwd>/.maou/gallery-images.json
  */
@@ -88,7 +88,7 @@ export function fitGallerySize(
 export function pickGalleryWork(seed?: string): GalleryWork {
   const list = loadGalleryWorks();
   if (list.length === 0) {
-    throw new Error("画廊 works 为空：请检查 assets/gallery-images.json");
+    throw new Error("画廊 works 为空：请检查 assets/gallery/gallery-images.json");
   }
   if (!seed) {
     return list[Math.floor(Math.random() * list.length)]!;

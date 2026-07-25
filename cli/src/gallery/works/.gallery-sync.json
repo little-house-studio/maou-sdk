@@ -1,14 +1,9 @@
 {
-  "at": "2026-07-13T20:03:01.361Z",
-  "catalog": "/Users/mac/Documents/vscodeProject/maou-sdk/cli/assets/gallery-images.json",
+  "at": "2026-07-25T11:31:43.054Z",
+  "catalog": "/Users/mac/Documents/vscodeProject/maou-sdk/cli/assets/gallery/gallery-images.json",
   "rebuilt": [],
   "skipped": [
     "fallen-angel",
-    "dante-virgil",
-    "fall-rebel-angels",
-    "fall-of-damned",
-    "great-day-wrath",
-    "pandemonium",
-    "lucifer"
+    "dante-virgil"
   ]
 }

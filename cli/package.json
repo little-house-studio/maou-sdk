@@ -46,6 +46,7 @@
     "@little-house-studio/coding-agent": "workspace:*",
     "@little-house-studio/context": "workspace:*",
     "@little-house-studio/llm": "workspace:*",
+    "@little-house-studio/ops-agent": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/types": "workspace:*",
     "ansi-escapes": "^7.3.0",

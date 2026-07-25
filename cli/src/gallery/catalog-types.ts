@@ -1,4 +1,4 @@
-/** 画廊画作元数据（与 assets/gallery-images.json 字段对齐） */
+/** 画廊画作元数据（与 assets/gallery/gallery-images.json 字段对齐） */
 export type GallerySize = "sm" | "md" | "lg";
 
 export interface GalleryWork {

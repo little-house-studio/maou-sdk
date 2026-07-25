@@ -12,7 +12,7 @@ import type { StreamEvent } from "@little-house-studio/types";
 function freshState(): UIState {
   // 重置 store 拿初始 state
   useStore.setState({
-    messages: [], currentAssistantId: null, streaming: false, aborting: false,
+    messages: [], currentAssistantId: null, streaming: false, agentBusy: false, aborting: false,
     sessionId: null, agentName: "test", provider: "p", model: "m", maxContext: 100000,
     round: 0, thinkingLevel: 2, rounds: [], cacheHistory: [],
     currentRoundUsage: { input: 0, output: 0 },

@@ -2,7 +2,7 @@
  * 启动时同步画廊：检测 catalog / 源图变更 → 自动重烘焙 ASCII。
  *
  * 便于用户自定义：
- *   1) 改 assets/gallery-images.json
+ *   1) 改 assets/gallery/gallery-images.json
  *   2) 放入 works/<id>/source.jpg（或 assets/gallery/<id>.jpg）
  *   3) 重启 maou coding → 自动 bake sm/md/lg
  *
@@ -67,7 +67,7 @@ function worksDir(root: string): string {
 }
 
 function catalogPath(root: string): string | null {
-  const p = join(root, "assets", "gallery-images.json");
+  const p = join(root, "assets", "gallery", "gallery-images.json");
   return existsSync(p) ? p : null;
 }
 

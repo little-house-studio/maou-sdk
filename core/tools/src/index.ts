@@ -188,3 +188,5 @@ export {
 export type { LoadSubagentKindOptionsArgs } from './agent_team/subagent-kind-options.js'
 export { collectDiff, formatDiffForReport } from './agent_team/diff-collector.js'
 export type { DiffSummary, DiffEntry } from './agent_team/diff-collector.js'
+export { ProjectAgentTool } from './project/project_agent/tool.js'
+export { ChangeSelfTool } from './agent_team/change_self/tool.js'

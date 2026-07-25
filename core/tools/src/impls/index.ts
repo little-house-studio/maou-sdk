@@ -25,6 +25,8 @@ import { TeamManageTool } from "../agent_team/agent_manage/tool.js";
 import { SupervisorTaskControlTool } from "../agent_team/supervisor_task_control/tool.js";
 import { SupervisorChatMainTool } from "../agent_team/supervisor_chat_main/tool.js";
 import { ProjectManageTool } from "../project/project_manage/tool.js";
+import { ProjectAgentTool } from "../project/project_agent/tool.js";
+import { ChangeSelfTool } from "../agent_team/change_self/tool.js";
 import { TodoManageTool } from "../task/task_manage/tool.js";
 import { TodoFinishTool } from "../task/task_finish/tool.js";
 import { LlmJudgeTool } from "../llm_judge/tool.js";
@@ -76,6 +78,8 @@ export { TeamManageTool } from "../agent_team/agent_manage/tool.js";
 export { SupervisorTaskControlTool } from "../agent_team/supervisor_task_control/tool.js";
 export { SupervisorChatMainTool } from "../agent_team/supervisor_chat_main/tool.js";
 export { ProjectManageTool } from "../project/project_manage/tool.js";
+export { ProjectAgentTool } from "../project/project_agent/tool.js";
+export { ChangeSelfTool } from "../agent_team/change_self/tool.js";
 export { TodoManageTool, TaskManageTool } from "../task/task_manage/tool.js";
 export { TodoFinishTool, TaskFinishTool } from "../task/task_finish/tool.js";
 export { LlmJudgeTool } from "../llm_judge/tool.js";
@@ -107,6 +111,8 @@ export function registerBuiltins(registry: ToolRegistry): void {
   registry.register(new SupervisorTaskControlTool());
   registry.register(new SupervisorChatMainTool());
   registry.register(new ProjectManageTool());
+  registry.register(new ProjectAgentTool());
+  registry.register(new ChangeSelfTool());
   registry.register(new TodoManageTool());
   registry.register(new TodoFinishTool());
 

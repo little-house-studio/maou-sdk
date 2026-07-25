@@ -67,6 +67,11 @@ export interface AppRuntimeOptions {
   enableCompression?: boolean;
   /** 与 enableCompression 配套的 agent 名（用于 TaskSessionStore 路径隔离）。 */
   agentName?: string;
+  /**
+   * Agent 实例作用域。project（默认）会解析/物化 <project>/.maou/agents；
+   * global 只使用 <maouRoot>/agents，适合机器级 Ops Agent。
+   */
+  agentScope?: "project" | "global";
   /** 显式注入 harnessStore（覆盖 enableCompression 自动构造）。 */
   harnessStore?: HarnessSessionStore;
   /** 显式注入 taskStore（覆盖 enableCompression 自动构造）。 */
@@ -115,6 +120,8 @@ export class Runtime {
   private summarizer?: Summarizer;
   private callMainAgentFn?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
   private skillOptions?: import("../bootstrap/skills.js").AgentSkillOptions;
+  private agentScope: "project" | "global";
+  private agentName: string;
   private fileDiffWatchOpt?: AppRuntimeOptions["fileDiffWatch"];
   private hooks?: Hooks;
   private agentRuntime: AgentRuntime | null = null;
@@ -138,6 +145,8 @@ export class Runtime {
     this.postLoggerEnabled = options.enablePostLogger ?? true;
     this.callMainAgentFn = options.callMainAgent;
     this.skillOptions = options.skillOptions;
+    this.agentScope = options.agentScope ?? "project";
+    this.agentName = options.agentName ?? "coding";
     this.fileDiffWatchOpt = options.fileDiffWatch;
     this.hooks = options.hooks;
     this.maouRoot = options.maouRoot ?? resolveUserMaouRoot();
@@ -332,7 +341,10 @@ export class Runtime {
           const globalHelperIdx = cfg.api.helperPreset;
           const roles = cfg.api.roles;
           // 读 agent.json 的 helperModel（轻量：AgentRegistry 构造只设路径）
-          const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
+          const registry = new AgentRegistry(
+            this.maouRoot,
+            this.agentScope === "project" ? this.projectRoot : undefined,
+          );
           const entry = registry.get(agentName);
           // LLMPreset（无 index signature）→ APIPreset（有 index signature）
           return resolveHelperPreset(
@@ -375,6 +387,7 @@ export class Runtime {
         resolveHelperPreset: resolveHelperPresetFn,
         callMainAgent: this.callMainAgentFn,
         skillOptions: this.skillOptions,
+        agentScope: this.agentScope,
         fileDiffWatch: this.fileDiffWatchOpt,
         hooks: this.hooks,
       });
@@ -417,14 +430,14 @@ export class Runtime {
             const idx = config.api.defaultPreset ?? 0;
             const main = (presets[idx] ?? presets[0]) as unknown as APIPreset | undefined;
             if (!main) return undefined;
-            return resolveHelperPresetFn("coding", main);
+            return resolveHelperPresetFn(this.agentName, main);
           } catch {
             return undefined;
           }
         },
         // 持久化 kind 自动 materialize
         maouRoot: this.maouRoot,
-        parentAgentName: "coding",
+        parentAgentName: this.agentName,
         projectRoot: this.projectRoot,
         // Todo 分身：预分配 sessionId
         subSessionIdFactory: (parentSessionId, taskId) => {
@@ -643,7 +656,10 @@ export class Runtime {
   /** 列出所有 agent */
   async listAgents(): Promise<Record<string, unknown>[]> {
     try {
-      const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
+      const registry = new AgentRegistry(
+        this.maouRoot,
+        this.agentScope === "project" ? this.projectRoot : undefined,
+      );
       return registry.list();
     } catch {
       return [];
@@ -652,6 +668,15 @@ export class Runtime {
 
   /** 初始化新 agent —— 在项目级物化 agent 实例（从全局模板复制到 <project>/.maou/agents/<name>/） */
   async initAgent(name: string): Promise<Record<string, unknown>> {
+    if (this.agentScope !== "project") {
+      return {
+        ok: false,
+        name,
+        created: false,
+        dir: "",
+        reason: "global 作用域 agent 不在项目目录物化，请编辑 ~/.maou/agents",
+      };
+    }
     const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
     const result = registry.ensureProjectAgent(name);
     return { ok: true, name, ...result };

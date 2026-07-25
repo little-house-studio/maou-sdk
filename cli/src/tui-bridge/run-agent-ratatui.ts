@@ -40,6 +40,7 @@ import { ensurePerfHudSampler } from "../headless/perf-hud-lines.js";
 import { notePaintFrame } from "../hooks/process-stats.js";
 import { resolveKeyBinding } from "../config/keybindings.js";
 import { commandOpensOverlay } from "../config/cli-commands.js";
+import { userMaouRoot } from "../config/paths.js";
 
 export interface RunRatatuiOpts {
   config: AgentCliConfig;
@@ -94,14 +95,19 @@ function refreshSupervisor(): void {
 }
 
 export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
-  const cwd = process.cwd();
+  const maouRoot = userMaouRoot();
+  const invocationCwd = process.cwd();
+  const cwd = opts.config.scope === "global"
+    ? (opts.config.resolveWorkspaceRoot?.(maouRoot) ?? maouRoot)
+    : invocationCwd;
   /** 可热切换；snapshot / ProtoTheme 读此引用 */
   let activeTheme: LoadedTheme = resolveThemeArg(opts.themePath);
   setActiveTheme(activeTheme, false);
 
   const cli = createCliSession({
     config: opts.config,
-    cwd,
+    cwd: invocationCwd,
+    maouRoot,
     restoreLastSession: true,
     sound: true,
   });
@@ -897,8 +903,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
           return;
         }
         store.requestAgentSwitch(value);
-        // 同步 reset handle
-        cli.resetAgent();
+        // 不在 UI 选择瞬间中止当前工作；切换在本轮结束后由订阅器落地。
         store.setOverlay(null);
         pushState(undefined, true);
         return;
@@ -994,28 +999,43 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   process.once("SIGINT", onSigInt);
   process.once("SIGTERM", onSigInt);
 
-  // agent 切换 nonce
+  // agent 切换 nonce：send() 整段不中断（含 supervisor），待 agentBusy 结束后再切。
   let lastSwitch = useStore.getState().agentSwitchNonce;
+  let queuedSwitch: string | null = null;
+  const applyAgentSwitch = (name: string) => {
+    const s = useStore.getState();
+    cli.resetAgent();
+    const cur = s.agentName;
+    if (cur && cur !== name) s.saveCurrentSession(cur);
+    const restored = s.restoreSession(name);
+    if (!restored) s.clearMessages();
+    s.clearPendingMessages();
+    s.setAgentMeta(name, "", "", 0);
+    if (!restored) {
+      s.setSessionId(null);
+      s.toastMsg(`切换到 ${name}（新会话）`, "ok");
+    }
+    s.clearPendingAgentSwitch();
+    s.setOverlay(null);
+    queuedSwitch = null;
+  };
   const unsubSwitch = useStore.subscribe((s) => {
     if (s.agentSwitchNonce !== lastSwitch) {
       lastSwitch = s.agentSwitchNonce;
       const name = s.pendingAgentName;
       if (name) {
-        cli.resetAgent();
-        // useAgent 逻辑：restore
-        const cur = s.agentName;
-        if (cur && cur !== name) s.saveCurrentSession(cur);
-        const restored = s.restoreSession(name);
-        if (!restored) s.clearMessages();
-        s.clearPendingMessages();
-        s.setAgentMeta(name, "", "", 0);
-        if (!restored) {
-          s.setSessionId(null);
-          s.toastMsg(`切换到 ${name}（新会话）`, "ok");
+        // agentBusy 覆盖 streaming：supervisor 间隙 streaming 可能短暂 false
+        if (s.agentBusy || s.streaming) {
+          queuedSwitch = name;
+          s.toastMsg(`当前任务继续运行，完成后切换到 ${name}`, "info");
+        } else {
+          applyAgentSwitch(name);
         }
-        s.clearPendingAgentSwitch();
-        s.setOverlay(null);
       }
+      return;
+    }
+    if (queuedSwitch && !s.agentBusy && !s.streaming) {
+      applyAgentSwitch(queuedSwitch);
     }
   });
 

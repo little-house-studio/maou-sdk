@@ -58,6 +58,25 @@ export function resolveUserLastSessionPath(userRoot?: string): string {
   return join(userRoot ? resolve(userRoot) : resolveUserMaouRoot(), "last-session.json");
 }
 
+/** 机器级项目索引：由 `maou coding` 注册，供 Ops Agent 查询。 */
+export function resolveUserProjectsPath(userRoot?: string): string {
+  return join(userRoot ? resolve(userRoot) : resolveUserMaouRoot(), "projects.json");
+}
+
+/** Ops Agent 固定数据根；与调用 `maou` 时的 cwd 无关。 */
+export function resolveUserOpsRoot(userRoot?: string): string {
+  return join(userRoot ? resolve(userRoot) : resolveUserMaouRoot(), "ops");
+}
+
+/**
+ * Ops 会话目录，与 CLI projectSessionsDir(opsRoot) 对齐：
+ *   $MAOU_HOME/ops/.maou/sessions
+ * （last-session 同在 ops/.maou/last-session.json）
+ */
+export function resolveUserOpsSessionsDir(userRoot?: string): string {
+  return join(resolveUserOpsRoot(userRoot), MAOU_DIR_NAME, "sessions");
+}
+
 /** 项目态 maou 根：仅会话 / 项目 agents，不含全局 API */
 export function resolveProjectMaouRoot(projectRoot: string = process.cwd()): string {
   return join(projectRoot, MAOU_DIR_NAME);

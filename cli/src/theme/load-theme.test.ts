@@ -75,6 +75,13 @@ describe("themes/<name>.json", () => {
     expect(t.id).toBe("tau-ceti");
   });
 
+  it("Ops 内置主题使用橙红主色", () => {
+    const t = resolveThemeArg("ops-ember");
+    expect(t.id).toBe("ops-ember");
+    expect(t.tokens.accent.toUpperCase()).toBe("#FF5A36");
+    expect(t.tokens.accent2.toUpperCase()).toBe("#FF8A3D");
+  });
+
   it("Nav 配色：agent 橙红 · 会话米黄 · 设置黄绿", () => {
     setActiveTheme(loadThemeById("tau-ceti")!);
     const nav = getDefaultNavConfig();

@@ -128,6 +128,8 @@ export interface RuntimeOptions {
   maouRoot?: string;
   /** 项目根目录 */
   projectRoot?: string;
+  /** 全局 agent 不创建/读取调用路径下的 `.maou/agents`。 */
+  agentScope?: "project" | "global";
   /**
    * ContextEngine 上下文压缩闭环（可选）。
    * 同时注入 harnessStore + taskStore 时启用：每轮 sync→compress→toLLMHistory
@@ -285,6 +287,7 @@ export class AgentRuntime {
   private logFn: (level: string, message: string) => void;
   private maouRoot: string;
   private projectRoot: string;
+  private agentScope: "project" | "global";
   /** 当前 run() 的实际工作目录（agent.json working_dir 或 projectRoot）—— workspaceChanges/PromptCompiler 用 */
   private effectiveWorkingDir: string = "";
   /** ContextEngine 闭环依赖（可选） */
@@ -387,6 +390,7 @@ export class AgentRuntime {
     this.logFn = options.log ?? (() => {});
     this.maouRoot = options.maouRoot ?? resolveUserMaouRoot();
     this.projectRoot = options.projectRoot ?? process.cwd();
+    this.agentScope = options.agentScope ?? "project";
     this.harnessStore = options.harnessStore;
     this.taskStore = options.taskStore;
     this.summarizer = options.summarizer;
@@ -968,11 +972,18 @@ export class AgentRuntime {
     let effectiveWorkingDir = effectiveProjectRoot;
     let compressionLevel: "off" | "normal" | "aggressive" = "normal";
     let verifyCommand = "";
-    const registry = new AgentRegistry(maouRoot, effectiveProjectRoot);
-    // 确保项目级 agent 已物化（从全局模板复制到 <project>/.maou/agents/<name>/）
-    const projectAgentResult = registry.ensureProjectAgent(agentName);
-    if (projectAgentResult.created) {
-      this.log("info", `[RUN] 项目级 agent '${agentName}' 已物化 → ${projectAgentResult.dir} (${projectAgentResult.reason})`);
+    const usesProjectAgent = this.agentScope === "project" || Boolean(options.bindingProjectRoot);
+    const registry = new AgentRegistry(
+      maouRoot,
+      usesProjectAgent ? effectiveProjectRoot : undefined,
+    );
+    // 机器级主 agent（如 ops）只使用 <maouRoot>/agents；显式绑定路径的 project 子 Agent
+    // 则在目标项目内解析/物化 agent 配置。
+    if (usesProjectAgent) {
+      const projectAgentResult = registry.ensureProjectAgent(agentName);
+      if (projectAgentResult.created) {
+        this.log("info", `[RUN] 项目级 agent '${agentName}' 已物化 → ${projectAgentResult.dir} (${projectAgentResult.reason})`);
+      }
     }
     const agentEntry = registry.get(agentName);
     if (!agentEntry) {
@@ -1381,9 +1392,15 @@ export class AgentRuntime {
       }
     } catch { /* ignore */ }
 
-    // agent.json tools 白名单（与 PERMISSION 取交集）
+    // agent.json tools 白名单（与 PERMISSION 取交集）。
+    // project 子 Agent 可通过 bindingProjectRoot 切换到目标项目，即使母 Agent 是 global。
     try {
-      const registry = new AgentRegistry(maouRoot, effectiveProjectRoot);
+      const registry = new AgentRegistry(
+        maouRoot,
+        this.agentScope === "project" || options.bindingProjectRoot
+          ? effectiveProjectRoot
+          : undefined,
+      );
       const agentEntry = registry.get(agentName);
       if (agentEntry?.tools && Array.isArray(agentEntry.tools)) {
         if (agentEntry.tools.includes("*")) {
@@ -1839,7 +1856,9 @@ export class AgentRuntime {
         platformContext: options.platformContext,
         rollingSummary: this.sessionManager.getRollingSummary(sessionId!) ?? "",
         structuredMemory: memoryResult.formattedContext,
-        projectRoot: this.projectRoot,
+        projectRoot: this.agentScope === "project" || options.bindingProjectRoot
+          ? effectiveProjectRoot
+          : undefined,
         compressedHistory,
       }), { round: currentRound });
 
@@ -2798,7 +2817,11 @@ export class AgentRuntime {
     if (this._loopScriptCache.has(agentName)) return this._loopScriptCache.get(agentName)!;
     let script: ((ctx: LoopScriptCtx) => boolean) | null = null;
     try {
-      const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
+      // global 作用域（如 ops）只查 <maouRoot>/agents，避免误用 projectRoot 下的 .maou/agents
+      const registry = new AgentRegistry(
+        this.maouRoot,
+        this.agentScope === "project" ? this.projectRoot : undefined,
+      );
       const dir = registry.resolveAgentDir(agentName);
       // 引用模式：从 .agent.ref 找模板目录的 loop.ts
       const templateDir = getTemplateRef(dir) ?? dir;

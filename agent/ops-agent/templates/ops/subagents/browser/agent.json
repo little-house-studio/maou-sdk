@@ -1,0 +1,15 @@
+{
+  "name": "browser",
+  "display_name": "Browser Operator",
+  "role": "browser",
+  "scope": "subagent",
+  "subagent_kind": "task",
+  "description": "隔离处理浏览器搜索与交互任务；不操作项目代码。",
+  "status": "active",
+  "round_limit": 30,
+  "enable_loop": true,
+  "persist_context": true,
+  "permission": "scoped_write",
+  "tools": ["use_browser", "search_internet", "reader", "todo_finish"],
+  "list_in_manager": true
+}

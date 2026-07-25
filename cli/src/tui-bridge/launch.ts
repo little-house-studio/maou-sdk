@@ -11,7 +11,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
@@ -90,8 +90,21 @@ export function spawnRatatui(
     }
   }
 
+  // Node：cwd 不存在时 spawn 会报 ENOENT（错误信息里却写二进制路径，极易误判）。
+  const spawnCwd = opts.cwd || process.cwd();
+  if (!existsSync(spawnCwd)) {
+    try {
+      mkdirSync(spawnCwd, { recursive: true });
+    } catch (e) {
+      throw new Error(
+        `TUI 工作目录不存在且无法创建: ${spawnCwd}\n` +
+          `  ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   const child = spawn(bin, [], {
-    cwd: opts.cwd || process.cwd(),
+    cwd: spawnCwd,
     env: {
       ...process.env,
       MAOU_TUI_IPC_FD: String(IPC_FD),
@@ -144,7 +157,17 @@ export function spawnRatatui(
     );
   });
   child.on("error", (err) => {
-    markDead(`child error: ${err?.message ?? err}`);
+    const msg = err?.message ?? String(err);
+    // 常见误判：cwd 缺失时 libuv 也报 spawn … ENOENT
+    if (/ENOENT/i.test(msg) && !existsSync(spawnCwd)) {
+      markDead(`child error: ${msg} (cwd missing: ${spawnCwd})`);
+      return;
+    }
+    if (/ENOENT/i.test(msg) && !existsSync(bin)) {
+      markDead(`child error: ${msg} (binary missing: ${bin})`);
+      return;
+    }
+    markDead(`child error: ${msg}`);
   });
   if (ipc && typeof (ipc as NodeJS.EventEmitter).on === "function") {
     // 关键：无 error 监听时 write 到已断管道 → uncaughtException(EPIPE) → 整进程闪退

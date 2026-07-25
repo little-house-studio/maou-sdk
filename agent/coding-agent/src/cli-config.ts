@@ -1,7 +1,7 @@
 /**
  * coding-agent 的 CLI 配置 —— 仅 coding 特化 + 通用 bootstrap。
  *
- * 入口：`maou coding`（`maou` / `maou agent` 为同产品默认/别名）。
+ * 入口：`maou coding`（`maou agent` 为兼容别名；裸 `maou` 启动 Ops Agent）。
  * 装配 / preset / 审核器 / listAgents 均来自 @little-house-studio/agent。
  */
 
@@ -17,6 +17,7 @@ import { createCodingAgent } from "./index.js";
 
 const codingCliConfig: AgentCliConfig = {
   name: "coding",
+  scope: "project",
 
   createAgent(projectRoot: string, maouRoot: string) {
     // 通用依赖装配（builtins + terminal policy + LLM 审核器）

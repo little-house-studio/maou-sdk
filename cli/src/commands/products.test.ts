@@ -4,9 +4,17 @@ import {
   resolveCliToken,
   resolveProduct,
   PRODUCT_ALIASES,
+  DEFAULT_PRODUCT,
 } from "./products.js";
 
 describe("products registry", () => {
+  it("defaults to the machine-level ops product", () => {
+    expect(DEFAULT_PRODUCT).toBe("ops");
+    const p = resolveProduct(DEFAULT_PRODUCT);
+    expect(p?.scope).toBe("global");
+    expect(p?.defaultTheme).toBe("ops-ember");
+  });
+
   it("resolves coding product", () => {
     const p = resolveProduct("coding");
     expect(p?.name).toBe("coding");
@@ -32,6 +40,7 @@ describe("products registry", () => {
   it("resolveCliToken routes correctly", () => {
     expect(resolveCliToken("setup").kind).toBe("system");
     expect(resolveCliToken("doctor").kind).toBe("system");
+    expect(resolveCliToken("ops").kind).toBe("product");
     expect(resolveCliToken("coding").kind).toBe("product");
     expect(resolveCliToken("agent").kind).toBe("product");
     expect(resolveCliToken("./my.ts").kind).toBe("config");

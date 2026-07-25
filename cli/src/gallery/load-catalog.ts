@@ -4,7 +4,7 @@
  * 查找顺序（前者整表替换）：
  *   1) <cwd>/.maou/gallery-images.json
  *   2) ~/.maou/gallery-images.json
- *   3) 包内 assets/gallery-images.json
+ *   3) 包内 assets/gallery/gallery-images.json
  *
  * 与配色 themes/ 完全分离。
  */
@@ -39,7 +39,7 @@ const BUILTIN_WORKS: GalleryImageEntry[] = [
     artistEn: "Alexandre Cabanel",
     year: "1847",
     note: "Musée Fabre, Montpellier",
-    image: "1.png",
+    image: "gallery/fallen-angel.png",
     license: "public-domain",
   },
   {
@@ -59,8 +59,8 @@ const BUILTIN_WORKS: GalleryImageEntry[] = [
 function packageAssetsDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    join(here, "..", "assets"),
-    join(here, "..", "..", "assets"),
+    join(here, "..", "assets", "gallery"),
+    join(here, "..", "..", "assets", "gallery"),
   ];
   for (const d of candidates) {
     if (existsSync(join(d, "gallery-images.json"))) return d;

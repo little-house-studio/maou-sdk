@@ -1,0 +1,15 @@
+{
+  "name": "computer",
+  "display_name": "Computer Operator",
+  "role": "computer",
+  "scope": "subagent",
+  "subagent_kind": "task",
+  "description": "处理独立的电脑环境、终端、文件和进程操作任务。",
+  "status": "active",
+  "round_limit": 40,
+  "enable_loop": true,
+  "persist_context": true,
+  "permission": "scoped_write",
+  "tools": ["reader", "write_file", "edit_file", "glob", "grep", "use_terminal", "todo_finish"],
+  "list_in_manager": true
+}

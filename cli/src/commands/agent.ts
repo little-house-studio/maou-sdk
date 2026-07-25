@@ -2,15 +2,15 @@
  * maou <product> —— 在当前项目目录启动指定 agent 产品 TUI。
  *
  * 入口示例：
- *   maou coding          编程 agent（主产品）
+ *   maou                 机器级 Ops Agent（默认）
+ *   maou coding          当前目录的编程 agent
  *   maou agent           coding 兼容别名
- *   maou                 默认 coding
  *   maou ./my-cli.ts     自定义配置路径
  *
  * 启动顺序：
  *   0. 依赖预检 / 自动补齐
  *   1. 系列首次 → maou setup（全局 API）
- *   2. 新路径 → 项目确认（创建 .maou）
+ *   2. project 产品 → 项目确认（创建 .maou）；global 产品跳过
  *   3. 进入 Ratatui TUI（唯一产品 UI）
  */
 
@@ -18,13 +18,14 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentCliConfig } from "../types.js";
 import { ensureApiConfigured } from "./setup.js";
-import { ensureProjectConsent } from "./project-gate.js";
-import { resolveProduct, type MaouProduct } from "./products.js";
+import { ensureProjectConsent, isProjectInitialized } from "./project-gate.js";
+import { registerProject, resolveUserMaouRoot } from "@little-house-studio/types";
+import { DEFAULT_PRODUCT, resolveProduct, type MaouProduct } from "./products.js";
 
 export interface AgentLaunchOptions {
   /**
-   * 产品名（如 coding）。与 configTarget 二选一；
-   * 都不传时默认 coding。
+   * 产品名（如 ops/coding）。与 configTarget 二选一；
+   * 都不传时默认 ops。
    */
   product?: string;
   /** 自定义 agent cli-config 路径 / 包名；优先于 product */
@@ -72,7 +73,7 @@ async function loadConfigFromPath(target: string): Promise<AgentCliConfig> {
 async function resolveLaunchConfig(
   opts: AgentLaunchOptions,
 ): Promise<{ config: AgentCliConfig; product: MaouProduct }> {
-  const productName = opts.product ?? "coding";
+  const productName = opts.product ?? DEFAULT_PRODUCT;
   const product = resolveProduct(productName);
   if (!product) {
     throw new Error(
@@ -81,9 +82,16 @@ async function resolveLaunchConfig(
   }
 
   if (opts.configTarget) {
+    const config = await loadConfigFromPath(opts.configTarget);
     return {
-      config: await loadConfigFromPath(opts.configTarget),
-      product,
+      config,
+      product: {
+        ...product,
+        name: config.name || product.name,
+        productId: config.name || product.productId,
+        scope: config.scope ?? "project",
+        defaultTheme: undefined,
+      },
     };
   }
 
@@ -139,18 +147,26 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
 
   const { config, product } = await resolveLaunchConfig(opts);
 
-  // 2) 新项目确认（product 写入 .maou/project.json）
-  if (!opts.skipProjectGate && process.env.MAOU_SKIP_PROJECT_GATE !== "1") {
-    const ok = await ensureProjectConsent({
-      yes: opts.yes,
-      product: product.productId,
-    });
-    if (!ok) {
-      process.exit(1);
+  // 2) 仅项目产品创建 cwd/.maou；全局 Ops 不污染调用路径。
+  if (product.scope === "project") {
+    const gateSkipped = opts.skipProjectGate || process.env.MAOU_SKIP_PROJECT_GATE === "1";
+    if (!gateSkipped) {
+      const ok = await ensureProjectConsent({
+        yes: opts.yes,
+        product: product.productId,
+      });
+      if (!ok) process.exit(1);
+    }
+    // 每次成功启动都 upsert，修复老项目没有全局索引的情况。
+    if (!gateSkipped || isProjectInitialized()) {
+      registerProject(process.cwd(), {
+        product: product.productId,
+        userRoot: resolveUserMaouRoot(),
+      });
     }
   }
 
-  const themePath = opts.themePath;
+  const themePath = opts.themePath ?? product.defaultTheme;
 
   // 画廊：catalog / 源图变更时自动重烘焙 ASCII
   try {
