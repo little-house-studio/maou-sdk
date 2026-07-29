@@ -12,6 +12,9 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { normalizeDateString, normalizeResult, stripHtml } from "./normalize.js";
 import {
   extractQueryCore,
@@ -89,18 +92,96 @@ function mapNormalized(
 
 // ── 免费通用引擎 ─────────────────────────────────────────────
 
-let ddgrAvailable: boolean | null = null;
+/** 解析结果缓存：null = 还没查；"" = 查过且不可用 */
+let ddgrPath: string | null = null;
+
+/** 向上找 monorepo / 预编译包根（含 vendor/bin 或 ensure 脚本的那层） */
+function guessRepoRoot(): string | null {
+  try {
+    let dir = dirname(fileURLToPath(import.meta.url));
+    for (let i = 0; i < 10; i++) {
+      if (
+        existsSync(join(dir, "pnpm-workspace.yaml")) ||
+        existsSync(join(dir, "RELEASE.json")) ||
+        existsSync(join(dir, "vendor", "bin"))
+      ) {
+        return dir;
+      }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 定位 ddgr 可执行文件。
+ *
+ * 以前这里只有 `which ddgr`，有两个问题：
+ *   1. Windows 没有 `which`（是 `where`）→ 在 Windows 上**永远**探测不到，
+ *      哪怕已经装好了
+ *   2. 只看 PATH → 装在 vendor/bin（预编译包内置的位置）时找不到
+ *
+ * 现在按显式路径 → 包内 vendor/bin → ~/.maou/bin → PATH 依次找。
+ * Windows 上优先 .cmd shim（ddgr 本体是 .py，直接 spawn 跑不起来）。
+ */
+function resolveDdgr(): string {
+  if (ddgrPath != null) return ddgrPath;
+
+  const isWin = process.platform === "win32";
+  const names = isWin ? ["ddgr.cmd", "ddgr.exe", "ddgr"] : ["ddgr"];
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const dirs = [
+    process.env.MAOU_DDGR_DIR,
+    process.env.MAOU_BUNDLE_ROOT ? join(process.env.MAOU_BUNDLE_ROOT, "vendor", "bin") : "",
+    guessRepoRoot() ? join(guessRepoRoot()!, "vendor", "bin") : "",
+    home ? join(home, ".maou", "bin") : "",
+    home ? join(home, ".local", "bin") : "",
+  ].filter(Boolean) as string[];
+
+  const explicit = process.env.MAOU_DDGR_PATH;
+  if (explicit && existsSync(explicit)) {
+    ddgrPath = explicit;
+    return ddgrPath;
+  }
+
+  for (const d of dirs) {
+    for (const n of names) {
+      const p = join(d, n);
+      if (existsSync(p)) {
+        ddgrPath = p;
+        return ddgrPath;
+      }
+    }
+  }
+
+  // PATH 兜底（跨平台：Windows 用 where）
+  try {
+    const out = execFileSync(isWin ? "where" : "which", ["ddgr"], {
+      stdio: "pipe",
+      timeout: 2000,
+      encoding: "utf-8",
+      windowsHide: true,
+    });
+    const line = String(out).split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+    if (line) {
+      ddgrPath = line;
+      return ddgrPath;
+    }
+  } catch {
+    /* not on PATH */
+  }
+
+  ddgrPath = "";
+  return ddgrPath;
+}
 
 /** ddgr 是外部 CLI，不是 npm 依赖；未安装 → unavailable，绝不假装「搜空」 */
 function isDdgrAvailable(): boolean {
-  if (ddgrAvailable != null) return ddgrAvailable;
-  try {
-    execFileSync("which", ["ddgr"], { stdio: "pipe", timeout: 2000 });
-    ddgrAvailable = true;
-  } catch {
-    ddgrAvailable = false;
-  }
-  return ddgrAvailable;
+  return resolveDdgr() !== "";
 }
 
 export function tryDdgr(
@@ -108,23 +189,30 @@ export function tryDdgr(
   num: number,
   timeFilter: TimeFilter,
 ): Promise<EngineOutcome> {
-  if (!isDdgrAvailable()) {
+  const bin = resolveDdgr();
+  if (!bin) {
     return Promise.resolve({
       status: "unavailable",
       source: "ddgr",
-      reason: "ddgr CLI 未安装（可选增强，非 npm 包；建议 brew install ddgr 或 pip install ddgr）",
+      reason: "ddgr CLI 未安装（可选增强；maou doctor 可自动装，需 Python >= 3.6）",
     });
   }
   return new Promise((resolve) => {
     const args = ["-n", String(num), "--json", "--np"];
     if (timeFilter) args.push("-t", timeFilter);
     args.push(query);
-    execFile("ddgr", args, { timeout: 15_000, encoding: "utf-8" }, (error, stdout) => {
+    // Windows 上 bin 可能是 .cmd shim，必须 shell:true 才能 spawn
+    const useShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(bin);
+    execFile(
+      bin,
+      args,
+      { timeout: 15_000, encoding: "utf-8", shell: useShell, windowsHide: true },
+      (error, stdout) => {
       if (error) {
         const msg = String((error as NodeJS.ErrnoException).message || error);
         // 执行失败 = 引擎不可用，不是「搜到 0 条」
         if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-          ddgrAvailable = false;
+          ddgrPath = ""; // 让后续调用直接短路，不再反复 spawn
           return resolve({
             status: "unavailable",
             source: "ddgr",

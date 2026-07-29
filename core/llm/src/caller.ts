@@ -14,6 +14,7 @@ import type { LLMClient } from "./client.js";
 import { detectToolCallFromPartialJson } from "./protocol/json-scan.js";
 import { extractJsonCandidate } from "./protocol/json-extract.js";
 import { validateParsedResponse } from "./protocol/json-validation.js";
+import { detectContextOverflow } from "./overflow.js";
 
 /** 模型调用结果 */
 export interface ModelCallResult {
@@ -352,17 +353,39 @@ export class ModelCaller {
         // - 流式停滞（一个字没动超过 stall 阈值即中止）→ 这是用户要求的"流式停滞才重试"
         // - 连接/网络/超时类瞬时故障
         const errStr = String(error);
+        // 上下文溢出：禁止在 ModelCaller 层原样重试（payload 未变，只会连打 400）
+        // 交给 AgentRuntime 强制 ContextEngine 压缩后再请求
+        if (detectContextOverflow(errStr)) {
+          throw error;
+        }
+        // 可重试：仅瞬时类。400/401/403/404/422 等业务/参数错误重试无意义
+        // （讯飞 10305 常包在 API Error 400 里，旧逻辑见 "API Error" 就重试 → 连响多次）
+        const httpStatus = (() => {
+          const m = errStr.match(/API Error\s*(\d{3})/i);
+          return m ? Number(m[1]) : null;
+        })();
+        const isTransientHttp =
+          httpStatus != null && (httpStatus === 429 || httpStatus >= 500);
+        const isTransientNet =
+          errStr.includes("停滞") ||
+          errStr.includes("stall") ||
+          errStr.includes("timeout") ||
+          errStr.includes("timed out") ||
+          errStr.includes("ECONNRESET") ||
+          errStr.includes("ECONNREFUSED") ||
+          errStr.includes("ETIMEDOUT") ||
+          errStr.includes("socket hang up") ||
+          errStr.includes("network") ||
+          errStr.includes("fetch failed");
+        // 裸 "API Error" 且无状态码：保守当瞬时；有 4xx（非 429）则不重试
         const retryable =
-          errStr.includes("API Error") ||
-          errStr.includes("停滞") || errStr.includes("stall") ||
-          errStr.includes("timeout") || errStr.includes("timed out") ||
-          errStr.includes("ECONNRESET") || errStr.includes("ECONNREFUSED") ||
-          errStr.includes("ETIMEDOUT") || errStr.includes("socket hang up") ||
-          errStr.includes("network");
+          isTransientNet ||
+          isTransientHttp ||
+          (errStr.includes("API Error") && httpStatus == null);
         if (retry < this.maxRetries && retryable) {
           const attempt = retry + 1;
           const delaySec = Math.min(2 ** retry, 16); // 指数退避：1,2,4,8,16s
-          const errCategory = errStr.includes("API Error") ? "HTTP 错误" : "瞬时故障";
+          const errCategory = isTransientHttp || errStr.includes("API Error") ? "HTTP 错误" : "瞬时故障";
           yield this.emitEvent("status", { text: `API error · Retrying in ${delaySec}s · attempt ${attempt}/${this.maxRetries}` });
           yield this.emitLog("warn", `请求失败可重试[${errCategory}]（${errStr.slice(0, 80)}），第 ${attempt}/${this.maxRetries} 次重试，${delaySec}s 后重试`);
           await new Promise(r => setTimeout(r, delaySec * 1000));

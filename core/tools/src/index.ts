@@ -20,6 +20,7 @@ export {
   safePath,
   pathGuardFromPolicy,
   pipelineIsolateGuard,
+  machineOpenPathGuard,
   effectiveDenySegments,
   pathHitsDenySegments,
   parseEnvDenySegments,

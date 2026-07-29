@@ -18,6 +18,28 @@ describe("path-guard", () => {
     expect(r.needsAudit).toBe(false);
   });
 
+  it("open 模式允许任意绝对路径（Ops 机器管家）", () => {
+    const r = resolveToolPath(
+      {
+        projectRoot: "/tmp/ops-root",
+        workingDir: "/tmp/ops-root",
+        pathGuard: { mode: "open", roots: ["/tmp/ops-root"] },
+      },
+      "/etc/hosts",
+    );
+    expect(r.path).toBe("/etc/hosts");
+    // 相对路径仍落在 base
+    const rel = resolveToolPath(
+      {
+        projectRoot: "/tmp/ops-root",
+        workingDir: "/tmp/ops-root",
+        pathGuard: { mode: "open", roots: ["/tmp/ops-root"] },
+      },
+      "notes/a.md",
+    );
+    expect(rel.path).toBe(join("/tmp/ops-root", "notes/a.md"));
+  });
+
   it("hard 模式只允许 primary root", () => {
     const root = mkdtempSync(join(tmpdir(), "pg-hard-"));
     try {

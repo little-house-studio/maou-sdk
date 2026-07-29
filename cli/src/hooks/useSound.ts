@@ -32,6 +32,13 @@ export interface SoundConfig {
     approval: boolean;
   };
   idleTimeoutSec: number; // 0 = 禁用空闲检测
+  /**
+   * 完全卡住（API 失败后无人交互）时的长铃声：
+   * 每隔 ringIntervalSec 响一次 error，最长 ringDurationSec，
+   * 有任何用户交互（clearStuckAlarm）即停。
+   */
+  stuckRingDurationSec: number;
+  stuckRingIntervalSec: number;
 }
 
 export const DEFAULT_SOUND_CONFIG: SoundConfig = {
@@ -39,6 +46,9 @@ export const DEFAULT_SOUND_CONFIG: SoundConfig = {
   volume: 0.7,
   events: { done: true, error: true, warning: true, approval: true },
   idleTimeoutSec: 60,
+  // 完全卡住：默认响 10 秒（间隔 1s），有交互即停；可用 ui.sounds 覆盖
+  stuckRingDurationSec: 10,
+  stuckRingIntervalSec: 1,
 };
 
 /**
@@ -67,6 +77,12 @@ export function loadSoundConfig(): Partial<SoundConfig> | undefined {
         typeof sounds.idleTimeoutSec === "number"
           ? sounds.idleTimeoutSec
           : (sounds.idleTimeout as number);
+    }
+    if (typeof sounds.stuckRingDurationSec === "number") {
+      result.stuckRingDurationSec = sounds.stuckRingDurationSec;
+    }
+    if (typeof sounds.stuckRingIntervalSec === "number") {
+      result.stuckRingIntervalSec = sounds.stuckRingIntervalSec;
     }
 
     const evtDone = typeof sounds.done === "boolean" ? sounds.done : undefined;
@@ -135,6 +151,9 @@ export class SoundManager {
   private config: SoundConfig;
   private player: AudioPlayer | null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 卡住长铃声：interval + 总时长截止 */
+  private stuckInterval: ReturnType<typeof setInterval> | null = null;
+  private stuckDeadline = 0;
 
   constructor(configOverrides?: Partial<SoundConfig>) {
     this.config = { ...DEFAULT_SOUND_CONFIG, ...configOverrides };
@@ -173,6 +192,11 @@ export class SoundManager {
         process.stdout.write("\x07");
       } catch { /* headless */ }
     }
+  }
+
+  /** 只响一声（不启动卡住长铃） */
+  playOnce(id: SoundId): void {
+    this.play(id);
   }
 
   private playAudioFile(id: SoundId): void {
@@ -215,6 +239,51 @@ export class SoundManager {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
     }
+  }
+
+  /**
+   * 完全卡住（API 失败/重试耗尽）→ 电话式长铃：
+   * 每 stuckRingIntervalSec 响 error，最长 stuckRingDurationSec，
+   * 直到 clearStuckAlarm（用户在场：键/鼠/点/滚/打字）。
+   * 语义：提醒「人不在」；人已在操作界面则立刻停。
+   */
+  startStuckAlarm(): void {
+    // 已在响：不要重启（否则每次 error 事件又叠一轮「连响几十次」）
+    if (this.stuckInterval) return;
+    if (!this.config.enabled) return;
+    const durationMs = Math.max(0, this.config.stuckRingDurationSec) * 1000;
+    const intervalMs = Math.max(500, this.config.stuckRingIntervalSec * 1000);
+    if (durationMs <= 0) {
+      // 仅响一声
+      this.play("error");
+      return;
+    }
+    this.stuckDeadline = Date.now() + durationMs;
+    // 立刻响一次
+    this.play("error");
+    this.stuckInterval = setInterval(() => {
+      if (Date.now() >= this.stuckDeadline) {
+        this.clearStuckAlarm();
+        return;
+      }
+      this.play("error");
+    }, intervalMs);
+  }
+
+  clearStuckAlarm(): void {
+    if (this.stuckInterval) {
+      clearInterval(this.stuckInterval);
+      this.stuckInterval = null;
+    }
+    this.stuckDeadline = 0;
+  }
+
+  /**
+   * 用户在场：停卡住长铃。
+   * 由 TUI 任意键鼠/业务消息触发（含 user_activity / input_update / click…）。
+   */
+  onUserInteraction(): void {
+    this.clearStuckAlarm();
   }
 
   updateConfig(partial: Partial<SoundConfig>): void {

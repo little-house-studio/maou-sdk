@@ -30,12 +30,14 @@ const HELP = `Maou CLI — 终端 AI agent 多产品入口
   maou setup              配置全局 API（全系列产品共用，首次必做）
   maou setup --force      强制重新配置
   maou setup --from-env   从环境变量写入 API
-  maou doctor             诊断并自动修复依赖（pnpm/build/dcg/native）
+  maou --version          显示版本与安装形态
+  maou doctor             诊断并自动修复依赖（缺啥补啥）
   maou doctor --check     只诊断，不修复
-  maou update             Git pull + 本机构建（仅 clone 安装）
-  maou update --check     只 fetch 看 ahead/behind
-  maou update --force     脏工作区先 stash 再 pull
-  maou update --no-build  只 pull 不构建
+  maou update             更新（预编译包→下载新包；源码树→git pull + 构建）
+  maou update --check     只检查有无更新，不应用
+  maou update --force     强制重装 / 脏工作区先 stash 再 pull
+  maou update --no-build  只 pull 不构建（仅源码树）
+  maou update --channel X 切换发布通道 stable|dev（仅预编译包）
   maou session analyze    诊断会话：轮次/token/cache/浪费启发式
   maou session analyze <id> [--write] [--md] [--json]
   maou coding --yes       新路径免确认
@@ -109,11 +111,26 @@ async function main(): Promise<void> {
   let configTarget: string | undefined;
   let tuiBackend: string | undefined;
 
+  let channel: string | undefined;
+
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "-h" || a === "--help") {
       printHelp();
       process.exit(0);
+    }
+    if (a === "-v" || a === "--version") {
+      const { runtimeVersionLabel } = await import("./commands/runtime-mode.js");
+      process.stdout.write(`maou ${runtimeVersionLabel()}\n`);
+      process.exit(0);
+    }
+    if (a === "--channel") {
+      channel = argv[++i];
+      continue;
+    }
+    if (a.startsWith("--channel=")) {
+      channel = a.slice("--channel=".length);
+      continue;
     }
     if (a === "--theme") {
       themePath = argv[++i];
@@ -200,6 +217,7 @@ async function main(): Promise<void> {
       keepTarget: argv.includes("--keep-target"),
       check: argv.includes("--check"),
       noBuild: argv.includes("--no-build"),
+      channel,
     });
     process.exit(ok ? 0 : 1);
   }

@@ -7,9 +7,14 @@
       "task": {
         "type": "string",
         "description": "要委托给子 Agent 的任务描述（自然语言）。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
     "required": [
+      "description",
       "task"
     ],
     "additionalProperties": false

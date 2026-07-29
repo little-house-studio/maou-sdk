@@ -1,22 +1,20 @@
 # 多平台预编译 terminal-engine + maou-tui-ratatui，上传到 GitHub Release `native-prebuilds`
 #
-# 触发：
-#   - workflow_dispatch（手动）
-#   - push tags: native-v* / v*
-#   - push to develop（滚动更新 native-prebuilds，可选）
+# ⚠ 常规发布已由 `release.yml` 接管 —— 它同时产出「免构建预编译包」并刷新
+#   `native-prebuilds`。这里只保留手动触发，用于单独重刷裸原生件
+#   （例如只改了 Rust、不想走完整 bundle 流程）。
+#   两者都会写 `native-prebuilds`，所以**不要**再让本工作流自动触发，否则会互相覆盖。
 #
-# 用户侧：node scripts/ensure-terminal-engine.mjs / ensure-maou-tui.mjs
+# 用户侧：普通用户用 install-user.sh/ps1 装免构建包，不需要这里的资产。
+#         源码树开发者：node scripts/ensure-terminal-engine.mjs / ensure-maou-tui.mjs
 
-name: Native prebuilds
+name: Native prebuilds (manual)
 
 on:
   workflow_dispatch:
   push:
     tags:
       - "native-v*"
-      - "v*"
-    branches:
-      - develop
 
 permissions:
   contents: write

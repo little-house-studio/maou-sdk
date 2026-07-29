@@ -13,7 +13,7 @@ use crate::mouse;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use std::time::Instant;
 use unicode_width::UnicodeWidthStr;
@@ -183,6 +183,45 @@ fn agent_page_row(
 /// Chat right scrollbar width (cols). Wider = easier to grab with mouse.
 pub(crate) const CHAT_SCROLLBAR_W: u16 = 2;
 
+/// 顶部横幅 tip 前缀（与文案本身分离，便于窄屏先丢前缀）
+const BANNER_TIP_MARK: &str = "※ ";
+
+/// 点阵 spinner（goal 运行中）
+const GOAL_SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+
+/// Goal 相位 → (chip 文案, 是否等用户操作)。
+///
+/// chip 与详情共用这一处，两边文案不可能打架（grok active_phase_label 同思路）。
+fn goal_phase_label(state: &str, verify_rounds: u32) -> (String, bool) {
+    match state {
+        "planning" => ("规划中".into(), false),
+        "confirming_plan" => ("待确认计划".into(), true),
+        "started" => {
+            if verify_rounds > 0 {
+                (format!("执行中 · 验收 {verify_rounds} 轮"), false)
+            } else {
+                ("执行中".into(), false)
+            }
+        }
+        "confirming" => ("待验收".into(), true),
+        "ended" => ("已结束".into(), false),
+        other if other.is_empty() => ("监督中".into(), false),
+        other => (other.into(), false),
+    }
+}
+
+/// 耗时紧凑串（chip 用）：`8s` · `1m23s` · `2h05m`
+fn elapsed_compact(ms: u64) -> String {
+    let s = ms / 1000;
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m{:02}s", s / 60, s % 60)
+    } else {
+        format!("{}h{:02}m", s / 3600, (s % 3600) / 60)
+    }
+}
+
 /// Geometry of the last painted chat scrollbar (for hit-test / drag).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ChatScrollbarGeom {
@@ -291,6 +330,476 @@ impl App {
         }
     }
 
+    /// Goal 详情内容行 + 按钮行号。
+    ///
+    /// 高度预算与渲染共用这一个来源 —— 两边各写一套（grok 那样靠注释维护行数）迟早漂移，
+    /// 一漂移就是"按钮画在框外/点不中"。
+    /// 返回 `(行, (行下标, action))`；`w` 是可用文本列宽，
+    /// `plan_rows` 是分给计划区的行数（0 = 整段不画，屏幕矮时让位给操作按钮）。
+    fn goal_detail_lines(
+        &mut self,
+        w: usize,
+        plan_rows: usize,
+        th: &crate::theme::Theme,
+    ) -> (Vec<Line<'static>>, Vec<(usize, String)>) {
+        let mut out: Vec<Line<'static>> = Vec::new();
+        let mut hits: Vec<(usize, String)> = Vec::new();
+        let Some(sup) = self.chrome.supervisor.clone() else {
+            return (out, hits);
+        };
+        let st = sup.state.as_str();
+        let (label, needs_user) = goal_phase_label(st, sup.verify_rounds.unwrap_or(0));
+        let elapsed = self.goal_elapsed_ms();
+
+        let key = Style::default().fg(th.dim);
+        let val = Style::default().fg(th.fg);
+        let hdr = Style::default().fg(th.accent2).add_modifier(Modifier::BOLD);
+
+        // ── 状态 ──
+        let detail_hint = match st {
+            "planning" => "在输入框描述任务细节，监督写好计划后请你确认",
+            "confirming_plan" => "确认后开始执行；想改直接在输入框说",
+            "started" => "主 Agent 执行中，监督自动验收",
+            "confirming" => "监督认为已完成，等你验收",
+            _ => "",
+        };
+        out.push(Line::from(vec![
+            Span::styled("状态  ", key),
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(if needs_user { th.warn } else { th.accent })
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                if detail_hint.is_empty() {
+                    String::new()
+                } else {
+                    format!("  — {detail_hint}")
+                },
+                Style::default().fg(th.muted),
+            ),
+        ]));
+
+        // ── token / 用时 ──
+        let used = sup.tokens_used.unwrap_or(0);
+        let budget = sup.token_budget.filter(|b| *b > 0);
+        let pct = budget
+            .map(|b| ((used as f64 / b as f64) * 100.0).min(100.0))
+            .unwrap_or(0.0);
+        let tok_txt = match budget {
+            Some(b) => format!(
+                "{} / {} ({:.0}%)",
+                messages::compact(used),
+                messages::compact(b),
+                pct
+            ),
+            None => format!("{} tokens", messages::compact(used)),
+        };
+        out.push(Line::from(vec![
+            Span::styled("用量  ", key),
+            Span::styled(tok_txt, val),
+            Span::styled("   用时  ", key),
+            Span::styled(
+                elapsed.map(elapsed_compact).unwrap_or_else(|| "—".into()),
+                val,
+            ),
+        ]));
+
+        // 进度条（有预算才画）
+        if budget.is_some() {
+            let bar_w = w.saturating_sub(8).min(30).max(8);
+            let filled = ((pct / 100.0) * bar_w as f64).round() as usize;
+            let fg = if pct >= 85.0 {
+                th.err
+            } else if pct >= 60.0 {
+                th.warn
+            } else {
+                th.ok
+            };
+            out.push(Line::from(vec![
+                Span::styled("      ", key),
+                Span::styled("█".repeat(filled), Style::default().fg(fg)),
+                Span::styled(
+                    "░".repeat(bar_w.saturating_sub(filled)),
+                    Style::default().fg(th.dim),
+                ),
+            ]));
+        }
+
+        // ── 计划（可滚动；plan_rows=0 → 矮屏让位，整段不画）──
+        if plan_rows > 0 {
+            if let Some(plan) = sup.plan.as_ref().filter(|p| !p.trim().is_empty()) {
+                out.push(Line::from(""));
+                let all: Vec<&str> = plan.lines().collect();
+                let total = all.len();
+                let max_start = total.saturating_sub(plan_rows);
+                let start = self.goal_detail_scroll.min(max_start);
+                out.push(Line::from(vec![
+                    Span::styled("计划", hdr),
+                    Span::styled(
+                        if total > plan_rows {
+                            format!(
+                                "  {}–{} / {total} 行 · 滚轮翻阅",
+                                start + 1,
+                                (start + plan_rows).min(total)
+                            )
+                        } else {
+                            format!("  {total} 行")
+                        },
+                        Style::default().fg(th.dim),
+                    ),
+                ]));
+                for l in all.iter().skip(start).take(plan_rows) {
+                    out.push(Line::from(Span::styled(
+                        format!("  {}", trunc(l.trim_end(), w.saturating_sub(2))),
+                        Style::default().fg(th.md_code_block),
+                    )));
+                }
+            }
+        }
+
+        // ── 验收 ──
+        if let Some(v) = sup.last_verdict.as_ref() {
+            let pass = v.eq_ignore_ascii_case("pass") || v == "合格";
+            out.push(Line::from(""));
+            out.push(Line::from(vec![
+                Span::styled("验收", hdr),
+                Span::styled(
+                    format!("  第 {} 轮 · ", sup.verify_rounds.unwrap_or(0)),
+                    Style::default().fg(th.dim),
+                ),
+                Span::styled(
+                    if pass { "合格" } else { "需改进" }.to_string(),
+                    Style::default()
+                        .fg(if pass { th.ok } else { th.err })
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
+
+        // ── 操作 ──
+        out.push(Line::from(""));
+        out.push(Line::from(Span::styled("操作", hdr)));
+        let btn = |out: &mut Vec<Line<'static>>,
+                       hits: &mut Vec<(usize, String)>,
+                       text: &str,
+                       bg: Color,
+                       act: &str| {
+            hits.push((out.len(), act.to_string()));
+            out.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    format!(" {text} "),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        };
+        match st {
+            "confirming_plan" => {
+                btn(&mut out, &mut hits, "✓ 确认计划，开始执行", th.accent, "confirm_plan");
+            }
+            "confirming" => {
+                btn(&mut out, &mut hits, "✓ 通过并结束监督", th.ok, "confirm_pass");
+            }
+            _ => {}
+        }
+        btn(&mut out, &mut hits, "✕ 退出监督", th.err, "exit");
+
+        out.push(Line::from(Span::styled(
+            "  Esc 关闭详情 · 输入框可继续给监督追加指示".to_string(),
+            Style::default().fg(th.dim),
+        )));
+
+        (out, hits)
+    }
+
+    /// 计划区最多几行（宽屏时的上限）
+    const GOAL_PLAN_ROWS_MAX: usize = 8;
+
+    /// 在给定可用高度下，计划区分几行 + 浮层外框该多高。
+    ///
+    /// 先算「不含计划」的固定行数，剩下的才给计划 —— 反过来（先铺计划再截）会把
+    /// 底部的操作按钮切掉，那等于「确认计划」点不到，是功能损坏而非显示瑕疵。
+    /// 高度与渲染共用 `goal_detail_lines`，不会各算一套。
+    fn goal_detail_layout(&mut self, outer_w: u16, avail_h: u16) -> (usize, u16) {
+        let th = self.theme.clone();
+        let text_w = outer_w.saturating_sub(4).max(8) as usize;
+        let fixed = self.goal_detail_lines(text_w, 0, &th).0.len();
+        let plan_total = self
+            .chrome
+            .supervisor
+            .as_ref()
+            .and_then(|s| s.plan.as_ref())
+            .filter(|p| !p.trim().is_empty())
+            .map(|p| p.lines().count())
+            .unwrap_or(0);
+        // 内容可用高度 = 外框高 − 上下边框
+        let content_h = avail_h.saturating_sub(2) as usize;
+        // 计划段自带「空行 + 标题」2 行开销，凑不出 1 行正文就整段不画
+        let room = content_h.saturating_sub(fixed);
+        let plan_rows = if plan_total > 0 && room >= 3 {
+            (room - 2).min(Self::GOAL_PLAN_ROWS_MAX).min(plan_total)
+        } else {
+            0
+        };
+        let content = fixed + if plan_rows > 0 { plan_rows + 2 } else { 0 };
+        (plan_rows, (content as u16).saturating_add(2))
+    }
+
+    /// Goal 详情浮层：圆角框 + 标题(objective) + 右上 [✗] + 分段内容。
+    fn paint_goal_detail(&mut self, f: &mut Frame, r: Rect, th: &crate::theme::Theme) {
+        if r.width < 20 || r.height < 6 {
+            return;
+        }
+        let sup = match self.chrome.supervisor.clone() {
+            Some(s) => s,
+            None => return,
+        };
+        f.render_widget(Clear, r);
+
+        // 标题：目标一句话 + 运行中 spinner；右上角关闭按钮
+        let running = self.goal_is_running();
+        let spin = if running {
+            let i = (self.spinner_frame / 4) as usize % GOAL_SPINNER.len();
+            format!("{} ", GOAL_SPINNER[i])
+        } else {
+            String::new()
+        };
+        let close_txt = " [✗] ";
+        let close_w = UnicodeWidthStr::width(close_txt) as u16;
+        let title_budget = r.width.saturating_sub(close_w + 6) as usize;
+        let objective = sup
+            .objective
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "监督目标".into());
+        let title = format!(" {spin}{} ", trunc(&objective, title_budget));
+
+        f.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(th.accent))
+                .title(Span::styled(
+                    title,
+                    Style::default()
+                        .fg(th.accent)
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .style(Style::default().bg(th.panel_bg)),
+            r,
+        );
+
+        // 关闭按钮画在上边框右侧
+        let close_x = r.x + r.width.saturating_sub(close_w + 1);
+        let close_hover = self
+            .hover_id
+            .as_ref()
+            .map(|h| h == "goal_close")
+            .unwrap_or(false);
+        let close_rect = Rect::new(close_x, r.y, close_w, 1);
+        self.goal_detail_close = Some(close_rect);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                close_txt,
+                if close_hover {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(th.err)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(th.dim).bg(th.panel_bg)
+                },
+            ))),
+            close_rect,
+        );
+
+        let body = Rect {
+            x: r.x.saturating_add(2),
+            y: r.y.saturating_add(1),
+            width: r.width.saturating_sub(4),
+            height: r.height.saturating_sub(2),
+        };
+        // 计划行数按实际外框高反算，与尺寸阶段同一函数 → 不会画出框外
+        let (plan_rows, _) = self.goal_detail_layout(r.width, r.height);
+        let (lines, hits) = self.goal_detail_lines(body.width as usize, plan_rows, th);
+        // 按钮 hit：内容行号 → 绝对屏幕行
+        self.goal_action_hits = hits
+            .into_iter()
+            .filter(|(i, _)| (*i as u16) < body.height)
+            .map(|(i, act)| (body.y.saturating_add(i as u16), act))
+            .collect();
+        let shown: Vec<Line> = lines.into_iter().take(body.height as usize).collect();
+        f.render_widget(
+            Paragraph::new(shown).style(Style::default().bg(th.panel_bg)),
+            body,
+        );
+    }
+
+    /// Goal 状态 chip（1 行）：`[⠹ Goal: 执行中 · 验收 2 轮]  12.5k tokens  1m23s  ▸ 详情`
+    ///
+    /// chip 底色编码状态（等用户操作 = 反色警示），hover 只加粗+下划线不换色 —— 颜色已经
+    /// 被状态占用，再拿它做 hover 反馈就分不清「悬停」和「要我确认」。
+    fn paint_goal_chip(&mut self, f: &mut Frame, r: Rect, th: &crate::theme::Theme) {
+        let Some(sup) = self.chrome.supervisor.clone() else {
+            return;
+        };
+        let (label, needs_user) = goal_phase_label(
+            sup.state.as_str(),
+            sup.verify_rounds.unwrap_or(0),
+        );
+        let running = self.goal_is_running();
+        let elapsed = self.goal_elapsed_ms();
+
+        let glyph = if running {
+            let i = (self.spinner_frame / 4) as usize % GOAL_SPINNER.len();
+            format!("{} ", GOAL_SPINNER[i])
+        } else {
+            String::new()
+        };
+        let chip_text = format!("{glyph}Goal: {label}");
+
+        // 等用户 → 反色（黄底黑字，和审批条同一套语汇）；正常运行 → accent 前景
+        let mut chip_style = if needs_user {
+            Style::default()
+                .fg(Color::Black)
+                .bg(th.warn)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(th.accent)
+                .bg(th.bg)
+                .add_modifier(Modifier::BOLD)
+        };
+        let hovered = self
+            .hover_id
+            .as_ref()
+            .map(|h| h == "goal_chip")
+            .unwrap_or(false);
+        if hovered {
+            chip_style = chip_style.add_modifier(Modifier::UNDERLINED);
+        }
+
+        let dim = Style::default().fg(th.dim).bg(th.bg);
+        let mut metrics = String::new();
+        if let Some(t) = sup.tokens_used.filter(|v| *v > 0) {
+            metrics.push_str(&format!("  {} tokens", messages::compact(t)));
+        }
+        if let Some(ms) = elapsed {
+            metrics.push_str(&format!("  {}", elapsed_compact(ms)));
+        }
+        let tail = if self.show_goal_detail {
+            "  ▾ 收起"
+        } else {
+            "  ▸ 详情"
+        };
+
+        let mut spans = vec![
+            Span::styled(" [", dim),
+            Span::styled(chip_text, chip_style),
+            Span::styled("]", dim),
+        ];
+        if !metrics.is_empty() {
+            spans.push(Span::styled(metrics, dim));
+        }
+        spans.push(Span::styled(
+            tail.to_string(),
+            Style::default().fg(th.muted).bg(th.bg),
+        ));
+
+        let line = pad_line_to_width(
+            Line::from(spans),
+            r.width as usize,
+            Style::default().bg(th.bg),
+        );
+        f.render_widget(
+            Paragraph::new(line).style(Style::default().bg(th.bg)),
+            r,
+        );
+    }
+
+    /// 顶部横幅（1 行）：左 agent 名 · 中 tip · 右 审批权限。
+    ///
+    /// 窄屏优先级：审批芯片 > agent 名 > tip（tip 先掉前缀再截断，最后整条不画）。
+    /// 文案全部来自协议（`chrome.agent` / `chrome.tips` / `chrome.approval_*`）。
+    fn paint_banner(&mut self, f: &mut Frame, r: Rect, th: &crate::theme::Theme) {
+        if r.width == 0 || r.height == 0 {
+            return;
+        }
+        let w = r.width as usize;
+
+        // 右：审批权限芯片（色/标题与 EventBlock 同源；中文提示由 Node 下发）
+        let mode = self
+            .chrome
+            .approval_mode
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("normal");
+        let (chip_bg, chip_title, chip_fallback) = messages::approval_chip(mode, th);
+        let chip_hint = self
+            .chrome
+            .approval_label
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(chip_fallback);
+        let right = trunc(&format!(" {chip_title} · {chip_hint} "), w);
+        let right_w = UnicodeWidthStr::width(right.as_str());
+
+        // 左：当前 agent 名（Hello / chrome.agent）
+        let agent = self.agent.trim();
+        let left = trunc(
+            &format!(" ◆ {} ", if agent.is_empty() { "—" } else { agent }),
+            w.saturating_sub(right_w),
+        );
+        let left_w = UnicodeWidthStr::width(left.as_str());
+
+        // 中：tip 居中于剩余列；不足容纳「※ x…」就整条不画
+        let mid_w = w.saturating_sub(left_w + right_w);
+        let tip = self.banner_tip();
+        let mid = if tip.is_empty() || mid_w < 6 {
+            " ".repeat(mid_w)
+        } else {
+            let mark_w = UnicodeWidthStr::width(BANNER_TIP_MARK);
+            // 左右各留 1 列呼吸位，避免 tip 贴住 agent 名 / 审批芯片
+            let body_w = mid_w.saturating_sub(2);
+            let body = if body_w > mark_w + 2 {
+                format!("{BANNER_TIP_MARK}{tip}")
+            } else {
+                tip
+            };
+            center(&trunc(&body, body_w), mid_w)
+        };
+
+        // 顶栏底色用 footer_bg（浅）：与底部 InfoBar 同色系，把深色对话区上下夹住。
+        // 用 panel_bg 时它和聊天底 (#1A1A1A) 只差一档，横幅会糊进正文里分不出层。
+        let bar_bg = th.footer_bg;
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    left,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(bar_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(mid, Style::default().fg(th.bg).bg(bar_bg)),
+                Span::styled(
+                    right,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(chip_bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]))
+            .style(Style::default().bg(bar_bg)),
+            r,
+        );
+    }
+
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         let th = self.theme.clone();
@@ -323,29 +832,9 @@ impl App {
             .as_ref()
             .map(|s| s.active)
             .unwrap_or(false);
-        let goal_h: u16 = if has_goal {
-            let plan_lines = self
-                .chrome
-                .supervisor
-                .as_ref()
-                .and_then(|s| s.plan.as_ref())
-                .map(|p| p.lines().take(10).count())
-                .unwrap_or(0);
-            let actions = self
-                .chrome
-                .supervisor
-                .as_ref()
-                .map(|s| match s.state.as_str() {
-                    "confirming_plan" => 2u16,
-                    "confirming" => 1,
-                    "started" if s.last_verdict.is_some() => 1,
-                    _ => 0,
-                })
-                .unwrap_or(0);
-            (2 + plan_lines as u16 + actions + 1).min(16).max(3)
-        } else {
-            0
-        };
+        // Goal 只占 1 行状态 chip（详情走浮层）——面板式布局会随状态在 3~14 行间跳，
+        // 既挤压对话区又让整屏重排。grok 的做法：常态一行，点开才铺开。
+        let goal_h: u16 = if has_goal { 1 } else { 0 };
         let event_h: u16 = if !show_comp
             && self.chrome.event_block_expanded
             && self
@@ -390,7 +879,21 @@ impl App {
             (0, 0)
         };
 
+        // Goal 详情浮层尺寸（grok goal_detail_area: 90% 宽 clamp 60..140）
+        let (goal_detail_w, goal_detail_h) = if has_goal && self.show_goal_detail {
+            let w = ((area.width as u32 * 90 / 100) as u16)
+                .clamp(48, 140)
+                .min(area.width.saturating_sub(4));
+            // 上限按「整屏 − 下方 chrome」估：浮层住在对话区里，不去压 chip/输入/导航
+            let avail = area.height.saturating_sub(8).max(8);
+            let (_, h) = self.goal_detail_layout(w, avail);
+            (w, h.min(avail))
+        } else {
+            (0, 0)
+        };
+
         let metrics = ShellMetrics {
+            has_banner: !self.full_editor,
             has_goal,
             goal_h,
             has_approval,
@@ -413,6 +916,8 @@ impl App {
             },
             overlay_w,
             overlay_h,
+            goal_detail_w,
+            goal_detail_h,
             full_editor: self.full_editor,
         };
         let solved = solve_shell(&metrics, area);
@@ -468,6 +973,11 @@ impl App {
             return;
         }
         self.full_editor_rect = None;
+
+        // 顶部横幅（agent · tip · 审批）——先画顶行，聊天体只写 chat_inner 不会覆盖
+        if let Some(br) = solved.get(Slot::Banner) {
+            self.paint_banner(f, br, &th);
+        }
 
         // chat body from layout slots（无外框；ChatInner ≈ Chat 全区域）
         let chat = solved.get(Slot::Chat).unwrap_or(area);
@@ -768,117 +1278,18 @@ impl App {
             }
         }
 
-        // Goal / supervisor panel
+        // Goal 状态 chip（1 行；详情在浮层里，见 paint_goal_detail）
         self.goal_rect = None;
+        self.goal_action_hits.clear();
         if has_goal {
-            let r = match solved.get(Slot::Goal) {
-                Some(r) => r,
-                None => Rect::default(),
-            };
-            self.goal_rect = Some(r);
-            if let Some(sup) = &self.chrome.supervisor {
-                // Ink GoalPanel stateLabel
-                let state_label = match sup.state.as_str() {
-                    "planning" => "规划中".to_string(),
-                    "confirming_plan" => "待确认计划".to_string(),
-                    "started" => format!("执行中 · {} 轮", sup.verify_rounds.unwrap_or(0)),
-                    "confirming" => "待最终验收".to_string(),
-                    "ended" => "已结束".to_string(),
-                    other => other.to_string(),
-                };
-                let border_fg = if matches!(
-                    sup.state.as_str(),
-                    "confirming_plan" | "confirming"
-                ) {
-                    th.warn
-                } else {
-                    th.accent
-                };
-                let plan_chars = sup.plan.as_ref().map(|p| p.chars().count()).unwrap_or(0);
-                let mut body: Vec<Line> = vec![Line::from(vec![
-                    Span::styled(
-                        format!(" 🎯 监督模式 · {state_label} "),
-                        Style::default()
-                            .fg(border_fg)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        if plan_chars > 0 {
-                            format!("{plan_chars} 字计划 ▼")
-                        } else {
-                            String::new()
-                        },
-                        Style::default().fg(th.dim),
-                    ),
-                ])];
-                if let Some(plan) = &sup.plan {
-                    let total_lines = plan.lines().count();
-                    for pl in plan.lines().take(10) {
-                        body.push(Line::from(Span::styled(
-                            format!("  {pl}"),
-                            Style::default().fg(th.fg),
-                        )));
-                    }
-                    if total_lines > 10 {
-                        body.push(Line::from(Span::styled(
-                            format!("  …（共 {total_lines} 行，展开 EventBlock 查看完整监督输出）"),
-                            Style::default().fg(th.dim),
-                        )));
-                    }
-                }
-                // Ink GoalButton rows (click → goal_action)
-                match sup.state.as_str() {
-                    "confirming_plan" => {
-                        body.push(Line::from(Span::styled(
-                            "  ✓ 确认计划，开始监督 ".to_string(),
-                            Style::default()
-                                .fg(Color::Black)
-                                .bg(th.accent)
-                                .add_modifier(Modifier::BOLD),
-                        )));
-                        body.push(Line::from(Span::styled(
-                            "  ✎ 修改（在输入框发改动说明） ".to_string(),
-                            Style::default().fg(th.fg).bg(th.muted),
-                        )));
-                    }
-                    "confirming" => {
-                        body.push(Line::from(Span::styled(
-                            "  ✓ 通过验收，结束监督 ".to_string(),
-                            Style::default()
-                                .fg(Color::Black)
-                                .bg(th.ok)
-                                .add_modifier(Modifier::BOLD),
-                        )));
-                    }
-                    _ => {}
-                }
-                if let Some(v) = &sup.last_verdict {
-                    let pass = v.eq_ignore_ascii_case("pass") || v == "合格";
-                    let (label, fg) = if pass {
-                        ("合格", th.ok)
-                    } else if v.eq_ignore_ascii_case("fail")
-                        || v == "不合格"
-                        || v.eq_ignore_ascii_case("reject")
-                    {
-                        ("不合格", th.err)
-                    } else {
-                        (v.as_str(), th.muted)
-                    };
-                    body.push(Line::from(Span::styled(
-                        format!("  上轮验收：{label}"),
-                        Style::default().fg(fg),
-                    )));
-                }
-                f.render_widget(
-                    Paragraph::new(body).block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(border_fg)),
-                    ),
-                    r,
-                );
+            if let Some(r) = solved.get(Slot::Goal) {
+                self.goal_rect = Some(r);
+                self.paint_goal_chip(f, r, &th);
             }
+        } else {
+            self.show_goal_detail = false;
         }
+
 
         self.approval_rect = None;
         self.approval_chips.clear();
@@ -1225,20 +1636,18 @@ impl App {
                     .unwrap_or_else(|| "normal".into());
                 let pending = self.chrome.pending_count.unwrap_or(0);
                 let detail = self.chrome.detail.clone().unwrap_or_default();
-                // Supervisor collapsed chip (Ink EventBlockCollapsed) when active
+                // Supervisor 展开入口。状态/轮次/耗时已经在 Goal chip 上，这里只留
+                // 「看监督说了什么」这一个功能，不再复述一遍相位（两处各写一份必然打架）。
                 let ev_line = if sup_active {
-                    if let Some(sup) = &self.chrome.supervisor {
-                        let label = match sup.state.as_str() {
-                            "planning" => "规划中",
-                            "confirming_plan" => "待确认计划",
-                            "started" => "执行中",
-                            "confirming" => "待最终验收",
-                            other => other,
-                        };
+                    if self.chrome.supervisor.is_some() {
                         Line::from(Span::styled(
                             format!(
-                                " 🎯 SUP · {label}  ▶ expand · 轮次{} ",
-                                sup.verify_rounds.unwrap_or(0)
+                                " 🎯 监督输出 · {} 展开 ",
+                                if self.chrome.event_block_expanded {
+                                    "▾"
+                                } else {
+                                    "▶"
+                                }
                             ),
                             Style::default()
                                 .fg(Color::Black)
@@ -1558,6 +1967,16 @@ impl App {
                 Paragraph::new(nav_line).style(Style::default().bg(bgc)),
                 seg_r,
             );
+        }
+
+        // Goal 详情浮层：在 Node 弹层之下画（弹层是显式交互，优先级更高）
+        self.goal_detail_rect = None;
+        self.goal_detail_close = None;
+        if has_goal && self.show_goal_detail {
+            if let Some(gr) = solved.get(Slot::GoalDetail) {
+                self.goal_detail_rect = Some(gr);
+                self.paint_goal_detail(f, gr, &th);
+            }
         }
 
         // Overlay modal — absolute center from layout

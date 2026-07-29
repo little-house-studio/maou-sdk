@@ -89,6 +89,10 @@ export interface SystemEvent {
   content: string;
   ts: number;
   detail?: string;       // 点击展开看详细
+  /** 可操作类型：retry = 可按 R / 点击重试上一轮用户消息 */
+  action?: "retry";
+  /** action=retry 时重新提交的用户原文 */
+  retryText?: string;
 }
 
 export type EventMode =
@@ -124,20 +128,30 @@ export interface Toast {
 }
 
 export interface RoundUsage {
+  /** 归一后的 prompt **总量**（含缓存命中与写入）= 上下文占用 / 命中率分母 */
   input: number;
   output: number;
   total?: number;
   cacheRead?: number;
-  /** 本轮是否计入 cacheHistory（主模型且模型支持 cache 上报） */
+  /** 缓存写入（建缓存）：计入 input，但不算命中 */
+  cacheWrite?: number;
+  /**
+   * 本轮是否计入 cacheHistory。
+   * 需同时满足：主模型可能上报 cache，且 usage 里**真的出现过** cache 字段
+   * （只满足前者会把不上报的模型写成假 0%）。
+   */
   cacheEligible?: boolean;
 }
 
 /** 单轮缓存统计原始量（用于正确计算合并缓存率，避免 mean-of-rates 偏差）
- *  仅主 agent 当前主模型、且模型支持 prompt-cache 上报时写入。
+ *  仅主 agent 当前主模型、且 usage 真上报 prompt-cache 时写入。
  */
 export interface CacheStat {
   cacheRead: number;
+  /** 归一后的 prompt 总量（命中率分母），不是裸 input_tokens */
   input: number;
+  /** 缓存写入（建缓存） */
+  cacheWrite?: number;
   /** 产生该样本时的主模型 id（换模后历史作废） */
   model?: string;
 }
@@ -191,11 +205,20 @@ export interface SupervisorState {
   plan?: string;
   verifyRounds?: number;
   lastVerdict?: "pass" | "fail" | "loop";
+  /** 监督开始的 epoch ms（binding.createdAt）：TUI 的 elapsed 基线 */
+  startedAtMs?: number;
+  /** goal 开始时的上下文 token 快照，用于算「本次 goal 花了多少」 */
+  tokenBaseline?: number;
 }
 
 export interface UIState {
   messages: ChatMessage[];
   systemEvents: SystemEvent[];   // 系统事件行（压缩/中断/失败等）
+  /**
+   * 最近一次可重试失败（API/系统错误）对应的用户原文。
+   * TUI 按 R / 点击系统事件行时重新 send。
+   */
+  lastRetryText: string | null;
   currentAssistantId: string | null;
   streaming: boolean;
   /**

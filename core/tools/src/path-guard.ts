@@ -15,7 +15,7 @@
 
 import { resolve as resolvePath, isAbsolute, relative } from "node:path";
 
-export type PathGuardMode = "inherit" | "hard" | "audit";
+export type PathGuardMode = "inherit" | "hard" | "audit" | "open";
 
 /** 流水线隔离默认禁止的路径段（仅 MAOU_PIPELINE_ISOLATE=1 时自动加入） */
 export const DEFAULT_PIPELINE_DENY_SEGMENTS: readonly string[] = [
@@ -26,11 +26,28 @@ export const DEFAULT_PIPELINE_DENY_SEGMENTS: readonly string[] = [
   "pipeline-management",
 ];
 
+/**
+ * Ops / 机器管家：全机可读（相对路径仍落在 projectRoot）。
+ * 安全靠终端/写操作审批与 DCG，而非硬锁路径。
+ */
+export function machineOpenPathGuard(opts?: {
+  /** 相对路径解析基（通常 ~/.maou/ops） */
+  projectRoot?: string;
+  denySegments?: string[];
+}): PathGuard {
+  return {
+    mode: "open",
+    roots: [opts?.projectRoot ? resolvePath(opts.projectRoot) : "/"],
+    denySegments: opts?.denySegments,
+  };
+}
+
 export interface PathGuard {
   mode: PathGuardMode;
   /**
    * 主根路径列表（通常 1 个：project.path）。
    * 绝对路径；相对路径会在 resolve 时相对 projectRoot 展开。
+   * mode=open 时 roots 仅作相对路径解析基提示，不限制绝对路径。
    */
   roots: string[];
   /** 域外审核路径（audit 模式才有意义） */
@@ -133,13 +150,30 @@ export function resolveToolPath(
   const base = resolvePath(ctx.workingDir || ctx.projectRoot || process.cwd());
   const guard = ctx.pathGuard;
 
+  // open：机器级管家 — 任意绝对路径；相对路径仍相对 base
+  if (guard?.mode === "open") {
+    const candidate = isAbsolute(userPath)
+      ? resolvePath(userPath)
+      : resolvePath(base, userPath);
+    assertNotDenied(candidate, userPath, guard);
+    const matchedRoot =
+      guard.roots?.length > 0
+        ? normalizeRoot(guard.roots[0]!, base)
+        : base;
+    return { path: candidate, needsAudit: false, matchedRoot };
+  }
+
   // 无 guard / inherit → 单 root
   if (!guard || guard.mode === "inherit" || !guard.roots?.length) {
     const candidate = isAbsolute(userPath)
       ? resolvePath(userPath)
       : resolvePath(base, userPath);
     if (!isUnder(base, candidate)) {
-      throw new Error(`路径越过了项目根目录: ${userPath}`);
+      throw new Error(
+        `路径越过了项目根目录: ${userPath}\n` +
+          `当前根: ${base}\n` +
+          `提示：Coding Agent 限制在项目内；Ops 机器管家应使用 pathGuard.mode=open（全机路径）。`,
+      );
     }
     assertNotDenied(candidate, userPath, guard);
     return { path: candidate, needsAudit: false, matchedRoot: base };

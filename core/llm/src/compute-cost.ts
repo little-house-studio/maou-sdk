@@ -16,6 +16,7 @@
  */
 
 import type { LLMUsage } from "./adapters/types.js";
+import { normalizeCacheUsage } from "./cache-usage.js";
 
 /** preset 的定价配置 */
 export interface Pricing {
@@ -50,20 +51,13 @@ export interface CostBreakdown {
 export function computeCost(usage: LLMUsage | null | undefined, pricing: Pricing | null | undefined): CostBreakdown | null {
   if (!usage || !pricing) return null;
 
-  // 输入 token：优先 prompt_tokens，其次 input_tokens
-  const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? 0);
-  // 输出 token：优先 completion_tokens，其次 output_tokens
-  const outputTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
-  // 缓存命中 token：尝试多个常见字段名
-  const cacheHitTokens = Number(
-    usage.cache_read_input_tokens
-    ?? usage.cache_hit_tokens
-    ?? usage.cached_tokens
-    ?? 0
-  );
-
-  // 实际计费的输入 token = 总输入 - 缓存命中（缓存命中按更低价格计）
-  const billableInputTokens = Math.max(0, inputTokens - cacheHitTokens);
+  // 归一：Anthropic 的 input_tokens 不含命中，直接相减会把计费输入扣成 0
+  const n = normalizeCacheUsage(usage as Record<string, unknown>);
+  const outputTokens = n.output;
+  const cacheHitTokens = n.cacheRead;
+  // 实际按原价计费的输入 = 总 prompt − 命中（命中按 cacheHitPrice 另计）
+  // 注：建缓存（cacheWrite）目前按原价计入 —— 各家写入溢价系数不同，未建模。
+  const billableInputTokens = n.uncached + n.cacheWrite;
 
   const inputCost = (billableInputTokens / 1_000_000) * (pricing.inputPrice ?? 0);
   const outputCost = (outputTokens / 1_000_000) * (pricing.outputPrice ?? 0);

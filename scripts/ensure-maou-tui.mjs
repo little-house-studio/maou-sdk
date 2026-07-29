@@ -23,7 +23,11 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { platform, arch, homedir } from "node:os";
+import { platform as osPlatform, arch as osArch, homedir } from "node:os";
+
+/** 交叉打包：MAOU_TARGET_PLATFORM / MAOU_TARGET_ARCH 指定目标平台（默认本机） */
+const platform = () => process.env.MAOU_TARGET_PLATFORM || osPlatform();
+const arch = () => process.env.MAOU_TARGET_ARCH || osArch();
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 
@@ -41,7 +45,8 @@ if (process.env.MAOU_NATIVE_SKIP === "1") {
 function assetAndDest() {
   const p = platform();
   const a = arch();
-  const userBin = join(homedir(), ".maou", "bin");
+  // MAOU_TUI_DEST：指定落盘目录（打 bundle 时指向 <bundle>/vendor/bin）
+  const userBin = process.env.MAOU_TUI_DEST || join(homedir(), ".maou", "bin");
   if (p === "darwin" && a === "arm64") {
     return {
       asset: "maou-tui-ratatui-darwin-arm64",
@@ -83,7 +88,11 @@ function assetAndDest() {
 
 function alreadyOk(dest) {
   if (FORCE) return false;
-  if (process.env.MAOU_TUI_BIN && existsSync(process.env.MAOU_TUI_BIN)) {
+  if (
+    !process.env.MAOU_TUI_DEST &&
+    process.env.MAOU_TUI_BIN &&
+    existsSync(process.env.MAOU_TUI_BIN)
+  ) {
     return true;
   }
   try {
@@ -148,7 +157,7 @@ async function main() {
     } catch {
       /* */
     }
-    if (platform() !== "win32") {
+    if (platform() !== "win32" && osPlatform() !== "win32") {
       try {
         chmodSync(dest, 0o755);
       } catch {

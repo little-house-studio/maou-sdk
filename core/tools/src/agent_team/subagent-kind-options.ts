@@ -80,7 +80,7 @@ export function forkOptionsFromAgentJson(
   if (typeof data.round_limit === "number" && data.round_limit > 0) {
     opts.roundLimit = data.round_limit;
   }
-  // role 不是四类之一时（explore/reviewer/tester），仍用 tools/round_limit，kind 已回落 task
+  // role 不是四类之一时（explore/research/reviewer/tester/browser…），仍用 tools/round_limit，kind 已回落 task
   return opts;
 }
 

@@ -1,0 +1,225 @@
+/* 复古地牢：深褐石板 / 琥珀火光 / 羊皮纸 — 无紫青霓虹 */
+
+.dungeon-lab {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 0;
+  height: 100%;
+  background: #12100c;
+  color: #e8dcc8;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+
+.dungeon-side {
+  padding: 14px 12px;
+  border-right: 1px solid #3a3020;
+  background: linear-gradient(180deg, #1e1810 0%, #14110c 100%);
+  overflow: auto;
+}
+
+.dungeon-title {
+  margin: 0 0 8px;
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  color: #d4a574;
+  text-transform: uppercase;
+}
+
+.dungeon-desc {
+  margin: 0 0 12px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #9a8a70;
+}
+
+.dungeon-desc code {
+  color: #c4783a;
+  font-size: 10px;
+}
+
+.dungeon-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #c8b898;
+}
+
+.dungeon-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.dungeon-toggles input {
+  accent-color: #c4783a;
+}
+
+.dungeon-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border: 2px solid #5a4a32;
+  font-size: 11px;
+  margin-bottom: 12px;
+  background: #1a1410;
+}
+
+.dungeon-badge.ok {
+  border-color: #8a9a50;
+  color: #b0c060;
+}
+
+.dungeon-badge.bad {
+  border-color: #a84838;
+  color: #c85840;
+}
+
+.dungeon-hints {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: #9a8a70;
+  line-height: 1.5;
+}
+
+.dungeon-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 360px;
+  height: 100%;
+  display: flex;
+  flex: 1;
+  background: #1a1410
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 3px,
+      #12100c66 3px,
+      #12100c66 4px
+    );
+}
+
+.dungeon-canvas {
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  cursor: crosshair;
+  outline: none;
+  background: #1a1410;
+}
+
+/* 可见 DOM HUD — 羊皮纸石板 */
+.dungeon-html-hud {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 260px;
+  height: 140px;
+  pointer-events: auto;
+  z-index: 2;
+}
+
+.dungeon-html-hud-visible {
+  display: block;
+}
+
+/* polyfill 采样预览：左下小条，不挡主操作 */
+.dungeon-poly-canvas {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  width: 160px;
+  height: 86px;
+  image-rendering: pixelated;
+  border: 2px solid #5a4a32;
+  background: #0c0a08;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+/* 供 polyfill 采样的 DOM 源：离屏布局，不挡交互 */
+.dungeon-poly-sample {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  width: 260px;
+  height: 140px;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.html-hud-inner {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  background: linear-gradient(160deg, #2a2218 0%, #1e1810 100%);
+  border: 3px solid #5a4a32;
+  box-shadow: 3px 3px 0 #0c0a08, inset 0 0 0 1px #d4a57444;
+  color: #e8dcc8;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 11px;
+}
+
+.html-hud-inner header {
+  color: #d4a574;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #5a4a32;
+  padding-bottom: 4px;
+}
+
+.html-hud-line {
+  margin: 4px 0;
+  color: #c8b898;
+}
+
+.html-hud-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.html-hud-actions button {
+  flex: 1;
+  border: 2px solid #5a4a32;
+  background: #14110c;
+  color: #d4a574;
+  font: inherit;
+  font-size: 10px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.html-hud-actions button:hover {
+  border-color: #c4783a;
+  color: #e8dcc8;
+  background: #2a2218;
+}
+
+.html-hud-inner footer {
+  margin-top: 8px;
+  color: #9a8a70;
+  font-size: 10px;
+}
+
+@media (max-width: 900px) {
+  .dungeon-lab {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .dungeon-side {
+    border-right: none;
+    border-bottom: 1px solid #3a3020;
+  }
+  .dungeon-stage {
+    min-height: 360px;
+  }
+}

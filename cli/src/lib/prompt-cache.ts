@@ -56,7 +56,8 @@ export function formatCacheLabelFromSnap(snap: CacheSnapshot | null | undefined)
   return {
     label: snap.label,
     pct: snap.avgHitPct,
-    eligible: snap.reportsCache,
+    // 「可能上报」不等于「真上报」——两者都成立才按有缓存能力上色
+    eligible: snap.reportsCache && snap.sawCacheField,
     samples: snap.samples,
   };
 }
@@ -68,28 +69,63 @@ export function loadCacheHistoryFromLedger(
   agentName: string,
   sessionId: string | null | undefined,
   model: string,
-): { cacheHistory: Array<{ cacheRead: number; input: number; model?: string }>; snapshot: CacheSnapshot } {
+): { cacheHistory: CacheStatMirror[]; snapshot: CacheSnapshot } {
   const snap = promptCacheLedger().snapshot(agentName, sessionId ?? "", model);
-  return {
-    snapshot: snap,
-    cacheHistory: snap.samples.map((s) => ({
-      cacheRead: s.cacheRead,
-      input: s.input,
-      model: s.model,
-    })),
-  };
+  // 与 ledger.toSnapshot 一致：含未 seal 的 current，避免切回会话时 c— 直到下一轮 seal
+  const samples = [...snap.samples];
+  if (
+    snap.reportsCache &&
+    snap.sawCacheField &&
+    (snap.current.input > 0 || snap.current.cacheRead > 0)
+  ) {
+    samples.push({
+      cacheRead: snap.current.cacheRead,
+      input: snap.current.input,
+      cacheWrite: snap.current.cacheWrite ?? 0,
+      model: snap.model,
+      ts: Date.now(),
+    });
+  }
+  return { snapshot: snap, cacheHistory: mirrorSamples(samples) };
 }
 
-/** 从 stream 事件上的 cache 字段镜像 UI history */
-export function cacheHistoryFromEventCache(
-  cache: unknown,
-): Array<{ cacheRead: number; input: number; model?: string }> | null {
+/** UI 侧镜像的样本形状（与 state/types.ts 的 CacheStat 对齐） */
+type CacheStatMirror = {
+  cacheRead: number;
+  input: number;
+  cacheWrite?: number;
+  model?: string;
+};
+
+function mirrorSamples(samples: CacheSample[]): CacheStatMirror[] {
+  return samples.map((s) => ({
+    cacheRead: s.cacheRead ?? 0,
+    input: s.input ?? 0,
+    cacheWrite: s.cacheWrite ?? 0,
+    model: s.model,
+  }));
+}
+
+/** 从 stream 事件上的 cache 字段镜像 UI history（含未 seal current，若事件带了） */
+export function cacheHistoryFromEventCache(cache: unknown): CacheStatMirror[] | null {
   if (!cache || typeof cache !== "object") return null;
   const snap = cache as CacheSnapshot;
   if (!Array.isArray(snap.samples)) return null;
-  return snap.samples.map((s) => ({
-    cacheRead: s.cacheRead ?? 0,
-    input: s.input ?? 0,
-    model: s.model,
-  }));
+  const samples = [...snap.samples];
+  const cur = snap.current;
+  if (
+    cur &&
+    snap.reportsCache &&
+    snap.sawCacheField &&
+    ((cur.input ?? 0) > 0 || (cur.cacheRead ?? 0) > 0)
+  ) {
+    samples.push({
+      cacheRead: cur.cacheRead ?? 0,
+      input: cur.input ?? 0,
+      cacheWrite: cur.cacheWrite ?? 0,
+      model: snap.model,
+      ts: Date.now(),
+    });
+  }
+  return mirrorSamples(samples);
 }

@@ -1,9 +1,10 @@
 ## 使用指引
 
-- `project_agent` 只给机器级 Ops Agent 使用。
-- 用户询问有哪些 Coding 项目时调用 `action=list`，不要猜项目路径。
-- 用户要求在某路径创建项目 Agent 时调用 `action=create`；路径必须已存在。
-- 用户要求进行持续、较大或需要驻扎目录的项目任务时调用 `action=send`。
-- 简单的单文件读取或能很快直接完成的操作，不必转交项目 Agent。
-- 项目名重名时传绝对路径，禁止随意选择其中一个。
-- 项目 Agent 受项目路径沙箱约束，不应操作该项目之外的文件。
+- **list**：本机 `projects.json` 注册的 Coding 项目（● 可用 / ○ 标记失效）。
+- **create**：绝对路径注册项目 + 写 `.maou/project.json` + 驻扎 coding agent。
+- **send**：向项目 coding agent 派任务（path 须 isActive）。
+- **repair**：路径存在但标记失效时重建 `project.json`、补 agent、刷新注册。
+- **rebind**：`project/name=旧项` + `path=新绝对路径`，更新注册并 repair 新路径。
+
+失效示例：list 显示「路径或 .maou 标记失效」→ `repair path="/abs/project"`。  
+搬家：`rebind project=旧名 path="/new/abs/path"`。

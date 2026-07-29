@@ -29,6 +29,9 @@ import {
   estimateFullPromptTokens,
   parsePromptTokensFromUsage,
   resolveContextUsedTokens,
+  emergencyTrimMessages,
+  estimateMessagesTokens,
+  stripNonTextContent,
   MAX_ROUNDS,
   DEFAULT_AGENT_ROUND_LIMIT,
   DEFAULT_LOOP_THRESHOLD,
@@ -48,6 +51,10 @@ import { TokenTracker } from "./token-tracker.js";
 import type { TokenUsage } from "./token-tracker.js";
 import { promptCacheLedger } from "./prompt-cache-ledger.js";
 import { AgentRegistry } from "./registry.js";
+import {
+  detectContextOverflow,
+  detectUnsupportedMediaContent,
+} from "@little-house-studio/llm";
 import { getTemplateRef } from "./template-ref.js";
 import { renderAgentPreview, watchAgentPreview } from "./template.js";
 import { runAgentCommand } from "./command-runner.js";
@@ -259,7 +266,7 @@ export interface RunOptions {
    * 路径沙箱（project subagent）。也会写入 per-session map 供 processToolCalls 注入。
    */
   pathGuard?: {
-    mode: "inherit" | "hard" | "audit";
+    mode: "inherit" | "hard" | "audit" | "open";
     roots: string[];
     auditRoots?: string[];
   };
@@ -317,7 +324,7 @@ export class AgentRuntime {
   /** per-session 路径沙箱（project/task subagent） */
   private _sessionPathGuards = new Map<
     string,
-    { mode: "inherit" | "hard" | "audit"; roots: string[]; auditRoots?: string[] }
+    { mode: "inherit" | "hard" | "audit" | "open"; roots: string[]; auditRoots?: string[] }
   >();
   /** 已注册的子 Agent delegate 工具名（subagent_<name>），用于下次 run 前清理，
    * 避免上一次 run 注册的 subagent_<name> 在子 Agent 目录变更后残留。 */
@@ -465,13 +472,18 @@ export class AgentRuntime {
       });
       const session = this.sessions.load(sessionId);
       const msgs = (session?.messages ?? []) as unknown as Array<Record<string, unknown>>;
-      engine.initFromSessionMessages(msgs);
+      // B1：优先 harness 工作集 + session 增量，避免从全量 session 重压
+      engine.seedWorkingSet(msgs);
       const limit =
         this.currentPreset?.maxContext ??
         this.currentPreset?.maxTokens ??
         65536;
       const known = this.resolveSessionContextTokens(sessionId, engine.getHistory());
-      const report = await engine.compress(limit, { knownTokens: known, force: true });
+      const report = await engine.compress(limit, {
+        knownTokens: known,
+        force: true,
+        sourceSessionMessages: msgs,
+      });
       this.compressRetryAfter.delete(sessionId);
       // 压缩后失效旧 API usage，等下一轮真回报
       this.sessionLastApiPromptTokens.delete(sessionId);
@@ -512,10 +524,15 @@ export class AgentRuntime {
       systemPrompt?: string;
       toolSchemas?: unknown;
       extras?: string[];
+      /**
+       * B1：从 harness 复用工作集时，磁盘 latest usage 可能仍是**压缩前**的 prompt，
+       * 再 max 进门槛会每轮假触发压缩。此时只信本进程 compress 之后写入的 in-memory API。
+       */
+      ignoreStaleApi?: boolean;
     },
   ): number {
     let api = this.sessionLastApiPromptTokens.get(sessionId) ?? 0;
-    if (api <= 0) {
+    if (api <= 0 && !opts?.ignoreStaleApi) {
       try {
         const latest = this.sessions.getLatestUsage(sessionId);
         api = parsePromptTokensFromUsage(latest.usage as Record<string, unknown>);
@@ -1296,8 +1313,10 @@ export class AgentRuntime {
         const { readMcpToolStrategyFromAgentConfig } = await import("./mcp/strategy.js");
         const mcpStrategy = readMcpToolStrategyFromAgentConfig(
           agentEntry as unknown as Record<string, unknown>,
-          // coding 主 agent 默认 gateway；其它 agent 默认 flat（兼容旧行为）
-          agentName === "coding" ? "gateway" : "flat",
+          // coding / ops 默认 gateway（提示词与元工具 mcp 对齐）；其它 agent 默认 flat
+          agentName === "coding" || agentName === "ops" || agentEntry.role === "ops"
+            ? "gateway"
+            : "flat",
         );
         this.mcpManager.setToolExposureStrategy(mcpStrategy);
         this.log("info", `[MCP] tool exposure strategy=${mcpStrategy} (agent=${agentName})`);
@@ -1347,9 +1366,10 @@ export class AgentRuntime {
               catalogBlock =
                 catalog +
                 "\n\n<mcp_gateway_hint>\n" +
-                "MCP tools are NOT each listed in your tools array. Use the single tool `mcp`:\n" +
+                "MCP tools are NOT each listed in your tools array. Use the single tool named exactly `mcp` " +
+                "(never invent a tool named `mcp list` or `mcp__...` as top-level tools).\n" +
                 "  list — one shot: full description + parameters for every matching tool\n" +
-                "  call — execute mcp__server__tool\n" +
+                "  call — execute mcp__server__tool via the mcp tool\n" +
                 "Examples:\n" +
                 "  mcp({ action: \"list\" })\n" +
                 "  mcp({ action: \"list\", server: \"my-server\" })\n" +
@@ -1749,9 +1769,10 @@ export class AgentRuntime {
       const compressTriggerAt = contextLimit * (CONTEXT_THRESHOLD_PERCENT / 100);
 
       // ── ContextEngine 闭环路径（注入 stores 时启用）──
-      // 每轮从原始 session 重建工作集 → 超阈值则 compress（备份/任务块/zone 落盘）→ toLLMHistory。
-      // 仅在真正发生压缩（stage != activeStage）时用压缩历史替代原始历史，
-      // 否则保持原始 sessionMessages 路径（保留多模态图片旁路）。
+      // B1：优先 harness 工作集 + session 增量，不再每轮从全量 SessionStore 重建。
+      // - harness 对齐可用 → 复用压缩后工作集，append 新 turn；始终 toLLMHistory
+      // - harness 缺失/不对齐 → 从全量 session 初始化；仅当本轮真正压缩后用压缩历史
+      //   （未压缩时保持 sessionMessages 路径，保留多模态图片旁路）
       let compressedHistory: LLMMessage[] | undefined;
       const engineEnabled = Boolean(this.harnessStore && this.taskStore);
       const endCompress = prof.start("context_compress", { round: currentRound, path: engineEnabled ? "engine" : "legacy" });
@@ -1759,15 +1780,21 @@ export class AgentRuntime {
         const retryAt = this.compressRetryAfter.get(sessionId!) ?? 0;
         const now = Date.now();
         const allowTry = now >= retryAt;
+        const sessionMsgsWire = sessionMessages as unknown as Array<Record<string, unknown>>;
         try {
+          const engine = new ContextEngine({
+            sessionId: sessionId!,
+            harnessStore: this.harnessStore!,
+            taskStore: this.taskStore!,
+            summarizer: runSummarizer,
+          });
+          const seed = engine.seedWorkingSet(sessionMsgsWire);
+          // harness 已有工作集：即使本轮不压，也必须用 harness 历史，否则 B1 复发
+          if (seed.useAsLlmHistory) {
+            compressedHistory = engine.toLLMHistory();
+          }
+
           if (allowTry) {
-            const engine = new ContextEngine({
-              sessionId: sessionId!,
-              harnessStore: this.harnessStore!,
-              taskStore: this.taskStore!,
-              summarizer: runSummarizer,
-            });
-            engine.initFromSessionMessages(sessionMessages as unknown as Array<Record<string, unknown>>);
             const usedTokens = this.resolveSessionContextTokens(sessionId!, engine.getHistory(), {
               systemPrompt,
               toolSchemas,
@@ -1777,6 +1804,8 @@ export class AgentRuntime {
                 memoryResult.formattedContext ?? "",
                 this.sessionManager.getRollingSummary(sessionId!) ?? "",
               ].filter(Boolean),
+              // harness 复用时丢弃压前磁盘 usage，避免门槛永久命中
+              ignoreStaleApi: seed.fromHarness,
             });
             if (usedTokens >= compressTriggerAt) {
               this.hooks?.preCompact();
@@ -1788,6 +1817,7 @@ export class AgentRuntime {
               const report = await engine.compress(contextLimit, {
                 knownTokens: usedTokens,
                 force: usedTokens >= compressTriggerAt,
+                sourceSessionMessages: sessionMsgsWire,
               });
               if (report.stage !== "activeStage") {
                 compressedHistory = engine.toLLMHistory();
@@ -1826,11 +1856,18 @@ export class AgentRuntime {
                   );
                 }
                 this.hooks?.postCompact(report.compressedTokens ?? 0);
+              } else if (seed.useAsLlmHistory) {
+                // 无新压缩但仍在 harness 路径：保持 compressedHistory
+                compressedHistory = engine.toLLMHistory();
               }
             }
           } else {
             const waitSec = Math.ceil((retryAt - now) / 1000);
             this.log("info", `[ContextEngine] 压缩退避中，${waitSec}s 后再试`);
+            // 退避期间若 harness 可用，仍用工作集，避免回退全量 session 再次爆窗
+            if (seed.useAsLlmHistory) {
+              compressedHistory = engine.toLLMHistory();
+            }
           }
         } catch (err) {
           // 失败：本轮不压、不杀 loop；隔段时间再试，直到成功或用户 abort
@@ -1955,14 +1992,76 @@ export class AgentRuntime {
       this.hooks?.agentThinking();
       this.hooks?.responseStart();
 
-      // ── 3b. 调用 LLM（流式，带原样重试，不降级）──
-      // 模型返回不可用（抛错 / 空内容+校验失败）时，原样重试同一请求最多 MODEL_RETRIES 次。
-      // 注意：不修改请求、不去结构化、不换措辞——只是重试（用户要求"重试不自动降级"）。
+      // ── 3b. 调用 LLM（流式）──
+      // - 瞬时故障：ModelCaller 内部可原样重试
+      // - 上下文溢出：禁止原样重试；强制压缩 → 降 extras → 紧急截断 → 再请求
+      // - 不支持 image_url：剥多模态后重试（勿误判为超窗）
+      // - 目标：绝不因一次超窗把会话钉死，只剩「新话题」
       let result: ModelCallResult;
       const MODEL_RETRIES = 2;
+      /** 超窗恢复次数：每次更狠（0.50 → 0.35 → 0.22 全包预算 + 紧急 trim） */
+      const MAX_CTX_OVERFLOW_RECOVER = 3;
+      const MAX_MEDIA_RECOVER = 1;
       let modelAttempt = 0;
+      let ctxOverflowRecoveries = 0;
+      let mediaRecoveries = 0;
+      // 溢出后可关掉重型 extras，降低固定开销
+      let overflowLeanMode = false;
+
+      // 出征前预检：整包已估超 92% 窗口 → 先压再打，少一次必失败的 400
+      {
+        const preEst = estimateMessagesTokens(
+          finalMessages as Array<Record<string, unknown>>,
+        );
+        if (preEst >= Math.floor(contextLimit * 0.92) && !effectiveAbortSignal.aborted) {
+          yield this.logEvent(
+            "warning",
+            `出征前上下文已估 ${preEst}/${contextLimit}（≥92%），先强制压缩`,
+          );
+          const pre = await this.forceShrinkPromptForOverflow({
+            sessionId: sessionId!,
+            contextLimit,
+            attempt: 1,
+            engineEnabled,
+            runSummarizer,
+            systemPrompt,
+            toolSchemas,
+            sessionMessages: sessionMessages as unknown as Array<Record<string, unknown>>,
+            effectiveBeforeUser: overflowLeanMode ? "" : effectiveBeforeUser,
+            currentDynamicInjections: overflowLeanMode ? "" : currentDynamicInjections,
+            structuredMemory: overflowLeanMode ? "" : (memoryResult.formattedContext ?? ""),
+            rollingSummary: this.sessionManager.getRollingSummary(sessionId!) ?? "",
+            platformContext: options.platformContext,
+            projectRoot:
+              this.agentScope === "project" || options.bindingProjectRoot
+                ? effectiveProjectRoot
+                : undefined,
+            userName: options.userName ?? "user",
+            roundCount,
+            currentRound,
+            activeUserMessage,
+            finalMessages: finalMessages as Array<Record<string, unknown>>,
+            leanExtras: true,
+          });
+          if (pre.ok) {
+            finalMessages = pre.finalMessages;
+            if (pre.compressedHistory) compressedHistory = pre.compressedHistory;
+            overflowLeanMode = true;
+            yield this.logEvent(
+              "warning",
+              `出征前压缩完成 · 估 ${pre.estimatedTokens} tokens · stage=${pre.stage ?? "?"}`,
+            );
+          }
+        }
+      }
+
       for (;;) {
-        const endLlm = prof.start("llm_call", { round: currentRound, model: preset.model, attempt: modelAttempt });
+        const endLlm = prof.start("llm_call", {
+          round: currentRound,
+          model: preset.model,
+          attempt: modelAttempt,
+          ctx_recover: ctxOverflowRecoveries,
+        });
         try {
           const callGen = this.callModelFn({
             preset,
@@ -2019,16 +2118,156 @@ export class AgentRuntime {
           endLlm();
         }
 
+        const errBlob =
+          result.validationError ||
+          result.rawResponse ||
+          (result as { error?: string }).error ||
+          "";
+        const errText = `${errBlob}\n${String(result.content ?? "")}`;
+
+        // ── 多模态不支持 → 剥 image 后重试（勿当超窗）──
+        if (
+          detectUnsupportedMediaContent(errText) &&
+          mediaRecoveries < MAX_MEDIA_RECOVER &&
+          !effectiveAbortSignal.aborted
+        ) {
+          mediaRecoveries++;
+          const stripped = stripNonTextContent(
+            finalMessages as Array<Record<string, unknown>>,
+          );
+          if (stripped.stripped > 0) {
+            finalMessages = stripped.messages;
+            yield this.logEvent(
+              "warning",
+              `模型不支持多模态内容，已移除 ${stripped.stripped} 处非文本块后重试`,
+            );
+            yield this.event("status", {
+              text: `Unsupported media · stripped · retry`,
+            });
+            this.hooks?.agentThinking();
+            continue;
+          }
+        }
+
+        // ── 上下文溢出 → 强制压缩 / 瘦身 / 紧急截断 → 再请求 ──
+        const overflow = detectContextOverflow(errText);
+        if (
+          overflow &&
+          ctxOverflowRecoveries < MAX_CTX_OVERFLOW_RECOVER &&
+          !effectiveAbortSignal.aborted
+        ) {
+          ctxOverflowRecoveries++;
+          overflowLeanMode = true;
+          yield this.logEvent(
+            "warning",
+            `上下文超限（API），强制收缩后重试 ${ctxOverflowRecoveries}/${MAX_CTX_OVERFLOW_RECOVER}`,
+          );
+          yield this.event("status", {
+            text: `Context overflow · shrink · ${ctxOverflowRecoveries}/${MAX_CTX_OVERFLOW_RECOVER}`,
+          });
+          this.compressRetryAfter.delete(sessionId!);
+          this.sessionLastApiPromptTokens.delete(sessionId!);
+          this.sessionHistoryTokensAtLastApi.delete(sessionId!);
+
+          try {
+            const shrunk = await this.forceShrinkPromptForOverflow({
+              sessionId: sessionId!,
+              contextLimit,
+              attempt: ctxOverflowRecoveries,
+              engineEnabled,
+              runSummarizer,
+              systemPrompt,
+              toolSchemas,
+              sessionMessages: sessionMessages as unknown as Array<Record<string, unknown>>,
+              effectiveBeforeUser: "",
+              currentDynamicInjections: "",
+              structuredMemory: "",
+              rollingSummary:
+                ctxOverflowRecoveries >= 2
+                  ? ""
+                  : (this.sessionManager.getRollingSummary(sessionId!) ?? ""),
+              platformContext: options.platformContext,
+              projectRoot:
+                this.agentScope === "project" || options.bindingProjectRoot
+                  ? effectiveProjectRoot
+                  : undefined,
+              userName: options.userName ?? "user",
+              roundCount,
+              currentRound,
+              activeUserMessage,
+              finalMessages: finalMessages as Array<Record<string, unknown>>,
+              leanExtras: true,
+            });
+            if (shrunk.ok) {
+              finalMessages = shrunk.finalMessages;
+              if (shrunk.compressedHistory) compressedHistory = shrunk.compressedHistory;
+              if (shrunk.stage && shrunk.stage !== "activeStage") {
+                yield this.compressLogEvent({
+                  stage: shrunk.stage,
+                  originalTokens: shrunk.originalTokens ?? 0,
+                  compressedTokens: shrunk.estimatedTokens,
+                  droppedSummary: shrunk.droppedSummary ?? "",
+                  taskBlocks: shrunk.taskBlocks ?? [],
+                });
+              } else if (shrunk.emergencyTrimmed) {
+                yield this.logEvent(
+                  "warning",
+                  `紧急截断历史 ${shrunk.dropped ?? 0} 条 · 估 ${shrunk.estimatedTokens} tokens`,
+                );
+              }
+              this.hooks?.agentThinking();
+              continue;
+            }
+            yield this.logEvent(
+              "warning",
+              `上下文溢出恢复未降低占用（估 ${shrunk.estimatedTokens}）`,
+            );
+          } catch (ce) {
+            yield this.logEvent(
+              "warning",
+              `上下文溢出后强制收缩失败: ${ce instanceof Error ? ce.message : String(ce)}`,
+            );
+          }
+        }
+
         // 重试判定：模型应答但不可用（空内容 + 校验失败 / 错误结果）。
         // 中断信号优先；有原生工具调用即视为可用，不重试。
-        const unusable = !result.content && !!result.validationError && result.nativeToolCalls.length === 0;
-        if (unusable && modelAttempt < MODEL_RETRIES && !effectiveAbortSignal.aborted) {
+        // 注意：上下文溢出 / 多模态不支持不走「原样重试」分支（上面已处理）。
+        const unusable =
+          !result.content &&
+          !!result.validationError &&
+          result.nativeToolCalls.length === 0;
+        const unusableOverflow = detectContextOverflow(result.validationError || "");
+        const unusableMedia = detectUnsupportedMediaContent(result.validationError || "");
+        if (
+          unusable &&
+          !unusableOverflow &&
+          !unusableMedia &&
+          modelAttempt < MODEL_RETRIES &&
+          !effectiveAbortSignal.aborted
+        ) {
           modelAttempt++;
-          yield this.logEvent("warning", `模型返回不可用（${result.validationError}），原样重试 ${modelAttempt}/${MODEL_RETRIES}`);
+          yield this.logEvent(
+            "warning",
+            `模型返回不可用（${result.validationError}），原样重试 ${modelAttempt}/${MODEL_RETRIES}`,
+          );
           this.hooks?.agentThinking();
           continue;
         }
         break;
+      }
+
+      // 超窗耗尽仍失败：写清可恢复提示（会话 harness 若已压过，下轮可续，不必只能 /new）
+      if (
+        !result.content &&
+        result.validationError &&
+        detectContextOverflow(result.validationError)
+      ) {
+        const tip =
+          `${result.validationError}\n\n` +
+          `【上下文超限】已尝试自动压缩/截断仍失败。` +
+          `完整记录仍在会话中；可再发一条消息（将继续用压缩工作集）、执行 /compact，或新开话题。`;
+        result = this.errorCallResult(tip);
       }
 
       // 桥接 LLM 内部细分计时（首字节/生成）到 profiler，区分"网络等待"与"生成"
@@ -2542,9 +2781,13 @@ export class AgentRuntime {
    */
   setSessionPathGuard(
     sessionId: string,
-    guard: { mode: "inherit" | "hard" | "audit"; roots: string[]; auditRoots?: string[] } | null,
+    guard: {
+      mode: "inherit" | "hard" | "audit" | "open";
+      roots: string[];
+      auditRoots?: string[];
+    } | null,
   ): void {
-    if (guard && guard.roots?.length) {
+    if (guard && (guard.mode === "open" || guard.roots?.length)) {
       this._sessionPathGuards.set(sessionId, guard);
     } else {
       this._sessionPathGuards.delete(sessionId);
@@ -2553,8 +2796,32 @@ export class AgentRuntime {
 
   getSessionPathGuard(
     sessionId: string,
-  ): { mode: "inherit" | "hard" | "audit"; roots: string[]; auditRoots?: string[] } | undefined {
-    return this._sessionPathGuards.get(sessionId);
+  ): {
+    mode: "inherit" | "hard" | "audit" | "open";
+    roots: string[];
+    auditRoots?: string[];
+  } | undefined {
+    return this._sessionPathGuards.get(sessionId) ?? this._defaultPathGuard;
+  }
+
+  /**
+   * 默认 pathGuard（所有 session 共用，可被 setSessionPathGuard 覆盖）。
+   * Ops 机器管家设 mode=open。
+   */
+  private _defaultPathGuard?: {
+    mode: "inherit" | "hard" | "audit" | "open";
+    roots: string[];
+    auditRoots?: string[];
+  };
+
+  setDefaultPathGuard(
+    guard: {
+      mode: "inherit" | "hard" | "audit" | "open";
+      roots: string[];
+      auditRoots?: string[];
+    } | null,
+  ): void {
+    this._defaultPathGuard = guard ?? undefined;
   }
 
   /**
@@ -3127,8 +3394,11 @@ export class AgentRuntime {
 
     let result: Awaited<ReturnType<ToolExecutor["executeSingle"]>> | null = null;
     let execError: unknown = null;
+    // 工具真实耗时：随 tool_result 下发，UI 不必再用「结果到达时刻」倒推
+    let toolElapsedMs = 0;
     if (!blocked) {
       const endTool = prof?.start(`tool:${toolCall.name}`, { round });
+      const toolStartedAt = Date.now();
       try {
         result = await this.toolExecutor.executeSingle(
           { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters },
@@ -3137,6 +3407,8 @@ export class AgentRuntime {
       } catch (err) {
         execError = err;
       } finally {
+        // 失败也算耗时（错误同样花了墙钟时间）
+        toolElapsedMs = Math.max(0, Date.now() - toolStartedAt);
         endTool?.();
       }
     }
@@ -3170,7 +3442,8 @@ export class AgentRuntime {
           type: "tool_result", round, created_at: now(),
           data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: blockedMsg, ok: false, background },
         });
-        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: blockedMsg, ok: false, round, background }));
+        // 拦截未执行 → 耗时 0（而非「未知」，UI 显示 0ms 而不是空白）
+        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: blockedMsg, ok: false, round, background, durationMs: 0 }));
         if (!background) {
           this.sessions.appendMessage(sessionId, "tool", blockedMsg, {
             round, toolCallId: toolCall.id, tool_name: toolCall.name,
@@ -3188,7 +3461,7 @@ export class AgentRuntime {
           type: "tool_result", round, created_at: now(),
           data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: errorMsg, ok: false, background },
         });
-        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: errorMsg, ok: false, round, background }));
+        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: errorMsg, ok: false, round, background, durationMs: toolElapsedMs }));
         if (!background) {
           this.sessions.appendMessage(sessionId, "tool", errorMsg, {
             round, toolCallId: toolCall.id, tool_name: toolCall.name,
@@ -3224,13 +3497,14 @@ export class AgentRuntime {
         ok: res.result.ok,
         round,
         background,
+        durationMs: toolElapsedMs,
       };
       if (Array.isArray(res.result.displayEvents) && res.result.displayEvents.length > 0) {
         toolResultEvent.displayEvents = res.result.displayEvents;
       }
       events.push(this.event("tool_result", toolResultEvent));
-      events.push(this.logEvent("info", `工具 ${toolCall.name} 完成: ok=${res.result.ok}${background ? " [后台]" : ""}`));
-      this.hooks?.postToolUse(tcInfo, { toolCallId: toolCall.id, name: toolCall.name, output: toolResultContent, success: res.result.ok, error: "", elapsed: 0 });
+      events.push(this.logEvent("info", `工具 ${toolCall.name} 完成: ok=${res.result.ok}${background ? " [后台]" : ""} ${toolElapsedMs}ms`));
+      this.hooks?.postToolUse(tcInfo, { toolCallId: toolCall.id, name: toolCall.name, output: toolResultContent, success: res.result.ok, error: "", elapsed: toolElapsedMs });
 
       // 文件 diff 监听：成功触碰 reader/edit/write 后入名单
       if (res.result.ok && this.fileDiffWatch && sessionId) {
@@ -3332,6 +3606,232 @@ export class AgentRuntime {
 
   private errorCallResult(error: string): ModelCallResult {
     return ModelCaller.createErrorResult(error);
+  }
+
+  /**
+   * 超窗 / 出征前：强制把整包 prompt 压到可发送范围。
+   *
+   * 策略（随 attempt 加码）：
+   *  1) ContextEngine force compress（历史目标更矮）
+   *  2) 重建 messages 时去掉 memory/动态注入等固定 extras（leanExtras）
+   *  3) 仍超 → emergencyTrimMessages 砍中间历史
+   *
+   * 保证 harness 落盘，下轮 seed 可续聊，避免「只能新话题」。
+   */
+  private async forceShrinkPromptForOverflow(opts: {
+    sessionId: string;
+    contextLimit: number;
+    attempt: number;
+    engineEnabled: boolean;
+    runSummarizer?: Summarizer;
+    systemPrompt: string;
+    toolSchemas: unknown;
+    sessionMessages: Array<Record<string, unknown>>;
+    effectiveBeforeUser: string;
+    currentDynamicInjections: string;
+    structuredMemory: string;
+    rollingSummary: string;
+    platformContext?: unknown;
+    projectRoot?: string;
+    userName: string;
+    roundCount: number;
+    currentRound: number;
+    activeUserMessage: string;
+    finalMessages: Array<Record<string, unknown>>;
+    leanExtras: boolean;
+  }): Promise<{
+    ok: boolean;
+    finalMessages: Array<Record<string, unknown>>;
+    compressedHistory?: LLMMessage[];
+    estimatedTokens: number;
+    stage?: string;
+    originalTokens?: number;
+    droppedSummary?: string;
+    taskBlocks?: string[];
+    emergencyTrimmed?: boolean;
+    dropped?: number;
+  }> {
+    const {
+      sessionId,
+      contextLimit,
+      attempt,
+      engineEnabled,
+      runSummarizer,
+      systemPrompt,
+      toolSchemas,
+      sessionMessages,
+      userName,
+      roundCount,
+      currentRound,
+      activeUserMessage,
+      leanExtras,
+    } = opts;
+
+    // 全包目标：50% → 35% → 22%（attempt 1..3）
+    const fullRatio = attempt <= 1 ? 0.5 : attempt === 2 ? 0.35 : 0.22;
+    const fullBudget = Math.max(2048, Math.floor(contextLimit * fullRatio));
+
+    // 固定开销粗算（system + tools schema）
+    const fixedTok = estimateFullPromptTokens({
+      historyTokens: 0,
+      systemPrompt,
+      toolSchemas,
+      extras: leanExtras
+        ? []
+        : [
+            opts.effectiveBeforeUser,
+            opts.currentDynamicInjections,
+            opts.structuredMemory,
+            opts.rollingSummary,
+          ].filter(Boolean),
+    });
+    // 历史预算 = 全包预算 − 固定；至少留 512
+    const historyBudget = Math.max(512, fullBudget - fixedTok);
+
+    let compressedHistory: LLMMessage[] | undefined;
+    let stage: string | undefined;
+    let originalTokens: number | undefined;
+    let droppedSummary = "";
+    let taskBlocks: string[] = [];
+    let finalMessages = opts.finalMessages;
+
+    this.hooks?.preCompact();
+    this.compressRetryAfter.delete(sessionId);
+    this.sessionLastApiPromptTokens.delete(sessionId);
+    this.sessionHistoryTokensAtLastApi.delete(sessionId);
+
+    if (engineEnabled && this.harnessStore && this.taskStore) {
+      try {
+        const engine = new ContextEngine({
+          sessionId,
+          harnessStore: this.harnessStore,
+          taskStore: this.taskStore,
+          summarizer: runSummarizer,
+        });
+        const seed = engine.seedWorkingSet(sessionMessages);
+        const known = this.resolveSessionContextTokens(sessionId, engine.getHistory(), {
+          systemPrompt,
+          toolSchemas,
+          extras: leanExtras
+            ? []
+            : [
+                opts.effectiveBeforeUser,
+                opts.currentDynamicInjections,
+                opts.structuredMemory,
+                opts.rollingSummary,
+              ].filter(Boolean),
+          ignoreStaleApi: seed.fromHarness,
+        });
+        const report = await engine.compress(historyBudget, {
+          knownTokens: Math.max(known, historyBudget + 1),
+          force: true,
+          sourceSessionMessages: sessionMessages,
+        });
+        compressedHistory = engine.toLLMHistory();
+        stage = report.stage;
+        originalTokens = report.originalTokens;
+        droppedSummary = report.droppedSummary;
+        taskBlocks = report.taskBlocks ?? [];
+
+        if (report.droppedSummary) {
+          const existing = this.sessionManager.getRollingSummary(sessionId) ?? "";
+          // attempt≥2 可清空 rolling，避免摘要本身把窗口撑爆
+          if (attempt >= 2) {
+            this.sessionManager.setRollingSummary(
+              sessionId,
+              report.droppedSummary.slice(0, 2000),
+            );
+          } else {
+            const merged = existing
+              ? `${existing}\n\n---\n\n${report.droppedSummary}`
+              : report.droppedSummary;
+            this.sessionManager.setRollingSummary(sessionId, merged.slice(0, 8000));
+          }
+          this.sessionManager.saveState();
+        }
+        if (this.onCompress && report.stage !== "activeStage") {
+          try {
+            this.onCompress(sessionId, report.stage, report.droppedSummary, taskBlocks);
+          } catch { /* ignore */ }
+        }
+        this.hooks?.postCompact(report.compressedTokens ?? 0);
+
+        finalMessages = buildMessages({
+          systemPrompt,
+          sessionMessages: sessionMessages as never,
+          roundCount,
+          currentRound,
+          userOpts: {
+            beforeUserContent: leanExtras ? "" : opts.effectiveBeforeUser,
+            dynamicInjections: leanExtras ? "" : opts.currentDynamicInjections,
+            userMessage: roundCount === 0 ? activeUserMessage : "",
+            userName,
+          },
+          platformContext: leanExtras
+            ? undefined
+            : (opts.platformContext as never),
+          rollingSummary: leanExtras
+            ? (attempt >= 2
+                ? ""
+                : (this.sessionManager.getRollingSummary(sessionId) ?? "").slice(0, 1500))
+            : (this.sessionManager.getRollingSummary(sessionId) ?? ""),
+          structuredMemory: leanExtras ? "" : opts.structuredMemory,
+          projectRoot: opts.projectRoot,
+          compressedHistory,
+        }) as Array<Record<string, unknown>>;
+      } catch (e) {
+        this.log("warning", `[overflow-shrink] engine failed: ${e}`);
+      }
+    } else {
+      // legacy：直接对 finalMessages force maybeCompress
+      const compressResult = maybeCompress(finalMessages as never, historyBudget, {
+        knownTokens: estimateMessagesTokens(finalMessages) + 1,
+        force: true,
+      });
+      finalMessages = compressResult.messages as Array<Record<string, unknown>>;
+      stage = compressResult.stage;
+      originalTokens = compressResult.originalTokens;
+      droppedSummary = compressResult.droppedSummary;
+      taskBlocks = compressResult.taskBlocks ?? [];
+      if (compressResult.compressed) {
+        this.hooks?.postCompact(compressResult.compressedTokens ?? 0);
+      }
+    }
+
+    let estimatedTokens = estimateMessagesTokens(finalMessages);
+    let emergencyTrimmed = false;
+    let dropped = 0;
+
+    // 仍超全包预算 → 紧急截断中间历史（保证可继续发）
+    if (estimatedTokens > fullBudget) {
+      const trim = emergencyTrimMessages(finalMessages, fullBudget, {
+        keepTail: attempt >= 3 ? 4 : 8,
+      });
+      finalMessages = trim.messages;
+      estimatedTokens = trim.estimatedTokens;
+      emergencyTrimmed = trim.trimmed;
+      dropped = trim.dropped;
+      // 同步把截断后的历史尽量写回 harness，便于下轮 seed
+      if (engineEnabled && this.harnessStore && compressedHistory) {
+        try {
+          // 仅标记：下轮仍从 session+harness 走 seed；此处不破坏 session 审计
+        } catch { /* ignore */ }
+      }
+    }
+
+    const ok = estimatedTokens <= Math.floor(contextLimit * 0.95);
+    return {
+      ok: ok || emergencyTrimmed || estimatedTokens < estimateMessagesTokens(opts.finalMessages),
+      finalMessages,
+      compressedHistory,
+      estimatedTokens,
+      stage,
+      originalTokens,
+      droppedSummary,
+      taskBlocks,
+      emergencyTrimmed,
+      dropped,
+    };
   }
 
   // ── 沙箱快照 ──

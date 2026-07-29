@@ -85,6 +85,19 @@ export interface RunRatatuiOpts {
  * 必须与 useSupervisorState 一样：无变化时不 set，否则
  * setSupervisor → store.subscribe → refreshSupervisor 死循环（栈溢出）。
  */
+/** 当前 goal 的上下文 token 基线（goal 开始时快照，跨 refresh 保留） */
+let goalTokenBaseline: { key: string; tokens: number } | null = null;
+
+/** 上下文占用（与 InfoBar 的 used_tokens 同源） */
+function contextTokensNow(): number {
+  const s = useStore.getState();
+  const last = s.rounds?.[s.rounds.length - 1];
+  const lastCtx = last
+    ? (last.total ?? last.input ?? 0)
+    : (s.currentRoundUsage?.input ?? 0);
+  return Math.max(0, lastCtx);
+}
+
 function refreshSupervisor(): void {
   const sid = useStore.getState().sessionId;
   let next: SupervisorState | null = null;
@@ -93,6 +106,11 @@ function refreshSupervisor(): void {
       SUPERVISOR_MANAGER.getBySupervisor(sid) ??
       SUPERVISOR_MANAGER.getByMain(sid);
     if (b) {
+      // token 基线按 binding 身份记一次；换 goal（新 createdAt）即重置
+      const key = `${b.mainSessionId}::${b.createdAt}`;
+      if (goalTokenBaseline?.key !== key) {
+        goalTokenBaseline = { key, tokens: contextTokensNow() };
+      }
       next = {
         active: b.state !== "ended",
         mainSessionId: b.mainSessionId,
@@ -101,6 +119,8 @@ function refreshSupervisor(): void {
         plan: b.plan,
         verifyRounds: b.verifyRounds,
         lastVerdict: b.lastVerdict,
+        startedAtMs: b.createdAt,
+        tokenBaseline: goalTokenBaseline.tokens,
       };
       // ended 或 inactive → 清掉 UI 状态
       if (!next.active) next = null;
@@ -110,6 +130,7 @@ function refreshSupervisor(): void {
   const cur = useStore.getState().supervisor;
   // 双 null：绝不能 set（zustand 仍会 notify 所有 subscriber）
   if (!cur && !next) return;
+  if (!next) goalTokenBaseline = null;
   if (
     cur &&
     next &&
@@ -119,7 +140,9 @@ function refreshSupervisor(): void {
     cur.active === next.active &&
     cur.mainSessionId === next.mainSessionId &&
     cur.supervisorSessionId === next.supervisorSessionId &&
-    cur.lastVerdict === next.lastVerdict
+    cur.lastVerdict === next.lastVerdict &&
+    cur.startedAtMs === next.startedAtMs &&
+    cur.tokenBaseline === next.tokenBaseline
   ) {
     return;
   }
@@ -279,6 +302,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     const ctxTok = lastRound
       ? (lastRound.total ?? lastRound.input + lastRound.output)
       : (s.currentRoundUsage?.input ?? 0) + (s.currentRoundUsage?.output ?? 0);
+    // 含 cacheHistory / 本轮 cacheRead：否则 model.usage 只更新缓存命中时 InfoBar c— 不热更
     const sig = [
       s.lastStreamNonce,
       s.messages.length,
@@ -301,6 +325,10 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       s.eventBlock?.upTokens ?? 0,
       s.eventBlock?.downTokens ?? 0,
       s.systemEvents?.length ?? 0,
+      s.cacheHistory?.length ?? 0,
+      s.currentRoundUsage?.cacheRead ?? 0,
+      s.currentRoundUsage?.input ?? 0,
+      s.currentRoundUsage?.cacheEligible ? 1 : 0,
     ].join("|");
     if (!force && !epochBump && sig === lastSig) return;
     lastSig = sig;
@@ -383,6 +411,20 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       const type = String(msg.type ?? "");
       stderrLines += 1;
 
+      // 用户在场即停卡住长铃：键鼠/打字/点击/滚动/快捷键等
+      // （ready/log 是基建心跳，不算「我在操作」）
+      if (type !== "ready" && type !== "log") {
+        try {
+          cli.sound.onUserInteraction();
+        } catch {
+          /* ignore */
+        }
+      }
+      if (type === "user_activity") {
+        // 仅停铃，无业务
+        return;
+      }
+
       if (type === "ready") {
         tuiReady = true;
         process.stderr.write("[maou] TUI ready\n");
@@ -455,6 +497,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       }
       if (type === "submit") {
         // 勿 bumpScreenEpoch：full_paint 会让发送后卡顿数秒；Ratatui 自行管理 viewport
+        cli.sound.onUserInteraction();
         const text = String(msg.text ?? "");
         lastInput = "";
         lastCursor = 0;
@@ -475,7 +518,59 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         });
         return;
       }
+      // 重试：Ctrl+R 或点击可重试系统事件 → 重新发送 lastRetryText / 事件上的 retryText
+      if (type === "retry") {
+        cli.sound.onUserInteraction();
+        const st = useStore.getState();
+        if (st.streaming || st.agentBusy) {
+          st.toastMsg("生成中，请稍后再重试", "warn");
+          return;
+        }
+        const eventId = msg.event_id != null ? String(msg.event_id) : "";
+        let text = (st.lastRetryText ?? "").trim();
+        if (eventId) {
+          const ev = st.systemEvents.find((e) => e.id === eventId);
+          if (ev?.retryText?.trim()) text = ev.retryText.trim();
+        }
+        if (!text) {
+          // 回退：最近真人 user 气泡
+          for (let i = st.messages.length - 1; i >= 0; i--) {
+            const m = st.messages[i]!;
+            if (m.role !== "user") continue;
+            const kind = m.kind ?? "human_user";
+            if (
+              kind === "system_notice" ||
+              kind === "runtime_control" ||
+              kind === "agent_message"
+            ) {
+              continue;
+            }
+            if (m.content?.trim()) {
+              text = m.content.trim();
+              break;
+            }
+          }
+        }
+        if (!text) {
+          st.toastMsg("没有可重试的请求", "warn");
+          return;
+        }
+        st.toastMsg("正在重试…", "info");
+        st.pushInputHistory(text);
+        st.resetHistoryIndex();
+        historyDraft = null;
+        cancelScheduledPush();
+        const sendP = cli.send(text);
+        lastSig = "";
+        pushState(undefined, true);
+        void sendP.finally(() => {
+          lastSig = "";
+          pushState(undefined, true);
+        });
+        return;
+      }
       if (type === "input_update") {
+        // 打字 / 光标移动：上层已 onUserInteraction
         const nextText = String(msg.text ?? "");
         const nextCursor = Number(msg.cursor ?? nextText.length) || 0;
         // 浏览历史时：仅文本相对历史条目真正变化才退出；光标移动不 reset（对齐 Ink applyingHistory）
@@ -765,12 +860,45 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
       if (type === "goal_action") {
         const act = String(msg.action ?? "");
         if (act === "confirm_plan") {
+          // 先确定性推进状态再发消息，避免排队期间 UI 仍显示「待确认」
+          const sid = useStore.getState().sessionId;
+          if (sid) {
+            try {
+              const { tryApplySupervisorUserConfirmation } = await import(
+                "@little-house-studio/agent"
+              );
+              const ack = tryApplySupervisorUserConfirmation(sid, "确认");
+              if (ack.applied && ack.state === "started") {
+                refreshSupervisor();
+                pushState(undefined, true);
+              }
+            } catch { /* send 路径仍会再 ack */ }
+          }
           useStore.getState().requestSend("确认");
         } else if (act === "confirm_pass") {
+          const sid = useStore.getState().sessionId;
+          if (sid) {
+            try {
+              const { tryApplySupervisorUserConfirmation } = await import(
+                "@little-house-studio/agent"
+              );
+              const ack = tryApplySupervisorUserConfirmation(sid, "通过");
+              if (ack.ended && ack.mainSessionId) {
+                useStore.getState().setSessionId(ack.mainSessionId);
+                useStore.getState().clearSupervisor();
+                useStore.getState().toastMsg("监督模式已结束，切回主 Agent", "ok");
+                pushState(undefined, true);
+                return;
+              }
+            } catch { /* fall through */ }
+          }
           useStore.getState().requestSend("通过");
         } else if (act === "exit") {
           useStore.getState().exitSupervisor();
           cli.abort();
+          useStore.getState().toastMsg("已退出监督模式", "info");
+        } else if (act === "expand_plan" || act === "collapse_plan") {
+          // plan 展开由 Rust 本地处理；此处 no-op 保留协议扩展位
         }
         refreshSupervisor();
         pushState(undefined, true);

@@ -19,8 +19,17 @@
       "comment": {
         "type": "string",
         "description": "评语：为什么给这个分，扣分点/亮点。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
-    "required": ["score", "passed", "comment"]
+    "required": [
+      "description",
+      "score",
+      "passed",
+      "comment"
+    ]
   }
 }

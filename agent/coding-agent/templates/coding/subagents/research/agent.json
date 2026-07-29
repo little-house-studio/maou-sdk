@@ -1,0 +1,28 @@
+{
+  "name": "research",
+  "display_name": "Web Research",
+  "role": "research",
+  "scope": "subagent",
+  "subagent_kind": "task",
+  "description": "网络调研子 Agent：检索公开资料、必要时用浏览器核对页面，整理成可引用的调研报告。不修改项目代码。",
+  "status": "active",
+  "round_limit": 25,
+  "max_retries": 6,
+  "terminal_mode": "normal",
+  "enable_loop": true,
+  "persist_context": true,
+  "inherit_full_context": false,
+  "permission": "readonly",
+  "tool_preset": "explore",
+  "tools": [
+    "search_internet",
+    "use_browser",
+    "reader",
+    "todo_finish"
+  ],
+  "list_in_manager": true,
+  "use_executor": true,
+  "over_round_policy": "wrap_up",
+  "ephemeral": false,
+  "storage_scope": "nested"
+}

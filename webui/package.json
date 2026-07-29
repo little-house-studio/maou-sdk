@@ -43,8 +43,11 @@
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
     "express": "^4.21.0",
+    "html-in-canvas-polyfill": "^1.0.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "three": "^0.185.1",
+    "three-html-render": "^0.1.2",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -52,6 +55,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.185.1",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.0",
     "concurrently": "^9.0.0",

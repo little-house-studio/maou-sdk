@@ -19,6 +19,7 @@ import { getActiveTheme } from "../theme/load-theme.js";
 import { getNavAction } from "../config/nav-actions.js";
 import type { ProtoNavItem } from "./protocol-types.js";
 import { isLiteMode, LITE_HISTORY_BASE } from "../config/lite-mode.js";
+import { tipsForContext } from "../config/cli-tips.js";
 import { HISTORY_BASE_ROUNDS } from "../config/ui-constants.js";
 import { estimateTokens, estimateContextTokens } from "@little-house-studio/llm";
 import { uncachedInputTokens } from "@little-house-studio/agent";
@@ -41,10 +42,41 @@ function systemPromptForAgent(agentName: string | undefined): string {
   return cachedSystemPromptText;
 }
 
-/** 协议侧 duration 用整数 ms；流式中可推算 elapsed */
+/**
+ * 协议侧 duration 用整数 ms。
+ *
+ * `undefined` = **未知**（UI 留空）；`0` 是合法的「快到测不出」，会显示成 1ms —— 两者
+ * 不能混同，否则瞬时完成的工具看起来像丢了数据。负数视为坏数据 → 未知。
+ */
 function msInt(v: number | undefined | null): number | undefined {
-  if (v == null || !Number.isFinite(v) || v <= 0) return undefined;
+  if (v == null || !Number.isFinite(v) || v < 0) return undefined;
   return Math.max(1, Math.round(v));
+}
+
+/**
+ * 耗时口径：**已完成的一律封口，只有进行中才跟 now() 走**。
+ *
+ * 否则一条早已结束、但 duration 没落库的记录，每帧都会 `now() - startTs` 重算，
+ * 屏幕上的耗时便一直往上涨（历史工具卡显示几分钟就是这么来的）。
+ *
+ * @param settled  是否已结束（工具 done / thinking !streaming / 消息 !streaming）
+ * @param stored   已落库耗时（权威）
+ * @param startTs  开始时刻
+ * @param endTs    结束时刻（有则用于封口，替代 now()）
+ */
+function resolveDuration(
+  settled: boolean,
+  stored: number | undefined,
+  startTs: number | undefined,
+  endTs?: number,
+): number | undefined {
+  if (stored != null && Number.isFinite(stored) && stored >= 0) return stored;
+  if (startTs == null) return undefined;
+  if (settled) {
+    // 已结束但没落库：只能用真实结束时刻封口；没有就认「未知」，绝不用 now()
+    return endTs != null ? Math.max(0, endTs - startTs) : undefined;
+  }
+  return Math.max(0, Date.now() - startTs);
 }
 
 export function toProtoTool(
@@ -52,10 +84,7 @@ export function toProtoTool(
   expandedIds: Set<string>,
 ): ProtoToolCard {
   // 默认折叠：仅用户点开 expandedIds 才展开（执行中也不自动撑开）
-  let duration = t.callDuration;
-  if ((duration == null || duration <= 0) && t.callStartTs) {
-    duration = Date.now() - t.callStartTs;
-  }
+  const duration = resolveDuration(t.done === true, t.callDuration, t.callStartTs);
   return {
     id: t.id,
     name: t.name,
@@ -74,10 +103,7 @@ export function toProtoThinking(
 ): ProtoThinking {
   // 流式中展开看过程；结束后默认收成一行标识（仅用户点开才 expandedIds）
   const collapsed = !t.streaming && !expandedIds.has(t.id);
-  let duration = t.duration;
-  if ((duration == null || duration <= 0) && t.startTs) {
-    duration = Date.now() - t.startTs;
-  }
+  const duration = resolveDuration(!t.streaming, t.duration, t.startTs);
   return {
     id: t.id,
     content: t.content,
@@ -122,12 +148,8 @@ export function toProtoMessage(
   else if (expandedMsgs.has(m.id)) open = true;
   else open = inLatestRound === true;
   const baseKind = (m.kind ?? "").replace(/\|expanded/g, "");
-  // 消息耗时：已落库 duration 优先；流式/工具轮中用 ts 推算，避免「(dur) 缺失」
-  let msgDur = m.duration;
-  if ((msgDur == null || msgDur <= 0) && m.ts) {
-    const end = m.doneTs ?? Date.now();
-    msgDur = end - m.ts;
-  }
+  // 消息耗时：已落库 duration 优先；流式中才跟 now() 走，已结束用 doneTs 封口
+  const msgDur = resolveDuration(m.streaming !== true, m.duration, m.ts, m.doneTs);
   return {
     id: m.id,
     role: m.role,
@@ -153,37 +175,83 @@ export function toProtoSystemEvent(e: SystemEvent): ProtoSystemEvent {
     content: e.content,
     ts: e.ts,
     detail: e.detail,
+    action: e.action,
   };
 }
 
+/**
+ * 目标一句话：取 plan 首个非空行，去掉 markdown 标题/列表符号。
+ * chip 和详情标题共用同一来源，两处文案不会打架。
+ */
+function goalObjective(plan: string | undefined): string | undefined {
+  const line = (plan ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!line) return undefined;
+  const cleaned = line
+    .replace(/^#{1,6}\s*/, "")
+    .replace(/^[-*+]\s+/, "")
+    .replace(/^\d+[.)]\s+/, "")
+    .replace(/^\*\*|\*\*$/g, "")
+    .trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 160) : undefined;
+}
+
 export function toProtoChrome(s: UIState): ProtoChrome {
-  // 会话累计 token；InfoBar 优先用最近一轮上下文窗口占用（input/total），否则累计
-  const used =
-    s.rounds.reduce((a, r) => a + (r.input ?? 0) + (r.output ?? 0), 0) +
-    (s.currentRoundUsage?.input ?? 0) +
-    (s.currentRoundUsage?.output ?? 0);
-  const lastRound = s.rounds[s.rounds.length - 1];
-  // 最近一轮 prompt/input；0 时回退累计 used（避免恢复会话后显示 0/max）
-  const lastCtx = lastRound
-    ? (lastRound.total ?? lastRound.input ?? 0)
-    : (s.currentRoundUsage?.input ?? 0);
-  const ctxTokens = lastCtx > 0 ? lastCtx : used;
+  // ── 上下文占用（窗口语义，禁止 Σ 全历史各轮 prompt）──
+  // 历史 bug：最近一轮 input=0（空转/?）时回退「所有轮 input+output 相加」→ 虚高到 1M+
+  // 正确：最近一次有效 prompt_tokens / 本轮累计 / idle 估算，绝不用跨轮累加当「当前窗口」
+  const lastValidRound = [...(s.rounds ?? [])]
+    .reverse()
+    .find((r) => (r.input ?? 0) > 0 || (r.total ?? 0) > 0);
+  const currentIn = s.currentRoundUsage?.input ?? 0;
+  const lastCtx =
+    currentIn > 0
+      ? currentIn
+      : lastValidRound
+        ? (lastValidRound.input ?? lastValidRound.total ?? 0)
+        : 0;
+  // InfoBar 占用：当前窗口 ≈ lastCtx；无有效轮次时用 idle 估算（在下方 up 算完后回填）
+  let ctxTokens = lastCtx > 0 ? lastCtx : 0;
+  // 镜像历史 + 本轮未封印的 currentRoundUsage，避免流式中/首轮永远 c—
+  const cacheHistLive = [...(s.cacheHistory ?? [])];
+  if (
+    s.currentRoundUsage &&
+    (s.currentRoundUsage.cacheEligible ||
+      (s.currentRoundUsage.cacheRead ?? 0) > 0) &&
+    ((s.currentRoundUsage.input ?? 0) > 0 ||
+      (s.currentRoundUsage.cacheRead ?? 0) > 0)
+  ) {
+    cacheHistLive.push({
+      cacheRead: s.currentRoundUsage.cacheRead ?? 0,
+      input: s.currentRoundUsage.input ?? 0,
+      cacheWrite: s.currentRoundUsage.cacheWrite ?? 0,
+      model: s.model || undefined,
+    });
+  }
   const {
     label: cacheLabel,
     pct: cachePct,
     eligible: cacheEligible,
-  } = formatCacheLabel(s.model, s.provider, s.cacheHistory, 10);
+  } = formatCacheLabel(s.model, s.provider, cacheHistLive, 10);
   const mode = s.approvalMode;
   const approvalLabel = APPROVAL_LABELS[mode]?.short ?? mode;
   const lite = isLiteMode();
   let supervisor: ProtoSupervisor | null = null;
   if (s.supervisor?.active) {
+    const baseline = s.supervisor.tokenBaseline ?? 0;
+    const goalTokens = Math.max(0, ctxTokens - baseline);
     supervisor = {
       active: true,
       state: s.supervisor.state,
       plan: s.supervisor.plan,
       verify_rounds: s.supervisor.verifyRounds,
       last_verdict: s.supervisor.lastVerdict,
+      objective: goalObjective(s.supervisor.plan),
+      started_at_ms: s.supervisor.startedAtMs,
+      tokens_used: goalTokens,
+      token_budget: s.maxContext && s.maxContext > 0 ? s.maxContext : undefined,
     };
   }
   // Ink EventBlock: busy = uncachedInputTokens(usage); idle = estimateContextTokens + draft − cache
@@ -191,9 +259,11 @@ export function toProtoChrome(s: UIState): ProtoChrome {
   let up = s.eventBlock.upTokens ?? s.currentRoundUsage?.input ?? 0;
   const liveMode = s.eventBlock.mode ?? "idle";
   if (s.streaming || ((s.currentRoundUsage?.input ?? 0) > 0 && liveMode !== "idle")) {
+    // input 已是 prompt 总量；建缓存(cacheWrite)属于本轮真实上传，计入 ↑
     up = uncachedInputTokens({
       input_tokens: s.currentRoundUsage?.input ?? 0,
       cache_read_input_tokens: s.currentRoundUsage?.cacheRead ?? 0,
+      cache_creation_input_tokens: s.currentRoundUsage?.cacheWrite ?? 0,
     });
   } else {
     const historyMsgs = s.messages.map((m) => {
@@ -224,6 +294,10 @@ export function toProtoChrome(s: UIState): ProtoChrome {
       // first round / no cache: whole package is new input (Ink: totalEst, may be 0)
       up = totalEst > 0 ? totalEst : draftTok;
     }
+    // 无 API usage 时：窗口占用用 idle 整包估（仍禁止 Σ 历史各轮）
+    if (ctxTokens <= 0 && totalEst > 0) {
+      ctxTokens = totalEst;
+    }
   }
 
   return {
@@ -246,11 +320,17 @@ export function toProtoChrome(s: UIState): ProtoChrome {
     detail: s.eventBlock.detail,
     approval_mode: mode,
     approval_label: approvalLabel,
+    tips: tipsForContext({
+      streaming: s.streaming,
+      aborting: s.aborting,
+      hasApproval: !!s.terminalApproval,
+      overlay: (s.overlay as string | null) ?? null,
+    }),
     agent: s.agentName,
     provider: s.provider,
     model: s.model,
     max_context: s.maxContext,
-    used_tokens: ctxTokens || used,
+    used_tokens: ctxTokens,
     cache_label: cacheLabel,
     // Ink InfoBar: color cache by hit rate when eligible + sample present
     cache_pct: cacheEligible && cachePct != null ? cachePct : undefined,

@@ -40,6 +40,14 @@ import {
   gateTerminalCommand,
   describeCommandForApproval,
 } from "../../security/index.js";
+import {
+  evalConditionOnFile,
+  evalConditionOnText,
+  formatConditionHits,
+  resolveExpr,
+  validateConditionParams,
+  type ReturnWhen,
+} from "./condition.js";
 
 // Rust 终端引擎
 import * as engine from "@little-house-studio/terminal-engine";
@@ -51,17 +59,19 @@ export class TerminalTool extends Tool {
     aliases: ["bash", "terminal_manage"],
     description:
       "执行 shell 命令或管理常驻终端。" +
-      " action=run 运行命令（前台阻塞或后台运行）；" +
-      " action=manage 管理终端（list/rm/stop/logs）；" +
-      " action=write 向运行中的终端发送键盘输入（交互式命令确认/Ctrl+C 等）。" +
-      " 不指定 id 为临时终端，执行完即销毁；指定 id 为持久终端，可反复操作。" +
-      " 已存在的 id 会复用该终端执行新任务。",
+      " action=run 运行命令（前台/后台）；" +
+      " action=manage（list/rm/stop/logs）；" +
+      " action=write 键盘输入；" +
+      " action=scan 扫文件（path + return_when=filter）。" +
+      " 【条件返回】return_when=filter|until + match(正则可选) + expr(受限 Python 表达式)。" +
+      " 表达式可用 line/n/re/m；例: match='a\\\\s*=\\\\s*(\\\\d+)' expr='m is not None and 2 < int(m.group(1)) < 5'。" +
+      " until=第一次命中即返回（可 keep_running）；filter=筛出所有命中行。",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["run", "manage", "write"],
+          enum: ["run", "manage", "write", "scan"],
           description: "操作类型，默认 run",
         },
         id: {
@@ -71,24 +81,56 @@ export class TerminalTool extends Tool {
         },
         command: {
           type: "string",
-          description: "要执行的 shell 命令（run 时必填）",
+          description: "要执行的 shell 命令（run 时必填；scan 不需要）",
         },
         description: {
           type: "string",
-          description: "任务简介，用于在状态面板中显示（run 时必填）",
+          description: "任务简介，用于在状态面板中显示（run 时建议填）",
         },
         background: {
           type: "boolean",
-          description: "是否后台运行（run 时可选，默认 false）",
+          description: "是否后台运行（run 且无 return_when 时可选，默认 false）",
         },
         timeout: {
           type: "number",
           description:
-            "超时秒数。前台默认 120（超时自动转后台）；后台默认 0 即不超时提醒",
+            "超时秒数。前台默认 120；until 默认 3600；后台默认 0",
         },
         result_limit: {
           type: "integer",
           description: "返回结果限制字数，默认 5000，0 表示只返回状态提示",
+        },
+        return_when: {
+          type: "string",
+          enum: ["filter", "until"],
+          description:
+            "条件返回：filter=筛出所有命中行；until=第一次命中即返回（终端流/长任务）。需配 expr 和/或 match",
+        },
+        match: {
+          type: "string",
+          description:
+            "可选正则，匹配成功时 m=Match 否则 m=None。仅 match 时默认 expr 为 m is not None",
+        },
+        expr: {
+          type: "string",
+          description:
+            "受限 Python 表达式，可用 line/n/re/m。例: m is not None and 2 < int(m.group(1)) < 5",
+        },
+        path: {
+          type: "string",
+          description: "scan 时文件路径；或 run+filter 时从该文件筛（不跑命令）",
+        },
+        keep_running: {
+          type: "boolean",
+          description: "until 命中后是否保留进程（默认 true）。false 则 stop 终端",
+        },
+        context_lines: {
+          type: "integer",
+          description: "命中行前后上下文行数，默认 3",
+        },
+        max_hits: {
+          type: "integer",
+          description: "filter 最多返回条数，默认 100",
         },
         manage_action: {
           type: "string",
@@ -123,8 +165,9 @@ export class TerminalTool extends Tool {
     if (action === "run") res = await this._actionRun(params, ctx);
     else if (action === "manage") res = await this._actionManage(params, ctx);
     else if (action === "write") res = await this._actionWrite(params, ctx);
+    else if (action === "scan") res = await this._actionScan(params, ctx);
     else {
-      return createToolResponse(false, `未知 action: ${action}，可选: run, manage, write`);
+      return createToolResponse(false, `未知 action: ${action}，可选: run, manage, write, scan`);
     }
     // 每次调用附带终端快照，避免后台任务「消失了也不知道」
     return this._withTerminalFooter(res, ctx, action);
@@ -225,11 +268,19 @@ export class TerminalTool extends Tool {
     params: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResponse> {
+    const returnWhen = String(params.return_when ?? "").trim() as ReturnWhen | "";
+    const pathOnly = String(params.path ?? "").trim();
+
+    // run + path + filter 且无 command → 当文件扫描
+    if (returnWhen === "filter" && pathOnly && !String(params.command ?? "").trim()) {
+      return this._actionScan(params, ctx);
+    }
+
     const command = String(params.command ?? "").trim();
     if (!command) return createToolResponse(false,
       "❌ run 操作必须提供 command 参数。\n" +
       "正确用法示例：{\"action\":\"run\",\"command\":\"git status\",\"reason\":\"查看仓库状态\"}\n" +
-      "请重新调用 use_terminal 并填写 command 字段。"
+      "条件扫文件用 action=scan 或 run+return_when=filter+path。",
     );
 
     // ── 终端审批策略（normal / auto / yolo + 黑白名单 + 重复放行）──
@@ -259,13 +310,359 @@ export class TerminalTool extends Tool {
       : sandboxed
         ? (ctx.sandboxRoot || ctx.workingDir || ctx.projectRoot)
         : (ctx.workingDir || ctx.projectRoot || ctx.sandboxRoot);
-    const timeoutSec = params.timeout != null ? Number(params.timeout) : (background ? 0 : 120);
     const resultLimit = params.result_limit != null ? Number(params.result_limit) : 5000;
 
+    // 条件返回路径
+    if (returnWhen === "until" || returnWhen === "filter") {
+      const verr = validateConditionParams({
+        returnWhen,
+        expr: params.expr != null ? String(params.expr) : undefined,
+        match: params.match != null ? String(params.match) : undefined,
+      });
+      if (verr) return createToolResponse(false, verr);
+      const expr = resolveExpr(
+        params.expr != null ? String(params.expr) : undefined,
+        params.match != null ? String(params.match) : undefined,
+      );
+      const match = params.match != null ? String(params.match) : undefined;
+      const contextLines =
+        params.context_lines != null ? Number(params.context_lines) : 3;
+      const maxHits = params.max_hits != null ? Number(params.max_hits) : 100;
+      const keepRunning = params.keep_running !== false;
+      const timeoutSec =
+        params.timeout != null
+          ? Number(params.timeout)
+          : returnWhen === "until"
+            ? 3600
+            : 120;
+
+      if (returnWhen === "until") {
+        return this._runUntilCondition({
+          id,
+          command,
+          description,
+          cwd,
+          ctx,
+          timeoutSec,
+          resultLimit,
+          expr,
+          match,
+          contextLines,
+          keepRunning,
+        });
+      }
+      // filter：跑完（或超时）后对输出筛行
+      return this._runFilterCondition({
+        id,
+        command,
+        description,
+        cwd,
+        ctx,
+        timeoutSec,
+        resultLimit,
+        expr,
+        match,
+        contextLines,
+        maxHits,
+        background,
+      });
+    }
+
+    const timeoutSec = params.timeout != null ? Number(params.timeout) : (background ? 0 : 120);
     if (background) {
       return this._runBackground(id, command, description, cwd, ctx, timeoutSec, resultLimit);
     }
     return this._runForeground(id, command, description, cwd, ctx, timeoutSec, resultLimit);
+  }
+
+  /** 扫文件：action=scan 或 run+path+filter */
+  private async _actionScan(
+    params: Record<string, unknown>,
+    ctx: ToolContext,
+  ): Promise<ToolResponse> {
+    const path = String(params.path ?? "").trim();
+    if (!path) {
+      return createToolResponse(
+        false,
+        "scan 需要 path。例: {\"action\":\"scan\",\"path\":\"data.txt\",\"return_when\":\"filter\",\"match\":\"a\\\\s*=\\\\s*(\\\\d+)\",\"expr\":\"m is not None and 2 < int(m.group(1)) < 5\",\"reason\":\"…\"}",
+      );
+    }
+    const returnWhen = (String(params.return_when ?? "filter").trim() || "filter") as ReturnWhen;
+    if (returnWhen !== "filter" && returnWhen !== "until") {
+      return createToolResponse(false, "scan 的 return_when 须为 filter 或 until");
+    }
+    const verr = validateConditionParams({
+      returnWhen,
+      expr: params.expr != null ? String(params.expr) : undefined,
+      match: params.match != null ? String(params.match) : undefined,
+    });
+    if (verr) return createToolResponse(false, verr);
+
+    const expr = resolveExpr(
+      params.expr != null ? String(params.expr) : undefined,
+      params.match != null ? String(params.match) : undefined,
+    );
+    const match = params.match != null ? String(params.match) : undefined;
+    const result = await evalConditionOnFile(path, {
+      expr,
+      match,
+      mode: returnWhen,
+      maxHits: params.max_hits != null ? Number(params.max_hits) : 100,
+      contextLines: params.context_lines != null ? Number(params.context_lines) : 3,
+    });
+    const body = formatConditionHits(result);
+    const ok = result.ok && (returnWhen === "filter" || (result.matched ?? 0) > 0);
+    return createToolResponse(ok, body, {
+      payload: {
+        path,
+        return_when: returnWhen,
+        matched: result.matched ?? 0,
+        hits: result.hits ?? [],
+        error: result.error,
+      },
+    });
+  }
+
+  /** until：后台跑命令，轮询 logs，第一次 expr 真即返回 */
+  private async _runUntilCondition(opts: {
+    id: string | undefined;
+    command: string;
+    description: string;
+    cwd: string;
+    ctx: ToolContext;
+    timeoutSec: number;
+    resultLimit: number;
+    expr: string;
+    match?: string;
+    contextLines: number;
+    keepRunning: boolean;
+  }): Promise<ToolResponse> {
+    const agent = opts.ctx.agentName || "main";
+    const timeoutMs = Math.max(1000, opts.timeoutSec * 1000);
+    const pollMs = 400;
+    const started = Date.now();
+
+    let terminalId: string;
+    try {
+      const bg = await engine.runBackground(
+        agent,
+        opts.command,
+        opts.cwd,
+        opts.description,
+        opts.id,
+      );
+      terminalId = bg.terminalId;
+      // 已瞬间结束：对输出做 until
+      if (bg.exitCode != null) {
+        const cond = await evalConditionOnText(bg.output || "", {
+          expr: opts.expr,
+          match: opts.match,
+          mode: "until",
+          contextLines: opts.contextLines,
+        });
+        const body = formatConditionHits(cond, opts.resultLimit);
+        const meta = formatMetadata({
+          terminal_id: terminalId,
+          exit_code: bg.exitCode,
+          cwd: opts.cwd,
+          return_when: "until",
+        });
+        const ok = cond.ok && (cond.matched ?? 0) > 0;
+        return createToolResponse(ok, `${body}\n\n${meta}`, {
+          payload: {
+            terminal_id: terminalId,
+            exit_code: bg.exitCode,
+            return_when: "until",
+            matched: cond.matched ?? 0,
+            hits: cond.hits ?? [],
+            elapsed_ms: Date.now() - started,
+          },
+        });
+      }
+    } catch (err: unknown) {
+      return createToolResponse(
+        false,
+        `until 启动失败: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    let lastEvalKey = "";
+    while (Date.now() - started < timeoutMs) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      let output = "";
+      try {
+        output = await engine.logs(terminalId, agent, 5000);
+      } catch {
+        continue;
+      }
+      // 无变化则跳过求值
+      const key = `${output.length}:${output.slice(-200)}`;
+      if (key === lastEvalKey) {
+        // 检查是否已退出
+        const list = engine.list(agent) ?? [];
+        const t = list.find((x) => x.id === terminalId);
+        if (t && t.state !== "running") {
+          const cond = await evalConditionOnText(output, {
+            expr: opts.expr,
+            match: opts.match,
+            mode: "until",
+            contextLines: opts.contextLines,
+          });
+          const body = formatConditionHits(cond, opts.resultLimit);
+          const meta = formatMetadata({
+            terminal_id: terminalId,
+            exit_code: t.exitCode ?? null,
+            cwd: opts.cwd,
+            return_when: "until",
+            reason: "process_exited",
+          });
+          return createToolResponse(cond.ok && (cond.matched ?? 0) > 0, `${body}\n\n${meta}`, {
+            payload: {
+              terminal_id: terminalId,
+              exit_code: t.exitCode ?? null,
+              return_when: "until",
+              matched: cond.matched ?? 0,
+              hits: cond.hits ?? [],
+              elapsed_ms: Date.now() - started,
+              process_exited: true,
+            },
+          });
+        }
+        continue;
+      }
+      lastEvalKey = key;
+
+      const cond = await evalConditionOnText(output, {
+        expr: opts.expr,
+        match: opts.match,
+        mode: "until",
+        contextLines: opts.contextLines,
+      });
+      if (cond.ok && (cond.matched ?? 0) > 0) {
+        if (!opts.keepRunning) {
+          try {
+            await engine.stop(terminalId, agent);
+          } catch {
+            /* ignore */
+          }
+        }
+        const hit = cond.hits?.[0];
+        const body =
+          formatConditionHits(cond, opts.resultLimit) +
+          (hit?.context_before?.length
+            ? `\n\n── 上下文 ──\n${[...(hit.context_before ?? []), hit.text, ...(hit.context_after ?? [])].join("\n")}`
+            : "");
+        const meta = formatMetadata({
+          terminal_id: terminalId,
+          cwd: opts.cwd,
+          return_when: "until",
+          keep_running: opts.keepRunning,
+          elapsed_ms: Date.now() - started,
+        });
+        return createToolResponse(true, `${body}\n\n${meta}`, {
+          payload: {
+            terminal_id: terminalId,
+            return_when: "until",
+            matched: 1,
+            hits: cond.hits ?? [],
+            keep_running: opts.keepRunning,
+            elapsed_ms: Date.now() - started,
+            trigger: hit,
+          },
+        });
+      }
+    }
+
+    // 超时
+    let tail = "";
+    try {
+      tail = await engine.logs(terminalId, agent, 80);
+    } catch {
+      /* ignore */
+    }
+    const meta = formatMetadata({
+      terminal_id: terminalId,
+      cwd: opts.cwd,
+      return_when: "until",
+      error: "timeout",
+      timeout_sec: opts.timeoutSec,
+    });
+    return createToolResponse(
+      false,
+      `until 超时（${opts.timeoutSec}s）未命中条件。\n` +
+        `expr: ${opts.expr}\n` +
+        (opts.match ? `match: ${opts.match}\n` : "") +
+        (tail ? `\n── 最近输出 ──\n${applyResultLimit(tail, opts.resultLimit)}\n` : "") +
+        `\n${meta}`,
+      {
+        payload: {
+          terminal_id: terminalId,
+          return_when: "until",
+          error: "timeout",
+          timeout_sec: opts.timeoutSec,
+          elapsed_ms: Date.now() - started,
+        },
+      },
+    );
+  }
+
+  /** filter：前台/后台跑完后对输出筛行 */
+  private async _runFilterCondition(opts: {
+    id: string | undefined;
+    command: string;
+    description: string;
+    cwd: string;
+    ctx: ToolContext;
+    timeoutSec: number;
+    resultLimit: number;
+    expr: string;
+    match?: string;
+    contextLines: number;
+    maxHits: number;
+    background: boolean;
+  }): Promise<ToolResponse> {
+    // 前台跑到结束（或超时）再筛；background=true 时仍等一轮超时上限内完成
+    const timeoutMs = opts.timeoutSec > 0 ? opts.timeoutSec * 1000 : 120_000;
+    try {
+      const result = await engine.run(
+        opts.ctx.agentName || "main",
+        opts.command,
+        opts.cwd,
+        opts.description,
+        timeoutMs,
+        200_000, // 内部多取一点再 filter
+      );
+      const cond = await evalConditionOnText(result.output || "", {
+        expr: opts.expr,
+        match: opts.match,
+        mode: "filter",
+        maxHits: opts.maxHits,
+        contextLines: opts.contextLines,
+      });
+      const body = formatConditionHits(cond, opts.resultLimit);
+      const meta = formatMetadata({
+        terminal_id: result.terminalId,
+        exit_code: result.exitCode ?? null,
+        cwd: opts.cwd,
+        return_when: "filter",
+        duration_ms: Math.round(result.durationMs),
+      });
+      return createToolResponse(cond.ok, `${body}\n\n${meta}`, {
+        payload: {
+          terminal_id: result.terminalId,
+          exit_code: result.exitCode ?? null,
+          return_when: "filter",
+          matched: cond.matched ?? 0,
+          hits: cond.hits ?? [],
+          scanned: cond.scanned,
+        },
+      });
+    } catch (err: unknown) {
+      return createToolResponse(
+        false,
+        `filter 执行失败: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -411,10 +808,59 @@ export class TerminalTool extends Tool {
             recordReviewApprove(agent, command);
             return null;
           }
+          // 申诉通道：AI 拒后若有人手 approver，弹确认条（不写黑名单）
+          const approver = getTerminalApprover();
+          if (approver) {
+            try {
+              const human = await approver(command, {
+                ...buildApproverCtx("low"),
+                summary:
+                  `AI 审核未通过（${verdict.reason || "无理由"}）。仍可确认执行一次。`,
+                label: "AI拒·可确认",
+                reason: verdict.reason,
+                forceHuman: true,
+              });
+              if (human.approve) {
+                if (human.persist === "whitelist") {
+                  addToWhitelist(agent, commandPrefix(command));
+                }
+                recordReviewApprove(agent, command);
+                return null;
+              }
+              if (human.persist === "blacklist") {
+                addToBlacklist(agent, commandPrefix(command));
+              }
+              return createToolResponse(
+                false,
+                `⛔ 用户确认后仍拒绝：\`${command}\`\nAI 理由：${verdict.reason}`,
+                {
+                  payload: {
+                    policy: "review-reject-user-denied",
+                    command,
+                    reason: verdict.reason,
+                    tier: "safe",
+                  },
+                },
+              );
+            } catch {
+              /* 超时等 → 下方拒绝 */
+            }
+          }
           recordReviewReject(agent, command);
-          return createToolResponse(false,
-            `⛔ 审核未通过：\`${command}\`\n理由：${verdict.reason}`,
-            { payload: { policy: "review-reject", command, reason: verdict.reason, tier: "safe" } });
+          return createToolResponse(
+            false,
+            `⛔ 审核未通过：\`${command}\`\n理由：${verdict.reason}\n` +
+              `申诉：切换 normal/yolo，或再发完全相同命令（若策略允许二次确认）；` +
+              `人手在场时 auto 拒批会弹出确认条。`,
+            {
+              payload: {
+                policy: "review-reject",
+                command,
+                reason: verdict.reason,
+                tier: "safe",
+              },
+            },
+          );
         } catch (err) {
           return createToolResponse(false,
             `🔐 审核异常：\`${command}\`（${errToString(err)}）`,

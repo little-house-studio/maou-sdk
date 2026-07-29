@@ -27,9 +27,14 @@
         "minimum": 500,
         "maximum": 100000,
         "description": "最大返回字符数。默认 50000。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
     "required": [
+      "description",
       "path",
       "reason"
     ],

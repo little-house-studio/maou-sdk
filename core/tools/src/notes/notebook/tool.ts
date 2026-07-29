@@ -216,7 +216,7 @@ export class NotebookTool extends Tool {
     try {
       switch (action) {
         case "create": {
-          const desc = String(params.description ?? "").trim();
+          const desc = String(params.purpose ?? params.description ?? "").trim();
           const content = String(params.content ?? "").trim();
           return createToolResponse(true, store.create(name, desc, content));
         }

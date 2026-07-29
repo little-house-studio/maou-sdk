@@ -26,14 +26,14 @@ pub fn logo_empty() -> String {
     " ".repeat(LOGO_W)
 }
 
+/// 消息/事件时间戳 → 本地 `HH:MM:SS`。
+///
+/// 缺时间戳时给占位而非 `now()`：拿当前时间冒充，会让一条历史记录的时间每帧都在跳，
+/// 看着像刚刚发生。宽度与正常时间码一致，布局不变。
 fn timecode(ts_ms: Option<u64>) -> String {
-    use std::time::UNIX_EPOCH;
-    let ms = ts_ms.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
-    });
+    let Some(ms) = ts_ms.filter(|m| *m > 0) else {
+        return "--:--:--".into();
+    };
     // Prefer local wall clock if available via chrono-less approximation:
     // use system local offset when possible.
     #[cfg(unix)]
@@ -69,32 +69,74 @@ pub fn compact(n: u64) -> String {
     }
 }
 
-/// 执行耗时：ms → 完整可读串（不截成只有 min）
-/// 例：350ms · 1.2s · 2m05s · 1h02m03s
-fn duration_str(ms: Option<u64>) -> String {
-    match ms {
-        None | Some(0) => String::new(),
-        Some(d) if d < 1000 => format!("{d}ms"),
-        Some(d) if d < 60_000 => {
-            let s = d as f64 / 1000.0;
-            if (s - s.round()).abs() < 0.05 {
-                format!("{}s", s.round() as u64)
-            } else {
-                format!("{s:.1}s")
-            }
-        }
-        Some(d) if d < 3_600_000 => {
-            let m = d / 60_000;
-            let s = (d % 60_000) / 1000;
-            format!("{m}m{s:02}s")
-        }
-        Some(d) => {
-            let h = d / 3_600_000;
-            let m = (d % 3_600_000) / 60_000;
-            let s = (d % 60_000) / 1000;
-            format!("{h}h{m:02}m{s:02}s")
+/// 工具返回体量：字数 + 粗估 token（进折叠标题，扫上下文占用）
+/// 例：`· 128 字 · ~40 tok` · `· 12.3k 字 · ~4.1k tok`
+fn tool_result_size_label(result: Option<&str>) -> Option<String> {
+    let r = result?;
+    if r.is_empty() {
+        return Some("· 0 字".into());
+    }
+    let chars = r.chars().count() as u64;
+    // 与 SDK estimateTokensFromText 同思路：CJK≈1 tok，ASCII≈4 字 1 tok
+    let mut cjk = 0u64;
+    let mut ascii = 0u64;
+    let mut other = 0u64;
+    for ch in r.chars() {
+        let code = ch as u32;
+        if (0x2E80..=0x9FFF).contains(&code)
+            || (0xF900..=0xFAFF).contains(&code)
+            || (0xFE30..=0xFE4F).contains(&code)
+            || code >= 0x20000
+        {
+            cjk += 1;
+        } else if code <= 0x7F {
+            ascii += 1;
+        } else {
+            other += 1;
         }
     }
+    let tok = cjk + other + ascii.div_ceil(4);
+    Some(format!(
+        "· {} 字 · ~{} tok",
+        compact(chars),
+        compact(tok)
+    ))
+}
+
+/// 执行耗时：ms → 完整可读串（不截成只有 min）
+/// 例：0ms · 350ms · 1.2s · 2m05s · 1h02m03s
+///
+/// `None` = 未知 → 空串；`Some(0)` = 快到测不出 → `0ms`。
+/// 二者不可混同：把 0 也画成空白会让瞬时完成的工具看着像丢了数据。
+fn duration_str(ms: Option<u64>) -> String {
+    let Some(d) = ms else {
+        return String::new();
+    };
+    if d < 1000 {
+        return format!("{d}ms");
+    }
+    if d < 60_000 {
+        let s = d as f64 / 1000.0;
+        let rounded = s.round();
+        // 59.99s 四舍五入成 60 → 进位到分钟格式，别显示「60s」这种越界读数
+        if rounded >= 60.0 {
+            return "1m00s".into();
+        }
+        return if (s - rounded).abs() < 0.05 {
+            format!("{}s", rounded as u64)
+        } else {
+            format!("{s:.1}s")
+        };
+    }
+    if d < 3_600_000 {
+        let m = d / 60_000;
+        let s = (d % 60_000) / 1000;
+        return format!("{m}m{s:02}s");
+    }
+    let h = d / 3_600_000;
+    let m = (d % 3_600_000) / 60_000;
+    let s = (d % 60_000) / 1000;
+    format!("{h}h{m:02}m{s:02}s")
 }
 
 /// Ink `shortId`: `/^m?u?/` then first 6 chars
@@ -160,8 +202,8 @@ pub struct RenderHits {
     pub tool_results: Vec<ToolResultHit>,
 }
 
-/// Returns (summary_line, pretty_json).
-/// 折叠标题优先：description / reason / 短 target；整段 command 仅作展开详情。
+/// Returns (summary_line, unused_target, pretty_json).
+/// 折叠标题只显示调用级 description（任务简介）；command/path/reason 等仅展开后展示。
 fn parse_args(args: &str) -> (String, String, String) {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
         if let Some(obj) = v.as_object() {
@@ -171,51 +213,14 @@ fn parse_args(args: &str) -> (String, String, String) {
                 .unwrap_or("")
                 .trim()
                 .to_string();
-            let reason = obj
-                .get("reason")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let pathish = ["path", "file_path", "pattern", "query", "name", "url"]
-                .iter()
-                .find_map(|k| obj.get(*k).and_then(|x| x.as_str()))
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let command = obj
-                .get("command")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            // 折叠摘要：人话 > reason > 路径类 > 命令首段（截断）
-            let summary = if !description.is_empty() {
-                description
-            } else if !reason.is_empty() {
-                reason
-            } else if !pathish.is_empty() {
-                pathish
-            } else if !command.is_empty() {
-                // 终端命令：只取首行 / 首段，避免整行 cd && cat 刷屏
-                let one = command.lines().next().unwrap_or(&command);
-                let cut = one
-                    .split("&&")
-                    .next()
-                    .unwrap_or(one)
-                    .trim();
-                trunc(cut, 48)
-            } else {
-                String::new()
-            };
             let pretty = serde_json::to_string_pretty(&v).unwrap_or_else(|_| args.to_string());
-            // reason 槽位留给摘要；target 空 → tool_title 只显示摘要
-            return (summary, String::new(), pretty);
+            // 折叠：仅 description；缺省时留空（不把 reason/command 顶到标题）
+            return (description, String::new(), pretty);
         }
     }
     (
         String::new(),
-        args.chars().take(40).collect(),
+        String::new(),
         args.to_string(),
     )
 }
@@ -262,6 +267,11 @@ pub fn system_event_symbol(kind: &str) -> &'static str {
         "session_inject" => "↓",
         _ => "ℹ",
     }
+}
+
+fn system_event_is_retryable(ev: &ProtoSystemEvent) -> bool {
+    matches!(ev.action.as_deref(), Some("retry"))
+        || matches!(ev.kind.as_str(), "env_error" | "retry_fail")
 }
 
 /// Ink SystemEventRow KIND_COLOR → theme tokens
@@ -367,7 +377,17 @@ pub fn render_messages(
                     ));
                 }
             }
-        } else if has_detail {
+            if system_event_is_retryable(ev) {
+                hits.system_events.push(SystemEventHit {
+                    line_idx: out.len(),
+                    event_id: ev.id.clone(),
+                });
+                out.push(body_line(
+                    "  ↻ 再点此行或按 Ctrl+R 重试上次请求",
+                    Style::default().fg(theme.warn),
+                ));
+            }
+        } else if has_detail || system_event_is_retryable(ev) {
             // collapsed affordance (also clickable)
             hits.system_events.push(SystemEventHit {
                 line_idx: out.len(),
@@ -375,6 +395,8 @@ pub fn render_messages(
             });
             let hint = if ev.kind == "compress" {
                 "  ▶ 阶段 token · 压缩摘要（点击展开）"
+            } else if system_event_is_retryable(ev) {
+                "  ▶ 详情 · 按 R 或点击重试"
             } else {
                 "  ▶ 详情（点击展开）"
             };
@@ -913,7 +935,8 @@ fn render_tool_card(
     } else {
         "▶"
     };
-    // 折叠：只显示短摘要（description/reason/命令首段），不刷整段 command
+    // 折叠：只显示 description（任务简介）；详细参数见展开
+    // 已返回时附带结果体量（字数 + 粗估 token），方便扫上下文占用
     let mut meta = if summary.is_empty() {
         String::new()
     } else {
@@ -925,6 +948,14 @@ fn render_tool_card(
             meta.push(' ');
         }
         meta.push_str(&format!("({dur})"));
+    }
+    if t.done {
+        if let Some(size) = tool_result_size_label(t.result.as_deref()) {
+            if !meta.is_empty() {
+                meta.push(' ');
+            }
+            meta.push_str(&size);
+        }
     }
 
     hits.tools.push(ToolHit {
@@ -1077,6 +1108,16 @@ fn trunc(s: &str, w: usize) -> String {
 
 /// EventBlock: Ink dump style
 /// `◤○ IDLE  ↑~57.2k …… NORMAL · 询问 …… 0↑ 0↓ ◥`
+/// 审批模式 → (芯片底色, 英文标题, 兜底中文提示)。EventBlock / 顶部横幅同源。
+/// Ink approvalStyle: NORMAL uses inputFieldBg (#B0B0B0); AUTO warn; YOLO err.
+pub fn approval_chip(mode: &str, theme: &Theme) -> (Color, &'static str, &'static str) {
+    match mode {
+        "auto" => (theme.warn, "AUTO", "自动"),
+        "yolo" => (theme.err, "YOLO", "全放"),
+        _ => (theme.input_field_bg, "NORMAL", "询问"),
+    }
+}
+
 pub fn render_event_block(
     width: u16,
     theme: &Theme,
@@ -1112,12 +1153,8 @@ pub fn render_event_block_framed(
     } else {
         icon
     };
-    // Ink approvalStyle: NORMAL uses inputFieldBg (#B0B0B0); AUTO warn; YOLO err
-    let (appr_bg, appr_title, appr_hint) = match approval_mode {
-        "auto" => (theme.warn, "AUTO", "自动"),
-        "yolo" => (theme.err, "YOLO", "全放"),
-        _ => (theme.input_field_bg, "NORMAL", "询问"),
-    };
+    // 审批模式只在顶栏展示，底部 EventBlock 中间不再画 AUTO/NORMAL 芯片
+    let _ = approval_mode;
 
     // compact up like Ink ↑~57.2k when large
     let up_s = if up >= 1000 {
@@ -1127,7 +1164,6 @@ pub fn render_event_block_framed(
     };
     // ◤ ○ IDLE  ↑~12.5k …… （角后仅 1 空格，勿双空）
     let left = format!(" {icon} {en}  {up_s}");
-    let mid = format!(" {appr_title} · {appr_hint} ");
     let right = format!("{up}↑ {down}↓");
     let pend = if pending > 0 {
         format!(" q{pending} ")
@@ -1136,30 +1172,17 @@ pub fn render_event_block_framed(
     };
 
     let used = UnicodeWidthStr::width(left.as_str())
-        + UnicodeWidthStr::width(mid.as_str())
         + UnicodeWidthStr::width(right.as_str())
         + UnicodeWidthStr::width(pend.as_str())
         + 2; // corners
     let pad = (width as usize).saturating_sub(used);
-    // 中间审批芯片几何居中：左右空白尽量均分（右可多 1 列吸收奇数宽度）
-    let gap_l_n = pad / 2;
-    let gap_r_n = pad.saturating_sub(gap_l_n);
-    let gap_l = " ".repeat(gap_l_n);
-    let gap_r = " ".repeat(gap_r_n);
+    let gap = " ".repeat(pad);
 
     Line::from(vec![
         Span::styled("◤", Style::default().fg(theme.bg).bg(theme.footer_bg)),
         Span::styled(left, Style::default().fg(color).bg(theme.footer_bg)),
-        Span::styled(gap_l, Style::default().bg(theme.footer_bg)),
-        Span::styled(
-            mid,
-            Style::default()
-                .fg(Color::Black)
-                .bg(appr_bg)
-                .add_modifier(Modifier::BOLD),
-        ),
         Span::styled(pend, Style::default().fg(theme.accent).bg(theme.footer_bg)),
-        Span::styled(gap_r, Style::default().bg(theme.footer_bg)),
+        Span::styled(gap, Style::default().bg(theme.footer_bg)),
         Span::styled(
             right,
             Style::default().fg(Color::Black).bg(theme.footer_bg),
@@ -1252,7 +1275,7 @@ mod tests {
                 tool_cards: vec![ProtoToolCard {
                     id: "t1".into(),
                     name: "reader".into(),
-                    args: r#"{"path":"client/src/config.ts","reason":"先读文件"}"#.into(),
+                    args: r#"{"path":"client/src/config.ts","description":"先读配置文件","reason":"需要看现有配置再改"}"#.into(),
                     result: Some("ok".into()),
                     is_error: false,
                     done: true,
@@ -1279,18 +1302,78 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_size_label_shows_chars_and_tok() {
+        assert_eq!(tool_result_size_label(None), None);
+        assert_eq!(
+            tool_result_size_label(Some("")),
+            Some("· 0 字".into())
+        );
+        let short = tool_result_size_label(Some("ok")).unwrap();
+        assert!(short.contains("2 字"), "{short}");
+        assert!(short.contains("tok"), "{short}");
+        let long = "a".repeat(2500);
+        let lab = tool_result_size_label(Some(&long)).unwrap();
+        assert!(lab.contains("字") && lab.contains("tok"), "{lab}");
+    }
+
+    #[test]
+    fn collapsed_tool_header_includes_result_size() {
+        let theme = Theme::default();
+        let mut msgs = fixture_messages();
+        msgs[1].tool_cards[0].result = Some("hello world result body".into());
+        msgs[1].tool_cards[0].done = true;
+        msgs[1].tool_cards[0].expanded = false;
+        let empty = std::collections::HashSet::new();
+        let empty_tr = std::collections::HashSet::new();
+        let (lines, _) =
+            render_messages(&msgs, &[], 80, &theme, 200, 0, &empty, &empty_tr);
+        let plain: String = lines.iter().map(line_plain).collect::<Vec<_>>().join("\n");
+        assert!(
+            plain.contains("字") && plain.contains("tok"),
+            "expected result size on collapsed tool header:\n{plain}"
+        );
+        assert!(plain.contains("reader") || plain.contains("▶"), "{plain}");
+    }
+
+    #[test]
     fn duration_and_short_id_match_ink() {
         assert_eq!(duration_str(Some(350)), "350ms");
         assert_eq!(duration_str(Some(1200)), "1.2s");
         assert_eq!(duration_str(Some(150_000)), "2m30s");
         assert_eq!(duration_str(Some(3_725_000)), "1h02m05s");
+        // 未知 vs 零耗时：None 留空，0 显示 0ms（别让瞬时完成看着像丢数据）
+        assert_eq!(duration_str(None), "");
+        assert_eq!(duration_str(Some(0)), "0ms");
+        assert_eq!(duration_str(Some(1)), "1ms");
+        assert_eq!(duration_str(Some(999)), "999ms");
+        assert_eq!(duration_str(Some(1000)), "1s");
+        assert_eq!(duration_str(Some(59_400)), "59.4s");
+        // 秒分支进位不越界：四舍五入到 60s 就走分钟格式，不显示「60s」
+        assert_eq!(duration_str(Some(59_960)), "1m00s");
+        assert_eq!(duration_str(Some(59_999)), "1m00s");
+        assert_eq!(duration_str(Some(60_000)), "1m00s");
+        assert_eq!(duration_str(Some(3_599_999)), "59m59s");
+        assert_eq!(duration_str(Some(3_600_000)), "1h00m00s");
         assert_eq!(short_id("muabc123xyz"), "abc123");
         assert_eq!(short_id("msg01"), "sg01");
         assert_eq!(loop_mark(3), "↺3");
     }
 
     #[test]
-    fn event_block_has_corners_and_approval_chip() {
+    fn timecode_unknown_is_placeholder_not_now() {
+        // 缺时间戳 → 占位；拿 now() 冒充会让历史行时间每帧跳动
+        assert_eq!(timecode(None), "--:--:--");
+        assert_eq!(timecode(Some(0)), "--:--:--");
+        // 有值 → 正常 HH:MM:SS，且同一输入恒定
+        let a = timecode(Some(1_700_000_000_000));
+        let b = timecode(Some(1_700_000_000_000));
+        assert_eq!(a, b, "同一时间戳必须稳定");
+        assert_eq!(a.len(), 8, "宽度与占位一致，布局不抖: {a:?}");
+        assert_eq!(a.matches(':').count(), 2, "HH:MM:SS 形状: {a:?}");
+    }
+
+    #[test]
+    fn event_block_has_corners_without_mid_approval_chip() {
         let theme = Theme::default();
         let line = render_event_block(80, &theme, "idle", false, "normal", 57200, 120, "", 0);
         let plain = line_plain(&line);
@@ -1301,7 +1384,11 @@ mod tests {
             plain.contains("◤ ○") && !plain.contains("◤  ○"),
             "no double space after corner: {plain}"
         );
-        assert!(plain.contains("NORMAL") && plain.contains("询问"), "approval: {plain}");
+        // 中间不再展示 NORMAL/AUTO 审批芯片（仅顶栏保留）
+        assert!(
+            !plain.contains("NORMAL") && !plain.contains("AUTO") && !plain.contains("YOLO"),
+            "no mid approval chip: {plain}"
+        );
         assert!(plain.contains('↑') && plain.contains('↓'), "tokens: {plain}");
     }
 
@@ -1336,6 +1423,7 @@ mod tests {
             content: "compacted".into(),
             ts: Some(1),
             detail: Some("line1\nline2\nline3".into()),
+            action: None,
         };
         let empty = std::collections::HashSet::new();
         let empty_tr = std::collections::HashSet::new();

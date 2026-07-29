@@ -4,7 +4,7 @@
   "role": "tester",
   "scope": "subagent",
   "subagent_kind": "task",
-  "description": "测试员子 Agent：编写和运行测试。能读文件、写测试文件、执行测试命令。适合「给这个函数写测试」「跑一下测试看通不通过」等测试任务。",
+  "description": "测试员子 Agent：编写/运行单元与集成测试，必要时用浏览器做页面或 E2E 核对。能写测试文件、跑命令、use_browser。不修被测业务代码。",
   "status": "active",
   "round_limit": 25,
   "max_retries": 8,
@@ -22,6 +22,7 @@
     "grep",
     "find_code",
     "use_terminal",
+    "use_browser",
     "todo_finish"
   ],
   "list_in_manager": true,

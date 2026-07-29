@@ -30,7 +30,15 @@ import {
 import { spawnSync, execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { platform, arch, homedir, tmpdir } from "node:os";
+import { platform as osPlatform, arch as osArch, homedir, tmpdir } from "node:os";
+
+/**
+ * 交叉打包：MAOU_TARGET_PLATFORM / MAOU_TARGET_ARCH 指定目标平台（默认本机）。
+ */
+const platform = () => process.env.MAOU_TARGET_PLATFORM || osPlatform();
+const arch = () => process.env.MAOU_TARGET_ARCH || osArch();
+/** 目标 ≠ 本机时不能执行下载来的二进制 */
+const CROSS = platform() !== osPlatform() || arch() !== osArch();
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 
@@ -174,8 +182,8 @@ function extractArchive(archivePath, outDir) {
   mkdirSync(outDir, { recursive: true });
   const lower = archivePath.toLowerCase();
   if (lower.endsWith(".zip")) {
-    // try powershell Expand-Archive / unzip / tar
-    if (platform() === "win32") {
+    // 解压是**宿主**操作，按 osPlatform 选工具（交叉打包时 target 可能是 win32 但宿主不是）
+    if (osPlatform() === "win32") {
       const r = spawnSync(
         "powershell.exe",
         [
@@ -305,6 +313,10 @@ async function main() {
     } catch (e) {
       console.warn(`[ensure-dcg] 复制到 ${d} 失败: ${e.message || e}`);
     }
+  }
+  if (CROSS) {
+    console.log(`[ensure-dcg] 完成: ${primary} (交叉目标 ${platform()}/${arch()}，跳过运行校验)`);
+    return;
   }
   const ver = execFileSync(primary, ["--version"], {
     encoding: "utf-8",

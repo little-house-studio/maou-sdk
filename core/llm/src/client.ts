@@ -80,6 +80,15 @@ export type LLMPostLogger = (record: import("./post-logger.js").LLMPostLogRecord
 
 // extractUsageFromEvent 已拆到 usage-extractor.ts（顶部 import）
 
+/**
+ * ms → 秒，保留一位小数。
+ * 整数秒四舍五入会把 400ms 的首字延迟记成「0 秒」，日志里看着像没测到。
+ * 精确值仍在 `firstOutputMs` / `timing.firstByteMs`。
+ */
+function secondsOneDp(ms: number): number {
+  return Math.round(ms / 100) / 10;
+}
+
 
 export interface LLMClientOptions {
   /** 兼容旧回调：自动记录每次 LLM 调用的原始请求/响应 */
@@ -516,7 +525,7 @@ export class LLMClient {
           if (ev.thinking) reasoningFallbackUsed = true;
           if ((ev.delta || ev.thinking) && firstOutputMs === null) {
             firstOutputMs = Date.now() - startedAt;
-            firstOutputSeconds = Math.round(firstOutputMs / 1000);
+            firstOutputSeconds = secondsOneDp(firstOutputMs);
           }
           if (ev.delta || ev.thinking || ev.finishReason) {
             yield {
@@ -584,7 +593,7 @@ export class LLMClient {
           const event = adapter.parseStreamEvent(bedrockData, toolChunks);
           if ((event.delta || event.thinking) && firstOutputMs === null) {
             firstOutputMs = Date.now() - startedAt;
-            firstOutputSeconds = Math.round(firstOutputMs / 1000);
+            firstOutputSeconds = secondsOneDp(firstOutputMs);
           }
           responseBody += event.delta;
           if (event.thinking) reasoningContent += event.thinking;
@@ -658,7 +667,7 @@ export class LLMClient {
       reasoningFallbackUsed = parsed.usedReasoning;
       if (responseBody || toolCalls.length > 0) {
         firstOutputMs = Date.now() - startedAt;
-        firstOutputSeconds = Math.round(firstOutputMs / 1000);
+        firstOutputSeconds = secondsOneDp(firstOutputMs);
       }
       accumulatedUsage = data.usage as LLMUsage | null;
       yield {
@@ -794,7 +803,7 @@ export class LLMClient {
         if (ev.thinking) reasoningFallbackUsed = true;
         if ((ev.delta || ev.thinking) && firstOutputMs === null) {
           firstOutputMs = Date.now() - startedAt;
-          firstOutputSeconds = Math.round(firstOutputMs / 1000);
+          firstOutputSeconds = secondsOneDp(firstOutputMs);
         }
         if (ev.usage) {
           if (!accumulatedUsage) accumulatedUsage = {};
@@ -814,7 +823,7 @@ export class LLMClient {
           const event = adapter.parseStreamEvent(bedrockData, toolChunks);
           if ((event.delta || event.thinking) && firstOutputMs === null) {
             firstOutputMs = Date.now() - startedAt;
-            firstOutputSeconds = Math.round(firstOutputMs / 1000);
+            firstOutputSeconds = secondsOneDp(firstOutputMs);
           }
           responseBody += event.delta;
           if (event.thinking) reasoningContent += event.thinking;
@@ -846,7 +855,7 @@ export class LLMClient {
       reasoningFallbackUsed = parsed.usedReasoning;
       if (responseBody || toolCalls.length > 0) {
         firstOutputMs = Date.now() - startedAt;
-        firstOutputSeconds = Math.round(firstOutputMs / 1000);
+        firstOutputSeconds = secondsOneDp(firstOutputMs);
       }
       accumulatedUsage = (data.usage as LLMUsage) ?? null;
     }
@@ -966,10 +975,14 @@ export class LLMClient {
 
   /** 判断某状态码/错误是否可重试（先按策略，再让 onError 覆盖） */
   private _decideRetry(ctx: ErrorHookContext): "retry" | "fail" | { delayMs: number } {
+    // 上下文溢出：原样重试毫无意义（payload 没变），必须 fail 给上层压缩
+    if (ctx.category === "context_overflow") return "fail";
     if (this._onError) return this._onError(ctx);
     // 默认：retryableStatuses 命中或网络错误 → retry；其余 fail
     const e = ctx.error;
     if ("status" in e) {
+      // 400/422 且已分类为 overflow 上面已 return；其它 400 不重试
+      if (e.status === 400 || e.status === 422) return "fail";
       return this._retry.retryableStatuses.includes(e.status) ? "retry" : "fail";
     }
     return ctx.category === "network" || ctx.category === "timeout" ? "retry" : "fail";

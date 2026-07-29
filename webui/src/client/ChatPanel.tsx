@@ -105,9 +105,8 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
           const name =
             tool?.name ?? String(ev.name ?? (ev as { tool_name?: string }).tool_name ?? "tool");
           const params = tool?.parameters ?? (ev.parameters as Record<string, unknown>) ?? {};
-          const cmd = typeof params.command === "string" ? params.command : "";
           const desc =
-            typeof params.description === "string" ? params.description : "";
+            typeof params.description === "string" ? params.description.trim() : "";
           // 仅当显式传入 id（后台复用会话）时 tool_call 阶段就有 terminal id
           const tid =
             typeof params.id === "string"
@@ -116,10 +115,11 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
                 ? params.terminal_id
                 : undefined;
           const isTerm = name === "use_terminal" || name === "bash";
+          // 折叠态只展示任务简介 description；详细参数不在此行刷
           append({
             id: uid(),
             role: "tool",
-            text: `▶ ${name}${desc ? ` · ${desc}` : ""}${cmd ? `\n$ ${cmd.slice(0, 120)}` : ""}`,
+            text: `▶ ${name}${desc ? ` · ${desc}` : ""}`,
             terminalId: isTerm ? tid : undefined,
             agentName: defaultAgent,
           });

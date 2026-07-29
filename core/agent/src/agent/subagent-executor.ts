@@ -197,6 +197,9 @@ export class SubagentExecutor implements SubagentExecutorLike {
   private _defaultMaxRecursionDepth: number;
   private _defaultSoftRequestBudget: number;
   private _defaultMaxRuntimeMs: number;
+  /** 最近 fork 结果缓存（taskId → result），供 agent_message output/list */
+  private _resultCache = new Map<string, SubagentResultLike>();
+  private static readonly RESULT_CACHE_MAX = 50;
   /** 父 Agent 的 MCP 工具列表（P2-4） */
   private _parentMcpTools: McpToolDescriptor[];
   /** MCP 工具调用转发器（P2-4） */
@@ -392,7 +395,33 @@ export class SubagentExecutor implements SubagentExecutorLike {
    * @param taskDesc 任务描述（自然语言，子 Agent 的输入）
    * @param options fork 选项（forkMode/agentName/configOverrides/递归深度/预算/超时/进度回调）
    */
+  /** 取缓存的 fork 结果（agent_message action=output） */
+  getResult(taskId: string): SubagentResultLike | null {
+    return this._resultCache.get(taskId) ?? null;
+  }
+
+  /** 列出缓存的 fork 结果 */
+  listResults(): SubagentResultLike[] {
+    return [...this._resultCache.values()].reverse();
+  }
+
+  private _rememberResult(result: SubagentResultLike): SubagentResultLike {
+    this._resultCache.set(result.taskId, result);
+    // 粗略 LRU：超上限删最早插入的
+    while (this._resultCache.size > SubagentExecutor.RESULT_CACHE_MAX) {
+      const first = this._resultCache.keys().next().value;
+      if (first == null) break;
+      this._resultCache.delete(first);
+    }
+    return result;
+  }
+
   async fork(taskId: string, taskDesc: string, options?: ForkOptions): Promise<SubagentResultLike> {
+    const result = await this._forkImpl(taskId, taskDesc, options);
+    return this._rememberResult(result);
+  }
+
+  private async _forkImpl(taskId: string, taskDesc: string, options?: ForkOptions): Promise<SubagentResultLike> {
     const parentSessionId = this.parentSessionId;
     const subSessionId = this._idFactory(parentSessionId, taskId);
     const start = Date.now();

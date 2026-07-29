@@ -77,7 +77,7 @@ export function createSubagentDelegateTool(
 
       const taskId = `delegate-${subagentName}-${Date.now().toString(36)}`;
       try {
-        // 从 agent.json 读取 kind / path / tools 等（explore/reviewer/tester 模板已带 subagent_kind）
+        // 从 agent.json 读取 kind / path / tools 等（explore/research/reviewer/tester 等模板已带 subagent_kind）
         const kindOpts = loadSubagentKindOptionsFromCtx(ctx, subagentName, "task");
         const result = await exec.fork(taskId, task, {
           // 委托给文件即子 Agent：用独立 agent 配置

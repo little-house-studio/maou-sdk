@@ -38,6 +38,8 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        // 任意按键 = 用户在场 → 停 Node 卡住长铃
+        self.emit_user_activity("key");
         // full editor mode — expanded to match InputBar + FSE basics
         if self.full_editor {
             self.on_key_full_editor(key);
@@ -330,6 +332,13 @@ impl App {
                     emit(&OutMsg::OpenFullEditor);
                     return;
                 }
+                // Ctrl+R：重试最近一次 API/系统错误对应的用户消息
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    if !self.streaming {
+                        emit(&OutMsg::Retry { event_id: None });
+                    }
+                    return;
+                }
                 KeyCode::Char('g') | KeyCode::Char('\\') => {
                     let dump = self.screen_dump_text();
                     let already = if let Some(msg) = mouse::format_screen_dump_toast(&dump) {
@@ -369,6 +378,10 @@ impl App {
             if self.sel.active.is_some() || self.sel.drag.is_some() {
                 self.sel.clear();
                 set_pointer_shape("default");
+                return;
+            }
+            // Goal 详情是本地浮层：Esc 先收它，不该穿到 Node 去中断任务
+            if self.close_goal_detail() {
                 return;
             }
             emit(&OutMsg::Escape);

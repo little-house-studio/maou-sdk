@@ -120,6 +120,14 @@ impl App {
         let col = m.column;
         let row = m.row;
         self.sel.tick_phase();
+        // 键鼠在场即停卡住长铃（move 更狠节流）
+        let act = match m.kind {
+            MouseEventKind::Moved => "move",
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => "scroll",
+            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) => "mouse",
+            _ => "mouse",
+        };
+        self.emit_user_activity(act);
 
         // Chat scrollbar drag takes priority while active
         if self.chat_sb_drag.is_some() {
@@ -430,6 +438,25 @@ impl App {
                         self.sel.clear();
                     }
                 }
+                // Goal 详情浮层内滚轮 → 翻计划，不带动身后的对话
+                if let Some(dr) = self.goal_detail_rect {
+                    if point_in_rect(col, row, dr) {
+                        let plan_lines = self
+                            .chrome
+                            .supervisor
+                            .as_ref()
+                            .and_then(|s| s.plan.as_ref())
+                            .map(|p| p.lines().count())
+                            .unwrap_or(0);
+                        let max = plan_lines.saturating_sub(8);
+                        self.goal_detail_scroll = if up {
+                            self.goal_detail_scroll.saturating_sub(1)
+                        } else {
+                            (self.goal_detail_scroll + 1).min(max)
+                        };
+                        return;
+                    }
+                }
                 let over_comp = self
                     .completion_rect
                     .map(|cr| point_in_rect(col, row, cr))
@@ -544,19 +571,32 @@ impl App {
                         return;
                     }
                 }
+                // Goal 详情浮层：先判关闭按钮，再判按钮行；点框内空白不穿透到聊天
+                if let Some(cr) = self.goal_detail_close {
+                    if point_in_rect(col, row, cr) {
+                        self.close_goal_detail();
+                        return;
+                    }
+                }
+                if let Some(dr) = self.goal_detail_rect {
+                    if point_in_rect(col, row, dr) {
+                        if let Some((_, act)) = self
+                            .goal_action_hits
+                            .iter()
+                            .find(|(y, _)| *y == row)
+                            .cloned()
+                        {
+                            emit(&OutMsg::GoalAction { action: act });
+                            // 操作后收起详情：状态即将变化，留着旧内容反而误导
+                            self.close_goal_detail();
+                        }
+                        return;
+                    }
+                }
+                // Goal chip：点一下开/关详情（grok: hit_goal_status → toggle）
                 if let Some(gr) = self.goal_rect {
                     if point_in_rect(col, row, gr) {
-                        if let Some(sup) = &self.chrome.supervisor {
-                            match sup.state.as_str() {
-                                "confirming_plan" => emit(&OutMsg::GoalAction {
-                                    action: "confirm_plan".into(),
-                                }),
-                                "confirming" => emit(&OutMsg::GoalAction {
-                                    action: "confirm_pass".into(),
-                                }),
-                                _ => {}
-                            }
-                        }
+                        self.toggle_goal_detail();
                         return;
                     }
                 }
@@ -650,10 +690,26 @@ impl App {
                                 return;
                             }
                         }
-                        // Ink SystemEventRow: click banner toggles local detail open
+                        // Ink SystemEventRow: 点击展开详情；可重试事件在已展开时再点 → 重试
                         for se in &self.system_event_hits {
                             if se.line_idx == line_idx {
                                 let id = se.event_id.clone();
+                                let retryable = self
+                                    .system_events
+                                    .iter()
+                                    .find(|e| e.id == id)
+                                    .map(|e| {
+                                        e.action.as_deref() == Some("retry")
+                                            || e.kind == "env_error"
+                                            || e.kind == "retry_fail"
+                                    })
+                                    .unwrap_or(false);
+                                if retryable && self.expanded_system_events.contains(&id) {
+                                    emit(&OutMsg::Retry {
+                                        event_id: Some(id),
+                                    });
+                                    return;
+                                }
                                 if self.expanded_system_events.contains(&id) {
                                     self.expanded_system_events.remove(&id);
                                 } else {
@@ -1191,10 +1247,20 @@ impl App {
                 }
             }
             set_pointer_shape("pointer");
+        } else if self
+            .goal_detail_close
+            .map(|r| point_in_rect(col, row, r))
+            == Some(true)
+        {
+            id = Some("goal_close".into());
+            set_pointer_shape("pointer");
+        } else if self.goal_rect.map(|r| point_in_rect(col, row, r)) == Some(true) {
+            id = Some("goal_chip".into());
+            set_pointer_shape("pointer");
         } else if self.back_to_bottom_y == Some(row)
             || self.jump_prev_y == Some(row)
             || self.overlay_rect.map(|r| point_in_rect(col, row, r)) == Some(true)
-            || self.goal_rect.map(|r| point_in_rect(col, row, r)) == Some(true)
+            || self.goal_detail_rect.map(|r| point_in_rect(col, row, r)) == Some(true)
             || self.approval_rect.map(|r| point_in_rect(col, row, r)) == Some(true)
             || self.completion_rect.map(|r| point_in_rect(col, row, r)) == Some(true)
             || self.event_rect.map(|r| point_in_rect(col, row, r)) == Some(true)

@@ -135,7 +135,18 @@ export class BrowserTool extends Tool {
     if (!action) return createToolResponse(false, '❌ use_browser 缺少必填参数 action（操作类型）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "open", "url": "https://example.com"}}\n可选 action: open, state, find, screenshot, click, type, fill, extract 等。action=\'help\' 查看所有可用操作。请用正确的 action 参数重试。');
 
     if (!opencli.isAvailable()) {
-      return createToolResponse(false, "opencli 未安装（提示：请先安装 opencli 并加入 PATH）。");
+      return createToolResponse(
+        false,
+        "opencli 未安装或未在 PATH 中。\n\n" +
+          "【安装与诊断】\n" +
+          "  npm i -g @jackwener/opencli   # Node ≥ 21 推荐\n" +
+          "  opencli doctor               # 检查 daemon + 扩展 + Chrome\n" +
+          "  which opencli\n\n" +
+          "【Browser Bridge】\n" +
+          "  Chrome 扩展：https://chromewebstore.google.com/detail/opencli/ildkmabpimmkaediidaifkhjpohdnifk\n" +
+          "  保持 Chrome 已打开且扩展已连接；冲突时可暂时关闭 1Password 等占用 CDP 的扩展。\n" +
+          "静态页面只读可用 reader，不必启动浏览器。",
+      );
     }
 
     const session = String(params.session ?? "default").trim();
@@ -292,7 +303,8 @@ export class BrowserTool extends Tool {
       };
       return this.wrap(await opencli.run(session, action, shortcutArgs, { cwd }));
     } catch (e) {
-      return createToolResponse(false, `browser 执行失败: ${errToString(e)}`);
+      const raw = `browser 执行失败: ${errToString(e)}`;
+      return createToolResponse(false, this.enrichBrowserError(raw, false));
     }
   }
 
@@ -302,7 +314,31 @@ export class BrowserTool extends Tool {
     if (r.imageBase64) {
       extras.images = [{ mimeType: "image/png", data: r.imageBase64 }];
     }
-    return createToolResponse(r.ok, r.message, extras);
+    return createToolResponse(r.ok, this.enrichBrowserError(r.message, r.ok), extras);
+  }
+
+  /** Bridge / 扩展未连接时补安装指引 */
+  private enrichBrowserError(message: string, ok: boolean): string {
+    if (ok || !message) return message;
+    const m = message.toLowerCase();
+    const bridgeLike =
+      m.includes("bridge") ||
+      m.includes("未连接") ||
+      m.includes("not connected") ||
+      m.includes("extension") ||
+      m.includes("cdp") ||
+      (m.includes("chrome") &&
+        (m.includes("fail") || m.includes("error") || m.includes("unable")));
+    if (!bridgeLike) return message;
+    return (
+      message +
+      "\n\n【Browser Bridge 排查】\n" +
+      "1. `opencli doctor` 看 daemon / 扩展 / Chrome 是否就绪。\n" +
+      "2. 安装/启用扩展：https://chromewebstore.google.com/detail/opencli/ildkmabpimmkaediidaifkhjpohdnifk\n" +
+      "3. Chrome 保持打开；在 chrome://extensions 重新加载 OpenCLI；冲突可关 1Password 等 CDP 扩展。\n" +
+      "4. 未装 CLI：`npm i -g @jackwener/opencli` 后 `which opencli`。\n" +
+      "5. 静态页面只读可用 reader，不必启动浏览器。"
+    );
   }
 }
 

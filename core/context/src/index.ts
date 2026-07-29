@@ -71,6 +71,12 @@ export {
   DEFAULT_AGENT_ROUND_LIMIT,
   DEFAULT_LOOP_THRESHOLD,
   DEFAULT_PRIORITY_CONFIG,
+  MICRO_TRIGGER_PERCENT,
+  SUMMARY_TRIGGER_PERCENT,
+  ARCHIVE_TRIGGER_PERCENT,
+  ACTIVE_WINDOW_PERCENT,
+  ACTIVE_WINDOW_MIN_MESSAGES,
+  MAX_AUTO_CHECKPOINTS,
 } from "./constants.js";
 
 // 消息构建
@@ -111,7 +117,13 @@ export type {
 } from "./session-event.js";
 
 // 上下文压缩
-export { maybeCompress, compressMaou, assignTaskIds } from "./compressor.js";
+export {
+  maybeCompress,
+  compressMaou,
+  assignTaskIds,
+  activeWindowBoundary,
+  activeWindowSeqIds,
+} from "./compressor.js";
 export type { Summarizer, CompressOptions, CompressMaouResult, CompressionStage, CompressionResult, TaskSummary } from "./compressor.js";
 
 // Token 估算
@@ -126,9 +138,33 @@ export {
   resolveContextUsedTokens,
 } from "./token-estimate.js";
 
+// 超窗紧急截断 / 剥多模态
+export {
+  emergencyTrimMessages,
+  estimateMessagesTokens,
+  stripNonTextContent,
+} from "./emergency-trim.js";
+export type { EmergencyTrimResult } from "./emergency-trim.js";
+
 // ContextEngine（编排压缩 + 持久化闭环）
 export { ContextEngine } from "./context-engine.js";
-export type { ContextEngineOptions, CompressReport } from "./context-engine.js";
+export type {
+  ContextEngineOptions,
+  CompressReport,
+  SeedWorkingSetResult,
+} from "./context-engine.js";
+
+// Harness 工作集（LLM 压缩上下文；含 B1 对齐 meta）
+export {
+  HarnessSessionStore,
+  sessionMessageFingerprint,
+  isHarnessMetaAligned,
+} from "./harness-session-store.js";
+export type {
+  HarnessSessionStoreOptions,
+  HarnessWorkingSetMeta,
+  HarnessCurrentRecord,
+} from "./harness-session-store.js";
 
 // 注：compileDynamicContext / formatAgentStatus 已上移到 @little-house-studio/agent（需要 AgentRegistry）；
 //     SkillScanner / SkillContextManager 已下放到 @little-house-studio/tools。
@@ -144,10 +180,6 @@ export type { ProjectContext, ProjectContextMode } from "./project-context.js";
 // 平台上下文（插件可注册平台特定上下文）
 export { PlatformContextRegistry, platformContextRegistry, buildPlatformContext } from "./platform-context.js";
 export type { PlatformContextRequest, PlatformContextProvider, BuildPlatformContextOptions } from "./platform-context.js";
-
-// Harness Session 存储（双份：当前上下文 + 压缩前备份）
-export { HarnessSessionStore } from "./harness-session-store.js";
-export type { HarnessSessionStoreOptions } from "./harness-session-store.js";
 
 // 任务块存储
 export { TaskSessionStore } from "./task-session-store.js";

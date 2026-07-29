@@ -80,11 +80,32 @@ export function userBinPath(): string {
   return join(userBinDir(), ratatuiBinaryName());
 }
 
+/**
+ * bundle 根（含 RELEASE.json）。预编译包里 TUI 在 <root>/vendor/bin。
+ * 启动器会设 MAOU_BUNDLE_ROOT；直接 node dist/index.js 时向上探测兜底。
+ */
+function bundleVendorBin(): string | null {
+  const fromEnv = process.env.MAOU_BUNDLE_ROOT?.trim();
+  if (fromEnv && existsSync(join(fromEnv, "RELEASE.json"))) {
+    return join(fromEnv, "vendor", "bin");
+  }
+  let dir = packageCliRoot();
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(join(dir, "RELEASE.json"))) return join(dir, "vendor", "bin");
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
 /** 候选目录列表（去重） */
 function searchDirs(): string[] {
   const cliRoot = packageCliRoot();
   const monoCli = findMonorepoCliRoot(cliRoot) ?? findMonorepoCliRoot(process.cwd());
   const dirs = [
+    // 预编译包自带的优先于用户全局，避免跨版本混用
+    bundleVendorBin() ?? "",
     userBinDir(),
     join(cliRoot, "tui-ratatui", "target", "release"),
     join(cliRoot, "tui-ratatui", "target", "debug"),
@@ -234,8 +255,29 @@ function installToUserBin(src: string, log: (m: string) => void): string {
 }
 
 /**
- * 解析或尝试编译。
- * MAOU_TUI_NO_BUILD=1 时不自动编译。
+ * 预编译包：从 GitHub Release 下载 TUI 二进制到 <root>/vendor/bin（不编译）。
+ */
+function tryDownloadRatatuiBinary(log: (m: string) => void): string | null {
+  const vendorBin = bundleVendorBin();
+  if (!vendorBin) return null;
+  const root = resolve(vendorBin, "..", "..");
+  const script = join(root, "scripts", "ensure-maou-tui.mjs");
+  if (!existsSync(script)) return null;
+  log("[maou] 下载 maou-tui-ratatui 预编译二进制…");
+  const r = spawnSync(process.execPath, [script, "--force"], {
+    cwd: root,
+    stdio: "inherit",
+    env: { ...process.env, MAOU_TUI_DEST: vendorBin },
+    windowsHide: true,
+  });
+  if (r.status !== 0) return null;
+  const p = join(vendorBin, ratatuiBinaryName());
+  return isRunnable(p) ? p : null;
+}
+
+/**
+ * 解析 → 下载（预编译包）→ 编译（源码树）。
+ * MAOU_TUI_NO_BUILD=1 时不自动编译（下载仍允许）。
  */
 export function ensureRatatuiBinary(opts?: {
   explicit?: string;
@@ -244,6 +286,12 @@ export function ensureRatatuiBinary(opts?: {
 }): string | null {
   const found = resolveRatatuiBinary(opts?.explicit);
   if (found) return found;
+  const log = opts?.log ?? ((m: string) => process.stderr.write(`${m}\n`));
+
+  // 预编译包里没有 Rust 源码，下载是唯一正确路径
+  const downloaded = tryDownloadRatatuiBinary(log);
+  if (downloaded) return downloaded;
+
   const allowBuild =
     opts?.tryBuild !== false && process.env.MAOU_TUI_NO_BUILD !== "1";
   if (!allowBuild) return null;

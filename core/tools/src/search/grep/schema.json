@@ -22,7 +22,11 @@
       },
       "output_mode": {
         "type": "string",
-        "enum": ["content", "files_with_matches", "count"],
+        "enum": [
+          "content",
+          "files_with_matches",
+          "count"
+        ],
         "description": "content(默认)=文件:行号:内容；files_with_matches=仅路径；count=计数。"
       },
       "ignore_case": {
@@ -40,9 +44,14 @@
         "minimum": 1,
         "maximum": 500,
         "description": "最多返回行数。默认 250。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
     "required": [
+      "description",
       "pattern",
       "reason"
     ],

@@ -143,7 +143,7 @@ export interface ToolContext {
    * 文件工具走 resolveToolPath(ctx, path) 强制执行；无此字段时等同旧 single-root 行为。
    */
   pathGuard?: {
-    mode: "inherit" | "hard" | "audit"
+    mode: "inherit" | "hard" | "audit" | "open"
     roots: string[]
     auditRoots?: string[]
     /** 禁止访问的路径段（整段匹配）；防读 gold/management 等 */
@@ -353,6 +353,10 @@ export interface SubagentExecutorLike {
   fork(taskId: string, task: string, options?: ForkOptions): Promise<SubagentResultLike>
   /** 并发 fork 一层 task（同层可并行）。 */
   forkLayer(tasks: Array<{ id: string; desc: string }>, options?: ForkOptions): Promise<SubagentResultLike[]>
+  /** 可选：按 taskId 取最近一次 fork 结果（供 agent_message output）。 */
+  getResult?(taskId: string): SubagentResultLike | null
+  /** 可选：列出最近缓存的 fork 结果。 */
+  listResults?(): SubagentResultLike[]
 }
 
 /**

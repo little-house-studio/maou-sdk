@@ -31,9 +31,14 @@
       "session": {
         "type": "string",
         "description": "浏览器会话名称"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
     "required": [
+      "description",
       "action",
       "reason"
     ],

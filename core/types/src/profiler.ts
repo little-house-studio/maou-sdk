@@ -93,10 +93,16 @@ export class Profiler {
     }
   }
 
-  /** 直接登记一段已知耗时（用于桥接外层已测得的 timing，如 LLM result.timing）。 */
+  /**
+   * 直接登记一段已知耗时（用于桥接外层已测得的 timing，如 LLM result.timing）。
+   *
+   * 该 span 起点按「现在往前推 durationMs」还原；若比 profiler 起点还早（外层计时
+   * 早于本 profiler 创建），钳到 0，避免时间线出现负的 startMs。
+   */
   record(name: string, durationMs: number, meta?: Record<string, unknown>): void {
-    if (!this.enabled || !(durationMs >= 0)) return;
-    this.records.push({ name, startMs: now() - this.t0 - durationMs, durationMs, meta });
+    if (!this.enabled || !Number.isFinite(durationMs) || durationMs < 0) return;
+    const startMs = Math.max(0, now() - this.t0 - durationMs);
+    this.records.push({ name, startMs, durationMs, meta });
   }
 
   /** 自起点至今的墙钟总耗时（ms）。 */
@@ -138,7 +144,10 @@ export class Profiler {
     const lines: string[] = [`⏱ Profile [${rep.label}] total=${rep.totalMs}ms, spans=${rep.records.length}`];
     const nameW = Math.min(28, Math.max(12, ...rep.spans.map((s) => s.name.length)));
     for (const s of rep.spans) {
-      const bar = "█".repeat(Math.round(s.pct / 5));
+      // pct 可以 >100%（span 嵌套：llm_call ⊃ llm_first_byte；并行工具耗时累加），
+      // 直接 repeat(pct/5) 会拉出上百格把表撑烂 → bar 封顶 20 格，超出用 » 标记
+      const filled = Math.min(20, Math.round(s.pct / 5));
+      const bar = "█".repeat(filled) + (s.pct > 100 ? "»" : "");
       lines.push(
         `  ${s.name.padEnd(nameW)} ${String(s.totalMs).padStart(7)}ms ${String(s.pct).padStart(5)}% ×${String(s.count).padStart(2)} avg=${s.avgMs}ms ${bar}`,
       );

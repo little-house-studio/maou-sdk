@@ -17,6 +17,15 @@ import {
   galleryVerticalPads,
 } from "./load-art.js";
 import { maouLogoLines } from "./maou-logo.js";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** cli/package.json 的 version —— logo 渲染的就是它 */
+function cliPackageVersion(): string {
+  const pkg = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+  return (JSON.parse(readFileSync(pkg, "utf-8")).version as string).trim();
+}
 
 describe("gallery", () => {
   it("三档尺寸断点（按画高预算，含 logo/铭牌开销）", () => {
@@ -168,8 +177,9 @@ describe("gallery", () => {
     expect(a[2]!.startsWith("████  ██  ████")).toBe(true);
     expect(a[2]).toMatch(/│\s+│$/);
     // 第四行：方印 + │ v <version> │
+    // 断言「渲染的是包真实版本」，不写死版本号 —— 否则每次发版都要改测试
     expect(a[3]).toMatch(/v\s*\S+/);
-    expect(a[3]).toContain("0.1a");
+    expect(a[3]).toContain(cliPackageVersion());
     // 底行：方印 + 框底
     expect(a[4]).toMatch(/└─+┘$/);
   });

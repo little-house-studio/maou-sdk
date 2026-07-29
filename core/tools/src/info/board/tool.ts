@@ -301,7 +301,7 @@ export class BoardTool extends Tool {
         if (!value) return createToolResponse(false, "add 需要提供 value");
         const vtype = String(params.type ?? "").trim();
         const owner = String(params.owner ?? "").trim();
-        const desc = String(params.description ?? "").trim();
+        const desc = String(params.purpose ?? params.description ?? "").trim();
         const msg = store.add(scope, name, value, vtype, category, owner, desc, ctx.sessionId);
         return createToolResponse(true, msg);
       }
@@ -310,7 +310,12 @@ export class BoardTool extends Tool {
         const value = params.value != null ? String(params.value).trim() : null;
         const vtype = params.type != null ? String(params.type).trim() : null;
         const owner = params.owner != null ? String(params.owner).trim() : null;
-        const desc = params.description != null ? String(params.description).trim() : null;
+        const desc =
+          params.purpose != null
+            ? String(params.purpose).trim()
+            : params.description != null
+              ? String(params.description).trim()
+              : null;
         const msg = store.replace(scope, name, value, vtype, category || null, owner, desc);
         return createToolResponse(true, msg);
       }
@@ -319,7 +324,12 @@ export class BoardTool extends Tool {
         const value = params.value != null ? String(params.value).trim() : null;
         const vtype = params.type != null ? String(params.type).trim() : null;
         const owner = params.owner != null ? String(params.owner).trim() : null;
-        const desc = params.description != null ? String(params.description).trim() : null;
+        const desc =
+          params.purpose != null
+            ? String(params.purpose).trim()
+            : params.description != null
+              ? String(params.description).trim()
+              : null;
         const msg = store.edit(scope, name, value, vtype, category || null, owner, desc);
         return createToolResponse(true, msg);
       }

@@ -11,10 +11,16 @@
 
 import { createRequire } from "node:module";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { platform, homedir } from "node:os";
 import { findMonorepoRoot, findSdkGitRoot, resolveCliPackageRoot } from "./repo-root.js";
+import {
+  detectRuntime,
+  runtimeVersionLabel,
+  type InstallMode,
+  type RuntimeInfo,
+} from "./runtime-mode.js";
 import { resolveRatatuiBinary } from "../tui-bridge/resolve-binary.js";
 
 /**
@@ -123,6 +129,10 @@ export interface DepCheckResult {
   warnings: string[];
   cliRoot: string;
   monoRoot: string | null;
+  /** 安装形态：bundle（免构建预编译）/ monorepo（源码）/ standalone */
+  mode: InstallMode;
+  /** bundle 根，仅 mode==="bundle" 时非空 */
+  bundleRoot: string | null;
   distOk: boolean;
   tiers: CapabilityTier;
   details: {
@@ -142,6 +152,20 @@ export interface DepCheckResult {
 
 function log(msg: string): void {
   process.stderr.write(`${msg}\n`);
+}
+
+/**
+ * 修复提示。预编译包用户不该被告知去跑仓库脚本 —— 他们没有仓库，
+ * `maou doctor` 会用包内自带的同名脚本下载。
+ */
+function fixHint(rt: RuntimeInfo, script: string): string {
+  return rt.mode === "bundle" ? "maou doctor（自动下载）" : `node scripts/${script}`;
+}
+
+function installModeLabel(mode: InstallMode): string {
+  if (mode === "bundle") return "预编译包（免构建）";
+  if (mode === "monorepo") return "源码仓库（开发者）";
+  return "独立安装";
 }
 
 function commandOnPath(name: string): boolean {
@@ -206,31 +230,51 @@ function checkNodeVersion(): { ok: boolean; version: string } {
   return { ok: major >= 20, version };
 }
 
-function detectTerminalEngine(cliRoot: string, mono: string | null): { ok: boolean; detail: string } {
-  const teDir = mono ? join(mono, "terminal-engine") : null;
-  if (teDir && existsSync(join(teDir, "package.json"))) {
+/**
+ * terminal-engine 判定以「本平台 .node 真实存在」为准，而不是包能否 resolve。
+ * bundle 里引擎在 node_modules/@little-house-studio/terminal-engine 下。
+ */
+function detectTerminalEngine(rt: RuntimeInfo): { ok: boolean; detail: string } {
+  const dirs: string[] = [];
+  if (rt.bundleRoot) {
+    dirs.push(join(rt.bundleRoot, "node_modules", "@little-house-studio", "terminal-engine"));
+  }
+  if (rt.monoRoot) dirs.push(join(rt.monoRoot, "terminal-engine"));
+  try {
+    dirs.push(dirname(require.resolve("@little-house-studio/terminal-engine/package.json")));
+  } catch {
+    /* 包不可解析时靠上面两条 */
+  }
+
+  let sawPackage = false;
+  for (const d of dirs) {
+    if (!existsSync(join(d, "package.json"))) continue;
+    sawPackage = true;
     try {
-      const nodes = readdirSync(teDir).filter((f) => f.endsWith(".node"));
+      const nodes = readdirSync(d).filter((f) => f.endsWith(".node"));
       if (nodes.length) return { ok: true, detail: nodes.join(", ") };
-      return { ok: false, detail: "源码在但无 .node — scripts/build-native" };
     } catch {
-      return { ok: false, detail: "无法读取 terminal-engine" };
+      /* 下一个候选 */
     }
   }
-  try {
-    require.resolve("@little-house-studio/terminal-engine");
-    return { ok: true, detail: "package resolvable" };
-  } catch {
-    return { ok: false, detail: "未构建 / 未安装" };
+  if (sawPackage) {
+    return {
+      ok: false,
+      detail:
+        rt.mode === "bundle"
+          ? "无 .node — maou doctor（下载预编译）"
+          : "源码在但无 .node — scripts/build-native",
+    };
   }
+  return { ok: false, detail: "未构建 / 未安装" };
 }
 
-function detectDcg(mono: string | null): { ok: boolean; detail: string } {
+function detectDcg(rt: RuntimeInfo): { ok: boolean; detail: string } {
   const name = platform() === "win32" ? "dcg.exe" : "dcg";
   const candidates = [
     process.env.MAOU_DCG_PATH,
     process.env.DCG_PATH,
-    mono ? join(mono, "vendor", "bin", name) : "",
+    rt.vendorBinDir ? join(rt.vendorBinDir, name) : "",
     join(homedir(), ".maou", "bin", name),
     join(homedir(), ".local", "bin", name),
   ].filter(Boolean) as string[];
@@ -240,13 +284,13 @@ function detectDcg(mono: string | null): { ok: boolean; detail: string } {
   if (commandOnPath("dcg") || commandOnPath("dcg.exe")) {
     return { ok: true, detail: "on PATH" };
   }
-  return { ok: false, detail: "缺失 — node scripts/ensure-dcg.mjs --user" };
+  return { ok: false, detail: `缺失 — ${fixHint(rt, "ensure-dcg.mjs --user")}` };
 }
 
-function detectRg(mono: string | null = null): { ok: boolean; detail: string } {
+function detectRg(rt: RuntimeInfo): { ok: boolean; detail: string } {
   const names = platform() === "win32" ? ["rg.exe", "rg"] : ["rg"];
   const dirs = [
-    mono ? join(mono, "vendor", "bin") : "",
+    rt.vendorBinDir ?? "",
     join(homedir(), ".maou", "bin"),
     join(homedir(), ".local", "bin"),
   ].filter(Boolean) as string[];
@@ -259,13 +303,13 @@ function detectRg(mono: string | null = null): { ok: boolean; detail: string } {
   if (commandOnPath("rg") || commandOnPath("rg.exe")) {
     return { ok: true, detail: "on PATH" };
   }
-  return { ok: false, detail: "未安装（grep 降级为 Node.js）— node scripts/ensure-rg.mjs" };
+  return { ok: false, detail: `未安装（grep 降级为 Node.js）— ${fixHint(rt, "ensure-rg.mjs")}` };
 }
 
-function detectSqry(mono: string | null = null): { ok: boolean; detail: string } {
+function detectSqry(rt: RuntimeInfo): { ok: boolean; detail: string } {
   const names = platform() === "win32" ? ["sqry.exe", "sqry"] : ["sqry"];
   const dirs = [
-    mono ? join(mono, "vendor", "bin") : "",
+    rt.vendorBinDir ?? "",
     join(homedir(), ".cargo", "bin"),
     join(homedir(), ".maou", "bin"),
     join(homedir(), ".local", "bin"),
@@ -279,7 +323,7 @@ function detectSqry(mono: string | null = null): { ok: boolean; detail: string }
   if (commandOnPath("sqry") || commandOnPath("sqry.exe")) {
     return { ok: true, detail: "on PATH" };
   }
-  return { ok: false, detail: "未安装（find_code 不可用）— node scripts/ensure-sqry.mjs" };
+  return { ok: false, detail: `未安装（find_code 不可用）— ${fixHint(rt, "ensure-sqry.mjs")}` };
 }
 
 /** 尝试 require("node-pty")，验证原生模块加载成功（不只是包是否 resolve） */
@@ -305,16 +349,69 @@ function detectLspTS(): { ok: boolean; detail: string } {
 }
 
 /** 检测 ddgr（可选搜索 CLI，未安装时 search_internet 走 HTTP fallback） */
-function detectDdgr(): { ok: boolean; detail: string } {
-  if (commandOnPath("ddgr") || commandOnPath("ddgr.exe")) {
-    return { ok: true, detail: "on PATH" };
+/** Python >= 3.6（ddgr 是 Python 脚本，没有解释器就是装了也跑不动） */
+function detectPython(): { ok: boolean; detail: string } {
+  const names = platform() === "win32" ? ["python", "py", "python3"] : ["python3", "python"];
+  for (const n of names) {
+    const r = spawnSync(n, ["-c", "import sys; print(sys.version_info[0], sys.version_info[1])"], {
+      encoding: "utf-8",
+      timeout: 8000,
+      windowsHide: true,
+    });
+    if (r.status === 0 && r.stdout) {
+      const [maj, min] = r.stdout.trim().split(/\s+/).map(Number);
+      if (maj! > 3 || (maj === 3 && min! >= 6)) {
+        return { ok: true, detail: `${n} ${maj}.${min}` };
+      }
+    }
   }
-  return { ok: false, detail: "未安装（搜索走 HTTP fallback）" };
+  return { ok: false, detail: "未找到 Python >= 3.6" };
 }
 
-function detectGit(mono: string | null): string {
+function detectDdgr(rt: RuntimeInfo): { ok: boolean; detail: string } {
+  const isWin = platform() === "win32";
+  const names = isWin ? ["ddgr.cmd", "ddgr.exe", "ddgr"] : ["ddgr"];
+  const dirs = [
+    rt.vendorBinDir ?? "",
+    rt.bundleRoot ? join(rt.bundleRoot, "vendor", "bin") : "",
+    rt.monoRoot ? join(rt.monoRoot, "vendor", "bin") : "",
+    join(homedir(), ".maou", "bin"),
+    join(homedir(), ".local", "bin"),
+  ].filter(Boolean) as string[];
+
+  let found = "";
+  for (const d of dirs) {
+    for (const n of names) {
+      const p = join(d, n);
+      if (existsSync(p)) {
+        found = p;
+        break;
+      }
+    }
+    if (found) break;
+  }
+  if (!found && (commandOnPath("ddgr") || commandOnPath("ddgr.cmd") || commandOnPath("ddgr.exe"))) {
+    found = "on PATH";
+  }
+  if (!found) return { ok: false, detail: "未安装（搜索走 HTTP fallback）" };
+
+  // 装了但没 Python：必须报不可用，否则 doctor 说 ✓ 而实际调用直接失败
+  const py = detectPython();
+  if (!py.ok) {
+    return { ok: false, detail: `已下载但缺 Python >= 3.6（${found}）—— 装 Python 后即可用` };
+  }
+  return { ok: true, detail: `${found}（${py.detail}）` };
+}
+
+function detectGit(rt: RuntimeInfo): string {
+  if (rt.mode === "bundle") {
+    const rel = rt.release;
+    const tag = rel?.releaseTag ?? "?";
+    const short = rel?.commit ? rel.commit.slice(0, 7) : "?";
+    return `— 预编译包安装（${rel?.channel ?? "?"} ${tag} @${short}）；更新: maou update`;
+  }
   if (!commandOnPath("git")) return "✗ git 不在 PATH";
-  const root = findSdkGitRoot(mono ?? undefined);
+  const root = findSdkGitRoot(rt.monoRoot ?? undefined);
   if (!root) return "△ 非 git clone 安装（maou update 不可用）";
   const url = spawnSync("git", ["config", "--get", "remote.origin.url"], {
     cwd: root,
@@ -362,27 +459,39 @@ function detectApiConfig(): string {
   }
 }
 
-function detectTui(_mono: string | null): string {
+function detectTui(rt: RuntimeInfo): string {
   const forced = process.env.MAOU_TUI || "";
   const def = "ratatui";
   const active = forced || def;
-  // 与 launch 同源探测（含 ~/.maou/bin、target/release、PATH；Windows 认 .exe）
+  // 与 launch 同源探测（含 bundle vendor/bin、~/.maou/bin、target/release、PATH）
   const binPath = resolveRatatuiBinary() ?? "";
   const hasRt = !!binPath;
   if (active === "ratatui" || active === "rust" || active === "rt") {
-    return hasRt
-      ? `✓ ratatui（${binPath}） default=${def}`
-      : `△ 配置倾向 ratatui 但无二进制 — npm run build:tui-ratatui 或 maou doctor`;
+    if (hasRt) return `✓ ratatui（${binPath}） default=${def}`;
+    return rt.mode === "bundle"
+      ? "△ 预编译包内缺 TUI 二进制 — maou doctor（重新下载）"
+      : "△ 配置倾向 ratatui 但无二进制 — npm run build:tui-ratatui 或 maou doctor";
   }
   return `✓ ink（或默认） effective=${active}`;
 }
 
-function tryInstall(packages: string[], cwd: string, mono: string | null): { ok: boolean; error?: string } {
+function tryInstall(
+  packages: string[],
+  cwd: string,
+  mode: InstallMode,
+): { ok: boolean; error?: string } {
   if (packages.length === 0) return { ok: true };
-  if (mono) {
+  if (mode === "monorepo") {
     return {
       ok: false,
       error: "monorepo：请用 pnpm install && pnpm -r build / scripts/build-native，勿对单包 npm install",
+    };
+  }
+  if (mode === "bundle") {
+    // 预编译包自带完整 node_modules；缺包只可能是解压不全 → 重装，不要 npm install
+    return {
+      ok: false,
+      error: "预编译包内依赖不完整（解压可能损坏）— 请重新安装: maou update --force 或重跑安装脚本",
     };
   }
   const cmd = "npm";
@@ -404,8 +513,9 @@ export async function ensureDependencies(
   const autoInstall =
     opts.autoInstall !== false && process.env.MAOU_NO_AUTO_INSTALL !== "1";
   const quiet = !!opts.quiet;
-  const cliRoot = resolveCliPackageRoot();
-  const monoRoot = findMonorepoRoot(cliRoot);
+  const rt = detectRuntime({ refresh: true });
+  const cliRoot = rt.cliRoot;
+  const monoRoot = rt.monoRoot;
   const errors: string[] = [];
   const warnings: string[] = [];
   const repaired: string[] = [];
@@ -427,10 +537,11 @@ export async function ensureDependencies(
     if (!ok) missingOptional.push(pkg);
   }
 
-  // monorepo：永不自动 npm install 可选包；核心缺失只提示 build
-  if (missingCritical.length > 0 && autoInstall && !monoRoot) {
+  // monorepo / bundle：都不允许对单包 npm install（前者要构建，后者自带依赖）
+  const canNpmInstall = rt.mode === "standalone";
+  if (missingCritical.length > 0 && autoInstall && canNpmInstall) {
     if (!quiet) log(`[maou] 缺少核心依赖: ${missingCritical.join(", ")}`);
-    const r = tryInstall([...missingCritical], cliRoot, monoRoot);
+    const r = tryInstall([...missingCritical], cliRoot, rt.mode);
     if (r.ok) {
       repaired.push(...missingCritical);
       missingCritical.length = 0;
@@ -438,39 +549,45 @@ export async function ensureDependencies(
         if (!(await canImport(pkg))) missingCritical.push(pkg);
       }
     } else if (r.error) errors.push(r.error);
-  } else if (missingCritical.length > 0 && monoRoot) {
+  } else if (missingCritical.length > 0) {
     errors.push(
-      `核心包未就绪: ${missingCritical.join(", ")} — 在仓库根: pnpm install && pnpm -r build`,
+      rt.mode === "bundle"
+        ? `核心包缺失: ${missingCritical.join(", ")} — 预编译包不完整，请重装（见 maou update）`
+        : `核心包未就绪: ${missingCritical.join(", ")} — 在仓库根: pnpm install && pnpm -r build`,
     );
   }
 
-  if (missingOptional.length > 0 && autoInstall && !monoRoot) {
-    const r = tryInstall([...missingOptional], cliRoot, monoRoot);
+  if (missingOptional.length > 0 && autoInstall && canNpmInstall) {
+    const r = tryInstall([...missingOptional], cliRoot, rt.mode);
     if (r.ok) {
       repaired.push(...missingOptional);
       missingOptional.length = 0;
     }
-  } else if (missingOptional.length > 0 && monoRoot && !quiet) {
+  } else if (missingOptional.length > 0 && rt.mode !== "standalone" && !quiet) {
     // 不刷 install 错误；optional 在 monorepo 常因未 link 显示缺失
     warnings.push(`可选包（monorepo 可能仅未 link）: ${missingOptional.join(", ")}`);
   }
 
   const distOk = existsSync(join(cliRoot, "dist", "index.js"));
   if (!distOk) {
-    errors.push("cli/dist/index.js 不存在 — pnpm -r build 或 scripts/build-native");
+    errors.push(
+      rt.mode === "bundle"
+        ? "dist/index.js 不存在 — 预编译包损坏，请重装"
+        : "cli/dist/index.js 不存在 — pnpm -r build 或 scripts/build-native",
+    );
   }
 
-  const te = detectTerminalEngine(cliRoot, monoRoot);
-  const dcg = detectDcg(monoRoot);
-  const rg = detectRg(monoRoot);
-  const sqry = detectSqry(monoRoot);
+  const te = detectTerminalEngine(rt);
+  const dcg = detectDcg(rt);
+  const rg = detectRg(rt);
+  const sqry = detectSqry(rt);
   const nodePty = detectNodePty();
   const lspTS = detectLspTS();
-  const ddgr = detectDdgr();
-  const gitInfo = detectGit(monoRoot);
-  const pnpmInfo = detectPnpm();
+  const ddgr = detectDdgr(rt);
+  const gitInfo = detectGit(rt);
+  const pnpmInfo = rt.mode === "bundle" ? "— 预编译包无需 pnpm" : detectPnpm();
   const apiInfo = detectApiConfig();
-  const tuiInfo = detectTui(monoRoot);
+  const tuiInfo = detectTui(rt);
 
   const tiers: CapabilityTier = {
     core: node.ok && missingCritical.length === 0 && distOk,
@@ -492,6 +609,8 @@ export async function ensureDependencies(
     repaired,
     errors,
     warnings,
+    mode: rt.mode,
+    bundleRoot: rt.bundleRoot,
     cliRoot,
     monoRoot,
     distOk,
@@ -606,6 +725,103 @@ export async function autoFixDependencies(opts: {
   if (!opts.quiet) {
     log("");
     log("── 自动修复 ──");
+  }
+
+  const rt = detectRuntime();
+
+  if (rt.mode === "bundle" && rt.bundleRoot) {
+    // 预编译包：只允许「下载缺失的二进制」，绝不构建（包内没有源码）
+    const root = rt.bundleRoot;
+    const scripts = rt.scriptsDir;
+    const vendorBin = rt.vendorBinDir ?? join(root, "vendor", "bin");
+    const exe = platform() === "win32" ? ".exe" : "";
+
+    const runEnsure = (
+      file: string,
+      label: string,
+      env: Record<string, string>,
+    ): boolean => {
+      if (!scripts) return false;
+      const p = join(scripts, file);
+      if (!existsSync(p)) {
+        errors.push(`预编译包内缺 ${file} — 请重装`);
+        return false;
+      }
+      if (!opts.quiet) log(`[fix] ${label}…`);
+      actions.push(label);
+      const prev: Record<string, string | undefined> = {};
+      for (const [k, v] of Object.entries(env)) {
+        prev[k] = process.env[k];
+        process.env[k] = v;
+      }
+      const ok = runInherit(process.execPath, [p, "--force"], root);
+      for (const [k, v] of Object.entries(prev)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      return ok;
+    };
+
+    if (needCore) {
+      errors.push(
+        "预编译包 Core 不完整（dist/node_modules 缺失）— 解压可能损坏，请重跑安装脚本或 maou update --force",
+      );
+    }
+    if (needTerminal) {
+      if (!runEnsure("ensure-terminal-engine.mjs", "ensure-terminal-engine", {})) {
+        errors.push("terminal-engine 下载失败 — use_terminal 将降级");
+      }
+    }
+    if (needDcg) {
+      if (!runEnsure("ensure-dcg.mjs", "ensure-dcg", { MAOU_DCG_DEST: join(vendorBin, `dcg${exe}`) })) {
+        errors.push("dcg 下载失败 — 危险命令门降级");
+      }
+    }
+    if (needRg) {
+      if (!runEnsure("ensure-rg.mjs", "ensure-rg", { MAOU_RG_DEST: join(vendorBin, `rg${exe}`) })) {
+        errors.push("rg 下载失败 — grep 降级为 Node.js");
+      }
+    }
+    if (needSqry) {
+      if (!runEnsure("ensure-sqry.mjs", "ensure-sqry", { MAOU_SQRY_DEST: join(vendorBin, `sqry${exe}`) })) {
+        errors.push("sqry 下载失败 — find_code 不可用");
+      }
+    }
+    if (!resolveRatatuiBinary()) {
+      if (!runEnsure("ensure-maou-tui.mjs", "ensure-maou-tui", { MAOU_TUI_DEST: vendorBin })) {
+        errors.push("maou-tui-ratatui 下载失败 — TUI 不可用");
+      }
+    }
+    // ts-ls 是全局 npm 包，与包形态无关
+    if (needLspTS && (commandOnPath("npm") || commandOnPath("npm.cmd"))) {
+      if (!opts.quiet) log("[fix] npm i -g typescript-language-server typescript…");
+      actions.push("npm i -g typescript-language-server typescript");
+      if (!runInherit("npm", ["install", "-g", "typescript-language-server", "typescript"], root)) {
+        errors.push("npm i -g typescript-language-server 失败 — LSP 诊断将不可用");
+      }
+    }
+    if (!before.tiers.ddgr) {
+      // ddgr 是 Python 脚本，Windows 上也**不带** .exe（旁边另有 ddgr.cmd shim）
+      if (!runEnsure("ensure-ddgr.mjs", "ensure-ddgr", {
+        MAOU_DDGR_DEST: join(vendorBin, "ddgr"),
+      })) {
+        errors.push("ddgr 安装失败 — search_internet 走 HTTP fallback");
+      }
+    }
+
+    const afterBundle = await ensureDependencies({ autoInstall: false, quiet: true });
+    return {
+      attempted: true,
+      coreFixed: afterBundle.tiers.core,
+      terminalFixed: afterBundle.tiers.terminal,
+      dcgFixed: afterBundle.tiers.dcg,
+      rgFixed: afterBundle.tiers.rg,
+      sqryFixed: afterBundle.tiers.sqry,
+      lspTSFixed: afterBundle.tiers.lspTS,
+      nodePtyFixed: afterBundle.tiers.nodePty,
+      actions,
+      errors,
+    };
   }
 
   if (mono) {
@@ -748,16 +964,23 @@ export async function autoFixDependencies(opts: {
       }
     }
 
-    // ddgr —— 跨平台安装方式不一（brew/apt/pip），不自动装，仅告警
+    // ddgr —— 单文件 Python 脚本，直接抓 raw（不再依赖 brew/apt/pip）
     if (!before.tiers.ddgr) {
-      if (!opts.quiet) log("△ ddgr 未安装 — search_internet 走 HTTP fallback；如需更好结果: brew install ddgr / pip install ddgr");
+      const ensure = join(mono, "scripts", "ensure-ddgr.mjs");
+      if (existsSync(ensure)) {
+        if (!opts.quiet) log("[fix] ensure-ddgr…");
+        actions.push("ensure-ddgr");
+        if (!runInherit(process.execPath, [ensure], mono)) {
+          errors.push("ddgr 安装失败 — search_internet 走 HTTP fallback");
+        }
+      }
     }
   } else {
     // 非 monorepo：尽力 npm install 核心包
     if (needCore && before.missingCritical.length) {
       if (!opts.quiet) log("[fix] npm install 核心包…");
       actions.push("npm install critical");
-      const r = tryInstall([...before.missingCritical], cliRoot, null);
+      const r = tryInstall([...before.missingCritical], cliRoot, "standalone");
       if (!r.ok && r.error) errors.push(r.error);
     }
     // 非 monorepo 下也尝试装 ts-ls（全局）
@@ -802,8 +1025,10 @@ export async function autoFixDependencies(opts: {
 
 function printDoctorReport(r: DepCheckResult): void {
   log(`平台: ${process.platform}/${process.arch}`);
+  log(`形态: ${installModeLabel(r.mode)}`);
   log(`CLI:  ${r.cliRoot}`);
   if (r.monoRoot) log(`Repo: ${r.monoRoot}`);
+  if (r.mode === "bundle") log(`版本: ${runtimeVersionLabel()}`);
   log("");
 
   log("── Core（必须）──");
@@ -830,10 +1055,18 @@ function printDoctorReport(r: DepCheckResult): void {
     log("  兜底: 危险命令门不可靠");
   }
   if (!r.tiers.rg) {
-    log("  兜底: grep 降级为 Node.js（速度较慢）— node scripts/ensure-rg.mjs");
+    log(
+      `  兜底: grep 降级为 Node.js（速度较慢）— ${
+        r.mode === "bundle" ? "maou doctor" : "node scripts/ensure-rg.mjs"
+      }`,
+    );
   }
   if (!r.tiers.sqry) {
-    log("  缺失: find_code 不可用 — node scripts/ensure-sqry.mjs 或 maou doctor");
+    log(
+      `  缺失: find_code 不可用 — ${
+        r.mode === "bundle" ? "maou doctor" : "node scripts/ensure-sqry.mjs 或 maou doctor"
+      }`,
+    );
   }
 
   log("");
@@ -923,13 +1156,18 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
       if (!resolveRatatuiBinary()) {
         log("");
         log("── Ratatui TUI 二进制 ──");
+        // 预编译包：只下载，不 cargo build（包里没有 Rust 源码）
         const bin = ensureRatatuiBinary({
-          tryBuild: true,
+          tryBuild: r.mode !== "bundle",
           log: (m) => log(m),
         });
         if (bin) log(`  ✓ ${bin}`);
         else {
-          log("  △ 未安装 — 手动: cd maou-sdk/cli && npm run build:tui-ratatui");
+          log(
+            r.mode === "bundle"
+              ? "  △ 下载失败 — 检查网络/GitHub 可达性后重试 maou doctor"
+              : "  △ 未安装 — 手动: cd maou-sdk/cli && npm run build:tui-ratatui",
+          );
           log("  （无二进制时 maou coding 无法启动）");
         }
       }
@@ -942,20 +1180,30 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
 
   log("");
   log("── 下一步 ──");
+  const isBundle = r.mode === "bundle";
   if (!r.tiers.core) {
-    log("  Core 仍失败。检查 Node/pnpm，或手动: scripts/build-native");
+    log(
+      isBundle
+        ? "  Core 仍失败。预编译包不完整 — 重跑安装脚本，或 maou update --force 重装"
+        : "  Core 仍失败。检查 Node/pnpm，或手动: scripts/build-native",
+    );
   } else if (!r.tiers.terminal || !r.tiers.dcg || !r.tiers.rg || !r.tiers.sqry) {
     log("  可启动 maou coding（Coding 依赖不完整）");
-    if (!r.tiers.terminal) log("  terminal-engine: scripts/build-native 或 cd terminal-engine && npm run build");
-    if (!r.tiers.rg) log("  rg: node scripts/ensure-rg.mjs 或 winget install BurntSushi.ripgrep");
-    if (!r.tiers.sqry) log("  sqry: node scripts/ensure-sqry.mjs 或 maou doctor（find_code 必选）");
+    if (isBundle) {
+      log("  缺失组件均可重新下载: maou doctor（不需要编译器）");
+      if (!r.tiers.terminal) log("  terminal-engine: 检查能否访问 GitHub Release");
+    } else {
+      if (!r.tiers.terminal) log("  terminal-engine: scripts/build-native 或 cd terminal-engine && npm run build");
+      if (!r.tiers.rg) log("  rg: node scripts/ensure-rg.mjs 或 winget install BurntSushi.ripgrep");
+      if (!r.tiers.sqry) log("  sqry: node scripts/ensure-sqry.mjs 或 maou doctor（find_code 必选）");
+    }
     if (r.details.apiConfig.includes("△")) log("  API: maou setup");
   } else if (!r.tiers.lspTS) {
     log("  Coding 依赖就绪；Optional 降级");
     log("  ts-ls: maou doctor（npm i -g typescript-language-server typescript）");
   } else {
     log("  就绪 → maou coding（默认 Ratatui）");
-    if (!r.details.git.includes("非 git")) log("  更新: maou update");
+    if (isBundle || !r.details.git.includes("非 git")) log("  更新: maou update");
   }
 
   log("");

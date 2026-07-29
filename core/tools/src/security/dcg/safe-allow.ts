@@ -222,6 +222,43 @@ export function matchMaouSafeAllow(command: string): MaouSafeAllowHit | null {
     };
   }
 
+  // ── 纯文本处理 awk/gawk（含 printf %% 合法转义）──────────────
+  // DCG 有时把 awk 格式串 / stdin 分析误判为 deny；只读巡检管道常见。
+  // 含破坏性关键词时不放行。
+  if (
+    (/(?:^|[|&;]\s*)(?:\/[\w./-]+\/)?(?:g?awk|mawk)\b/.test(cmd) ||
+      /\|\s*(?:g?awk|mawk)\b/.test(cmd)) &&
+    !/\b(rm|mkfs|dd\b|DROP\s|TRUNCATE\s|FLUSHALL|curl\b[^|\n]*\|\s*(?:ba)?sh|wget\b[^|\n]*\|\s*(?:ba)?sh)\b/i.test(
+      cmd,
+    )
+  ) {
+    return {
+      id: "maou.allow:awk-text-processing",
+      reason:
+        "允许 awk/gawk 文本处理（printf 中 %% 为合法字面量 %，非语法错误）",
+    };
+  }
+
+  // ── 只读进程/系统巡检（ps | head | awk 等）──────────────────
+  if (
+    /(?:^|[;&]\s*)(?:ps|top|vm_stat|sysctl|df|du|uname|whoami|id|uptime|sw_vers)\b/.test(
+      cmd,
+    ) &&
+    !/\b(rm|mkfs|dd\b|DROP\s|curl\b[^|\n]*\|\s*(?:ba)?sh)\b/i.test(cmd)
+  ) {
+    // 整条以只读工具开头，或管道链中主操作是 ps/top 等
+    if (/^(?:ps|top|vm_stat|sysctl|df|du|uname|whoami|id|uptime|sw_vers)\b/.test(cmd) ||
+        /(?:&&|\|)\s*(?:ps|top|vm_stat|sysctl|df)\b/.test(cmd) ||
+        /^(?:echo|printf)\b.*\|\s*(?:ps|awk|head|tail)\b/.test(cmd) ||
+        /^ps\b/.test(cmd) ||
+        /(?:^|&&\s*)ps\s/.test(cmd)) {
+      return {
+        id: "maou.allow:readonly-sysinfo",
+        reason: "允许只读系统/进程巡检（ps/top/vm_stat/df 等）",
+      };
+    }
+  }
+
   return null;
 }
 

@@ -10,6 +10,7 @@ import { platform } from "node:os";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
+import { resolveToolPath } from "../../path-guard.js";
 
 /** Node.js 降级方案用的跳过目录（rg 模式自动读 .gitignore） */
 const SKIP_DIRS = new Set([
@@ -191,10 +192,14 @@ export class GlobTool extends Tool {
 
     const searchPath = String(params.path ?? ".").trim();
     const rootResolved = resolve(ctx.workingDir || ctx.projectRoot);
-    const searchDir = resolve(rootResolved, searchPath);
-
-    if (searchDir !== rootResolved && !searchDir.startsWith(rootResolved + sep)) {
-      return createToolResponse(false, `路径越过了项目根目录: ${searchPath}`);
+    let searchDir: string;
+    try {
+      searchDir = resolveToolPath(ctx, searchPath).path;
+    } catch (err: unknown) {
+      return createToolResponse(
+        false,
+        err instanceof Error ? err.message : String(err),
+      );
     }
 
     const headLimit = Math.max(1, Math.min(500, Number(params.head_limit ?? 100) || 100));
@@ -205,8 +210,11 @@ export class GlobTool extends Tool {
       try {
         const rgResults = await globWithRg(pattern, searchDir, headLimit);
         if (rgResults.length > 0) {
-          // rg 返回绝对路径，转为相对路径
-          const relPaths = rgResults.map((p) => relative(rootResolved, p));
+          // 在 base 下显示相对路径；域外（open）保留绝对路径
+          const relPaths = rgResults.map((p) => {
+            const rel = relative(rootResolved, p);
+            return rel.startsWith("..") || rel === "" ? p : rel;
+          });
           const fileList = relPaths.join("\n");
           const limitNote =
             relPaths.length >= headLimit

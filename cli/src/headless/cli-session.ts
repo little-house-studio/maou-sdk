@@ -6,7 +6,12 @@
  */
 
 import { mkdirSync } from "node:fs";
-import { runAgentCli, setSupervisorAbortSignal } from "@little-house-studio/agent";
+import {
+  runAgentCli,
+  setSupervisorAbortSignal,
+  SUPERVISOR_MANAGER,
+  tryApplySupervisorUserConfirmation,
+} from "@little-house-studio/agent";
 import type { AgentHandle } from "@little-house-studio/agent";
 import type { AgentCliConfig } from "../types.js";
 import { useStore } from "../state/store.js";
@@ -336,6 +341,32 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
     }
   }
 
+  /** 把 SUPERVISOR_MANAGER 状态同步到 Goal 面板（立即可见） */
+  function syncSupervisorUiFromSdk(sessionHint?: string | null): void {
+    const sid = sessionHint || useStore.getState().sessionId;
+    if (!sid) return;
+    try {
+      const b =
+        SUPERVISOR_MANAGER.getBySupervisor(sid) ??
+        SUPERVISOR_MANAGER.getByMain(sid);
+      if (!b || b.state === "ended") {
+        useStore.getState().clearSupervisor();
+        return;
+      }
+      useStore.getState().setSupervisor({
+        active: true,
+        mainSessionId: b.mainSessionId,
+        supervisorSessionId: b.supervisorSessionId,
+        state: b.state,
+        plan: b.plan,
+        verifyRounds: b.verifyRounds,
+        lastVerdict: b.lastVerdict,
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
   async function send(text: string) {
     const store = useStore.getState();
     text = repairUtf8Mojibake(text);
@@ -344,9 +375,42 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
     // 系统斜杠指令：/model /select /sessions … 本地执行，绝不发给 AI
     if (tryHandleSystemSlash(text)) return;
 
+    // 监督确认必须在 busy 排队之前处理，否则 Goal 条会一直卡在「待确认计划」
+    const sidForAck = store.sessionId;
+    let runText = text.trim();
+    let supervisorForceName: string | undefined;
+    if (sidForAck) {
+      const ack = tryApplySupervisorUserConfirmation(sidForAck, runText);
+      if (ack.applied) {
+        if (ack.ended && ack.mainSessionId) {
+          store.pushUserMessage(runText);
+          try {
+            useStore.getState().setSessionId(ack.mainSessionId);
+            useStore.getState().clearSupervisor();
+            useStore.getState().toastMsg("监督模式已结束，切回主 Agent", "ok");
+          } catch { /* ignore */ }
+          return;
+        }
+        if (ack.state === "started") {
+          syncSupervisorUiFromSdk(sidForAck);
+          useStore.getState().toastMsg("计划已确认 · 监督执行中", "ok");
+          if (ack.continueAsUserMessage) runText = ack.continueAsUserMessage;
+          supervisorForceName = "supervisor";
+        }
+      } else {
+        // 监督 session 内其它消息也要用 supervisor 身份跑
+        const b =
+          SUPERVISOR_MANAGER.getBySupervisor(sidForAck) ??
+          SUPERVISOR_MANAGER.getByMain(sidForAck);
+        if (b && b.supervisorSessionId === sidForAck && b.state !== "ended") {
+          supervisorForceName = "supervisor";
+        }
+      }
+    }
+
     if (store.streaming || store.agentBusy) {
-      store.enqueueMessage(text.trim());
-      store.toastMsg("已排队，生成完发送", "info");
+      store.enqueueMessage(runText);
+      store.toastMsg("已排队，当前轮结束后发送", "info");
       return;
     }
 
@@ -367,7 +431,9 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
     }
     const handle = agent;
 
-    store.pushUserMessage(text);
+    // 用户气泡显示原文（确认），模型侧可能收到改写后的 runText
+    sound.onUserInteraction();
+    store.pushUserMessage(text.trim());
     store.setAgentBusy(true);
     // Agent 页状态灯
     try {
@@ -393,16 +459,23 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
       } = { pending: null };
 
       const sandboxMode = store.approvalMode;
-      await runAgentCli(text, {
+      // 监督 session 必须用 supervisor 身份，否则工具 isSupervisorSession/权限会错
+      const initName =
+        supervisorForceName ||
+        (SUPERVISOR_MANAGER.isSupervisorSession(sessionId)
+          ? "supervisor"
+          : store.agentName || config.name);
+      await runAgentCli(runText, {
         runtime: handle.runtime,
         sessionId,
         preset,
         sandboxMode,
-        initAgentName: store.agentName || config.name,
+        initAgentName: initName,
         onEvent: (ev) => {
           if (ev.type === "done") {
             sound.play("done");
             sound.clearIdleTimer();
+            sound.clearStuckAlarm();
             const de = ev as { type: string; [k: string]: unknown };
             if (
               de.supervisorMode === true &&
@@ -414,21 +487,46 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
                 initialMessage: de.initialMessage,
               };
             }
+            // 每轮 done 后同步 Goal 条（submit_plan / start / verify 等）
+            try {
+              syncSupervisorUiFromSdk(sessionId);
+            } catch { /* ignore */ }
+          } else if (ev.type === "tool_result") {
+            try {
+              syncSupervisorUiFromSdk(sessionId);
+            } catch { /* ignore */ }
           } else if (ev.type === "error") {
-            sound.play("error");
+            // API / 重试类失败：完全静音（文案在系统消息里即可，绝不再连响）
             sound.clearIdleTimer();
+            sound.clearStuckAlarm();
+            const msg = String(
+              (ev as { message?: string }).message ??
+                (ev as { error?: string }).error ??
+                "",
+            );
+            const isApiNoise =
+              /API Error|请求失败|可重试|10305|status code|HTTP|ECONN|ETIMEDOUT|timeout|rate.?limit|overflow|上下文超|invalid_request|ModelArts/i.test(
+                msg,
+              );
+            // 仅非 API 的意外错误：可选一声；默认也不长铃
+            if (!isApiNoise) {
+              sound.playOnce("error");
+            }
+          } else if (ev.type === "status") {
+            // 重试 / 压缩 / API error 过程态：静音
+            if (useStore.getState().streaming) sound.resetIdleTimer();
           } else if (
             ev.type === "log" &&
             (ev.level === "error" || ev.level === "warning" || ev.level === "warn")
           ) {
-            sound.play("warning");
+            // 含「请求失败可重试」等：静音
             if (useStore.getState().streaming) sound.resetIdleTimer();
           } else if (
             ev.type === "model.error" ||
             ev.type === "model.loop_detected" ||
             ev.type === "round_limit"
           ) {
-            sound.play("warning");
+            // 静音
           } else if (useStore.getState().streaming) {
             sound.resetIdleTimer();
           }
@@ -454,8 +552,17 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
         });
       }
     } catch (e) {
-      sound.play("error");
       sound.clearIdleTimer();
+      sound.clearStuckAlarm();
+      // send 抛错多为 API/网络：静音，只 toast
+      const em = String(e);
+      if (
+        !/API Error|请求失败|可重试|10305|status code|HTTP|ECONN|timeout|fetch failed/i.test(
+          em,
+        )
+      ) {
+        sound.playOnce("error");
+      }
       useStore.getState().toastMsg(String(e).slice(0, 60), "err");
       useStore.getState().setStreaming(false);
       useStore.getState().setAborting(false);

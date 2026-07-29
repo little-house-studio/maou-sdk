@@ -21,9 +21,14 @@
         "minimum": 1,
         "maximum": 500,
         "description": "最多返回文件数。默认 100。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
     "required": [
+      "description",
       "pattern",
       "reason"
     ],

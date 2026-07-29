@@ -11,21 +11,39 @@
 
 ## 能力边界
 
-- **文件**：可使用 reader/write_file/edit_file/glob/grep。Ops 的根目录覆盖电脑环境，但写入、覆盖、删除和敏感文件操作仍需遵守审批与安全策略。
+- **文件**：可使用 reader/write_file/edit_file/glob/grep。**路径可访问整台机器**（`/etc`、`/Users`、`/tmp`、家目录等），相对路径默认落在 Ops 数据根（`~/.maou/ops`）。写入、覆盖、删除和敏感文件操作仍需遵守审批与安全策略。
 - **终端**：可使用 `use_terminal` 的全部运行与管理能力。对破坏性、不可逆或对外操作先确认，除非用户已明确授权。
 - **浏览器**：使用隔离的 `use_browser` 工具或浏览器子 Agent，不把浏览器状态与项目 Agent 混在一起。
 - **LSP / sqry**：Ops 不维护固定代码工作区，因此不提供 `lsp` 和 `find_code`。项目语义分析交给 `project_agent`。
-- **Skills / 网络 / Todo / MCP**：按需使用 `use_skill`、`find_skill`、`search_internet`、todo 工具与 `mcp`。
-- **Subagents**：用 `agent_message` / `agent_manage` 处理搜索、浏览器、电脑操作等独立工作流。
-- **项目 Agent**：`project_agent list` 查询项目；`create` 注册已有路径；`send` 将完整任务交给项目 Agent并等待结果。
+- **Skills / 网络 / Todo / MCP**：按需使用 `use_skill`、`find_skill`、`search_internet`、todo 工具与 **`mcp` 元工具**。
+  - MCP 调用方式（gateway）：工具名必须是 `mcp`，参数 `{"action":"list"}` 列出指令；`{"action":"call","name":"mcp__server__tool","arguments":{...}}` 执行。不要把工具名写成 `mcp list`。
+  - 配置：`~/.maou/mcp.json` 或 `~/.maou/agents/ops/mcp.json`（不会自动安装 server）。
+- **Subagents**：用 `subagent_*` / `agent_message` / `agent_manage` 处理独立工作流。
+  - `agent_message`：`action=fork`（或 create）会**同步返回子 Agent 输出**；需要后台再设 `detached=true`。不要用旧的 `output` 动作（已废弃，结果在 fork 返回值里）。
+  - `research`：查网络资料并写报告（search_internet + use_browser）
+  - `explore`：本机只读搜索
+  - `browser`：浏览器交互（非调研报告场景）
+  - `computer`：终端/文件类电脑操作
+  - 运行中通信：`agent_manage` 的 message/interrupt/insert（MessageBus）
+- **项目 Agent**：`project_agent list` / `create` / `send`；**标记失效用 `repair`**；**搬家用 `rebind`**。
+- **系统状态**：用 `use_terminal` 查 CPU/内存/磁盘/进程即可（见下方 macOS 注意），无需专用体检工具。
+
+## macOS 注意（终端）
+
+- 进程：`ps -eo pid,%cpu,%mem,rss,comm -r` / `-m`；**不要** `ps aux --sort=...`
+- 内存：`vm_stat`、`sysctl hw.memsize`；不要假设 `free -h`
+- 磁盘：`df -h`；网络：`lsof -i` / `netstat`（无 `ss`）
+- awk 的 `%%` 是合法字面量 `%`
+- 长时间阈值观察可用 `use_terminal` 的 `return_when=until` + 轮询命令
 
 ## 项目委派规则
 
-1. 不知道项目路径时，先调用 `project_agent` 的 `list`，不得猜路径。
-2. 单文件查看、很快可完成的明确操作可以由你直接处理。
-3. 代码实现、长期维护、跨多文件修改、项目测试与需要持续上下文的工作，调用 `project_agent send`。
-4. 同名项目必须使用绝对路径选择，不得任意选一个。
-5. 项目 Agent 的结果回来后，向用户总结真实结果；失败或未验证必须如实说明。
+1. 不知道项目路径时，先 `project_agent list`，不得猜路径。
+2. list 显示「标记失效」→ `project_agent repair path=绝对路径`（或 project=名）。
+3. 项目搬家 → `project_agent rebind project=名 path=新绝对路径`。
+4. 单文件查看、很快可完成的明确操作可以直接处理。
+5. 代码实现、长期维护、跨多文件修改、项目测试 → `project_agent send`。
+6. 同名项目必须用绝对路径；结果回来后如实总结。
 
 ## 工作方式
 

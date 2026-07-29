@@ -7,6 +7,8 @@ use ratatui::layout::Rect;
 /// Pure inputs for shell geometry (no App borrow needed during solve).
 #[derive(Debug, Clone)]
 pub struct ShellMetrics {
+    /// Top banner row (agent · tip · approval); off in full editor.
+    pub has_banner: bool,
     pub has_goal: bool,
     pub goal_h: u16,
     pub has_approval: bool,
@@ -23,6 +25,9 @@ pub struct ShellMetrics {
     /// Overlay box size (0 width = no overlay).
     pub overlay_w: u16,
     pub overlay_h: u16,
+    /// Goal 详情浮层尺寸（0 = 不显示）
+    pub goal_detail_w: u16,
+    pub goal_detail_h: u16,
     pub full_editor: bool,
 }
 
@@ -39,6 +44,7 @@ struct ShellMeasure<'a> {
 impl Measure for ShellMeasure<'_> {
     fn content_size(&self, slot: Slot, _max_w: u16, _max_h: u16) -> (u16, u16) {
         let h = match slot {
+            Slot::Banner => 1,
             Slot::Goal => self.m.goal_h,
             Slot::Approval => 3,
             Slot::BackToBottom => 1,
@@ -85,6 +91,15 @@ pub fn build_shell_tree(m: &ShellMetrics) -> Tree {
     }
 
     let root = t.root(Style::column());
+
+    // 顶部横幅：始终第一行（agent · tip · 审批），全屏编辑器除外
+    t.child(
+        root,
+        Some(Slot::Banner),
+        Style::column()
+            .height(Length::Fixed(1))
+            .visible_if(m.has_banner),
+    );
 
     // 「↑ 上一条」仅上滚时占顶行；贴底时不占位，避免对话/HUD 被挤到第二行
     if m.show_jump {
@@ -230,6 +245,23 @@ pub fn solve_shell(m: &ShellMetrics, viewport: Rect) -> Solved {
             height: r.height.saturating_sub(2),
         };
         solved.insert(Slot::OverlayBody, body);
+    }
+
+    // Goal 详情：居中于**对话区**而非整屏 —— 它是 goal chip 的展开体，压住 chip
+    // 自己（截成「[Goa│」）或盖掉输入框/导航条都说不通。
+    if m.goal_detail_w > 0 && m.goal_detail_h > 0 && !m.full_editor {
+        let host = solved.get(Slot::Chat).unwrap_or(viewport);
+        let r = place_absolute_center(host, m.goal_detail_w, m.goal_detail_h);
+        solved.insert(Slot::GoalDetail, r);
+        solved.insert(
+            Slot::GoalDetailBody,
+            Rect {
+                x: r.x.saturating_add(1),
+                y: r.y.saturating_add(1),
+                width: r.width.saturating_sub(2),
+                height: r.height.saturating_sub(2),
+            },
+        );
     }
 
     solved

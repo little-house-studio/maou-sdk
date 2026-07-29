@@ -6,7 +6,12 @@
     "properties": {
       "action": {
         "type": "string",
-        "enum": ["create", "replace", "delete", "list"],
+        "enum": [
+          "create",
+          "replace",
+          "delete",
+          "list"
+        ],
         "description": "create: 新建并自动调度 | replace: 仅无执行中时整表替换 | delete: 归档清空 | list: 只读"
       },
       "reason": {
@@ -19,25 +24,52 @@
         "items": {
           "type": "object",
           "properties": {
-            "id": { "type": "string", "description": "唯一标识" },
-            "desc": { "type": "string", "description": "描述" },
+            "id": {
+              "type": "string",
+              "description": "唯一标识"
+            },
+            "desc": {
+              "type": "string",
+              "description": "描述"
+            },
             "deps": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "依赖的 todo id。空数组=无依赖（可并行）。"
             },
             "status": {
               "type": "string",
-              "enum": ["pending", "in_progress", "completed", "failed", "cancelled"],
+              "enum": [
+                "pending",
+                "in_progress",
+                "completed",
+                "failed",
+                "cancelled"
+              ],
               "description": "初始建议 pending"
             }
           },
-          "required": ["id", "desc", "deps", "status"],
+          "required": [
+            "id",
+            "desc",
+            "deps",
+            "status"
+          ],
           "additionalProperties": false
         }
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
-    "required": ["action", "reason"],
+    "required": [
+      "description",
+      "action",
+      "reason"
+    ],
     "additionalProperties": false
   }
 }

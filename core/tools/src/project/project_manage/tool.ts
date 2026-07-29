@@ -111,7 +111,7 @@ export class ProjectManageTool extends Tool {
     const role = String(params.role ?? "项目主 Agent").trim();
     const personality = String(params.personality ?? "").trim();
     const team = String(params.team ?? name).trim();
-    const description = String(params.description ?? "").trim();
+    const description = String(params.detail ?? params.description ?? "").trim();
     const notes = String(params.notes ?? "").trim();
     const preset = String(params.preset ?? "default").trim();
     const permission = String(params.permission ?? "full").trim();
@@ -220,7 +220,7 @@ export class ProjectManageTool extends Tool {
           permission: String(params.permission ?? "full"),
           personality: String(params.personality ?? ""),
           team: String(params.team ?? ""),
-          description: String(params.description ?? ""),
+          description: String(params.detail ?? params.description ?? ""),
           notes: String(params.notes ?? ""),
           created_by: ctx.agentName || "main",
         }),

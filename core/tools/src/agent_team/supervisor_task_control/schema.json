@@ -6,7 +6,11 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["start", "confirm_end", "end"],
+      "enum": [
+        "start",
+        "confirm_end",
+        "end"
+      ],
       "description": "start=启动监督 | confirm_end=发起验收 | end=完全结束监督"
     },
     "plan": {
@@ -16,8 +20,15 @@
     "summary": {
       "type": "string",
       "description": "任务总结（action=confirm_end 时建议填）"
+    },
+    "description": {
+      "type": "string",
+      "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
     }
   },
-  "required": ["action"],
+  "required": [
+    "description",
+    "action"
+  ],
   "additionalProperties": false
 }

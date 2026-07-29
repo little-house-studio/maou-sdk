@@ -47,6 +47,24 @@ describe("project_agent", () => {
     expect(response.message).toMatch(/绝对路径/);
   });
 
+  it("repairs missing project marker and coding agent", async () => {
+    const { maouRoot, project } = fixture();
+    const tool = new ProjectAgentTool();
+    const ctx = { maouRoot, projectRoot: maouRoot, agentName: "ops" } as ToolContext;
+    // 只注册路径、不写 marker 的场景：先 create 再删 marker
+    await tool.execute({ action: "create", path: project }, ctx);
+    rmSync(join(project, ".maou", "project.json"), { force: true });
+    expect(getProjectsList(maouRoot)[0]?.isActive).toBe(false);
+
+    const response = await tool.execute(
+      { action: "repair", path: project, description: "修复标记" },
+      ctx,
+    );
+    expect(response.ok).toBe(true);
+    expect(existsSync(join(project, ".maou", "project.json"))).toBe(true);
+    expect(getProjectsList(maouRoot)[0]?.isActive).toBe(true);
+  });
+
   it("sends work through the target project's coding agent", async () => {
     const { maouRoot, project } = fixture();
     const fork = vi.fn().mockResolvedValue({

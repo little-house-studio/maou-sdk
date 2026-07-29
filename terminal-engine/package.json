@@ -20,8 +20,10 @@
     }
   },
   "scripts": {
-    "build": "napi build --release --platform --js index.cjs --dts index.d.ts",
-    "build:debug": "napi build --platform --js index.cjs --dts index.d.ts"
+    "build": "node scripts/build.mjs",
+    "build:force": "node scripts/build.mjs --force",
+    "build:debug": "node scripts/build.mjs --debug --force",
+    "build:napi": "napi build --release --platform --js index.cjs --dts index.d.ts"
   },
   "files": [
     "load.mjs",

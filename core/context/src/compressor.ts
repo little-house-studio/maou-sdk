@@ -5,11 +5,11 @@
  *   compressMaou()    — async，操作 MaouMessage[]，支持可插拔 Summarizer（LLM 摘要）。
  *   maybeCompress()    — sync compat shim（truncate-only），保持旧签名兼容。
  *
- * 压缩阶段（按 token 占比逐步升级）：
- *   activeStage  : < 70% maxTokens，不压缩。
- *   compactStage : >= 70%，微压缩——对标注过或单条超长的消息生成摘要。
- *   summaryStage : 微压缩后仍 >= 80%，大压缩——按 task_id 生成摘要，原文落盘。
- *   archiveStage : 大压缩后仍 >= 90%，归档——只保留 task_id + 极简摘要。
+ * 压缩阶段（按 token 占比逐步升级）——对齐 DESIGN：
+ *   activeStage  : < 70% maxTokens，不压缩；并定义「最新原文区」边界。
+ *   compactStage : >= 70%，微压缩——仅 active 区以外；标注/超长/工具结果。
+ *   summaryStage : 仍 >= 80%，大压缩——仅 active 区以外按 task 摘要；**active 原文整段保留**。
+ *   archiveStage : 仍 >= 90%，归档旧侧；**仍保留 active 原文区**。
  *   staticStage  : 静态阶段不参与压缩。
  */
 
@@ -22,6 +22,10 @@ import {
   SUMMARY_MAX_CHARS,
   SUMMARY_SNIPPET_MAX_CHARS,
   SUMMARY_MAX_ENTRIES_PER_ROLE,
+  ACTIVE_WINDOW_PERCENT,
+  ACTIVE_WINDOW_MIN_MESSAGES,
+  MICRO_OUTSIDE_MIN_CHARS,
+  MICRO_TOOL_RESULT_MIN_CHARS,
 } from "./constants.js";
 import type { CompressResult } from "./types.js";
 import type {
@@ -233,68 +237,69 @@ export function maybeCompress(
   return buildLegacyResult(afterArchive.messages, originalTokens, "archiveStage", afterArchive.summary, afterArchive.taskBlocks);
 }
 
-// ─── 微压缩（滑动窗口：从最新往前保留 N 条，超出的旧消息按标注压缩） ──────
+// ─── active / 原始上下文区（DESIGN：微压缩与大压缩共用） ────────────────────
+
+/**
+ * 计算 active 原文区边界（下标 `boundary..end-1` 为最新原文，不得被大压缩吞掉）。
+ * 与微压缩保留区同一公式：max(MIN, floor(n * ACTIVE_WINDOW_PERCENT/100))。
+ */
+export function activeWindowBoundary(messageCount: number): number {
+  if (messageCount <= 0) return 0;
+  const pctKeep = Math.floor((messageCount * ACTIVE_WINDOW_PERCENT) / 100);
+  const keep = Math.min(
+    messageCount,
+    Math.max(ACTIVE_WINDOW_MIN_MESSAGES, pctKeep, 1),
+  );
+  return Math.max(0, messageCount - keep);
+}
+
+/** active 区消息的 seqId 集合 */
+export function activeWindowSeqIds(messages: MaouMessage[]): Set<number> {
+  const b = activeWindowBoundary(messages.length);
+  const s = new Set<number>();
+  for (let i = b; i < messages.length; i++) s.add(messages[i]!.seqId);
+  return s;
+}
+
+// ─── 微压缩（滑动窗口：从最新往前保留 active 区，旧侧压缩） ────────────────
 
 /**
  * 微压缩 = 滑动窗口，不需要 LLM。
  *
- * 原理（对标 Claude Code Microcompact）：
- *   1. 从最新消息往前数，保留最近 N 条消息在动态区
- *   2. 超出窗口的旧消息，按标注（microCompact）压缩
- *   3. 没有标注的超长消息（>MICRO_SINGLE_MSG_CHARS）也自动压缩
- *   4. system/pinned/keepAfterCompress 的消息永远不压缩
- *
- * 方向：从末尾（最新）往前看，超出的部分压缩——和大压缩（从最老往前看）相反
+ * DESIGN：
+ *   1. 最新 active 区（ACTIVE_WINDOW_PERCENT）整段原文
+ *   2. 旧侧：标注 microCompact、超长、工具大结果 → 规则摘要
+ *   3. system/pinned/keepAfterCompress 永不压
  */
-async function microCompactAll(messages: MaouMessage[], summarizer?: Summarizer): Promise<MaouMessage[]> {
-  // 找到动态区边界：从末尾往前，累计 token 不超过阈值
-  const activeBudget = Math.floor(messages.length * 0.4); // 保留最近 40% 的消息
-  const boundary = Math.max(0, messages.length - activeBudget);
-
-  const result: MaouMessage[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const m = messages[i];
-    // 动态区内的消息不压缩
-    if (i >= boundary) { result.push(m); continue; }
-    // system/pinned/keepAfterCompress 永远不压缩
-    if (shouldSkipCompress(m)) { result.push(m); continue; }
-    // 已有微压缩摘要的跳过
-    const hasSummary = m.contents.some(c => c.microCompact?.enabled && c.microCompact.summary);
-    if (hasSummary) { result.push(m); continue; }
-
-    const fullText = m.contents.map(c => c.text).join('\n');
-    const hasMetaCompact = m.meta?.microCompact?.enabled === true;
-    const shouldAutoCompact = hasMetaCompact || fullText.length > MICRO_SINGLE_MSG_CHARS;
-    if (!shouldAutoCompact) { result.push(m); continue; }
-
-    // 按标注压缩（不需要 LLM，直接用规则）
-    const summary = compactByCategory(m);
-    const newContents = [...m.contents];
-    if (newContents.length > 0) {
-      newContents[0] = { ...newContents[0], microCompact: { enabled: true, summary } };
-    }
-    result.push({ ...m, contents: newContents });
-  }
-  return result;
+async function microCompactAll(messages: MaouMessage[], _summarizer?: Summarizer): Promise<MaouMessage[]> {
+  void _summarizer;
+  return microCompactAllSync(messages);
 }
 
 function microCompactAllSync(messages: MaouMessage[]): MaouMessage[] {
-  const activeBudget = Math.floor(messages.length * 0.4);
-  const boundary = Math.max(0, messages.length - activeBudget);
+  const boundary = activeWindowBoundary(messages.length);
 
   return messages.map((m, i) => {
+    // active 原文区：不压
     if (i >= boundary) return m;
     if (shouldSkipCompress(m)) return m;
-    const hasSummary = m.contents.some(c => c.microCompact?.enabled && c.microCompact.summary);
+    const hasSummary = m.contents.some((c) => c.microCompact?.enabled && c.microCompact.summary);
     if (hasSummary) return m;
-    const fullText = m.contents.map(c => c.text).join('\n');
+
+    const fullText = m.contents.map((c) => c.text).join("\n");
     const hasMetaCompact = m.meta?.microCompact?.enabled === true;
-    const shouldAutoCompact = hasMetaCompact || fullText.length > MICRO_SINGLE_MSG_CHARS;
+    // 旧侧强化：工具结果 / 中等长度正文也压（不再只认 800 字）
+    const shouldAutoCompact =
+      hasMetaCompact ||
+      fullText.length > MICRO_SINGLE_MSG_CHARS ||
+      (m.category === "tool_result" && fullText.length > MICRO_TOOL_RESULT_MIN_CHARS) ||
+      fullText.length > MICRO_OUTSIDE_MIN_CHARS;
     if (!shouldAutoCompact) return m;
+
     const summary = compactByCategory(m);
     const newContents = [...m.contents];
     if (newContents.length > 0) {
-      newContents[0] = { ...newContents[0], microCompact: { enabled: true, summary } };
+      newContents[0] = { ...newContents[0]!, microCompact: { enabled: true, summary } };
     }
     return { ...m, contents: newContents };
   });
@@ -330,10 +335,19 @@ interface SummaryCompressResult {
   perTaskOriginals: Map<string, MaouMessage[]>;
   /** 每个 task 的摘要文本（#1：archiveStage 保留每 task 摘要片段 + task id 展示层级） */
   perTaskSummaries: Map<string, string>;
+  /** DESIGN active 原文区（与 micro 同边界），大压缩/归档后仍附在工作集尾部 */
+  activeRawMsgs: MaouMessage[];
 }
 
 async function summaryCompressHarness(messages: MaouMessage[], summarizer?: Summarizer, activeTaskIds?: string[]): Promise<SummaryCompressResult> {
-  const { systemMsgs, pinnedOrCritical, recentToolChain, compressible, recentToolMsgs } = partitionMessages(messages);
+  // DESIGN：大压缩只动 active 以外；active 与 micro 保留区同一边界
+  const {
+    systemMsgs,
+    pinnedOrCritical,
+    compressible,
+    recentToolMsgs,
+    activeRawMsgs,
+  } = partitionMessages(messages, { protectActiveWindow: true });
   const groups = groupByTask(compressible);
   const taskBlocks: string[] = [];
   const summaryLines: string[] = [];
@@ -372,7 +386,14 @@ async function summaryCompressHarness(messages: MaouMessage[], summarizer?: Summ
   }
 
   const summary = summaryLines.join("\n\n");
-  const result: MaouMessage[] = [...systemMsgs, ...pinnedOrCritical, ...taskSummaryMsgs, ...recentToolMsgs];
+  // 工作集 = 旧侧摘要 + pin + 近 tool + **active 原文区**（DESIGN）
+  const result: MaouMessage[] = [
+    ...systemMsgs,
+    ...pinnedOrCritical,
+    ...taskSummaryMsgs,
+    ...recentToolMsgs,
+    ...activeRawMsgs,
+  ];
 
   return {
     messages: result.sort((a, b) => a.seqId - b.seqId),
@@ -380,11 +401,18 @@ async function summaryCompressHarness(messages: MaouMessage[], summarizer?: Summ
     taskBlocks,
     perTaskOriginals,
     perTaskSummaries,
+    activeRawMsgs,
   };
 }
 
 function summaryCompressSync(messages: MaouMessage[]): SummaryCompressResult {
-  const { systemMsgs, pinnedOrCritical, recentToolMsgs, compressible } = partitionMessages(messages);
+  const {
+    systemMsgs,
+    pinnedOrCritical,
+    recentToolMsgs,
+    compressible,
+    activeRawMsgs,
+  } = partitionMessages(messages, { protectActiveWindow: true });
   const groups = groupByTask(compressible);
   const taskBlocks: string[] = [];
   const summaryLines: string[] = [];
@@ -400,11 +428,17 @@ function summaryCompressSync(messages: MaouMessage[]): SummaryCompressResult {
   }
 
   const summary = summaryLines.join("\n\n");
-  // sync 版不筛选 active（maybeCompress 旧路径不接 activeTaskIds）
+  // sync 版不筛选 activeTaskIds（maybeCompress 旧路径）
   const taskSummaryMsgs = taskBlocks.map((taskId) =>
     makeTaskSummaryMessage(taskId, perTaskSummaries.get(taskId)!, groups.get(taskId)!),
   );
-  const result: MaouMessage[] = [...systemMsgs, ...pinnedOrCritical, ...taskSummaryMsgs, ...recentToolMsgs];
+  const result: MaouMessage[] = [
+    ...systemMsgs,
+    ...pinnedOrCritical,
+    ...taskSummaryMsgs,
+    ...recentToolMsgs,
+    ...activeRawMsgs,
+  ];
 
   return {
     messages: result.sort((a, b) => a.seqId - b.seqId),
@@ -412,29 +446,70 @@ function summaryCompressSync(messages: MaouMessage[]): SummaryCompressResult {
     taskBlocks,
     perTaskOriginals,
     perTaskSummaries,
+    activeRawMsgs,
   };
 }
 
-function partitionMessages(messages: MaouMessage[]) {
+/**
+ * 分区。protectActiveWindow=true（默认大压缩）时：
+ * 与 micro 同一 active 边界内的非 system 消息 → activeRawMsgs（原文保留）。
+ */
+function partitionMessages(
+  messages: MaouMessage[],
+  opts?: { protectActiveWindow?: boolean },
+) {
   const systemMsgs: MaouMessage[] = [];
   const pinnedOrCritical: MaouMessage[] = [];
   const compressible: MaouMessage[] = [];
+  const activeRawMsgs: MaouMessage[] = [];
+  const protect = opts?.protectActiveWindow !== false;
+  const activeSeq = protect ? activeWindowSeqIds(messages) : new Set<number>();
 
   const protectedToolCallIds = new Set<string>();
   for (const m of messages) {
     if (m.toolCalls) for (const tc of m.toolCalls) if (tc.id) protectedToolCallIds.add(tc.id);
   }
+  // 近 tool 链仅在「可压旧侧」内保留额外保护；已在 active 内的不必重复
   const recentToolChain = collectRecentToolChain(messages, protectedToolCallIds);
 
   for (const m of messages) {
-    if (m.category === "system") systemMsgs.push(m);
-    else if (m.pinned || m.keepAfterCompress) pinnedOrCritical.push(m);
-    else if (recentToolChain.has(m.seqId)) { /* handled below */ }
-    else compressible.push(m);
+    if (m.category === "system") {
+      systemMsgs.push(m);
+      continue;
+    }
+    if (m.pinned || m.keepAfterCompress) {
+      // 已是 task_summary 等 keep 消息：若落在 active 区仍算 pin 集合，避免重复进 activeRaw
+      pinnedOrCritical.push(m);
+      continue;
+    }
+    // DESIGN active 原文区：整段保留，不进 task 摘要池
+    if (protect && activeSeq.has(m.seqId)) {
+      activeRawMsgs.push(m);
+      continue;
+    }
+    if (recentToolChain.has(m.seqId)) {
+      /* handled as recentToolMsgs */
+      continue;
+    }
+    compressible.push(m);
   }
 
-  const recentToolMsgs = messages.filter(m => recentToolChain.has(m.seqId));
-  return { systemMsgs, pinnedOrCritical, recentToolChain, compressible, recentToolMsgs };
+  const recentToolMsgs = messages.filter(
+    (m) =>
+      recentToolChain.has(m.seqId) &&
+      !(protect && activeSeq.has(m.seqId)) &&
+      !m.pinned &&
+      !m.keepAfterCompress &&
+      m.category !== "system",
+  );
+  return {
+    systemMsgs,
+    pinnedOrCritical,
+    recentToolChain,
+    compressible,
+    recentToolMsgs,
+    activeRawMsgs,
+  };
 }
 
 function collectRecentToolChain(messages: MaouMessage[], protectedIds: Set<string>): Set<number> {
@@ -459,9 +534,14 @@ function collectRecentToolChain(messages: MaouMessage[], protectedIds: Set<strin
 // ─── 死阶段归档 ────────────────────────────────────────────────────────────────
 
 function archiveCompressHarness(input: SummaryCompressResult): { messages: MaouMessage[]; summary: string; taskBlocks: string[] } {
-  const systemMsgs = input.messages.filter(m => m.category === "system");
-  const pinned = input.messages.filter(m => m.pinned || m.keepAfterCompress);
-  // #1：保留每个 task 摘要片段 + task id（展示层级），不只列 id
+  const systemMsgs = input.messages.filter((m) => m.category === "system");
+  // pin / task_summary 等；但不要把 active 原文误标成 pin 再丢
+  const pinned = input.messages.filter(
+    (m) =>
+      (m.pinned || m.keepAfterCompress) &&
+      !input.activeRawMsgs.some((a) => a.seqId === m.seqId),
+  );
+  // #1：旧侧 → 任务极简清单；DESIGN：active 原文区仍保留
   const archiveLines: string[] = [`[已归档任务: ${input.taskBlocks.length} 个]`];
   for (const taskId of input.taskBlocks) {
     const summary = input.perTaskSummaries.get(taskId) ?? "";
@@ -470,7 +550,12 @@ function archiveCompressHarness(input: SummaryCompressResult): { messages: MaouM
   }
   const archiveText = archiveLines.join("\n");
   return {
-    messages: [...systemMsgs, makeSummaryMessage(archiveText), ...pinned],
+    messages: [
+      ...systemMsgs,
+      makeSummaryMessage(archiveText),
+      ...pinned,
+      ...input.activeRawMsgs,
+    ].sort((a, b) => a.seqId - b.seqId),
     summary: archiveText,
     taskBlocks: input.taskBlocks,
   };

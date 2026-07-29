@@ -12,17 +12,33 @@
  *   - helper / supervisor / 子 agent 不入桶
  *   - 不支持 cache 上报的模型（xopqwen 等）reportsCache=false → 显示 c—，不写假 0%
  *   - 换模 = 新桶；旧桶保留，切回同 agent+session+model 可恢复
+ *
+ * 命中率口径统一由 LLM 层 `normalizeCacheUsage` 提供（Anthropic 的 input_tokens
+ * 不含命中，OpenAI 的 prompt_tokens 含命中——直接相除会得到 9000%）。
  */
+
+import { normalizeCacheUsage, cacheHitPct } from "@little-house-studio/llm";
 
 // ─── 模型是否上报 cache ────────────────────────────────────────────────────
 
-const NO_CACHE_MODEL_RE =
-  /xopqwen|xop[_-]?qwen|sparkdesk|讯飞|xfyun.*qwen|qwen36v35/i;
+/**
+ * 仅保留「确认从不带 cache 字段」的窄黑名单。
+ *
+ * 历史坑：曾把 `xfyun + /xop/` 整段拉黑，误伤 **xopglm51**——
+ * 讯飞 MaaS 实际会回 `cached_tokens` / `prompt_tokens_details.cached_tokens`
+ *（本地 ops session 可见 99% 命中）。被黑名单挡住后 ledger 永不 sawCacheField → CLI 永远 `c—`。
+ *
+ * 默认 true；「有字段但命中 0」→ c0%；「字段都没有」→ sawCacheField=false → c—。
+ */
+const NO_CACHE_MODEL_RE = /sparkdesk/i;
 
-const KNOWN_CACHE_MODEL_RE =
-  /^(gpt-|o[1-9]|o3|o4|claude|deepseek|gemini)/i;
-
-/** 模型是否应计算/展示 prompt-cache 命中率 */
+/**
+ * 模型是否**可能**上报 prompt-cache。
+ *
+ * 只做极窄黑名单。自建/中转端点模型名千奇百怪，宽黑名单会把真实命中率误伤成 `c—`。
+ * 「上报了但没命中(c0%)」和「根本不上报(c—)」靠 usage 是否出现 cache 字段
+ * （`recordUsage` → `sawCacheField`），不靠模型名瞎猜。
+ */
 export function modelReportsPromptCache(
   model: string | undefined | null,
   provider?: string | null,
@@ -31,8 +47,8 @@ export function modelReportsPromptCache(
   const p = (provider ?? "").trim();
   if (!m && !p) return false;
   if (m && NO_CACHE_MODEL_RE.test(m)) return false;
-  if (p && /xfyun|xop|讯飞|spark/i.test(p) && m && /qwen|xop/i.test(m)) return false;
-  if (m && KNOWN_CACHE_MODEL_RE.test(m)) return true;
+  // provider 单独不再拉黑讯飞/xop——实测 xopglm / 部分 qwen 均带 cached_tokens
+  void p;
   return true;
 }
 
@@ -71,15 +87,20 @@ export function isMainAgentMainModelUsage(opts: {
 
 export interface CacheSample {
   cacheRead: number;
+  /** 归一后的 **prompt 总量**（含命中与写入）= 命中率分母，不是裸 input_tokens */
   input: number;
+  /** 缓存写入（建缓存）：计入 input，但不算命中 */
+  cacheWrite?: number;
   model: string;
   ts: number;
 }
 
 export interface CacheRoundAccum {
+  /** 归一后的 prompt 总量（命中率分母） */
   input: number;
   output: number;
   cacheRead: number;
+  cacheWrite?: number;
 }
 
 export interface CacheBucket {
@@ -88,6 +109,8 @@ export interface CacheBucket {
   model: string;
   provider?: string;
   reportsCache: boolean;
+  /** 本桶 usage 里是否真的出现过 cache 字段（决定 c0% vs c—） */
+  sawCacheField: boolean;
   samples: CacheSample[];
   current: CacheRoundAccum;
 }
@@ -97,6 +120,8 @@ export interface CacheSnapshot {
   sessionId: string;
   model: string;
   reportsCache: boolean;
+  /** usage 里是否真的出现过 cache 字段（false 时不写样本 → 显示 c—，不写假 0%） */
+  sawCacheField: boolean;
   samples: CacheSample[];
   current: CacheRoundAccum;
   /** 近 lastN 轮合并命中率；不支持或无样本 → null */
@@ -109,19 +134,13 @@ const HISTORY = 20;
 const DISPLAY_N = 10;
 
 function emptyRound(): CacheRoundAccum {
-  return { input: 0, output: 0, cacheRead: 0 };
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
 
-function parseUsage(u: Record<string, unknown> | null | undefined): CacheRoundAccum {
-  if (!u) return emptyRound();
-  const input = Number(u.prompt_tokens ?? u.input_tokens ?? u.inputTokens ?? 0) || 0;
-  const output = Number(u.completion_tokens ?? u.output_tokens ?? u.outputTokens ?? 0) || 0;
-  const details = u.prompt_tokens_details as { cached_tokens?: number } | undefined;
-  const cacheRead =
-    Number(u.cached_tokens ?? u.cache_read_input_tokens ?? u.cache_hit_tokens ?? details?.cached_tokens ?? 0) || 0;
-  return { input, output, cacheRead };
-}
-
+/**
+ * 近 lastN 轮的**合并**命中率（sum(命中)/sum(prompt 总量)），而非各轮命中率的均值——
+ * 大 prompt 轮次应当占更大权重。结果 clamp 在 0–100。
+ */
 export function avgCacheHitPct(
   samples: Array<{ cacheRead: number; input: number }>,
   lastN = DISPLAY_N,
@@ -130,8 +149,7 @@ export function avgCacheHitPct(
   const slice = samples.slice(-lastN);
   const sumCache = slice.reduce((a, c) => a + (c.cacheRead ?? 0), 0);
   const sumInput = slice.reduce((a, c) => a + (c.input ?? 0), 0);
-  if (sumInput <= 0) return null;
-  return Math.round((sumCache / sumInput) * 100);
+  return cacheHitPct(sumCache, sumInput);
 }
 
 export function formatCacheLabelFromSnapshot(snap: CacheSnapshot): string {
@@ -188,6 +206,7 @@ export class PromptCacheLedger {
         model: model || "",
         provider,
         reportsCache: modelReportsPromptCache(model, provider),
+        sawCacheField: false,
         samples: [],
         current: emptyRound(),
       };
@@ -230,11 +249,14 @@ export class PromptCacheLedger {
     }
 
     const b = this.ensure(opts.agentName, opts.sessionId, opts.model, opts.provider);
-    const u = parseUsage(opts.usage);
-    b.current.input += u.input;
+    // 归一后再累加：input 是 prompt 总量（Anthropic 需补回命中/写入），否则分母偏小
+    const u = normalizeCacheUsage(opts.usage as Record<string, unknown> | null | undefined);
+    b.current.input += u.promptTotal;
     b.current.output += u.output;
     if (b.reportsCache) {
       b.current.cacheRead += u.cacheRead;
+      b.current.cacheWrite = (b.current.cacheWrite ?? 0) + u.cacheWrite;
+      if (u.reported) b.sawCacheField = true;
     }
     return this.snapshot(opts.agentName, opts.sessionId, opts.model);
   }
@@ -249,18 +271,24 @@ export class PromptCacheLedger {
     if (!b) {
       return this.snapshot(agentName, sessionId, model);
     }
-    if (b.reportsCache && (b.current.input > 0 || b.current.cacheRead > 0)) {
+    // 只有「模型可能上报」且「本桶真见过 cache 字段」才写样本。
+    // 二者缺一即只重置 current —— 不写假 0%，UI 显示 c—。
+    if (
+      b.reportsCache &&
+      b.sawCacheField &&
+      (b.current.input > 0 || b.current.cacheRead > 0)
+    ) {
       b.samples = [
         ...b.samples,
         {
           cacheRead: b.current.cacheRead,
           input: b.current.input,
+          cacheWrite: b.current.cacheWrite ?? 0,
           model: b.model,
           ts: Date.now(),
         },
       ].slice(-HISTORY);
     }
-    // 不支持 cache 的模型：只重置 current，不写假 0% 样本
     b.current = emptyRound();
     return this.toSnapshot(b);
   }
@@ -277,6 +305,7 @@ export class PromptCacheLedger {
         sessionId: sessionId || "",
         model: model || "",
         reportsCache,
+        sawCacheField: false,
         samples: [],
         current: emptyRound(),
         avgHitPct,
@@ -287,12 +316,28 @@ export class PromptCacheLedger {
   }
 
   private toSnapshot(b: CacheBucket): CacheSnapshot {
-    const { avgHitPct, label } = buildLabel(b.reportsCache, b.samples);
+    // 含未 seal 的 current：流式过程中也能看到本轮命中率，避免一直 c—
+    const samplesForAvg = [...b.samples];
+    if (
+      b.reportsCache &&
+      b.sawCacheField &&
+      (b.current.input > 0 || b.current.cacheRead > 0)
+    ) {
+      samplesForAvg.push({
+        cacheRead: b.current.cacheRead,
+        input: b.current.input,
+        cacheWrite: b.current.cacheWrite ?? 0,
+        model: b.model,
+        ts: Date.now(),
+      });
+    }
+    const { avgHitPct, label } = buildLabel(b.reportsCache, samplesForAvg);
     return {
       agentName: b.agentName,
       sessionId: b.sessionId,
       model: b.model,
       reportsCache: b.reportsCache,
+      sawCacheField: b.sawCacheField,
       samples: b.samples.map((s) => ({ ...s })),
       current: { ...b.current },
       avgHitPct,
@@ -300,19 +345,23 @@ export class PromptCacheLedger {
     };
   }
 
-  /** 清空某会话下该 agent 的所有模型桶 */
+  /**
+   * 清空某会话下该 agent 的所有模型桶。
+   * 前缀必须与 `bucketKey` 同规则（空 sessionId → `_none`），否则 /new 后清不掉旧桶，
+   * 新会话会继续显示上一个会话的命中率。
+   */
   clearSession(agentName: string, sessionId: string): void {
-    const prefix = `${(agentName || "main").trim()}::${(sessionId || "").trim()}::`;
+    const a = (agentName || "main").trim() || "main";
+    const s = (sessionId || "").trim() || "_none";
+    const prefix = `${a}::${s}::`;
     for (const k of [...this.buckets.keys()]) {
-      if (k.startsWith(prefix) || k.startsWith(`${(agentName || "main").trim()}::${sessionId}::`)) {
-        this.buckets.delete(k);
-      }
+      if (k.startsWith(prefix)) this.buckets.delete(k);
     }
   }
 
   /** 清空某 agent 全部会话桶 */
   clearAgent(agentName: string): void {
-    const prefix = `${(agentName || "main").trim()}::`;
+    const prefix = `${(agentName || "main").trim() || "main"}::`;
     for (const k of [...this.buckets.keys()]) {
       if (k.startsWith(prefix)) this.buckets.delete(k);
     }

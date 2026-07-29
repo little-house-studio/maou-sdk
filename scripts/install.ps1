@@ -1,4 +1,13 @@
-# Maou installer (Windows PowerShell). Does NOT install Node.
+# Maou **开发者**安装器（Windows PowerShell）—— 从源码树构建。
+#
+# ┌─ 你可能想要的是另一个 ────────────────────────────────────────┐
+# │ 只是想「用」maou？别用这个脚本，它需要 pnpm 并且会编译。       │
+# │   irm .../scripts/install-user.ps1 | iex                      │
+# │ 那个装的是预编译包，零编译，只要 Node ≥ 20。                  │
+# └───────────────────────────────────────────────────────────────┘
+#
+# 跨平台等价物（推荐，三系统一条命令）：pnpm setup:dev
+#
 # Default: Node/pnpm + prebuilt natives (no Rust / VS Build Tools required).
 # Dev local build: $env:MAOU_BUILD_NATIVE=1; .\scripts\install.ps1
 $ErrorActionPreference = "Stop"

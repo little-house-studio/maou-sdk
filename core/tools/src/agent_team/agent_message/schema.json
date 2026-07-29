@@ -1,20 +1,17 @@
 {
   "name": "agent_message",
-  "description": "子 Agent 管理。仅在需要并行处理复杂任务时创建子 Agent。简单任务不需要子 Agent。",
+  "description": "fork 子 Agent 真并行执行独立任务。默认同步返回输出（── 输出 ──）；detached=true 后台跑。不要用 output 动作——结果在 fork 返回值里。",
   "parameters": {
     "type": "object",
     "properties": {
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
+      },
       "action": {
         "type": "string",
-        "enum": [
-          "list",
-          "create",
-          "status",
-          "output",
-          "update-task",
-          "stop"
-        ],
-        "description": "list | create | status | output | update-task | stop"
+        "enum": ["fork", "create", "fork_layer", "list", "status", "output"],
+        "description": "fork/create: 执行子任务（默认同步返回完整输出）| fork_layer: 并发当前 todo 层 | list/status/output: 读本进程结果缓存（可选，优先用 fork 返回值）"
       },
       "reason": {
         "type": "string",
@@ -22,25 +19,49 @@
       },
       "name": {
         "type": "string",
-        "description": "子 Agent 唯一名称。"
+        "description": "子 Agent / taskId（fork 可省略自动生成；output 时必填）"
       },
       "task": {
         "type": "string",
-        "description": "任务描述。create 必填。"
+        "description": "分配给子 Agent 的任务描述（fork/create 必填）"
       },
-      "description": {
+      "detail": {
         "type": "string",
         "description": "角色说明。可选。"
       },
-      "limit": {
-        "type": "integer",
-        "description": "output 时返回的最大消息数。默认 5。"
+      "fork_mode": {
+        "type": "string",
+        "enum": ["context_only", "context_and_config"],
+        "description": "默认 context_only；context_and_config 需 agent_name"
+      },
+      "agent_name": {
+        "type": "string",
+        "description": "fork_mode=context_and_config 时必填的 agent 配置名"
+      },
+      "detached": {
+        "type": "boolean",
+        "description": "true=后台立即返回；false（默认）=等完成并在 tool_result 含输出"
+      },
+      "timeout_ms": {
+        "type": "number",
+        "description": "子 Agent wall-clock 超时毫秒"
+      },
+      "kind": {
+        "type": "string",
+        "enum": ["fork", "helper", "task", "project"],
+        "description": "子 Agent 类型"
+      },
+      "tool_preset": {
+        "type": "string",
+        "enum": ["explore", "web_search", "report", "file_search", "coding_scoped", "none"],
+        "description": "task/project 工具白名单预设"
+      },
+      "output_schema": {
+        "type": "object",
+        "description": "校验子 Agent yield 结果的 JSON Schema（可选）"
       }
     },
-    "required": [
-      "action",
-      "reason"
-    ],
+    "required": ["description", "action", "reason"],
     "additionalProperties": false
   }
 }

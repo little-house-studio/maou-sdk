@@ -65,8 +65,13 @@ export class ${pascalCase(name)}Tool extends Tool {
     parameters: {
       type: "object",
       properties: {
+        description: {
+          type: "string",
+          description: "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。",
+        },
         input: { type: "string", description: "输入参数" },
       },
+      required: ["description"],
     },
     allowedModes: ["plan", "execute"],
   };
@@ -91,8 +96,13 @@ export default new ${pascalCase(name)}Tool();
     parameters: {
       type: "object",
       properties: {
+        description: {
+          type: "string",
+          description: "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。",
+        },
         input: { type: "string", description: "输入参数" },
       },
+      required: ["description"],
     },
   };
 

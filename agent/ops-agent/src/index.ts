@@ -14,6 +14,7 @@ import {
   TaskSessionStore,
 } from "@little-house-studio/context";
 import type { Summarizer, SessionStore } from "@little-house-studio/context";
+import { machineOpenPathGuard } from "@little-house-studio/tools";
 import type { ToolRegistry } from "@little-house-studio/tools";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { ConfigStore } from "@little-house-studio/types";
@@ -24,7 +25,7 @@ import {
 } from "@little-house-studio/types";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { cpSync, existsSync, mkdirSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 
 function resolveOpsTemplateDir(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -35,9 +36,26 @@ function installTemplateResources(templateDir: string, targetDir: string): void 
   for (const resource of ["subagents", "skills", "connections"]) {
     const source = join(templateDir, resource);
     const target = join(targetDir, resource);
-    if (!existsSync(source) || existsSync(target)) continue;
-    mkdirSync(targetDir, { recursive: true });
-    cpSync(source, target, { recursive: true });
+    if (!existsSync(source)) continue;
+    // 整目录不存在 → 整拷；skills 已存在时合并缺失的 skill 包（不覆盖用户改过的）
+    if (!existsSync(target)) {
+      mkdirSync(targetDir, { recursive: true });
+      cpSync(source, target, { recursive: true });
+      continue;
+    }
+    if (resource === "skills") {
+      try {
+        for (const name of readdirSync(source)) {
+          const srcSkill = join(source, name);
+          const dstSkill = join(target, name);
+          if (!existsSync(dstSkill)) {
+            cpSync(srcSkill, dstSkill, { recursive: true });
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
@@ -114,6 +132,10 @@ export function createOpsAgent(opts: OpsAgentOptions): OpsAgent {
     }),
   });
   runtimeContainer.ref = runtime;
+
+  // 机器管家：reader/glob/grep/write 等路径可访问全机（相对路径仍落在 opsRoot）。
+  // 安全靠 use_terminal 审批 / DCG / 写操作确认，不硬锁在 ~/.maou/ops。
+  runtime.setDefaultPathGuard(machineOpenPathGuard({ projectRoot: opsRoot }));
 
   return {
     runtime,

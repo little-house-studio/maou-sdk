@@ -1,0 +1,330 @@
+/* canvas-ui complete demo — warm paper / ink, editorial type */
+
+.portfolio {
+  --ink: #12110e;
+  --paper: #e8e2d6;
+  --muted: #8a8070;
+  --line: #3a342c;
+  --accent: #c4783a;
+  --panel: rgba(18, 17, 14, 0.72);
+  --panel-border: rgba(232, 226, 214, 0.12);
+
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 1fr minmax(240px, 320px);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  overflow: hidden;
+}
+
+.portfolio-stage {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: #1a1814;
+}
+
+.portfolio-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.portfolio-rail,
+.portfolio-detail {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.5rem 1.25rem;
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  border-color: var(--panel-border);
+  overflow: auto;
+}
+
+.portfolio-rail {
+  border-right: 1px solid var(--panel-border);
+}
+
+.portfolio-detail {
+  border-left: 1px solid var(--panel-border);
+}
+
+.portfolio-mark {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.portfolio-name {
+  margin: 0;
+  font-size: clamp(1.4rem, 2vw, 1.85rem);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.portfolio-role {
+  margin: 0;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+}
+
+.portfolio-tagline {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: #c8c0b0;
+  max-width: 28ch;
+}
+
+.portfolio-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--panel-border);
+  padding-top: 1rem;
+}
+
+.portfolio-nav button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  padding: 0.55rem 0.4rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.92rem;
+  border-left: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.portfolio-nav button:hover {
+  color: var(--paper);
+  background: rgba(232, 226, 214, 0.04);
+}
+
+.portfolio-nav button.active {
+  color: var(--paper);
+  border-left-color: var(--accent);
+  background: rgba(196, 120, 58, 0.08);
+}
+
+.portfolio-nav .idx {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--accent);
+  margin-right: 0.5rem;
+}
+
+.portfolio-controls {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.portfolio-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.portfolio-controls select,
+.portfolio-controls input[type="range"] {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+.portfolio-controls select {
+  background: #1c1a16;
+  color: var(--paper);
+  border: 1px solid var(--line);
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+}
+
+.portfolio-controls .row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.portfolio-controls .row input {
+  accent-color: var(--accent);
+}
+
+.portfolio-year {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+}
+
+.portfolio-title {
+  margin: 0;
+  font-size: clamp(1.5rem, 2.4vw, 2rem);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.portfolio-medium {
+  margin: 0;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.portfolio-blurb {
+  margin: 0;
+  font-size: 0.98rem;
+  line-height: 1.55;
+  color: #d0c8b8;
+}
+
+.portfolio-meta {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid var(--panel-border);
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.portfolio-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 1rem;
+  transform: translateX(-50%);
+  z-index: 2;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(232, 226, 214, 0.45);
+  pointer-events: none;
+  mix-blend-mode: difference;
+}
+
+.portfolio-fps {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 2;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: rgba(232, 226, 214, 0.4);
+  pointer-events: none;
+}
+
+.portfolio-stage-host {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.cui-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.cui-tabs button {
+  appearance: none;
+  border: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--muted);
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+}
+
+.cui-tabs button.active {
+  color: var(--paper);
+  border-color: var(--accent);
+  background: rgba(196, 120, 58, 0.12);
+}
+
+.cui-hud-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+  cursor: crosshair;
+}
+
+.cui-snippet {
+  margin: 0;
+  padding: 1.25rem 1.5rem;
+  height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #c8b898;
+  background: #14110c;
+  white-space: pre;
+}
+
+.cui-cpu-preview {
+  width: 100%;
+  max-width: 200px;
+  height: 80px;
+  image-rendering: pixelated;
+  border: 1px solid var(--line);
+  background: #1a1410;
+}
+
+.portfolio-controls code {
+  color: var(--accent);
+  font-size: 10px;
+}
+
+@media (max-width: 960px) {
+  .portfolio {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr auto;
+  }
+  .portfolio-rail,
+  .portfolio-detail {
+    max-height: 28vh;
+  }
+  .portfolio-stage {
+    min-height: 40vh;
+  }
+  .portfolio-nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .portfolio-nav button {
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+    padding: 0.4rem 0.55rem;
+  }
+  .portfolio-nav button.active {
+    border-left-color: transparent;
+    border-bottom-color: var(--accent);
+  }
+}

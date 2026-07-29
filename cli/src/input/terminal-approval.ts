@@ -145,18 +145,87 @@ export function installCliTerminalApprover(): void {
     setTerminalPolicyRoot(userMaouRoot());
   } catch { /* ignore */ }
 
+  const showHumanCard = (
+    command: string,
+    ctx: Parameters<TerminalApprover>[1],
+    extra?: { summary?: string; label?: string },
+  ) =>
+    new Promise<{ approve: boolean; persist?: "whitelist" | "blacklist" | "none" }>(
+      (resolve, reject) => {
+        const id = genId();
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          const s = useStore.getState();
+          if (s.terminalApproval?.id === id) s.setTerminalApproval(null);
+          reject(new Error("approval timeout"));
+        }, APPROVAL_TIMEOUT_MS);
+        pending.set(id, { resolve, reject, timer });
+        const risk = ctx.risk === "high" ? "high" : "low";
+        const summary =
+          extra?.summary ||
+          ctx.summary ||
+          (risk === "high"
+            ? "高风险命令：请确认你理解影响后再授权。"
+            : "终端命令待确认。");
+        const label =
+          extra?.label ||
+          ctx.label ||
+          (risk === "high" ? "高风险" : "需确认");
+        useStore.getState().setTerminalApproval({
+          id,
+          command,
+          agentName: resolveAgentName(ctx.agentName, APPROVAL_AGENT_FALLBACK),
+          cwd: ctx.cwd,
+          risk,
+          summary,
+          label,
+          ruleId: ctx.ruleId,
+          reason: ctx.reason,
+          hint: summary,
+        });
+        try {
+          void import("../state/agent-presence.js").then((m) => {
+            const st = useStore.getState();
+            m.markAgentBlocked(
+              m.agentPresenceKey(st.agentName, st.agentProjectRoot),
+              true,
+            );
+          });
+        } catch { /* ignore */ }
+        useStore
+          .getState()
+          .toastMsg(
+            risk === "high"
+              ? "高风险命令待确认（Y 允许 / N 拒绝）"
+              : "命令待确认（Y 允许 / N 拒绝）",
+            "warn",
+          );
+      },
+    );
+
   const approver: TerminalApprover = async (command, ctx) => {
     const mode = resolveEffectiveApprovalMode(ctx.agentName);
 
-    // ── auto：AI 审核，绝不弹人手卡 ──────────────────────────────
+    // AI 拒后申诉 / 显式要求人手：直接弹确认条
+    if (ctx.forceHuman) {
+      return showHumanCard(command, ctx, {
+        summary: ctx.summary,
+        label: ctx.label || "确认执行",
+      });
+    }
+
+    // ── auto：AI 审核；拒绝后弹人手确认（申诉）──────────────────
     if (mode === "auto") {
       const reviewer = getTerminalReviewer();
       if (!reviewer) {
         useStore.getState().toastMsg(
-          "auto 模式：未配置审核模型，已拒绝命令（不弹审批卡）",
+          "auto 模式：未配置审核模型，请人工确认",
           "warn",
         );
-        return { approve: false, persist: "none" };
+        return showHumanCard(command, ctx, {
+          summary: "未配置 AI 审核器，请人工确认是否执行。",
+          label: "需确认",
+        });
       }
       try {
         useStore.getState().toastMsg("auto 审核中…", "info");
@@ -164,24 +233,30 @@ export function installCliTerminalApprover(): void {
           agentName: resolveAgentName(ctx.agentName, APPROVAL_AGENT_FALLBACK),
           cwd: ctx.cwd,
         });
+        if (verdict.approve) {
+          useStore.getState().toastMsg(
+            `auto 已放行：${(verdict.reason || "").slice(0, 40)}`,
+            "ok",
+          );
+          return { approve: true, persist: "whitelist" };
+        }
         useStore.getState().toastMsg(
-          verdict.approve
-            ? `auto 已放行：${(verdict.reason || "").slice(0, 40)}`
-            : `auto 已拒绝：${(verdict.reason || "").slice(0, 40)}`,
-          verdict.approve ? "ok" : "warn",
+          `auto 未通过：${(verdict.reason || "").slice(0, 36)} · 可确认执行`,
+          "warn",
         );
-        return {
-          approve: verdict.approve,
-          // AI 放行：按命令类写白名单，减少同类重复审核；拒绝不写黑名单
-          // （黑名单由 tools recordReviewReject 负责）
-          persist: verdict.approve ? "whitelist" : "none",
-        };
+        return showHumanCard(command, ctx, {
+          summary: `AI 审核未通过：${verdict.reason || "无理由"}。可确认执行一次。`,
+          label: ctx.risk === "high" ? "AI拒·高风险确认" : "AI拒·确认执行",
+        });
       } catch (err) {
         useStore.getState().toastMsg(
           `auto 审核异常：${String(err).slice(0, 40)}`,
           "err",
         );
-        return { approve: false, persist: "none" };
+        return showHumanCard(command, ctx, {
+          summary: `AI 审核异常：${String(err).slice(0, 80)}。请人工确认。`,
+          label: "审核异常·确认",
+        });
       }
     }
 
@@ -191,57 +266,7 @@ export function installCliTerminalApprover(): void {
     }
 
     // ── normal：人手审批卡 ──────────────────────────────────────
-    return new Promise((resolve, reject) => {
-      const id = genId();
-      const timer = setTimeout(() => {
-        pending.delete(id);
-        const s = useStore.getState();
-        if (s.terminalApproval?.id === id) s.setTerminalApproval(null);
-        reject(new Error("approval timeout"));
-      }, APPROVAL_TIMEOUT_MS);
-
-      pending.set(id, { resolve, reject, timer });
-
-      const risk = ctx.risk === "high" ? "high" : "low";
-      const summary =
-        ctx.summary ||
-        (risk === "high"
-          ? "高风险命令：请确认你理解影响后再授权。"
-          : "终端命令待确认。");
-      const label = ctx.label || (risk === "high" ? "高风险" : "需确认");
-
-      useStore.getState().setTerminalApproval({
-        id,
-        command,
-        agentName: resolveAgentName(ctx.agentName, APPROVAL_AGENT_FALLBACK),
-        cwd: ctx.cwd,
-        risk,
-        summary,
-        label,
-        ruleId: ctx.ruleId,
-        reason: ctx.reason,
-        // 兼容旧 UI 字段
-        hint: summary,
-      });
-      try {
-        // 动态 import 会返回 Promise；此处用同步副作用包装避免把 approver 改成 async 链路
-        void import("../state/agent-presence.js").then((m) => {
-          const st = useStore.getState();
-          m.markAgentBlocked(
-            m.agentPresenceKey(st.agentName, st.agentProjectRoot),
-            true,
-          );
-        });
-      } catch { /* ignore */ }
-      useStore
-        .getState()
-        .toastMsg(
-          risk === "high"
-            ? "高风险终端命令待确认（红条 · Y/N）"
-            : "终端命令待你确认（黄条 · Y 允许 / N 拒绝）",
-          risk === "high" ? "err" : "warn",
-        );
-    });
+    return showHumanCard(command, ctx);
   };
 
   setTerminalApprover(approver);

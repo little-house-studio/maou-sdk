@@ -46,6 +46,8 @@ export interface ProtoSystemEvent {
   content: string;
   ts?: number;
   detail?: string;
+  /** retry = 可点按 / R 重试 */
+  action?: string;
 }
 
 export interface ProtoSelectItem {
@@ -177,6 +179,14 @@ export interface ProtoSupervisor {
   plan?: string;
   verify_rounds?: number;
   last_verdict?: string;
+  /** 目标一句话（从 plan 提取），chip / 详情标题用 */
+  objective?: string;
+  /** 监督开始的 epoch ms：TUI 侧 elapsed 的绝对基线 */
+  started_at_ms?: number;
+  /** 本次 goal 期间新增 token（开始时快照做基线） */
+  tokens_used?: number;
+  /** token 预算（有则详情里画进度条） */
+  token_budget?: number;
 }
 
 export interface ProtoChrome {
@@ -189,6 +199,8 @@ export interface ProtoChrome {
   detail?: string;
   approval_mode?: string;
   approval_label?: string;
+  /** 顶部横幅 tip 池：1 条=钉住，多条=TUI 定时轮播 */
+  tips?: string[];
   agent?: string;
   provider?: string;
   model?: string;

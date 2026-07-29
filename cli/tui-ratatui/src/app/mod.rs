@@ -9,7 +9,11 @@ mod state;
 mod text_util;
 
 #[cfg(test)]
+mod banner_tests;
+#[cfg(test)]
 mod edit_safety_tests;
+#[cfg(test)]
+mod goal_tests;
 
 #[allow(unused_imports)]
 pub use input_paint::{
@@ -85,6 +89,8 @@ pub struct App {
     pub(crate) ctrl_c_armed: bool,
     pub(crate) ctrl_c_at: Instant,
     pub(crate) last_input_emit: Instant,
+    /// 用户在场活动节流（停 Node 侧卡住长铃），避免 mousemove 刷爆 IPC
+    pub(crate) last_user_activity_emit: Instant,
     /// Software caret blink phase (Ink notifyCursorActivity / isCursorBlinkVisible)
     pub(crate) caret_blink_on: bool,
     pub(crate) caret_blink_at: Instant,
@@ -97,7 +103,23 @@ pub struct App {
     pub(crate) spinner_frame: u64,
     pub(crate) back_to_bottom_y: Option<u16>,
     pub(crate) jump_prev_y: Option<u16>,
+    /// Goal 状态 chip 的 1 行热区（点击开/关详情浮层）
     pub(crate) goal_rect: Option<Rect>,
+    /// Goal 详情里的可点按钮：绝对屏幕行 y → action id
+    pub(crate) goal_action_hits: Vec<(u16, String)>,
+    /// Goal 详情浮层是否打开（grok: show_goal_detail）
+    pub(crate) show_goal_detail: bool,
+    /// 详情浮层外框 / 右上角关闭按钮热区
+    pub(crate) goal_detail_rect: Option<Rect>,
+    pub(crate) goal_detail_close: Option<Rect>,
+    /// 详情内计划滚动偏移（计划可能几千字）
+    pub(crate) goal_detail_scroll: usize,
+    /// elapsed 单调下限：Node 换算基线抖动时不让计时倒退（grok: elapsed_floor_ms）
+    pub(crate) goal_elapsed_floor_ms: u64,
+    /// 上一帧的 goal 起始时刻，变化即认作新 goal → 重置 floor / 滚动
+    pub(crate) goal_started_at: Option<u64>,
+    /// 上一次见到的 goal 相位（推进时自动收起详情）
+    pub(crate) goal_last_state: Option<String>,
     pub(crate) chat_rect: Rect,
     pub(crate) chat_inner: Rect,
     /// Last painted chat scrollbar hit-box / thumb metrics (None if hidden).
@@ -133,6 +155,10 @@ pub struct App {
     pub(crate) max_scroll_lines: usize,
     /// InfoBar 右侧模型名 hit 区（点击打开 model overlay）
     pub(crate) model_hit: Option<Rect>,
+    /// 顶部横幅 tip 轮播：上帧池（内容变化即重置）+ 当前下标 + 上次切换时刻
+    pub(crate) banner_tips: Vec<String>,
+    pub(crate) banner_tip_i: usize,
+    pub(crate) banner_tip_at: Instant,
     pub vram: Vram,
     pub(crate) local_toast: Option<LocalToast>,
     pub(crate) rx: Receiver<InMsg>,
@@ -189,6 +215,9 @@ impl App {
             ctrl_c_armed: false,
             ctrl_c_at: Instant::now(),
             last_input_emit: Instant::now(),
+            last_user_activity_emit: Instant::now()
+                .checked_sub(std::time::Duration::from_secs(10))
+                .unwrap_or_else(Instant::now),
             caret_blink_on: true,
             caret_blink_at: Instant::now(),
             tool_hits: vec![],
@@ -200,6 +229,14 @@ impl App {
             back_to_bottom_y: None,
             jump_prev_y: None,
             goal_rect: None,
+            goal_action_hits: vec![],
+            show_goal_detail: false,
+            goal_detail_rect: None,
+            goal_detail_close: None,
+            goal_detail_scroll: 0,
+            goal_elapsed_floor_ms: 0,
+            goal_started_at: None,
+            goal_last_state: None,
             chat_rect: Rect::default(),
             chat_inner: Rect::default(),
             chat_sb_geom: None,
@@ -224,6 +261,9 @@ impl App {
             last_edge_tick: Instant::now(),
             max_scroll_lines: 0,
             model_hit: None,
+            banner_tips: vec![],
+            banner_tip_i: 0,
+            banner_tip_at: Instant::now(),
             vram: Vram::empty(),
             local_toast: None,
             rx,

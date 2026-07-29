@@ -12,6 +12,13 @@ use ratatui::buffer::Buffer;
 use std::sync::mpsc::TryRecvError;
 use std::time::{Duration, Instant};
 
+/// 顶部横幅 tip 轮播间隔（够读完一条中文短句，又不至于久停）
+pub(crate) const BANNER_TIP_PERIOD: Duration = Duration::from_secs(9);
+
+/// goal 耗时的合理上限（7 天）。超过即认作起点不可信（陈旧快照 / 时钟错位），
+/// 显示 `—` 而不是一个跨年的时长。
+const GOAL_ELAPSED_SANE_MAX_MS: u64 = 7 * 24 * 3600 * 1000;
+
 impl App {
     pub fn capture_vram(&mut self, buf: &Buffer) {
         self.vram.capture_from_buffer(buf);
@@ -35,6 +42,107 @@ impl App {
             kind: kind.into(),
             until: Instant::now() + Duration::from_millis(ms),
         });
+    }
+
+    /// Goal 是否处于"自己在跑"的相位（计时走字 + spinner）。
+    /// confirming_plan / confirming 在等用户，计时冻结 —— 等人的时间不算执行耗时。
+    pub(crate) fn goal_is_running(&self) -> bool {
+        matches!(
+            self.chrome
+                .supervisor
+                .as_ref()
+                .map(|s| s.state.as_str())
+                .unwrap_or(""),
+            "planning" | "started"
+        )
+    }
+
+    /// Goal 已运行时长（ms）。
+    ///
+    /// 语义（对齐 grok `live_elapsed_ms`）：
+    ///   - 运行中（planning/started）→ 按绝对起点随帧走字
+    ///   - 等用户（confirming*）→ **冻结**在最后一次运行时的读数：等人拍板的时间
+    ///     不该算进执行耗时，否则一个放着过夜的确认会显示「9h」
+    ///   - 任何情况都不倒退（`goal_elapsed_floor_ms` 兼作单调下限与冻结值）
+    ///
+    /// 起点显然不可信（陈旧/错位，算出跨月的时长）时返回 None → UI 显示 `—`，
+    /// 而不是把 `495854h45m` 这种数字摆在屏幕上。
+    pub(crate) fn goal_elapsed_ms(&mut self) -> Option<u64> {
+        let started = self
+            .chrome
+            .supervisor
+            .as_ref()
+            .and_then(|s| s.started_at_ms)
+            .filter(|v| *v > 0)?;
+        // 换 goal（起点变了）→ 重置单调下限与详情滚动，不继承上个目标的读数
+        if self.goal_started_at != Some(started) {
+            self.goal_started_at = Some(started);
+            self.goal_elapsed_floor_ms = 0;
+            self.goal_detail_scroll = 0;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(started);
+        // 未来时刻 / 超出 GOAL_ELAPSED_SANE_MAX_MS 的起点都视为不可信
+        if started > now.saturating_add(60_000) {
+            return None;
+        }
+        let live = now.saturating_sub(started);
+        if live > GOAL_ELAPSED_SANE_MAX_MS {
+            return None;
+        }
+        // 运行中才推进；等用户时保持上次读数（floor 即冻结值）
+        if self.goal_is_running() || self.goal_elapsed_floor_ms == 0 {
+            self.goal_elapsed_floor_ms = live.max(self.goal_elapsed_floor_ms);
+        }
+        Some(self.goal_elapsed_floor_ms)
+    }
+
+    /// 关闭 goal 详情浮层；返回是否真的关掉了（供 Esc 判断是否已消费按键）。
+    pub(crate) fn close_goal_detail(&mut self) -> bool {
+        if self.show_goal_detail {
+            self.show_goal_detail = false;
+            self.goal_detail_scroll = 0;
+            self.request_full_redraw();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 点 chip：开/关详情。goal 不在时无动作。
+    pub(crate) fn toggle_goal_detail(&mut self) {
+        if self.chrome.supervisor.as_ref().map(|s| s.active) != Some(true) {
+            return;
+        }
+        self.show_goal_detail = !self.show_goal_detail;
+        self.goal_detail_scroll = 0;
+        self.request_full_redraw();
+    }
+
+    /// 顶部横幅当前 tip。池由 Node 下发（文案唯一源）：
+    /// 单条 = 钉住（上下文提示），多条 = 每 `BANNER_TIP_PERIOD` 轮播一条。
+    /// 池内容变化即回到第 0 条并重置计时，避免切换瞬间显示旧位次。
+    pub(crate) fn banner_tip(&mut self) -> String {
+        if self.chrome.tips.is_empty() {
+            if !self.banner_tips.is_empty() {
+                self.banner_tips.clear();
+                self.banner_tip_i = 0;
+            }
+            return String::new();
+        }
+        if self.banner_tips != self.chrome.tips {
+            self.banner_tips = self.chrome.tips.clone();
+            self.banner_tip_i = 0;
+            self.banner_tip_at = Instant::now();
+        } else if self.banner_tips.len() > 1
+            && self.banner_tip_at.elapsed() >= BANNER_TIP_PERIOD
+        {
+            self.banner_tip_i = (self.banner_tip_i + 1) % self.banner_tips.len();
+            self.banner_tip_at = Instant::now();
+        }
+        self.banner_tips[self.banner_tip_i % self.banner_tips.len()].clone()
     }
 
     pub(crate) fn purge_toast(&mut self) {
@@ -193,6 +301,28 @@ impl App {
             .as_ref()
             .map(|s| s.active)
             .unwrap_or(false);
+        let now_sup_state = self
+            .chrome
+            .supervisor
+            .as_ref()
+            .map(|s| s.state.as_str().to_string());
+        // goal 相位推进 → 收起详情浮层：用户已经做出选择，留着旧内容会挡住新状态
+        if had_goal
+            && now_goal
+            && self.goal_last_state.as_deref() != now_sup_state.as_deref()
+            && self.show_goal_detail
+        {
+            self.show_goal_detail = false;
+            self.goal_detail_scroll = 0;
+            self.request_full_redraw();
+        }
+        self.goal_last_state = now_sup_state.clone();
+        // goal 结束 → 详情必须一起消失（chip 已经没了，浮层不能孤零零留着）
+        if !now_goal && self.show_goal_detail {
+            self.show_goal_detail = false;
+            self.goal_detail_scroll = 0;
+            self.request_full_redraw();
+        }
         if was_streaming != self.streaming
             || had_goal != now_goal
             || had_ev_exp != self.chrome.event_block_expanded
@@ -507,11 +637,24 @@ impl App {
 
     pub(crate) fn emit_input(&mut self) {
         self.notify_caret_activity();
+        self.emit_user_activity("key");
         emit(&OutMsg::InputUpdate {
             text: self.input.clone(),
             cursor: self.cursor,
         });
         self.last_input_emit = Instant::now();
+    }
+
+    /// 通知 Node「用户在场」——停卡住长铃。mousemove 节流 400ms，键/点 150ms。
+    pub(crate) fn emit_user_activity(&mut self, kind: &str) {
+        let min_ms = if kind == "move" { 400 } else { 150 };
+        if self.last_user_activity_emit.elapsed() < Duration::from_millis(min_ms) {
+            return;
+        }
+        self.last_user_activity_emit = Instant::now();
+        emit(&OutMsg::UserActivity {
+            kind: kind.to_string(),
+        });
     }
 
     /// Ink notifyCursorActivity: reset blink phase to "on" so typing isn't mid-off.

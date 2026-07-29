@@ -13,6 +13,7 @@ import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { groupGrepByFile } from "../../compress/output-compressor.js";
+import { resolveToolPath } from "../../path-guard.js";
 
 /** 默认跳过目录（Node 降级 + rg 额外 glob，避免未 gitignore 的 node_modules 噪声） */
 const SKIP_DIRS = new Set([
@@ -427,10 +428,14 @@ export class GrepTool extends Tool {
 
     const searchPath = String(params.path ?? ".").trim();
     const rootResolved = resolve(ctx.workingDir || ctx.projectRoot);
-    const searchDir = resolve(rootResolved, searchPath);
-
-    if (searchDir !== rootResolved && !searchDir.startsWith(rootResolved + sep)) {
-      return createToolResponse(false, `路径越过了项目根目录: ${searchPath}`);
+    let searchDir: string;
+    try {
+      searchDir = resolveToolPath(ctx, searchPath).path;
+    } catch (err: unknown) {
+      return createToolResponse(
+        false,
+        err instanceof Error ? err.message : String(err),
+      );
     }
 
     const globFilter = params.glob ? String(params.glob) : undefined;

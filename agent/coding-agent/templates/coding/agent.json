@@ -19,6 +19,7 @@
     "lsp",
     "use_terminal",
     "search_internet",
+    "use_browser",
     "use_skill",
     "find_skill",
     "todo_manage",

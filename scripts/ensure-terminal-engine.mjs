@@ -38,7 +38,28 @@ import { Readable } from "node:stream";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..");
-const ENGINE_DIR = join(REPO_ROOT, "terminal-engine");
+
+/**
+ * 引擎目录：
+ *   monorepo → <repo>/terminal-engine
+ *   bundle   → <bundle>/node_modules/@little-house-studio/terminal-engine
+ * （bundle 里没有 Rust 源码，只会走下载分支）
+ */
+function resolveEngineDir() {
+  if (process.env.MAOU_TE_DIR) return process.env.MAOU_TE_DIR;
+  const monorepo = join(REPO_ROOT, "terminal-engine");
+  if (existsSync(join(monorepo, "package.json"))) return monorepo;
+  const bundled = join(
+    REPO_ROOT,
+    "node_modules",
+    "@little-house-studio",
+    "terminal-engine",
+  );
+  if (existsSync(join(bundled, "package.json"))) return bundled;
+  return monorepo;
+}
+
+const ENGINE_DIR = resolveEngineDir();
 const FORCE = process.argv.includes("--force");
 const OWNER_REPO =
   process.env.MAOU_NATIVE_REPO || "little-house-studio/maou-sdk";

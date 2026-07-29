@@ -1,9 +1,8 @@
 ## 使用指引
 
-- 子 Agent 管理，用于并行处理复杂任务。
-- action=create：创建子 Agent 执行任务，需指定 name 和 task。
-- action=status：查看子 Agent 状态；action=output：获取子 Agent 输出。
-- action=stop：停止子 Agent；action=update-task：更新任务描述。
-- 简单任务不需要子 Agent，直接执行即可。
-- 子 Agent 完成后用 output 获取结果，再整合到主回复中。
-- limit 控制 output 返回的消息数，默认 5。
+- **主路径**：`action=fork`（或 `create`，同义）+ `task`。**默认同步等待**，tool_result 含 `── 输出 ──`，无需再调 output。
+- **后台**：`detached=true` 立即返回 taskId；进度用 `agent_manage list`，不要用旧 HTTP 式 output。
+- **并行一层**：先 `todo_manage` 建清单，再 `action=fork_layer`。
+- **可选缓存**：`list` / `status` / `output`（需 name=taskId）读本进程 fork 结果缓存；进程重启后缓存清空。
+- 子 Agent 可用 `yield` 提交结构化结果（配合 `output_schema`）。
+- 简单任务不要开子 Agent。

@@ -1,7 +1,7 @@
 {
   "name": "@little-house-studio/cli",
-  "version": "0.1a",
-  "description": "Maou CLI \u2014 \u6781\u7b80\u7ec8\u7aef AI \u5bf9\u8bdd\u754c\u9762",
+  "version": "0.1.0",
+  "description": "Maou CLI — 极简终端 AI 对话界面",
   "type": "module",
   "license": "MIT",
   "bin": {

@@ -45,6 +45,22 @@ describe("上下文溢出检测 (#14)", () => {
     expect(detectContextOverflow("The input token count (1200000) exceeds the maximum")).toBe(true);
     expect(detectContextOverflow("rate limit exceeded")).toBe(false);
     expect(detectContextOverflow("", 413)).toBe(true);
+    // 裸 10305 + 无 token 语义：不算超窗（讯飞网关用 10305 包各种 400）
+    expect(
+      detectContextOverflow('API Error 400: {"error":{"code":10305,"message":"..."}}'),
+    ).toBe(false);
+    expect(
+      detectContextOverflow(
+        'API Error 400: {"error":{"code":10305,"message":"上下文超限，请压缩"}}',
+      ),
+    ).toBe(true);
+    // image_url 不支持：绝不能当超窗
+    expect(
+      detectContextOverflow(
+        `API Error 400: code 10305 message[14].content has unsupported content type: 'image_url'`,
+      ),
+    ).toBe(false);
+    expect(detectContextOverflow("上下文超限，请压缩后重试")).toBe(true);
   });
   it("extractTokenCount 抽取 token 数", () => {
     expect(extractTokenCount("prompt is too long: 250000 tokens")).toBe(250000);

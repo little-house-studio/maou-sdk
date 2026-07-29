@@ -270,6 +270,7 @@ mod tests {
     #[test]
     fn shell_tree_assigns_chat_input_nav() {
         let m = ShellMetrics {
+            has_banner: false,
             has_goal: false,
             goal_h: 0,
             has_approval: false,
@@ -285,6 +286,8 @@ mod tests {
             nav_seg_count: 7,
             overlay_w: 0,
             overlay_h: 0,
+            goal_detail_w: 0,
+            goal_detail_h: 0,
             full_editor: false,
         };
         let s = solve_shell(&m, Rect::new(0, 0, 80, 30));
@@ -316,6 +319,7 @@ mod tests {
     #[test]
     fn shell_hides_event_when_completion() {
         let m = ShellMetrics {
+            has_banner: false,
             has_goal: false,
             goal_h: 0,
             has_approval: false,
@@ -331,6 +335,8 @@ mod tests {
             nav_seg_count: 7,
             overlay_w: 40,
             overlay_h: 12,
+            goal_detail_w: 0,
+            goal_detail_h: 0,
             full_editor: false,
         };
         let s = solve_shell(&m, Rect::new(0, 0, 100, 40));
@@ -341,5 +347,57 @@ mod tests {
         assert_eq!(ov.width, 40);
         assert_eq!(ov.height, 12);
         assert!(ov.x > 0 && ov.y > 0);
+    }
+
+    fn banner_metrics(show_jump: bool, full_editor: bool) -> ShellMetrics {
+        ShellMetrics {
+            has_banner: !full_editor,
+            has_goal: false,
+            goal_h: 0,
+            has_approval: false,
+            has_toast: false,
+            show_back: false,
+            show_jump,
+            empty_hint: false,
+            show_comp: false,
+            comp_h: 0,
+            event_h: 1,
+            input_h: 1,
+            show_info: true,
+            nav_seg_count: 7,
+            overlay_w: 0,
+            overlay_h: 0,
+            goal_detail_w: 0,
+            goal_detail_h: 0,
+            full_editor,
+        }
+    }
+
+    #[test]
+    fn banner_takes_first_row_and_pushes_chat_down() {
+        let s = solve_shell(&banner_metrics(false, false), Rect::new(0, 0, 80, 30));
+        let banner = s.get(Slot::Banner).expect("banner");
+        let chat = s.get(Slot::Chat).expect("chat");
+        assert_eq!(banner, Rect::new(0, 0, 80, 1), "banner owns the top row full-width");
+        assert_eq!(chat.y, 1, "chat starts below the banner");
+        // banner(1)+chat+back(1)+event(1)+input(1)+info(1)+nav(1) fills the viewport
+        assert_eq!(1 + chat.height + 1 + 1 + 1 + 1 + 1, 30);
+    }
+
+    #[test]
+    fn banner_sits_above_jump_bar() {
+        let s = solve_shell(&banner_metrics(true, false), Rect::new(0, 0, 80, 30));
+        let banner = s.get(Slot::Banner).expect("banner");
+        let jump = s.get(Slot::JumpPrev).expect("jump");
+        assert_eq!(banner.y, 0);
+        assert_eq!(jump.y, 1, "「↑ 上一条」在横幅下方");
+        assert_eq!(s.get(Slot::Chat).expect("chat").y, 2);
+    }
+
+    #[test]
+    fn banner_absent_in_full_editor() {
+        let s = solve_shell(&banner_metrics(false, true), Rect::new(0, 0, 80, 30));
+        assert!(s.get(Slot::Banner).is_none());
+        assert!(s.get(Slot::FullEditor).is_some());
     }
 }

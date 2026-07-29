@@ -18,6 +18,7 @@ import {
   cacheHistoryFromEventCache,
   loadCacheHistoryFromLedger,
 } from "../lib/prompt-cache.js";
+import { normalizeCacheUsage } from "@little-house-studio/llm";
 
 let idc = 0;
 export const uid = (): string => `m${Date.now()}_${idc++}`;
@@ -30,6 +31,81 @@ const HISTORY = 20;
 
 function clipToast(s: string): string {
   return s.slice(0, TOAST_TEXT_MAX);
+}
+
+/** 系统事件标题行长度（可在上下文中看清，详情放 detail） */
+const SYS_EVENT_TITLE_MAX = 160;
+const SYS_EVENT_DETAIL_MAX = 4000;
+
+function clipSysTitle(s: string): string {
+  const one = s.replace(/\s+/g, " ").trim();
+  return one.length > SYS_EVENT_TITLE_MAX
+    ? one.slice(0, SYS_EVENT_TITLE_MAX - 1) + "…"
+    : one;
+}
+
+function clipSysDetail(s: string): string {
+  return s.length > SYS_EVENT_DETAIL_MAX
+    ? s.slice(0, SYS_EVENT_DETAIL_MAX) + "\n…(截断)"
+    : s;
+}
+
+/** 是否为 API/网络/供应商侧系统错误（应进上下文 + 可重试） */
+function isSystemApiError(msg: string): boolean {
+  return (
+    /API Error/i.test(msg) ||
+    /status code:\s*[45]\d\d/i.test(msg) ||
+    /\b(429|500|502|503|504|400)\b/.test(msg) ||
+    /code["']?\s*:\s*10305/i.test(msg) ||
+    /ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network/i.test(msg) ||
+    /供应商|上游|model.*fail|请求失败/i.test(msg)
+  );
+}
+
+/** 取最近一条真人用户消息（用于失败后重试） */
+function lastHumanUserText(messages: UIState["messages"]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role !== "user") continue;
+    const kind = m.kind ?? "human_user";
+    if (
+      kind === "system_notice" ||
+      kind === "runtime_control" ||
+      kind === "agent_message" ||
+      kind === "compact" ||
+      kind === "unknown"
+    ) {
+      continue;
+    }
+    const t = (m.content ?? "").trim();
+    if (t) return t;
+  }
+  return null;
+}
+
+function makeApiErrorSystemEvent(
+  raw: string,
+  messages: UIState["messages"],
+  opts?: { retrying?: boolean; attempt?: string },
+): { sysEvent: SystemEvent; lastRetryText: string | null } {
+  const retryText = lastHumanUserText(messages);
+  const short = clipSysTitle(raw);
+  const prefix = opts?.retrying
+    ? opts.attempt
+      ? `API 重试 ${opts.attempt} · `
+      : "API 重试中 · "
+    : "API/系统错误 · ";
+  const suffix = retryText ? " · 按 R 或点击重试" : "";
+  const sysEvent: SystemEvent = {
+    id: uid(),
+    kind: opts?.retrying ? "retry_fail" : "env_error",
+    content: clipSysTitle(`${prefix}${short}${suffix}`),
+    ts: Date.now(),
+    detail: clipSysDetail(raw),
+    action: retryText ? "retry" : undefined,
+    retryText: retryText ?? undefined,
+  };
+  return { sysEvent, lastRetryText: retryText };
 }
 
 /**
@@ -60,14 +136,27 @@ function sealMessageThinking(m: ChatMessage, now = Date.now()): ChatMessage {
   return sealed === m.thinkingBlocks ? m : { ...m, thinkingBlocks: sealed };
 }
 
-/** 从 usage 对象取 input/output token（兼容各家字段名） */
-function parseUsage(u: Record<string, unknown> | undefined): { input: number; output: number; cacheRead?: number } {
-  if (!u) return { input: 0, output: 0 };
-  const input = Number(u.prompt_tokens ?? u.input_tokens ?? u.inputTokens ?? 0) || 0;
-  const output = Number(u.completion_tokens ?? u.output_tokens ?? u.outputTokens ?? 0) || 0;
-  const details = u.prompt_tokens_details as { cached_tokens?: number } | undefined;
-  const cacheRead = Number(u.cached_tokens ?? u.cache_read_input_tokens ?? details?.cached_tokens ?? 0) || 0;
-  return { input, output, cacheRead };
+/**
+ * 从 usage 对象取归一后的 token 量。
+ * `input` 是 **prompt 总量**（含缓存命中/写入）—— 各家语义差异已在 LLM 层
+ * `normalizeCacheUsage` 消化，这里不再自己解字段，避免与 ledger 口径漂移。
+ */
+function parseUsage(u: Record<string, unknown> | undefined): {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** usage 里是否真的出现过 cache 字段 */
+  reported: boolean;
+} {
+  const n = normalizeCacheUsage(u);
+  return {
+    input: n.promptTotal,
+    output: n.output,
+    cacheRead: n.cacheRead,
+    cacheWrite: n.cacheWrite,
+    reported: n.reported,
+  };
 }
 
 /**
@@ -87,7 +176,8 @@ function pushRound(
   if (fromAgent) {
     cacheHistory = fromAgent;
   } else {
-    // 回退：仅主模型且支持 cache 时本地 append
+    // 回退：仅主模型 + 模型可能上报 + 本轮真见过 cache 字段（cacheEligible）时才 append。
+    // 少了 cacheEligible 就会给不上报 cache 的端点写一串假 0%。
     const eligible =
       usage.cacheEligible === true &&
       modelReportsPromptCache(state.model, state.provider) &&
@@ -95,7 +185,12 @@ function pushRound(
     if (eligible) {
       cacheHistory = [
         ...state.cacheHistory,
-        { cacheRead: usage.cacheRead ?? 0, input: usage.input, model: state.model || undefined },
+        {
+          cacheRead: usage.cacheRead ?? 0,
+          input: usage.input,
+          cacheWrite: usage.cacheWrite ?? 0,
+          model: state.model || undefined,
+        },
       ].slice(-HISTORY);
     }
   }
@@ -103,30 +198,79 @@ function pushRound(
 }
 
 export function reduce(state: UIState, ev: StreamEvent): Patch {
-  // /goal 监督模式：supervisor session 的事件进 supervisorMessages（不进主对话区，避免混乱）
-  // 用 ev.sessionId 判断来源——supervisor run 的 event sessionId 是 supervisorSessionId
-  const evSessionId = (ev.session as { id?: string } | undefined)?.id ?? (ev.sessionId as string | undefined) ?? null;
-  const isSupervisorEv = !!state.supervisor?.supervisorSessionId && evSessionId === state.supervisor.supervisorSessionId;
+  // /goal：监督 session 的事件同时进主对话区（用户能看到监督在说什么）
+  // 并镜像一份到 supervisorMessages（SUP expand 用）。
+  // 旧逻辑「只进 supervisorMessages」导致主区几乎空白，像坏了。
+  const evSessionId =
+    (ev.session as { id?: string } | undefined)?.id ??
+    (ev.sessionId as string | undefined) ??
+    null;
+  const isSupervisorEv =
+    !!state.supervisor?.supervisorSessionId &&
+    evSessionId === state.supervisor.supervisorSessionId;
 
-  // supervisor 事件：简化追加到 supervisorMessages（不参与主 messages 的流式占位/工具卡片逻辑）
-  if (isSupervisorEv && (ev.type === "assistant" || ev.type === "assistant_delta" || ev.type === "tool_call" || ev.type === "tool_result")) {
-    const content = (ev.type === "assistant_delta" ? (ev.delta ?? "") : (ev.content ?? "")) as string;
-    if (content) {
+  // 先处理镜像；主路径 switch 仍会把同事件写入 messages（正常 assistant 流）
+  let supervisorMirror: Patch = {};
+  if (
+    isSupervisorEv &&
+    (ev.type === "assistant" ||
+      ev.type === "assistant_delta" ||
+      ev.type === "tool_call" ||
+      ev.type === "tool_result")
+  ) {
+    const content = (
+      ev.type === "assistant_delta" ? (ev.delta ?? "") : (ev.content ?? "")
+    ) as string;
+    if (content && (ev.type === "assistant" || ev.type === "assistant_delta")) {
       const last = state.supervisorMessages[state.supervisorMessages.length - 1];
-      // delta 追加到上一条 streaming 的；否则新建
       if (ev.type === "assistant_delta" && last?.streaming) {
-        return { supervisorMessages: [...state.supervisorMessages.slice(0, -1), { ...last, content: last.content + content }] };
+        supervisorMirror = {
+          supervisorMessages: [
+            ...state.supervisorMessages.slice(0, -1),
+            { ...last, content: last.content + content },
+          ],
+        };
+      } else {
+        supervisorMirror = {
+          supervisorMessages: [
+            ...state.supervisorMessages,
+            {
+              id: `s${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+              role: "assistant",
+              content,
+              ts: Date.now(),
+              streaming: ev.type === "assistant_delta",
+            },
+          ],
+        };
       }
-      return { supervisorMessages: [...state.supervisorMessages, { id: `s${Date.now()}_${Math.random().toString(36).slice(2,6)}`, role: "assistant", content, ts: Date.now(), streaming: ev.type === "assistant_delta" }] };
-    }
-    if (ev.type === "tool_call" || ev.type === "tool_result") {
+    } else if (ev.type === "tool_call" || ev.type === "tool_result") {
       const name = (ev as { name?: string }).name ?? "tool";
-      const tc = ev.type === "tool_result" ? `  ↳ ${(ev as { content?: string }).content?.slice(0, 100) ?? ""}` : `▸ ${name}`;
-      return { supervisorMessages: [...state.supervisorMessages, { id: `s${Date.now()}_${Math.random().toString(36).slice(2,6)}`, role: "assistant", content: tc, ts: Date.now() }] };
+      const tc =
+        ev.type === "tool_result"
+          ? `  ↳ ${((ev as { content?: string }).content ?? "").slice(0, 120)}`
+          : `▸ ${name}`;
+      supervisorMirror = {
+        supervisorMessages: [
+          ...state.supervisorMessages,
+          {
+            id: `s${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            role: "assistant",
+            content: tc,
+            ts: Date.now(),
+          },
+        ],
+      };
     }
-    return {};
   }
 
+  const withSup = (patch: Patch): Patch => {
+    if (!supervisorMirror.supervisorMessages) return patch;
+    if (patch.supervisorMessages) return patch;
+    return { ...patch, supervisorMessages: supervisorMirror.supervisorMessages };
+  };
+
+  const core: Patch = (() => {
   switch (ev.type) {
     // ── 会话 ──────────────────────────────────────────────
     case "session": {
@@ -163,12 +307,28 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     // ── 状态文本 ──────────────────────────────────────────
     case "status": {
       const text = (ev.text ?? ev.message ?? "") as string;
-      const isRetry = /重试|retry|loop.?detect/i.test(text);
+      const isRetry = /重试|retry|loop.?detect|API error/i.test(text);
+      // 流式重试进度：底部状态 + 上下文一条（避免只有 toast）
+      if (isRetry && /API error|HTTP|attempt\s+\d/i.test(text)) {
+        const { sysEvent, lastRetryText } = makeApiErrorSystemEvent(
+          text,
+          state.messages,
+          { retrying: true },
+        );
+        return {
+          eventBlock: {
+            ...state.eventBlock,
+            mode: "retrying" as const,
+            detail: clipToast(text).slice(0, 36),
+          },
+          systemEvents: [...state.systemEvents, sysEvent],
+          lastRetryText: lastRetryText ?? state.lastRetryText,
+        };
+      }
       return {
         eventBlock: {
           ...state.eventBlock,
-          mode: isRetry ? "retrying" : "thinking",
-          detail: text || undefined,
+          mode: isRetry ? "retrying" : "thinking",          detail: text || undefined,
         },
       };
     }
@@ -450,6 +610,12 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const content = typeof ev.content === "string" ? ev.content : JSON.stringify(ev.content ?? "");
       const ok = ev.ok !== false;
       const now = Date.now();
+      // agent 层实测耗时优先（权威）；缺失才用本地 callStartTs 倒推
+      const evDur = (ev as { durationMs?: unknown }).durationMs;
+      const authoritativeDur =
+        typeof evDur === "number" && Number.isFinite(evDur) && evDur >= 0
+          ? Math.round(evDur)
+          : null;
       // 若只有 result、没有事先的 tool_call（旧路径/后台补发），补一张已完成卡
       let matched = false;
       let messages = state.messages.map((m) => {
@@ -462,7 +628,9 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
               result: content.slice(0, MAX_RESULT),
               isError: !ok,
               done: true,
-              callDuration: tc.callStartTs ? now - tc.callStartTs : undefined,
+              callDuration:
+                authoritativeDur ??
+                (tc.callStartTs ? Math.max(0, now - tc.callStartTs) : undefined),
             };
           }
           return tc;
@@ -502,8 +670,12 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
           result: content.slice(0, MAX_RESULT),
           isError: !ok,
           done: true,
-          callStartTs: now,
-          callDuration: 0,
+          // 补发卡没有真实开始时刻——不能把「结果到达时间」当 callStartTs，
+          // 否则 snapshot 会拿它跟 now() 相减，让一张早已完成的卡耗时无限增长。
+          // 有 agent 实测值就用，没有就留空（显示空白 = 未知）。
+          ...(authoritativeDur != null
+            ? { callStartTs: now - authoritativeDur, callDuration: authoritativeDur }
+            : {}),
         };
         messages = messages.map((m) => {
           if (m.id !== id) return m;
@@ -592,7 +764,11 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
         cacheRead: eligible
           ? (cur.cacheRead ?? 0) + (usage.cacheRead ?? 0)
           : (cur.cacheRead ?? 0),
-        cacheEligible: eligible || cur.cacheEligible === true,
+        cacheWrite: eligible
+          ? (cur.cacheWrite ?? 0) + usage.cacheWrite
+          : (cur.cacheWrite ?? 0),
+        // 模型可能上报 ∧ 本次 usage 真带 cache 字段 → 本轮可写样本
+        cacheEligible: (eligible && usage.reported) || cur.cacheEligible === true,
       };
       // 镜像 agent 层 samples（未 seal 的 current 不在 samples 里，history 仍是已封印轮次）
       const fromAgent = cacheHistoryFromEventCache(evRec.cache);
@@ -663,10 +839,51 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
           },
         };
       }
-      if (level === "error") return { toast: { text: clipToast(message), kind: "err" } };
+      if (level === "error") {
+        // 系统级 API 错误：持久进上下文，不只 toast
+        if (isSystemApiError(message)) {
+          const { sysEvent, lastRetryText } = makeApiErrorSystemEvent(
+            message,
+            state.messages,
+          );
+          return {
+            toast: { text: clipToast(message), kind: "err" },
+            systemEvents: [...state.systemEvents, sysEvent],
+            lastRetryText: lastRetryText ?? state.lastRetryText,
+            eventBlock: {
+              mode: "error",
+              upTokens: state.eventBlock.upTokens,
+              downTokens: state.eventBlock.downTokens,
+              detail: clipToast(message).slice(0, 40),
+            },
+          };
+        }
+        return { toast: { text: clipToast(message), kind: "err" } };
+      }
       if (level === "warning" || level === "warn") {
         const isRetry = /重试|retry|循环输出|stall|可重试/i.test(message);
         const detail = clipToast(message).slice(0, 36);
+        // 可重试 HTTP：上下文中落一行（含 attempt），便于看到连续失败
+        if (isRetry && isSystemApiError(message)) {
+          const attempt =
+            message.match(/第\s*(\d+)\s*\/\s*(\d+)\s*次/)?.[0] ||
+            message.match(/attempt\s+(\d+)\s*\/\s*(\d+)/i)?.[0];
+          const { sysEvent, lastRetryText } = makeApiErrorSystemEvent(
+            message,
+            state.messages,
+            { retrying: true, attempt: attempt ?? undefined },
+          );
+          return {
+            toast: { text: clipToast(message), kind: "warn" },
+            systemEvents: [...state.systemEvents, sysEvent],
+            lastRetryText: lastRetryText ?? state.lastRetryText,
+            eventBlock: {
+              ...state.eventBlock,
+              mode: "retrying" as const,
+              detail,
+            },
+          };
+        }
         return {
           toast: { text: clipToast(message), kind: "warn" },
           ...(isRetry
@@ -690,9 +907,32 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
 
     // ── trace 类（toast 提示或静默） ──────────────────────
     case "model.error": {
-      const err = (ev.error as string | undefined) ?? (ev.message as string | undefined) ?? "模型错误";
-      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: clipToast(err), ts: Date.now() };
-      return { toast: { text: clipToast(err), kind: "err" }, systemEvents: [...state.systemEvents, sysEvent] };
+      const err =
+        (ev.error as string | undefined) ??
+        (ev.message as string | undefined) ??
+        "模型错误";
+      if (isSystemApiError(err)) {
+        const { sysEvent, lastRetryText } = makeApiErrorSystemEvent(
+          err,
+          state.messages,
+        );
+        return {
+          toast: { text: clipToast(err), kind: "err" },
+          systemEvents: [...state.systemEvents, sysEvent],
+          lastRetryText: lastRetryText ?? state.lastRetryText,
+        };
+      }
+      const sysEvent: SystemEvent = {
+        id: uid(),
+        kind: "other",
+        content: clipSysTitle(err),
+        ts: Date.now(),
+        detail: clipSysDetail(err),
+      };
+      return {
+        toast: { text: clipToast(err), kind: "err" },
+        systemEvents: [...state.systemEvents, sysEvent],
+      };
     }
     case "model.loop_detected": {
       const retry = typeof ev.retry === "number" ? ev.retry + 1 : undefined;
@@ -797,21 +1037,43 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     }
     case "error": {
       // 陷阱①：error 后 runAgentCli 即 return，必须这里置 streaming:false
-      const msg = typeof ev.message === "string" ? ev.message : String(ev.message ?? "错误");
+      const msg =
+        typeof ev.message === "string" ? ev.message : String(ev.message ?? "错误");
       const nowTs = Date.now();
       const messages = state.messages.map((m) => {
         const sealed = sealMessageThinking(m, nowTs);
         return sealed.streaming ? { ...sealed, streaming: false } : sealed;
       });
-      const sysEvent: SystemEvent = { id: uid(), kind: "other", content: clipToast(msg), ts: nowTs };
+      // 系统/API 错误：长文进 detail，标题可重试；普通错误也进上下文（不只 toast）
+      const isApi = isSystemApiError(msg);
+      const { sysEvent, lastRetryText } = isApi
+        ? makeApiErrorSystemEvent(msg, messages)
+        : {
+            sysEvent: {
+              id: uid(),
+              kind: "env_error" as const,
+              content: clipSysTitle(`错误 · ${msg}`),
+              ts: nowTs,
+              detail: clipSysDetail(msg),
+              action: lastHumanUserText(messages) ? ("retry" as const) : undefined,
+              retryText: lastHumanUserText(messages) ?? undefined,
+            },
+            lastRetryText: lastHumanUserText(messages),
+          };
       return {
         messages,
         streaming: false,
         aborting: false,
         currentAssistantId: null,
         toast: { text: clipToast(msg), kind: "err" },
-        eventBlock: { mode: "error", upTokens: 0, downTokens: 0, detail: msg.slice(0, 40) },
+        eventBlock: {
+          mode: "error",
+          upTokens: 0,
+          downTokens: 0,
+          detail: msg.slice(0, 40),
+        },
         systemEvents: [...state.systemEvents, sysEvent],
+        lastRetryText: lastRetryText ?? state.lastRetryText,
       };
     }
 
@@ -828,6 +1090,8 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     default:
       return {};
   }
+  })();
+  return withSup(core);
 }
 
 /** 把 patch 应用到当前 assistant 消息（thinking_delta 用） */

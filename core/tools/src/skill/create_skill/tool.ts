@@ -26,13 +26,17 @@ export class CreateSkillTool extends Tool {
     parameters: {
       type: "object",
       properties: {
+        description: {
+          type: "string",
+          description: "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。",
+        },
         name: {
           type: "string",
           description: "Skill name (kebab-case, e.g. 'code-review', 'lark-im')",
         },
-        description: {
+        skill_description: {
           type: "string",
-          description: "Brief description of what this skill does",
+          description: "skill 的简短描述（写入 SKILL.md）。",
         },
         requirements: {
           type: "string",
@@ -41,7 +45,7 @@ export class CreateSkillTool extends Tool {
             "whether it needs code resources, CLI tools, or external dependencies.",
         },
       },
-      required: ["name", "description", "requirements"],
+      required: ["description", "name", "skill_description", "requirements"],
       additionalProperties: false,
     },
     allowedModes: ["execute"],
@@ -49,7 +53,10 @@ export class CreateSkillTool extends Tool {
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
     const name = String(params.name ?? "").trim();
-    const description = String(params.description ?? "").trim();
+    // skill_description=写入 SKILL.md 的技能简介；description=调用任务简介
+    const description = String(
+      params.skill_description ?? params.description ?? "",
+    ).trim();
     const requirements = String(params.requirements ?? "").trim();
 
     // 验证参数
@@ -57,7 +64,7 @@ export class CreateSkillTool extends Tool {
       return createToolResponse(false, "请提供 skill 名称");
     }
     if (!description) {
-      return createToolResponse(false, "请提供 skill 描述");
+      return createToolResponse(false, "请提供 skill 描述（skill_description）");
     }
     if (!requirements || requirements.length < 50) {
       return createToolResponse(false, "需求描述太短，请提供更详细的需求（至少 50 字）");

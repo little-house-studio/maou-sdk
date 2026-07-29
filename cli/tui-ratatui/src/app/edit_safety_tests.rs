@@ -246,3 +246,44 @@ fn full_editor_left_right_home_end_cjk() {
         assert!(app.full_editor_text.is_char_boundary(app.full_editor_cursor));
     }
 }
+
+/// 把 tip 计时器推到「已过期」，测试轮播推进而不真等一个周期。
+fn expire_banner_tip(app: &mut App) {
+    app.banner_tip_at = std::time::Instant::now()
+        .checked_sub(super::state::BANNER_TIP_PERIOD)
+        .expect("monotonic clock younger than one tip period");
+}
+
+#[test]
+fn banner_tip_pins_single_and_rotates_pool() {
+    let mut app = test_app();
+    // 空池：无 tip
+    assert_eq!(app.banner_tip(), "");
+
+    // 单条（Node 钉住的上下文提示）：到期也不切
+    app.chrome.tips = vec!["生成中 · Esc 中断".into()];
+    assert_eq!(app.banner_tip(), "生成中 · Esc 中断");
+    expire_banner_tip(&mut app);
+    assert_eq!(app.banner_tip(), "生成中 · Esc 中断", "单条池钉住不轮播");
+
+    // 多条：换池从第 0 条起，未到期保持，到期推进并回环
+    app.chrome.tips = vec!["a".into(), "b".into(), "c".into()];
+    assert_eq!(app.banner_tip(), "a", "换池从第 0 条起");
+    assert_eq!(app.banner_tip(), "a", "未到期不切");
+    expire_banner_tip(&mut app);
+    assert_eq!(app.banner_tip(), "b");
+    expire_banner_tip(&mut app);
+    assert_eq!(app.banner_tip(), "c");
+    expire_banner_tip(&mut app);
+    assert_eq!(app.banner_tip(), "a", "轮播回环");
+
+    // 池内容变化：即便已到期也回第 0 条（不显示旧位次）
+    expire_banner_tip(&mut app);
+    app.chrome.tips = vec!["x".into(), "y".into()];
+    assert_eq!(app.banner_tip(), "x");
+
+    // 清空：无 tip 且下标复位
+    app.chrome.tips.clear();
+    assert_eq!(app.banner_tip(), "");
+    assert_eq!(app.banner_tip_i, 0);
+}

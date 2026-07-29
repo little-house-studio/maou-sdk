@@ -7,17 +7,23 @@ import {
 } from "./prompt-cache.js";
 
 describe("prompt-cache helpers", () => {
-  it("xopqwen 等不支持 cache 上报", () => {
-    expect(modelReportsPromptCache("xopqwen36v35b", "xfyun")).toBe(false);
-    expect(modelReportsPromptCache("xopqwen36v35", "")).toBe(false);
+  it("讯飞 xop* 默认可显示 cache（不再宽黑名单）", () => {
+    expect(modelReportsPromptCache("xopglm51", "xfyun-glm-coding")).toBe(true);
+    expect(modelReportsPromptCache("xopqwen36v35b", "xfyun")).toBe(true);
     expect(modelReportsPromptCache("gpt-4o", "openai")).toBe(true);
     expect(modelReportsPromptCache("claude-sonnet-4-5", "anthropic")).toBe(true);
     expect(modelReportsPromptCache("deepseek-chat", "deepseek")).toBe(true);
   });
 
-  it("formatCacheLabel: 无能力 → c—；有样本 → cN%", () => {
-    expect(formatCacheLabel("xopqwen36v35b", "xfyun", [{ cacheRead: 0, input: 1000 }]).label).toBe(" c—");
+  it("formatCacheLabel: 无样本 → c—；有样本 → cN%（含讯飞模型名）", () => {
+    // 无 history 时仍是 c—（eligible 但尚无样本）
+    expect(formatCacheLabel("xopglm51", "xfyun", []).label).toBe(" c—");
     expect(formatCacheLabel("gpt-4o", "openai", []).label).toBe(" c—");
+    expect(
+      formatCacheLabel("xopglm51", "xfyun-glm-coding", [
+        { cacheRead: 17664, input: 17793 },
+      ]).pct,
+    ).toBe(99);
     expect(
       formatCacheLabel("gpt-4o", "openai", [
         { cacheRead: 900, input: 1000 },

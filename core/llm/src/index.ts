@@ -138,6 +138,8 @@ export type { CompressedBody, ReconstructedPost } from './raw-codec.js'
 // ─── 成本计算 ───────────────────────────────────────────────────────────────
 export { computeCost, formatCost } from './compute-cost.js'
 export type { Pricing, CostBreakdown } from './compute-cost.js'
+export { normalizeCacheUsage, cacheHitPct } from './cache-usage.js'
+export type { NormalizedCacheUsage } from './cache-usage.js'
 
 // ─── 模型注册表（内置目录 + 定价 + 能力，对标 pi-ai getModel/getModels）──────
 export {
@@ -237,7 +239,11 @@ export type { ReasoningLevel, EffortLevel } from './reasoning.js'
 export { getEnvApiKey, findEnvKeys, hasEnvKey, PROVIDER_ENV_KEYS } from './env.js'
 
 // ─── 上下文溢出检测（对标 pi-ai overflow detection，覆盖 20+ 厂商）───────────
-export { detectContextOverflow, extractTokenCount } from './overflow.js'
+export {
+  detectContextOverflow,
+  detectUnsupportedMediaContent,
+  extractTokenCount,
+} from './overflow.js'
 
 // ─── 跨平台 stop_reason 统一映射 ────────────────────────────────────────────
 export {

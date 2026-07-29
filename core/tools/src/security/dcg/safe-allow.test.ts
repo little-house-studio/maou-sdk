@@ -34,6 +34,20 @@ describe("maou-dcg-allow (safe overrides)", () => {
     expect(matchMaouSafeAllow('find dist -type f -delete')).toBeTruthy();
     expect(matchMaouSafeAllow('find . -name "*.log" -delete')).toBeNull();
   });
+
+  it("allows awk printf %% and readonly ps pipelines", () => {
+    expect(
+      matchMaouSafeAllow(
+        `ps -eo pid,%cpu,%mem,rss,comm -r | head -21 | awk '{printf "%5s%% %s\\n", $1, $5}'`,
+      )?.id,
+    ).toMatch(/awk|readonly/);
+    expect(
+      matchMaouSafeAllow(`awk 'BEGIN{printf "%%s\\n", "x"}'`),
+    ).toBeTruthy();
+    expect(matchMaouSafeAllow("ps aux | head -20")?.id).toMatch(/readonly|awk/);
+    // 破坏性仍不放行
+    expect(matchMaouSafeAllow("awk '{print}' | rm -rf /")).toBeNull();
+  });
 });
 
 describe("evaluateWithDcg applies safe allow after DCG deny", () => {

@@ -6,8 +6,15 @@
     "task": {
       "type": "string",
       "description": "要对当前 Agent 做的改造目标、约束和验收条件。"
+    },
+    "description": {
+      "type": "string",
+      "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
     }
   },
-  "required": ["task"],
+  "required": [
+    "description",
+    "task"
+  ],
   "additionalProperties": false
 }

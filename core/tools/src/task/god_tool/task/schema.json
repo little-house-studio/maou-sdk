@@ -7,9 +7,14 @@
       "reason": {
         "type": "string",
         "description": "为什么必须调用此工具？"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
     "required": [
+      "description",
       "reason"
     ],
     "additionalProperties": false

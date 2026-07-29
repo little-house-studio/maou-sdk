@@ -15,6 +15,7 @@ import {
 import { join, basename } from "node:path";
 import type { SessionStore, SessionData, SessionMessage, SessionTrace } from "./session-store.js";
 import type { CheckpointMeta, CheckpointDiff } from "./types.js";
+import { MAX_AUTO_CHECKPOINTS } from "./constants.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -83,6 +84,15 @@ export class CheckpointStore {
     } else {
       // 如果没有 JSONL（空会话），创建空文件
       writeFileSync(dataFile, "", "utf-8");
+    }
+
+    // 自动快照：只保留最近 N 个，避免每 tool 全量拷导致数百 MB
+    if (autoCheckpoint) {
+      try {
+        this.pruneAutoCheckpoints(sessionId, MAX_AUTO_CHECKPOINTS);
+      } catch {
+        /* 清理失败不影响主流程 */
+      }
     }
 
     return meta;
@@ -174,15 +184,33 @@ export class CheckpointStore {
 
   // ─── 自动快照触发 ──────────────────────────────────────────────────────────
 
-  /** 判断是否需要自动快照 */
+  /**
+   * 判断是否需要自动快照。
+   *
+   * 历史问题：tool_call 每次全量拷贝 session → 长会话 checkpoint 目录数百 MB。
+   * 现策略：
+   *   - compression：压前快照（可能丢信息，值得）
+   *   - tool_call：不再每次快照（写文件风险改由终端审批/沙箱承担）
+   *   - round_start：仍关
+   */
   shouldAutoCheckpoint(eventType: "tool_call" | "compression" | "round_start"): boolean {
-    // 工具调用前总是快照（风险操作）
-    if (eventType === "tool_call") return true;
-    // 压缩前快照（可能丢失信息）
     if (eventType === "compression") return true;
-    // 每 10 轮快照一次
-    if (eventType === "round_start") return false;  // 暂不启用
+    if (eventType === "tool_call") return false;
+    if (eventType === "round_start") return false;
     return false;
+  }
+
+  /** 只保留最近 keep 个 autoCheckpoint，删最旧 */
+  pruneAutoCheckpoints(sessionId: string, keep: number = MAX_AUTO_CHECKPOINTS): number {
+    const all = this.listCheckpoints(sessionId).filter((m) => m.autoCheckpoint);
+    if (all.length <= keep) return 0;
+    // list 已按 createdAt 降序；删掉尾部旧的
+    const toDelete = all.slice(keep);
+    let n = 0;
+    for (const m of toDelete) {
+      if (this.deleteCheckpoint(sessionId, m.id)) n++;
+    }
+    return n;
   }
 
   // ─── 内部 ──────────────────────────────────────────────────────────────────

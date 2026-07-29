@@ -52,10 +52,28 @@ export class ToolExecutor {
     const tool = this._registry.get(toolCall.name);
 
     if (!tool) {
+      const name = String(toolCall.name ?? "").trim();
+      let hint = "";
+      // MCP：配置了 server 但未注册元工具 / 名字写错时的友好提示
+      if (
+        name === "mcp" ||
+        name.startsWith("mcp_") ||
+        name.startsWith("mcp.") ||
+        name.includes("mcp list") ||
+        name.includes("mcp__")
+      ) {
+        hint =
+          "\n\n【MCP 提示】\n" +
+          "- gateway 模式请调用工具名 `mcp`（不是 `mcp list`），参数如 " +
+          '`{"action":"list"}` 或 `{"action":"call","name":"mcp__server__tool","arguments":{...}}`。\n' +
+          "- 若仍报不支持：检查 agent 是否已启用 MCP（run 时连接 ~/.maou/mcp.json / agents/<name>/mcp.json），" +
+          "以及 tools 白名单是否包含 `mcp`。\n" +
+          "- flat 模式则直接调 `mcp__<server>__<tool>`，无元工具 `mcp`。";
+      }
       return {
         toolCall,
         events: [],
-        result: createToolResponse(false, `不支持的工具: ${toolCall.name}`),
+        result: createToolResponse(false, `不支持的工具: ${name}${hint}`),
       };
     }
 

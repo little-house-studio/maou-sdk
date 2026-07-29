@@ -247,6 +247,7 @@ interface Store extends UIState {
 const initialState: UIState = {
   messages: [],
   systemEvents: [],
+  lastRetryText: null,
   currentAssistantId: null,
   streaming: false,
   agentBusy: false,
@@ -549,6 +550,7 @@ export const useStore = create<Store>((set, get) => ({
     set({
       messages: [],
       systemEvents: [],
+      lastRetryText: null,
       currentAssistantId: null,
       rounds: [],
       cacheHistory: [],
@@ -581,6 +583,7 @@ export const useStore = create<Store>((set, get) => ({
     set((s) => ({
       messages: [],
       systemEvents: [],
+      lastRetryText: null,
       currentAssistantId: null,
       rounds: [],
       cacheHistory: [],

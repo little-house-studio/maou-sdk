@@ -16,6 +16,10 @@ vendor/bin/
 # ─── 编译产物 ───
 dist/
 build/
+# 发布打包输出（scripts/build-release-bundle.mjs）
+.release/
+.maou-deploy-test/
+.maou-deploy-hoisted/
 **/dist/
 **/build/
 *.tsbuildinfo

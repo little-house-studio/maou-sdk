@@ -197,3 +197,104 @@ class SupervisorManagerImpl {
 
 /** 全局单例 */
 export const SUPERVISOR_MANAGER = new SupervisorManagerImpl();
+
+// ── 用户确认的确定性状态推进（不依赖 LLM 是否调 start/end）──────────────
+
+/** 计划确认：确认 / ok / 开始 … */
+const PLAN_CONFIRM_RE =
+  /^(确认|确认计划|同意计划|同意|开始|开始监督|开始执行|ok|okay|yes|y|go|start|approve|lgtm)[.!！。…\s]*$/i;
+
+/** 最终验收通过：通过 / pass / 结束 …（避免与「确认计划」完全相同的「确认」在 confirming 时也可结束） */
+const FINAL_PASS_RE =
+  /^(通过|验收通过|确认通过|结束|结束监督|完成|可以结束|pass|done|ship)[.!！。…\s]*$/i;
+
+/**
+ * confirming 状态下「确认」也算通过（confirm_end 文案写的是回复确认）。
+ * planning/confirming_plan 下的「确认」只用于计划。
+ */
+const FINAL_CONFIRM_RE =
+  /^(确认|确认结束|ok|okay|yes|y)[.!！。…\s]*$/i;
+
+export interface SupervisorUserAckResult {
+  applied: boolean;
+  /** 推进后的状态（ended 时 binding 可能已 unbind） */
+  state?: SupervisorState;
+  mainSessionId?: string;
+  supervisorSessionId?: string;
+  /** 是否已解除监督（最终通过） */
+  ended?: boolean;
+  /**
+   * 若仍需跑 supervisor LLM：改写/追加后的用户消息，确保它去派主 Agent 而不是空口「已开始」。
+   * ended 时为 undefined（不必再跑模型）。
+   */
+  continueAsUserMessage?: string;
+}
+
+/**
+ * 用户在监督会话中的确认话术 → 直接推进 SUPERVISOR_MANAGER。
+ *
+ * 解决：用户点「确认计划」/输入「确认」后，LLM 只嘴上说「开始执行」却不调
+ * supervisor_task_control(start)，UI 一直卡在「待确认计划」。
+ *
+ * sessionId 可为 main 或 supervisor session。
+ */
+export function tryApplySupervisorUserConfirmation(
+  sessionId: string,
+  userText: string,
+): SupervisorUserAckResult {
+  const text = userText.trim();
+  if (!text || !sessionId) return { applied: false };
+
+  const binding =
+    SUPERVISOR_MANAGER.getBySupervisor(sessionId) ??
+    SUPERVISOR_MANAGER.getByMain(sessionId);
+  if (!binding || binding.state === "ended") return { applied: false };
+
+  // 已 started 时用户再点确认 / 发「确认」：幂等，继续催派活
+  if (binding.state === "started" && PLAN_CONFIRM_RE.test(text)) {
+    return {
+      applied: true,
+      state: "started",
+      mainSessionId: binding.mainSessionId,
+      supervisorSessionId: binding.supervisorSessionId,
+      continueAsUserMessage:
+        `用户再次确认继续执行（状态已是 started）。请用 supervisor_chat_main 派/继续主 Agent 任务，` +
+        `完成后 verify。用户原话：${text}`,
+    };
+  }
+
+  if (binding.state === "confirming_plan" && PLAN_CONFIRM_RE.test(text)) {
+    if (!binding.plan?.trim()) {
+      return { applied: false };
+    }
+    SUPERVISOR_MANAGER.updateState(binding.mainSessionId, "started");
+    return {
+      applied: true,
+      state: "started",
+      mainSessionId: binding.mainSessionId,
+      supervisorSessionId: binding.supervisorSessionId,
+      continueAsUserMessage:
+        `用户已确认任务计划（系统已将监督状态推进为 started，无需再调用 submit_plan/start）。\n` +
+        `请立即用 supervisor_chat_main 把当前阶段任务派给主 Agent 开始执行；` +
+        `主 Agent 每轮 loop 结束后用 supervisor_task_control action=verify 验收。\n` +
+        `用户原话：${text}`,
+    };
+  }
+
+  if (binding.state === "confirming") {
+    const pass =
+      FINAL_PASS_RE.test(text) || FINAL_CONFIRM_RE.test(text);
+    if (!pass) return { applied: false };
+    SUPERVISOR_MANAGER.updateState(binding.mainSessionId, "ended");
+    SUPERVISOR_MANAGER.unbind(binding.mainSessionId);
+    return {
+      applied: true,
+      state: "ended",
+      ended: true,
+      mainSessionId: binding.mainSessionId,
+      supervisorSessionId: binding.supervisorSessionId,
+    };
+  }
+
+  return { applied: false };
+}

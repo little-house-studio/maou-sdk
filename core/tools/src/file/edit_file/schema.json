@@ -23,9 +23,14 @@
       "replace_all": {
         "type": "boolean",
         "description": "为 true 时替换所有匹配（重命名变量等）；默认 false，要求唯一匹配。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
     "required": [
+      "description",
       "path",
       "old_text",
       "new_text",

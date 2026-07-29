@@ -125,6 +125,12 @@ export class Runtime {
   private fileDiffWatchOpt?: AppRuntimeOptions["fileDiffWatch"];
   private hooks?: Hooks;
   private agentRuntime: AgentRuntime | null = null;
+  /** Ops 等机器级 agent：在 ensure agentRuntime 后应用 */
+  private _pendingDefaultPathGuard?: {
+    mode: "inherit" | "hard" | "audit" | "open";
+    roots: string[];
+    auditRoots?: string[];
+  } | null;
   private appLogger = createAppLogger();
   private customLog?: (level: string, message: string) => void;
   private postLoggerEnabled: boolean = true;
@@ -460,6 +466,11 @@ export class Runtime {
       });
       this.agentRuntime.setSubagentExecutor(executor);
 
+      // 延迟的默认 pathGuard（createOpsAgent 等在 Runtime 构造后设置）
+      if (this._pendingDefaultPathGuard) {
+        this.agentRuntime.setDefaultPathGuard(this._pendingDefaultPathGuard);
+      }
+
       // ── MCP host/client：连接管理 + 工具桥（agents/<name>/connections/）──
       const mcpManager = new McpConnectionManager({
         log: (level, msg) => {
@@ -522,6 +533,23 @@ export class Runtime {
       });
     }
     return this.agentRuntime;
+  }
+
+  /**
+   * 默认路径沙箱（所有 session）。Ops 机器管家用 mode=open。
+   * agentRuntime 尚未创建时先挂起，ensure 时应用。
+   */
+  setDefaultPathGuard(
+    guard: {
+      mode: "inherit" | "hard" | "audit" | "open";
+      roots: string[];
+      auditRoots?: string[];
+    } | null,
+  ): void {
+    this._pendingDefaultPathGuard = guard;
+    if (this.agentRuntime) {
+      this.agentRuntime.setDefaultPathGuard(guard);
+    }
   }
 
   /** 获取 commandRegistry（供 TUI 拉取 agent 层命令列表做 autocomplete） */

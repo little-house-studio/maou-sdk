@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { platform } from "node:os";
 import { findSdkGitRoot } from "./repo-root.js";
+import { detectRuntime } from "./runtime-mode.js";
 
 export interface UpdateOptions {
   force?: boolean;
@@ -22,6 +23,8 @@ export interface UpdateOptions {
   check?: boolean;
   /** 只 git，不跑 build-native */
   noBuild?: boolean;
+  /** 预编译包：覆盖发布通道（stable / dev） */
+  channel?: string;
 }
 
 function log(msg: string): void {
@@ -64,6 +67,20 @@ function git(cwd: string, args: string[]) {
 }
 
 export async function runUpdate(opts: UpdateOptions = {}): Promise<boolean> {
+  // 预编译包安装：走下载新 bundle 的自更新，不碰 git / 构建
+  const rt = detectRuntime({ refresh: true });
+  if (rt.mode === "bundle") {
+    log("══════════════════════════════════════");
+    log("  Maou Update · 预编译包自更新");
+    log("══════════════════════════════════════");
+    const { runBundleUpdate } = await import("./update-bundle.js");
+    return runBundleUpdate({
+      check: opts.check,
+      force: opts.force,
+      channel: opts.channel,
+    });
+  }
+
   log("══════════════════════════════════════");
   log("  Maou Update · Git 拉取 + 本机构建");
   log("══════════════════════════════════════");
@@ -71,8 +88,8 @@ export async function runUpdate(opts: UpdateOptions = {}): Promise<boolean> {
   const root = findSdkGitRoot();
   if (!root) {
     log("❌ 找不到 maou-sdk Git 仓库根（需同时有 .git 与 pnpm-workspace.yaml）。");
-    log("   仅支持：git clone 安装的源码树。");
-    log("   确认 maou 包装脚本指向该 monorepo 的 cli/dist/index.js。");
+    log("   源码安装需要 .git + pnpm-workspace.yaml；预编译包安装需要 RELEASE.json。");
+    log("   两者都没有 → 请用 scripts/install-user.sh（用户）或 git clone（开发者）重装。");
     return false;
   }
   log(`仓库: ${root}`);

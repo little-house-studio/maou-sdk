@@ -1,12 +1,16 @@
 {
   "name": "project_agent",
-  "description": "Ops Agent 的项目代理工具。查看本机所有 Maou Coding 项目、创建驻扎项目 Agent，或向项目 Agent 发送较大的项目任务。",
+  "description": "Ops 项目代理：list/create/send/repair/rebind。repair 修复失效 .maou 标记；rebind 改绑路径。",
   "type": "object",
   "properties": {
+    "description": {
+      "type": "string",
+      "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
+    },
     "action": {
       "type": "string",
-      "enum": ["list", "create", "send"],
-      "description": "list=项目清单；create=注册路径并创建驻扎 Agent；send=向项目 Agent 发送任务。"
+      "enum": ["list", "create", "send", "repair", "rebind"],
+      "description": "list=清单；create=注册+驻扎；send=派任务；repair=修复标记/agent；rebind=绑定新路径。"
     },
     "project": {
       "type": "string",
@@ -14,7 +18,7 @@
     },
     "path": {
       "type": "string",
-      "description": "create 时的项目绝对路径。"
+      "description": "create/repair 的项目路径；rebind 时为新绝对路径。"
     },
     "task": {
       "type": "string",
@@ -22,9 +26,9 @@
     },
     "name": {
       "type": "string",
-      "description": "create 时可选的项目显示名。"
+      "description": "项目显示名（create/rebind 可选）。"
     }
   },
-  "required": ["action"],
+  "required": ["description", "action"],
   "additionalProperties": false
 }

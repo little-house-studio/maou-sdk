@@ -71,16 +71,21 @@
         "type": "string",
         "description": "所属团队。可选。"
       },
-      "description": {
-        "type": "string",
-        "description": "详细说明。可选。"
-      },
       "notes": {
         "type": "string",
         "description": "备注。可选。"
+      },
+      "detail": {
+        "type": "string",
+        "description": "详细说明。可选。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
     "required": [
+      "description",
       "action",
       "reason"
     ],

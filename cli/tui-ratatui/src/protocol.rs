@@ -76,6 +76,9 @@ pub struct ProtoSystemEvent {
     pub ts: Option<u64>,
     #[serde(default)]
     pub detail: Option<String>,
+    /// "retry" = 可 R / 点击重试
+    #[serde(default)]
+    pub action: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -106,6 +109,9 @@ pub struct ProtoChrome {
     pub approval_mode: Option<String>,
     #[serde(default)]
     pub approval_label: Option<String>,
+    /// 顶部横幅 tip 池（Node 唯一文案源）：1 条=钉住，多条=定时轮播
+    #[serde(default)]
+    pub tips: Vec<String>,
     #[serde(default)]
     pub agent: Option<String>,
     #[serde(default)]
@@ -171,6 +177,18 @@ pub struct ProtoSupervisor {
     pub verify_rounds: Option<u32>,
     #[serde(default)]
     pub last_verdict: Option<String>,
+    /// 目标一句话（Node 从 plan 提取），chip / 详情标题用
+    #[serde(default)]
+    pub objective: Option<String>,
+    /// 监督开始的 epoch ms（binding.createdAt）：elapsed 的绝对基线
+    #[serde(default)]
+    pub started_at_ms: Option<u64>,
+    /// 本次 goal 期间新增 token（Node 用开始时快照做基线）
+    #[serde(default)]
+    pub tokens_used: Option<u64>,
+    /// token 预算（有则详情里画进度条）
+    #[serde(default)]
+    pub token_budget: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -496,6 +514,11 @@ pub enum InMsg {
 pub enum OutMsg {
     Ready { version: String },
     Submit { text: String },
+    /// 重试最近一次失败请求对应的用户消息（Node 用 lastRetryText）
+    Retry {
+        #[serde(default)]
+        event_id: Option<String>,
+    },
     Abort,
     Escape,
     Command {
@@ -556,6 +579,12 @@ pub enum OutMsg {
     Log { text: String },
     /// Ask Node to write system clipboard (pbcopy / xclip / clip). Avoids AppKit in TUI.
     Clipboard { text: String },
+    /// 用户在场：键鼠任意操作（Node 用来停卡住长铃；不驱动业务）
+    UserActivity {
+        /// key | mouse | scroll | other
+        #[serde(default)]
+        kind: String,
+    },
 }
 
 pub fn emit(msg: &OutMsg) {

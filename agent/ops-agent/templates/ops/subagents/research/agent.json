@@ -1,0 +1,15 @@
+{
+  "name": "research",
+  "display_name": "Web Research",
+  "role": "research",
+  "scope": "subagent",
+  "subagent_kind": "task",
+  "description": "网络调研并写报告：search_internet + 浏览器核对；不改项目代码。",
+  "status": "active",
+  "round_limit": 25,
+  "enable_loop": true,
+  "persist_context": true,
+  "permission": "readonly",
+  "tools": ["search_internet", "use_browser", "reader", "todo_finish"],
+  "list_in_manager": true
+}

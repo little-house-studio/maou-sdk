@@ -50,6 +50,62 @@ export function createToolResponse(
   };
 }
 
+/** 调用级 description：任务简介（CLI 折叠标题只显示此项） */
+export const CALL_DESCRIPTION_PARAM = {
+  type: "string",
+  description:
+    "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。",
+} as const;
+
+/**
+ * 确保工具 schema 含必填的调用级 `description` 参数。
+ * 兼容两种形态：
+ * - { parameters: { properties, required } }
+ * - { properties, required }（顶层 JSON Schema）
+ */
+export function ensureCallDescriptionSchema<T extends Record<string, unknown>>(
+  schema: T,
+): T {
+  const s = JSON.parse(JSON.stringify(schema)) as Record<string, unknown>;
+  const params =
+    s.parameters && typeof s.parameters === "object" && !Array.isArray(s.parameters)
+      ? (s.parameters as Record<string, unknown>)
+      : s;
+  const props =
+    params.properties && typeof params.properties === "object" && !Array.isArray(params.properties)
+      ? (params.properties as Record<string, unknown>)
+      : ((params.properties = {}) as Record<string, unknown>);
+
+  // 仅当不存在或仍是旧文案时写入标准调用级 description
+  const existing = props.description as { description?: string } | undefined;
+  const existingText = existing?.description ?? "";
+  const isEntityOnly =
+    existing &&
+    !/任务简介|CLI 折叠|这次调用在做什么/.test(existingText) &&
+    /详细说明|角色说明|用途说明|skill|Brief description/i.test(existingText);
+  if (!props.description || isEntityOnly) {
+    // 实体字段被误命名为 description 时不在此自动改名（schema 源文件已处理）
+    if (!isEntityOnly) {
+      props.description = { ...CALL_DESCRIPTION_PARAM };
+    }
+  } else if (existing && typeof existing === "object") {
+    props.description = {
+      type: "string",
+      description: CALL_DESCRIPTION_PARAM.description,
+    };
+  }
+
+  let required = params.required;
+  if (!Array.isArray(required)) {
+    required = [];
+    params.required = required;
+  }
+  if (props.description && !(required as string[]).includes("description")) {
+    (required as string[]).unshift("description");
+  }
+  return s as T;
+}
+
 /**
  * 工具抽象基类
  * 所有工具实现必须继承此类并实现 definition 和 execute 方法
@@ -82,14 +138,17 @@ export abstract class Tool {
     const { name, description, parameters } = this.definition;
     if (!name) return [];
 
+    const wrap = (schemas: JsonSchema[]): JsonSchema[] =>
+      schemas.map((s) => ensureCallDescriptionSchema(s as Record<string, unknown>) as JsonSchema);
+
     // 1. 优先从 schema.json 文件读取（最完整、最权威）
     if (this.schemaDir) {
       const schemaPath = join(this.schemaDir, "schema.json");
       if (existsSync(schemaPath)) {
         try {
           const data = JSON.parse(readFileSync(schemaPath, "utf-8"));
-          if (Array.isArray(data)) return data;
-          if (data && typeof data === "object") return [data];
+          if (Array.isArray(data)) return wrap(data);
+          if (data && typeof data === "object") return wrap([data]);
         } catch { /* fallthrough */ }
       }
     }
@@ -99,28 +158,28 @@ export abstract class Tool {
       try {
         const { zodToJsonSchema } = require("./schema-utils.js") as typeof import("./schema-utils.js");
         const jsonSchema = zodToJsonSchema(this.zodParameters, name);
-        return [
+        return wrap([
           {
             type: "object",
             name,
             description: description || name,
             parameters: jsonSchema,
           },
-        ];
+        ]);
       } catch {
         // 转换失败，回退到 definition.parameters
       }
     }
 
     // 3. 回退到 definition.parameters
-    return [
+    return wrap([
       {
         type: "object",
         name,
         description: description || name,
         parameters,
       },
-    ];
+    ]);
   }
 
   /**

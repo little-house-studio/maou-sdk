@@ -6,6 +6,8 @@ use ratatui::layout::Rect;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Slot {
     Root,
+    /// Top banner row: agent name · tip · approval mode.
+    Banner,
     Chat,
     ChatInner,
     JumpPrev,
@@ -24,6 +26,9 @@ pub enum Slot {
     Footer,
     Overlay,
     OverlayBody,
+    /// Goal 详情浮层（绝对居中，点 chip 打开）
+    GoalDetail,
+    GoalDetailBody,
     FullEditor,
     FullEditorBody,
 }

@@ -8,16 +8,25 @@
         "type": "string",
         "description": "skill 名称，使用 kebab-case 格式（如 'code-review', 'lark-im'）"
       },
-      "description": {
-        "type": "string",
-        "description": "skill 的简短描述"
-      },
       "requirements": {
         "type": "string",
         "description": "详细需求（50-3000字）。包含：目的、大纲、验收标准、是否需要程序代码资源、CLI工具或外部依赖等。"
+      },
+      "skill_description": {
+        "type": "string",
+        "description": "skill 的简短描述（写入 SKILL.md）。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
-    "required": ["name", "description", "requirements"],
+    "required": [
+      "description",
+      "name",
+      "skill_description",
+      "requirements"
+    ],
     "additionalProperties": false
   }
 }

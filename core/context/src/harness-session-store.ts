@@ -4,6 +4,10 @@
  * 存储路径：
  *   <maouRoot>/sessions/<sessionId>/harness_session.json         —— 当前上下文
  *   <maouRoot>/sessions/<sessionId>/harness_session_backup.json   —— 压缩前备份
+ *
+ * harness 是 **LLM 工作集**（可压缩）；SessionStore 仍是完整审计轨迹（UI）。
+ * `sourceSessionMessageCount` 记录本工作集已覆盖的 session.messages 条数，
+ * 下轮只 append 增量，避免每轮从全量 session 重压（B1）。
  */
 
 import {
@@ -26,6 +30,22 @@ export interface HarnessSessionStoreOptions {
   maouRoot?: string;
 }
 
+/**
+ * 工作集与 SessionStore 的对齐元数据。
+ * - sourceSessionMessageCount：已吸收的 session.messages 前缀长度
+ * - sourceTailFingerprint：该前缀最后一条的指纹（检测 /new 截断或重写）
+ */
+export interface HarnessWorkingSetMeta {
+  sourceSessionMessageCount: number;
+  sourceTailFingerprint?: string;
+}
+
+export interface HarnessCurrentRecord extends HarnessWorkingSetMeta {
+  sessionId: string;
+  updatedAt: string;
+  context: MaouMessage[];
+}
+
 // ─── 工具函数 ──────────────────────────────────────────────────────────────
 
 function nowIso(): string {
@@ -41,6 +61,45 @@ function atomicWriteJson(filePath: string, data: unknown): void {
   renameSync(tmp, filePath);
 }
 
+/**
+ * Session 消息指纹：用于校验 harness 覆盖前缀是否仍与 session 对齐。
+ * 不依赖不稳定 id，用 role + toolCallId + content 前缀。
+ */
+export function sessionMessageFingerprint(
+  msg: Record<string, unknown> | null | undefined,
+): string {
+  if (!msg || typeof msg !== "object") return "";
+  const role = String(msg.role ?? "");
+  const tool = String(msg.toolCallId ?? msg.tool_call_id ?? "");
+  const content = String(msg.content ?? "").slice(0, 120);
+  return `${role}|${tool}|${content}`;
+}
+
+/**
+ * harness 元数据是否仍可对当前 session 使用。
+ * 无 meta / 越界 / 尾指纹不匹配 → 不可用，应回退全量 session。
+ *
+ * 旧 harness（无 fingerprint）不可增量 append：只在 count 恰好等于当前长度时复用；
+ * 否则回退全量，最多多压一轮，避免把旧工作集与全量 session 错叠。
+ */
+export function isHarnessMetaAligned(
+  meta: HarnessWorkingSetMeta | null | undefined,
+  sessionMessages: Array<Record<string, unknown>>,
+): boolean {
+  if (!meta) return false;
+  const n = meta.sourceSessionMessageCount;
+  if (!Number.isFinite(n) || n < 0 || n > sessionMessages.length) return false;
+  if (!meta.sourceTailFingerprint) {
+    // 无指纹：无法校验前缀 → 仅「完整覆盖且无新消息」可复用
+    return n > 0 && n === sessionMessages.length;
+  }
+  if (n === 0) {
+    return sessionMessages.length === 0;
+  }
+  const tail = sessionMessages[n - 1];
+  return sessionMessageFingerprint(tail) === meta.sourceTailFingerprint;
+}
+
 // ─── HarnessSessionStore ───────────────────────────────────────────────────
 
 /**
@@ -49,6 +108,7 @@ function atomicWriteJson(filePath: string, data: unknown): void {
  * 职责：
  * - 保存两份 harness_session（当前上下文 + 压缩前备份）
  * - 支持压缩前备份、回溯到备份
+ * - 记录与 SessionStore 的覆盖对齐信息（B1）
  */
 export class HarnessSessionStore {
   private maouRoot: string;
@@ -80,14 +140,25 @@ export class HarnessSessionStore {
   // ── 核心操作 ──
 
   /**
-   * 保存当前上下文
+   * 保存当前上下文（可选对齐元数据）。
    */
-  saveCurrent(sessionId: string, context: MaouMessage[]): void {
+  saveCurrent(
+    sessionId: string,
+    context: MaouMessage[],
+    meta?: HarnessWorkingSetMeta,
+  ): void {
     const filePath = this.currentPath(sessionId);
-    const data = {
+    const prev = this.getCurrentRecord(sessionId);
+    const data: HarnessCurrentRecord = {
       sessionId,
       updatedAt: nowIso(),
       context,
+      sourceSessionMessageCount:
+        meta?.sourceSessionMessageCount ??
+        prev?.sourceSessionMessageCount ??
+        0,
+      sourceTailFingerprint:
+        meta?.sourceTailFingerprint ?? prev?.sourceTailFingerprint,
     };
     atomicWriteJson(filePath, data);
   }
@@ -96,36 +167,50 @@ export class HarnessSessionStore {
    * 压缩前备份 —— 将当前上下文复制到备份文件
    */
   backupBeforeCompress(sessionId: string): void {
-    const current = this.getCurrent(sessionId);
+    const current = this.getCurrentRecord(sessionId);
     if (!current) {
-      // 当前不存在，无需备份
       return;
     }
     const filePath = this.backupPath(sessionId);
     const data = {
       sessionId,
       updatedAt: nowIso(),
-      context: current,
+      context: current.context,
+      sourceSessionMessageCount: current.sourceSessionMessageCount,
+      sourceTailFingerprint: current.sourceTailFingerprint,
     };
     atomicWriteJson(filePath, data);
+  }
+
+  /**
+   * 读取完整当前记录（含对齐 meta）。
+   */
+  getCurrentRecord(sessionId: string): HarnessCurrentRecord | null {
+    const filePath = this.currentPath(sessionId);
+    try {
+      if (!existsSync(filePath)) return null;
+      const raw = JSON.parse(readFileSync(filePath, "utf-8")) as Partial<HarnessCurrentRecord>;
+      if (!Array.isArray(raw.context)) return null;
+      return {
+        sessionId: String(raw.sessionId ?? sessionId),
+        updatedAt: String(raw.updatedAt ?? ""),
+        context: raw.context,
+        sourceSessionMessageCount: Number(raw.sourceSessionMessageCount ?? 0) || 0,
+        sourceTailFingerprint:
+          typeof raw.sourceTailFingerprint === "string"
+            ? raw.sourceTailFingerprint
+            : undefined,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
    * 获取当前上下文
    */
   getCurrent(sessionId: string): MaouMessage[] | null {
-    const filePath = this.currentPath(sessionId);
-    try {
-      if (!existsSync(filePath)) return null;
-      const raw = JSON.parse(readFileSync(filePath, "utf-8")) as {
-        sessionId: string;
-        updatedAt: string;
-        context: MaouMessage[];
-      };
-      return raw.context ?? null;
-    } catch {
-      return null;
-    }
+    return this.getCurrentRecord(sessionId)?.context ?? null;
   }
 
   /**
@@ -150,19 +235,27 @@ export class HarnessSessionStore {
    * 回溯到备份 —— 将备份恢复为当前上下文
    */
   rollbackToBackup(sessionId: string): boolean {
-    const backup = this.getBackup(sessionId);
-    if (!backup) {
+    const filePath = this.backupPath(sessionId);
+    try {
+      if (!existsSync(filePath)) return false;
+      const raw = JSON.parse(readFileSync(filePath, "utf-8")) as Partial<HarnessCurrentRecord>;
+      if (!Array.isArray(raw.context)) return false;
+      const currentPath = this.currentPath(sessionId);
+      const data: HarnessCurrentRecord = {
+        sessionId,
+        updatedAt: nowIso(),
+        context: raw.context,
+        sourceSessionMessageCount: Number(raw.sourceSessionMessageCount ?? 0) || 0,
+        sourceTailFingerprint:
+          typeof raw.sourceTailFingerprint === "string"
+            ? raw.sourceTailFingerprint
+            : undefined,
+      };
+      atomicWriteJson(currentPath, data);
+      return true;
+    } catch {
       return false;
     }
-    // 将备份写入当前文件
-    const filePath = this.currentPath(sessionId);
-    const data = {
-      sessionId,
-      updatedAt: nowIso(),
-      context: backup,
-    };
-    atomicWriteJson(filePath, data);
-    return true;
   }
 
   // ── 压缩区落盘 ──
@@ -223,5 +316,4 @@ export class HarnessSessionStore {
     if (!source) return null;
     return source.filter((m) => m.seqId <= seqId);
   }
-
 }

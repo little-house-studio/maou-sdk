@@ -61,6 +61,10 @@ export type TerminalApprover = (
     ruleId?: string;
     /** 安全层原因 */
     reason?: string;
+    /**
+     * true：跳过 auto AI 审核，直接弹人手确认（AI 拒后的申诉通道）。
+     */
+    forceHuman?: boolean;
   },
 ) => Promise<{ approve: boolean; persist?: "whitelist" | "blacklist" | "none" }>;
 

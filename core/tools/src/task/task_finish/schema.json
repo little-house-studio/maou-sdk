@@ -10,7 +10,10 @@
       },
       "status": {
         "type": "string",
-        "enum": ["completed", "failed"],
+        "enum": [
+          "completed",
+          "failed"
+        ],
         "description": "completed=成功 | failed=失败类完成"
       },
       "summary": {
@@ -24,9 +27,17 @@
       "reason": {
         "type": "string",
         "description": "failed 时原因；也可写在 summary"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
-    "required": ["task_id", "summary"],
+    "required": [
+      "description",
+      "task_id",
+      "summary"
+    ],
     "additionalProperties": false
   }
 }

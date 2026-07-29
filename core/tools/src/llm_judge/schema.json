@@ -14,11 +14,21 @@
       },
       "format": {
         "type": "string",
-        "enum": ["text", "json"],
+        "enum": [
+          "text",
+          "json"
+        ],
         "description": "返回格式（可选，默认 text）。text=自由文本判断；json=JSON 对象（适合结构化判定，如 { safe: true, reason }）。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
-    "required": ["question"],
+    "required": [
+      "description",
+      "question"
+    ],
     "additionalProperties": false
   }
 }

@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# Maou installer (macOS / Linux). Does NOT install Node.
+# Maou **开发者**安装器（macOS / Linux）—— 从源码树构建。
+#
+# ┌─ 你可能想要的是另一个 ────────────────────────────────────────┐
+# │ 只是想「用」maou？别用这个脚本，它需要 pnpm 并且会编译。       │
+# │   curl -fsSL .../scripts/install-user.sh | bash               │
+# │ 那个装的是预编译包，零编译，只要 Node ≥ 20。                  │
+# └───────────────────────────────────────────────────────────────┘
+#
+# 跨平台等价物（推荐，三系统一条命令）：pnpm setup:dev
 #
 # 默认路径：Node/pnpm + 预编译原生组件（无需 Rust）。
 # 开发者本机构建：MAOU_BUILD_NATIVE=1 bash scripts/install.sh
@@ -67,6 +75,11 @@ ENSURE_RG="$REPO_ROOT/scripts/ensure-rg.mjs"
 if [[ -f "$ENSURE_RG" ]]; then
   log "[maou] ensuring rg (ripgrep)…"
   node "$ENSURE_RG" --user || log "[maou] ⚠ rg install failed — grep 将降级为 Node.js"
+fi
+ENSURE_DDGR="$REPO_ROOT/scripts/ensure-ddgr.mjs"
+if [[ -f "$ENSURE_DDGR" ]]; then
+  log "[maou] ensuring ddgr (search_internet 增强)…"
+  node "$ENSURE_DDGR" --user || log "[maou] ⚠ ddgr 未装 — search_internet 走 HTTP fallback"
 fi
 ENSURE_SQRY="$REPO_ROOT/scripts/ensure-sqry.mjs"
 if [[ -f "$ENSURE_SQRY" ]]; then

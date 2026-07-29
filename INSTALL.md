@@ -1,152 +1,193 @@
-# Maou 安装（不包含安装 Node）
+# 安装
 
-**前提**：本机 **Node.js ≥ 20**、**pnpm**（`npm i -g pnpm`）。安装器**不装 Node**。
+两条路，选一条。**不要混着来。**
 
-**原则**：
+| | 普通用户 | 开发者 |
+|---|---|---|
+| 装什么 | Release 上的预编译包 | git clone 的源码树 |
+| 前提 | Node ≥ 20（没有可自动装私有版） | Node ≥ 20 + pnpm（Rust 可选） |
+| 要编译吗 | **不用**，一行都不编 | 要 |
+| 命令 | `install-user.sh` / `install-user.ps1` | `pnpm setup:dev` |
+| 更新 | `maou update`（下载新包） | `maou update`（git pull + 构建） |
 
-- **Core（必须）**：JS monorepo `pnpm -r build` + `cli/dist` — **失败则安装 exit 1**，不写假成功。
-- **Terminal / TUI（默认预编译）**：`ensure-terminal-engine` / `ensure-maou-tui` 从 GitHub Release **`native-prebuilds`** 下载；**普通用户无需 Rust / VS Build Tools**。
-- **本机构建（可选）**：`MAOU_BUILD_NATIVE=1` 或 `build-native.sh --from-source`（开发改引擎时）。
-- **dcg / rg / sqry** 仍从各自 Release / 脚本拉取。
-- 详见 [`docs/NATIVE_PREBUILD.md`](docs/NATIVE_PREBUILD.md)。
-
-## 磁盘占用（Git 下载 + 构建后目标 &lt; 1GB）
-
-| 阶段 | 大约 | 说明 |
-|------|------|------|
-| **git clone** | **~15～30 MB** | 仓库跟踪文件本身约 **10MB**；`target/`/`node_modules` **已 gitignore** |
-| **Core 构建后** | **~300～600 MB** | 主要是 `node_modules` + `dist` + dcg |
-| **含 terminal-engine 且清理缓存后** | **~0.4～0.8 GB** | 默认 `build-native` **删掉 Rust `target`**，只留 `.node` |
-| **若保留 cargo target / 编 ratatui debug** | **2～3 GB+** | 开发机常见；用 `scripts/clean-build-cache.sh` 可砍回 |
-
-构建脚本默认：
-
-- `CARGO_TARGET_DIR` 放在系统临时目录（不堆在仓库里）
-- 只做 **release** 原生构建
-- 结束时 **清理** `**/target`（开发迭代可加 `--keep-target` / `-KeepTarget`）
-
-```bash
-bash scripts/clean-build-cache.sh        # 清 target，保留 node_modules
-bash scripts/clean-build-cache.sh --all  # 连 node_modules 也删（需重装）
-```
+`maou` 自己知道它是哪一种（包里有没有 `RELEASE.json`），`doctor` / `update`
+的行为会随之切换 —— 预编译包里**永远不会**去调 pnpm / cargo。
 
 ---
 
-## 支持矩阵（诚实）
-
-| 能力 | Core 成功后 | 额外条件 | 缺失时兜底 |
-|------|-------------|----------|------------|
-| 启动 Ink TUI / 对话 | ✅ | — | — |
-| 文件 read/write/edit | ✅ | — | — |
-| grep / glob | ✅ | 有 `rg` 更快 | **Node 实现** |
-| MCP | ✅ | 用户配置 server | — |
-| 压缩 / 会话 | ✅ | — | — |
-| use_terminal 完整 | △ | `build-native` + Rust(+Win VS)；`node-pty` 需可加载 | **降级 spawn，弱交互** |
-| 危险命令门 DCG | △ | `ensure-dcg` 成功 | **弱/失败关闭** — 非生产基线 |
-| find_code (sqry) | △ | `maou doctor` / `node scripts/ensure-sqry.mjs`（预编译） | **工具不可用** |
-| LSP（TS/JS） | △ | `npm i -g typescript-language-server typescript`（doctor 自动） | **语义诊断不可用** |
-| search_internet 质量 | △ | 可选 `ddgr` | **HTTP fallback 仍可用** |
-| ratatui TUI | △ | 自建二进制 | **Win 默认 Ratatui** |
-| 与 mac 命令语义完全一致 | ❌ | — | 优先内置工具，勿依赖 bash 脚本 |
-
-**不能保证**：任意 Windows 用户「装完即与开发者 Mac 全功能零缺陷」。
-
----
-
-## 安装
+## 一、普通用户（免构建）
 
 ### macOS / Linux
 
 ```bash
-git clone <maou-sdk-url> && cd maou-sdk
-bash scripts/install.sh          # Core 失败 → exit 1
-export PATH="$HOME/.maou/bin:$PATH"
-maou doctor                      # 看 Core / Terminal / Optional
-maou setup
-maou coding
-```
-
-完整原生（可选）：
-
-```bash
-bash scripts/build-native.sh
+curl -fsSL https://raw.githubusercontent.com/little-house-studio/maou-sdk/develop/scripts/install-user.sh | bash
 ```
 
 ### Windows（原生 PowerShell，不要 WSL）
 
-建议先装：Node 20、pnpm、Git。**默认 install 不要求 Rust / VS Build Tools**（拉预编译）。
-
 ```powershell
-git clone <maou-sdk-url>
-cd maou-sdk
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1   # Core 失败 → exit 1
-$env:Path = "$env:USERPROFILE\.maou\bin;" + $env:Path
-maou doctor
-maou setup
-maou coding
+irm https://raw.githubusercontent.com/little-house-studio/maou-sdk/develop/scripts/install-user.ps1 | iex
 ```
 
-本机构建原生（可选）：`$env:MAOU_BUILD_NATIVE=1` 后再跑 install，或 `scripts\build-native.ps1 -FromSource`。
-
----
-
-## 更新（Git clone 用户）
-
-`maou update` **自动使用当前安装对应 clone 的 `origin` remote**（不必再填仓库 URL）。
+### 然后
 
 ```bash
-maou update --check      # fetch + 显示 ahead/behind（允许脏工作区）
-maou update              # 干净工作区 → pull(若落后) → 重建 / 拉预编译
-maou update --force      # stash -u 后 pull（之后自行 git stash pop）
-maou update --no-build   # 只 git，不构建
-maou update --js-only    # pull + 仅 JS
-maou update --full       # pull + 含完整 native 路径
+maou doctor      # 组件自检
+maou setup       # 配置 API
+maou coding      # 启动编程 Agent
 ```
 
-成功后**手动退出** `maou coding` 再开（不自动杀进程）。
+找不到 `maou`：开新终端窗口，或 `export PATH="$HOME/.maou/bin:$PATH"`
+（Windows：新开 PowerShell）。
 
-要求：`.git` + `pnpm-workspace.yaml`，且 `maou` 指向该 monorepo 的 `cli/dist`。
+### 装完的目录
 
-## doctor / 自动修复
-
-```bash
-maou doctor              # 诊断 + 自动修复（pnpm build / ensure-dcg / ensure-sqry / ts-ls / build-native）
-maou doctor --check      # 只诊断
-maou doctor --js-only    # 修复时跳过 terminal-engine 原生编译
-maou doctor --full       # 修复时含 ratatui
+```
+~/.maou/
+├── bin/maou                       启动器（读 current，换版本不用重装）
+├── current -> versions/<版本>/     当前版本
+├── versions/
+│   └── maou-0.1.0-darwin-arm64/   自包含运行时（dist + node_modules + vendor/bin）
+├── runtime/node/                  仅当安装器帮你装了私有 Node
+└── config.json                    maou setup 写的 API 配置
 ```
 
-分档：
+磁盘占用约 **90 MB**（解压后），下载约 39 MB。
 
-```text
-Core      必须 → 失败不能启动
-Terminal  建议 → 缺则降级 PTY（含 node-pty 加载检测）
-Optional  可选 → sqry / typescript-language-server / ddgr 等
-```
+### 环境变量
 
-自动修复会：
-- Core：`pnpm install` + `pnpm -r build`
-- dcg：`node scripts/ensure-dcg.mjs`
-- sqry：`node scripts/ensure-sqry.mjs`（GitHub 预编译；失败再回退 `cargo install sqry-cli`）
-- typescript-language-server：`npm i -g typescript-language-server typescript`
-- Terminal/node-pty：`scripts/build-native`（失败会**明确告警**，不再静默吞错）
-- ddgr：仅检测/提示，不自动装（跨平台包管理器不一）
-
-启动 `maou coding` 时若 Core/终端/dcg 不全，会**先自动修一次**再决定是否启动。
-
----
-
-## 脚本
-
-| 脚本 | 行为 |
+| 变量 | 作用 |
 |------|------|
-| `install.sh` / `install.ps1` | **Core fail-closed**；写 wrapper；dcg 尽量装 |
-| `build-native.*` | Core + 本机 napi/可选 ratatui；node-pty rebuild 失败会告警 |
-| `ensure-dcg.mjs` | 跨平台下载 dcg |
-| `ensure-sqry.mjs` | 跨平台下载 sqry 预编译（verivus-oss/sqry） |
+| `MAOU_CHANNEL=dev` | 装滚动开发版（默认 stable，无 stable 时自动回退 dev） |
+| `MAOU_VERSION=v0.1.0` | 装指定 Release |
+| `MAOU_REPO=owner/repo` | 换源仓库 |
+| `MAOU_HOME` | 换安装目录 |
+| `MAOU_NO_PATH=1` | 不改 PATH |
+| `MAOU_INSTALL_NODE=0` | 缺 Node 时报错而不是自动装 |
+| `GITHUB_TOKEN` | 私有仓库 / API 限额 |
+
+### 更新与回滚
+
+```bash
+maou update                 # 下载新包 → 校验 sha256 → 切换 current
+maou update --check         # 只看有没有新版本
+maou update --force         # 版本相同也重装（修复损坏安装）
+maou update --channel dev   # 切通道
+```
+
+旧版本保留最近 2 个，回滚就是把 `current` 指回去：
+
+```bash
+ls ~/.maou/versions
+ln -sfn ~/.maou/versions/maou-0.1.0-darwin-arm64 ~/.maou/current
+```
+
+Windows 若没有开发者模式建不了 junction，安装器会写 `~/.maou/current.path`
+文本指针，启动器两种都认；回滚改这个文件里的路径即可。
+
+### 卸载
+
+删掉 `~/.maou`（Windows：`%USERPROFILE%\.maou`），再从 shell 配置 / 用户 PATH
+里去掉那一行。
 
 ---
 
-## 在 Mac 上测 Windows
+## 二、开发者（源码树）
 
-见 [docs/WINDOWS-TEST-ON-MAC.md](./docs/WINDOWS-TEST-ON-MAC.md)（真机/UTM/Actions；Docker-for-Mac 不行）。
+```bash
+git clone https://github.com/little-house-studio/maou-sdk.git
+cd maou-sdk
+git checkout develop
+
+npm i -g pnpm
+pnpm setup:dev
+```
+
+`pnpm setup:dev` 一条命令覆盖三系统，依次做：
+
+1. 校验 Node ≥ 20 / pnpm（缺 pnpm 会试 `corepack enable`）
+2. `pnpm install`
+3. `pnpm -r build`
+4. 补 `dcg` / `rg` / `sqry` / `ddgr` 到 `vendor/bin`
+5. 备好 Ratatui TUI 二进制（有 cargo 就编，没有就下载预编译）
+6. 写 `~/.maou/bin/maou`，指向**本源码树**的 `cli/dist/index.js`
+7. `maou doctor --check`
+
+**Rust 不是必需的。** 有 `cargo` 就本机编 `terminal-engine` / TUI；没有就走
+预编译下载。`terminal-engine` 的构建脚本也不再需要全局 `napi` CLI —— 有就用，
+没有自动回退 `cargo build` 并生成 `.node`。
+
+### 日常
+
+```bash
+pnpm -r build      # 改完代码重新构建
+pnpm -r test
+pnpm -r typecheck
+pnpm bundle        # 打一个免构建包到 .release/，验证发布链路
+maou doctor        # 诊断 + 自动修复
+maou update        # git pull + 重新构建
+```
+
+### 单独编原生组件
+
+```bash
+pnpm --filter @little-house-studio/terminal-engine run build:force
+cd cli && npm run build:tui-ratatui
+```
+
+### 磁盘
+
+| 阶段 | 大约 |
+|------|------|
+| git clone | 15–30 MB |
+| `pnpm setup:dev` 后 | 0.4–0.8 GB |
+| 保留 cargo `target/` | 2–3 GB+ |
+
+```bash
+bash scripts/clean-build-cache.sh        # 清 target，留 node_modules
+bash scripts/clean-build-cache.sh --all  # 连 node_modules 一起删
+```
+
+---
+
+## 能力矩阵（诚实版）
+
+| 能力 | 预编译包 | 源码树 | 缺失时兜底 |
+|------|----------|--------|------------|
+| 启动 TUI / 对话 | ✅ 内置 | ✅ 构建后 | — |
+| 文件 read/write/edit | ✅ | ✅ | — |
+| grep / glob | ✅ 内置 `rg` | ✅ | Node 实现（更慢） |
+| `find_code`（sqry） | ✅ 内置 | ✅ | 工具不可用 |
+| 危险命令门（dcg） | ✅ 内置 | ✅ | **关闭 —— 非生产基线** |
+| `use_terminal` 完整 | ✅ 内置引擎 | ✅ / 需 Rust 或预编译 | 降级 spawn，弱交互 |
+| MCP / 压缩 / 会话 | ✅ | ✅ | — |
+| LSP（TS/JS） | △ 需 `npm i -g typescript-language-server`（doctor 自动） | 同左 | 语义诊断不可用 |
+| `search_internet` 质量 | ✅ 内置 `ddgr`，**但需机器上有 Python ≥ 3.6** | 同左 | HTTP fallback |
+
+**不保证**：任意 Windows 机器「装完即与开发者 Mac 全功能零缺陷」。
+
+---
+
+## 排查
+
+```bash
+maou --version           # 先确认是哪种安装形态
+maou doctor              # 诊断 + 自动修复
+maou doctor --check      # 只诊断
+```
+
+| 症状 | 处理 |
+|------|------|
+| 找不到 `maou` | 开新终端；或 `export PATH="$HOME/.maou/bin:$PATH"` |
+| `doctor` 报组件缺失（预编译包） | `maou doctor` 会重新下载；确认能访问 GitHub |
+| `doctor` 报 Core 不完整（预编译包） | 包解压损坏 → `maou update --force` 或重跑安装脚本 |
+| 下载失败 / 限流 | 设 `GITHUB_TOKEN`，或用代理 |
+| 该平台无资产 | 该次发布缺这个平台，见 `docs/RELEASE.md` 平台矩阵 |
+| TUI 起不来（源码树） | 装 Rust 后 `cd cli && npm run build:tui-ratatui` |
+
+---
+
+## 相关文档
+
+- [`docs/RELEASE.md`](docs/RELEASE.md) — 维护者发布流程
+- [`docs/NATIVE_PREBUILD.md`](docs/NATIVE_PREBUILD.md) — 裸原生件（源码树开发者用）

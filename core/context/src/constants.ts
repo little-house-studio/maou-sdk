@@ -16,8 +16,29 @@ export const ARCHIVE_TRIGGER_PERCENT = 90;
 /** 单条消息超过此字符数且未标注 micro_compact，自动参与微压缩 */
 export const MICRO_SINGLE_MSG_CHARS = 800;
 
+/**
+ * active / 原始上下文区：从最新往回保留的消息条数占比（与 DESIGN activeStage 对齐）。
+ * 微压缩与大压缩共用同一边界——大压缩不得吞掉该区原文。
+ */
+export const ACTIVE_WINDOW_PERCENT = 40;
+
+/** active 区至少保留的消息条数（会话很短时避免「全压没」） */
+export const ACTIVE_WINDOW_MIN_MESSAGES = 6;
+
+/**
+ * active 区以外的消息：超过此字符即参与微压缩（强化旧侧；原 800 过高导致几乎不压）。
+ * tool_result 另见更低阈值。
+ */
+export const MICRO_OUTSIDE_MIN_CHARS = 200;
+
+/** tool_result 在 active 外超过此长度必微压 */
+export const MICRO_TOOL_RESULT_MIN_CHARS = 120;
+
 /** 单条微压缩摘要最大字符数 */
 export const MICRO_SUMMARY_MAX_CHARS = 100;
+
+/** 自动 checkpoint 最多保留个数（超出删最旧；防 tool 全量拷盘爆） */
+export const MAX_AUTO_CHECKPOINTS = 8;
 
 /** 任务摘要每条最大字符数 */
 export const SUMMARY_MAX_CHARS = 500;

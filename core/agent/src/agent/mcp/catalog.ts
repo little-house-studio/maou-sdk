@@ -170,10 +170,11 @@ export function formatMcpCatalogPrompt(
       `There are ${snapshot.toolCount} MCP tools across servers (above the full-catalog threshold of ${threshold}).`,
     );
     lines.push(
-      "Only server names are listed here. To discover tools/schemas, use the MCP meta-tool (`mcp` with action=list or call).",
+      "Only server names are listed here. Discover tools via the single tool named `mcp` " +
+        '(NOT a tool named "mcp list"): mcp({ action: "list" }) or mcp({ action: "call", name: "mcp__server__tool", arguments: {} }).',
     );
     lines.push(
-      "Do not invent tool names; look them up before calling.",
+      "Do not invent tool names; look them up with mcp action=list before calling.",
     );
   }
   lines.push("");
@@ -223,7 +224,7 @@ export function formatMcpCatalogPrompt(
       }
     } else {
       lines.push(
-        `  <tools count="${s.tools.length}" listed="false" hint="use mcp list/search for this server" />`,
+        `  <tools count="${s.tools.length}" listed="false" hint='call tool mcp with action=list (and optional server filter)' />`,
       );
     }
     lines.push("</mcp_server>");

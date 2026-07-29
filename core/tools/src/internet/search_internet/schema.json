@@ -21,7 +21,12 @@
       },
       "time": {
         "type": "string",
-        "enum": ["d", "w", "m", "y"],
+        "enum": [
+          "d",
+          "w",
+          "m",
+          "y"
+        ],
         "description": "时效窗口。d=近24小时, w=近一周, m=近一月, y=近一年。查最新动态务必用 d 或 w。"
       },
       "category": {
@@ -41,9 +46,16 @@
       "max_results": {
         "type": "number",
         "description": "返回条数上限，默认 10，最大 15。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
       }
     },
-    "required": ["query"],
+    "required": [
+      "description",
+      "query"
+    ],
     "additionalProperties": false
   }
 }

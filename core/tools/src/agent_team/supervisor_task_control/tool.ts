@@ -143,7 +143,14 @@ export class SupervisorTaskControlTool extends Tool {
         );
       }
       case "start": {
-        // 步骤3: 用户确认 plan 后，supervisor 调 start 正式启动监督
+        // 用户确认 plan 后启动监督。CLI 也可能已确定性推进到 started（防 LLM 漏调）。
+        if (binding.state === "started") {
+          return createToolResponse(
+            true,
+            "✅ 监督已在 started（用户可能已点确认）。请用 supervisor_chat_main 派任务给主 Agent，完成后 verify。",
+            { payload: { state: "started", planLength: binding.plan?.length ?? 0, idempotent: true } },
+          );
+        }
         if (binding.state !== "confirming_plan") {
           return createToolResponse(
             false,
@@ -480,8 +487,26 @@ export class SupervisorTaskControlTool extends Tool {
         );
       }
       case "end": {
-        if (binding.state !== "confirming") {
-          return createToolResponse(false, `当前状态为 ${binding.state}，只能从 confirming 状态结束（请先 confirm_end）。`);
+        // confirming 正常结束；CLI 也可能已 unbind。idempotent 避免重复报错。
+        if (binding.state === "ended" || !mgr.getByMain(binding.mainSessionId)) {
+          return createToolResponse(
+            true,
+            "✅ 监督模式已结束。",
+            {
+              payload: { state: "ended", idempotent: true },
+              displayEvents: [{
+                type: "supervisor_end",
+                text: binding.mainSessionId,
+                stream: "info",
+              }],
+            },
+          );
+        }
+        if (binding.state !== "confirming" && binding.state !== "started") {
+          return createToolResponse(
+            false,
+            `当前状态为 ${binding.state}，只能从 confirming（或用户确认后）结束。`,
+          );
         }
         mgr.updateState(binding.mainSessionId, "ended");
         const unbound = mgr.unbind(binding.mainSessionId);

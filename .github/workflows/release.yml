@@ -1,0 +1,407 @@
+# 发布「免构建」预编译包（bundle）+ 刷新原生预编译资产。
+#
+# 产物（每平台一份，解压即用，用户无需 git / pnpm / Rust / 编译器）：
+#   maou-<platform>.tar.gz | .zip     自包含运行时
+#   manifest.json                     各平台版本 / 校验和索引（maou update 读它）
+#   SHA256SUMS.txt                    校验和
+# 同时把裸原生件推到 Release `native-prebuilds`，兼容老的 ensure-* 流程。
+#
+# 触发：
+#   push tag v*      → stable 通道，Release 名 = tag
+#   push develop     → dev 通道，滚动更新 Release `bundle-dev`（prerelease）
+#   workflow_dispatch → 手动选通道
+#
+# 用户侧：
+#   curl -fsSL .../scripts/install-user.sh | bash
+#   irm .../scripts/install-user.ps1 | iex
+
+name: Release bundles
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "发布通道"
+        type: choice
+        options: [dev, stable]
+        default: dev
+      tag:
+        description: "Release tag（留空按通道取默认：stable→当前 tag，dev→bundle-dev）"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  PNPM_VERSION: "10"
+  NODE_VERSION: "20"
+
+jobs:
+  # ─────────────────────── 决定通道与 tag ───────────────────────
+  meta:
+    name: Resolve release meta
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.r.outputs.channel }}
+      tag: ${{ steps.r.outputs.tag }}
+      prerelease: ${{ steps.r.outputs.prerelease }}
+    steps:
+      - id: r
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            channel="${{ inputs.channel }}"
+            tag="${{ inputs.tag }}"
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            channel="stable"
+            tag="${{ github.ref_name }}"
+          else
+            channel="dev"
+            tag=""
+          fi
+
+          if [[ -z "$tag" ]]; then
+            if [[ "$channel" == "stable" ]]; then
+              if [[ "${{ github.ref_type }}" == "tag" ]]; then
+                tag="${{ github.ref_name }}"
+              else
+                echo "::error::stable 通道需要 tag：给 workflow_dispatch 填 tag，或直接推 v* tag"
+                exit 1
+              fi
+            else
+              tag="bundle-dev"
+            fi
+          fi
+
+          prerelease=true
+          [[ "$channel" == "stable" ]] && prerelease=false
+
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"         >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "→ channel=$channel tag=$tag prerelease=$prerelease"
+
+  # ───────────────────── 安装脚本静态检查 ─────────────────────
+  lint-installers:
+    name: Lint installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell parse install-user.ps1
+        shell: pwsh
+        run: |
+          $err = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "scripts/install-user.ps1", [ref]$null, [ref]$err) | Out-Null
+          if ($err) { $err | ForEach-Object { Write-Host $_.Message }; exit 1 }
+          Write-Host "install-user.ps1 OK"
+      - name: Bash syntax check install-user.sh
+        shell: bash
+        run: bash -n scripts/install-user.sh && echo "install-user.sh OK"
+
+  # ───────────────────────── 各平台打包 ────────────────────────
+  build:
+    name: ${{ matrix.platform }}
+    needs: meta
+    runs-on: ${{ matrix.os }}
+    # ARM runner 可能在某些账户/仓库不可用；不要因此让整个发布失败
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            os: macos-14
+            rust_target: ""
+            engine_lib: libterminal_engine.dylib
+            tui_bin: maou-tui-ratatui
+            optional: false
+          # Intel mac：从 arm64 host 交叉编译（Intel runner 排队慢/正在退役）
+          - platform: darwin-x64
+            os: macos-14
+            rust_target: x86_64-apple-darwin
+            engine_lib: libterminal_engine.dylib
+            tui_bin: maou-tui-ratatui
+            optional: false
+          - platform: linux-x64
+            os: ubuntu-22.04
+            rust_target: ""
+            engine_lib: libterminal_engine.so
+            tui_bin: maou-tui-ratatui
+            optional: false
+          - platform: linux-arm64
+            os: ubuntu-22.04-arm
+            rust_target: ""
+            engine_lib: libterminal_engine.so
+            tui_bin: maou-tui-ratatui
+            optional: true
+          - platform: win32-x64
+            os: windows-latest
+            rust_target: ""
+            engine_lib: terminal_engine.dll
+            tui_bin: maou-tui-ratatui.exe
+            optional: false
+          - platform: win32-arm64
+            os: windows-11-arm
+            rust_target: ""
+            engine_lib: terminal_engine.dll
+            tui_bin: maou-tui-ratatui.exe
+            optional: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      # 先编原生：之后 pnpm -r build 看到 .node 就会跳过重复编译
+      - name: Build terminal-engine
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          cd terminal-engine
+          if [ -n "$RUST_TARGET" ]; then
+            cargo build --release --target "$RUST_TARGET"
+            OUT="target/${RUST_TARGET}/release"
+          else
+            cargo build --release
+            OUT="target/release"
+          fi
+          SRC="${OUT}/${{ matrix.engine_lib }}"
+          [ -f "$SRC" ] || { echo "missing $SRC"; ls -la "$OUT"; exit 1; }
+
+          case "$PLATFORM" in
+            darwin-*) TRIPLE="${PLATFORM}" ;;
+            linux-*)  TRIPLE="${PLATFORM}-gnu" ;;
+            win32-*)  TRIPLE="${PLATFORM}-msvc" ;;
+          esac
+          cp "$SRC" "terminal_engine.${TRIPLE}.node"
+          cp "$SRC" "terminal-engine.${TRIPLE}.node"
+          mkdir -p ../dist-native
+          cp "$SRC" "../dist-native/terminal_engine.${TRIPLE}.node"
+          cp "$SRC" "../dist-native/terminal-engine.${TRIPLE}.node"
+          echo "ENGINE_NODE=$(pwd)/terminal_engine.${TRIPLE}.node" >> "$GITHUB_ENV"
+          ls -la *.node
+
+      - name: Build maou-tui-ratatui
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          if [ -n "$RUST_TARGET" ]; then
+            cargo build --release --manifest-path cli/tui-ratatui/Cargo.toml --target "$RUST_TARGET"
+            SRC="cli/tui-ratatui/target/${RUST_TARGET}/release/${{ matrix.tui_bin }}"
+            [ -f "$SRC" ] || SRC="target/${RUST_TARGET}/release/${{ matrix.tui_bin }}"
+          else
+            cargo build --release --manifest-path cli/tui-ratatui/Cargo.toml
+            SRC="cli/tui-ratatui/target/release/${{ matrix.tui_bin }}"
+            [ -f "$SRC" ] || SRC="target/release/${{ matrix.tui_bin }}"
+          fi
+          [ -f "$SRC" ] || { echo "missing tui binary"; find . -name 'maou-tui-ratatui*' -type f | head -30; exit 1; }
+          mkdir -p dist-native
+          case "$PLATFORM" in
+            win32-*) ASSET="maou-tui-ratatui-${PLATFORM}.exe" ;;
+            *)       ASSET="maou-tui-ratatui-${PLATFORM}" ;;
+          esac
+          cp "$SRC" "dist-native/${ASSET}"
+          echo "TUI_BIN=$(pwd)/${SRC}" >> "$GITHUB_ENV"
+          ls -la "dist-native/${ASSET}"
+
+      - name: Build release bundle
+        shell: bash
+        env:
+          MAOU_NATIVE_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          node scripts/build-release-bundle.mjs \
+            --target "${{ matrix.platform }}" \
+            --channel "${{ needs.meta.outputs.channel }}" \
+            --tag "${{ needs.meta.outputs.tag }}" \
+            --engine "$ENGINE_NODE" \
+            --tui "$TUI_BIN"
+          ls -la .release/
+
+      - name: Smoke test bundle
+        shell: bash
+        # 交叉产物在本机跑不起来，只验证同架构的
+        if: matrix.rust_target == ''
+        run: |
+          set -euo pipefail
+          mkdir -p .smoke
+          case "${{ matrix.platform }}" in
+            win32-*) tar -xf .release/maou-${{ matrix.platform }}.zip -C .smoke ;;
+            *)       tar -xzf .release/maou-${{ matrix.platform }}.tar.gz -C .smoke ;;
+          esac
+          ROOT=$(find .smoke -maxdepth 1 -mindepth 1 -type d | head -n1)
+          echo "bundle root: $ROOT"
+          test -f "$ROOT/RELEASE.json"
+          MAOU_BUNDLE_ROOT="$ROOT" node "$ROOT/dist/index.js" --version
+          MAOU_BUNDLE_ROOT="$ROOT" node "$ROOT/dist/index.js" doctor --check || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.platform }}
+          path: |
+            .release/maou-*.tar.gz
+            .release/maou-*.zip
+            .release/maou-*.sha256
+            .release/manifest-*.json
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: dist-native/*
+          if-no-files-found: error
+
+  # ────────────────────────── 汇总发布 ─────────────────────────
+  publish:
+    name: Publish Release
+    needs: [meta, build]
+    # build 里 optional 目标失败也要发（有几个平台发几个）；meta 失败则不发
+    if: ${{ !cancelled() && needs.meta.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          path: bundles
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: natives
+          merge-multiple: true
+
+      - name: Assemble release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out native-out
+          find bundles -type f \( -name 'maou-*.tar.gz' -o -name 'maou-*.zip' \) -exec cp -v {} out/ \;
+          find natives -type f -exec cp -v {} native-out/ \;
+
+          # 至少要有一个平台成功，否则这次发布没有意义
+          count=$(find out -type f | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::没有任何平台产出 bundle —— 中止发布"
+            exit 1
+          fi
+          echo "打包了 $count 个平台"
+
+          # 合并各平台 manifest → manifest.json
+          node -e '
+            const fs = require("fs"), path = require("path");
+            const dir = "bundles";
+            const files = [];
+            (function walk(d){ for (const e of fs.readdirSync(d,{withFileTypes:true})) {
+              const p = path.join(d, e.name);
+              if (e.isDirectory()) walk(p);
+              else if (/^manifest-.*\.json$/.test(e.name)) files.push(p);
+            }})(dir);
+            const builds = files.map(f => JSON.parse(fs.readFileSync(f,"utf8")))
+                                .sort((a,b) => a.platform.localeCompare(b.platform));
+            if (!builds.length) { console.error("no manifest-*.json"); process.exit(1); }
+            const out = {
+              schema: 1,
+              product: "maou",
+              version: builds[0].version,
+              channel: builds[0].channel,
+              commit: builds[0].commit,
+              releaseTag: builds[0].releaseTag,
+              generatedAt: new Date().toISOString(),
+              builds,
+            };
+            fs.writeFileSync("out/manifest.json", JSON.stringify(out, null, 2) + "\n");
+            console.log("manifest.json:", builds.map(b => `${b.platform}@${b.version}`).join(", "));
+          '
+
+          (cd out && sha256sum maou-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          (cd native-out && sha256sum * > SHA256SUMS.txt || true)
+          ls -la out native-out
+
+      - name: Publish bundle release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: >-
+            Maou ${{ needs.meta.outputs.tag }}
+            (${{ needs.meta.outputs.channel }})
+          prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
+          files: out/*
+          body: |
+            **免构建预编译包** — 解压即用，无需 git / pnpm / Rust / C++ 工具链。
+
+            ### 安装
+
+            macOS / Linux：
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/scripts/install-user.sh | bash
+            ```
+
+            Windows（原生 PowerShell，不要 WSL）：
+            ```powershell
+            irm https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/scripts/install-user.ps1 | iex
+            ```
+
+            装好后：`maou doctor` → `maou setup` → `maou coding`
+            更新：`maou update`
+
+            ### 资产
+
+            | 文件 | 说明 |
+            |------|------|
+            | `maou-<platform>.tar.gz` / `.zip` | 自包含运行时（含 dist + node_modules + 原生件） |
+            | `manifest.json` | 各平台版本 / 校验和索引（`maou update` 读它） |
+            | `SHA256SUMS.txt` | 校验和 |
+
+            唯一前提：Node.js ≥ 20（安装器可自动装一份私有的）。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refresh native-prebuilds release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: native-prebuilds
+          name: Native prebuilds (rolling)
+          prerelease: true
+          files: native-out/*
+          body: |
+            裸原生件（供源码树开发者的 `ensure-terminal-engine.mjs` / `ensure-maou-tui.mjs` 拉取）。
+
+            **普通用户不需要这里的东西** —— 用 Release 里的 `maou-<platform>.tar.gz` 免构建包。
+
+            | 资产 | 说明 |
+            |------|------|
+            | `terminal_engine.*.node` | use_terminal 引擎 |
+            | `maou-tui-ratatui-*` | Ratatui TUI |
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

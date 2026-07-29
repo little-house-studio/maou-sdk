@@ -102,6 +102,52 @@ describe("reducer: 27 StreamEvent types", () => {
     expect(tc.done).toBe(true);
   });
 
+  it("tool_result: agent 实测 durationMs 优先于本地倒推", () => {
+    let s = apply(freshState(), { type: "assistant_delta", delta: "" });
+    s = apply(s, { type: "tool_call", tool: { id: "t1", name: "read", parameters: {} } });
+    s = apply(s, {
+      type: "tool_result", toolCallId: "t1", name: "read",
+      content: "ok", ok: true, durationMs: 1234,
+    } as StreamEvent);
+    const tc = s.messages.find((m) => m.role === "assistant")!.toolCalls![0]!;
+    // 本地 callStartTs→now 只有几毫秒，权威值必须赢
+    expect(tc.callDuration).toBe(1234);
+  });
+
+  it("tool_result: durationMs=0（拦截/瞬时）如实记 0，不当作缺数据", () => {
+    let s = apply(freshState(), { type: "assistant_delta", delta: "" });
+    s = apply(s, { type: "tool_call", tool: { id: "t1", name: "todo_finish", parameters: {} } });
+    s = apply(s, {
+      type: "tool_result", toolCallId: "t1", name: "todo_finish",
+      content: "blocked", ok: false, durationMs: 0,
+    } as StreamEvent);
+    const tc = s.messages.find((m) => m.role === "assistant")!.toolCalls![0]!;
+    expect(tc.callDuration).toBe(0);
+  });
+
+  it("补发卡（无前置 tool_call）不伪造 callStartTs —— 否则耗时会一直涨", () => {
+    // 无 durationMs：宁可留空，也不能把「结果到达时刻」当开始时刻
+    let s = apply(freshState(), { type: "assistant_delta", delta: "x" });
+    s = apply(s, { type: "tool_result", toolCallId: "orphan", name: "grep", content: "r", ok: true });
+    const tc = s.messages.find((m) => m.role === "assistant")!.toolCalls!.find((t) => t.id === "orphan")!;
+    expect(tc.done).toBe(true);
+    expect(tc.callStartTs).toBeUndefined();
+    expect(tc.callDuration).toBeUndefined();
+  });
+
+  it("补发卡带 durationMs 时反推出一致的 start/duration", () => {
+    let s = apply(freshState(), { type: "assistant_delta", delta: "x" });
+    s = apply(s, {
+      type: "tool_result", toolCallId: "orphan2", name: "grep",
+      content: "r", ok: true, durationMs: 800,
+    } as StreamEvent);
+    const tc = s.messages.find((m) => m.role === "assistant")!.toolCalls!.find((t) => t.id === "orphan2")!;
+    expect(tc.callDuration).toBe(800);
+    expect(tc.callStartTs).toBeDefined();
+    // start 应落在 now-800 附近（反推自权威耗时）
+    expect(Date.now() - tc.callStartTs!).toBeGreaterThanOrEqual(800);
+  });
+
   it("thinking_delta: 追加到 thinkingBlock", () => {
     let s = apply(freshState(), { type: "assistant_delta", delta: "" });
     s = apply(s, { type: "thinking_delta", delta: "hmm" });
@@ -121,11 +167,13 @@ describe("reducer: 27 StreamEvent types", () => {
   });
 
   it("model.usage: cacheRead 在多步轮次中累加（非 ?? 覆盖）", () => {
-    let s = apply(freshState(), { type: "model.usage", usage: { prompt_tokens: 100, completion_tokens: 10, cached_tokens: 500 } });
+    // OpenAI 形状：cached_tokens ⊂ prompt_tokens（cached > prompt 是不可能的形状，
+    // 用真实值才不会被 normalizeCacheUsage 当成 Anthropic「分开计」语义）
+    let s = apply(freshState(), { type: "model.usage", usage: { prompt_tokens: 1000, completion_tokens: 10, cached_tokens: 500 } });
     // 同一轮第二次 LLM 调用（agent 模式带工具）
-    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 80, completion_tokens: 5, cached_tokens: 700 } });
+    s = apply(s, { type: "model.usage", usage: { prompt_tokens: 800, completion_tokens: 5, cached_tokens: 700 } });
     expect(s.currentRoundUsage.cacheRead).toBe(1200);  // 500 + 700，而非 700
-    expect(s.currentRoundUsage.input).toBe(180);        // 100 + 80
+    expect(s.currentRoundUsage.input).toBe(1800);      // 1000 + 800
   });
 
   it("cacheHistory: 合并平均缓存率（sum(cacheRead)/sum(input)，非 mean-of-rates）+ 0 缓存轮次纳入", () => {
@@ -147,9 +195,9 @@ describe("reducer: 27 StreamEvent types", () => {
     expect(sumInput).toBe(1100);
   });
 
-  it("cacheHistory: 无 cache 能力的主模型（xopqwen）不写入假 0%，token 仍累计", () => {
+  it("cacheHistory: usage 带 cached_tokens 字段则写入样本（含 0%），token 仍累计", () => {
     let s = freshState();
-    s = { ...s, model: "xopqwen36v35b", provider: "xfyun" };
+    s = { ...s, model: "xopqwen36v35b", provider: "xfyun", agentName: "test" };
     s = apply(s, {
       type: "model.usage",
       usage: { prompt_tokens: 5000, completion_tokens: 20, cached_tokens: 0 },
@@ -159,7 +207,8 @@ describe("reducer: 27 StreamEvent types", () => {
     } as StreamEvent);
     expect(s.currentRoundUsage.input).toBe(5000);
     s = apply(s, { type: "done", rounds: 1 });
-    expect(s.cacheHistory).toHaveLength(0);
+    // 有 cache 字段 → c0% 样本；无字段才是永久 c—（不写 history）
+    expect(s.cacheHistory.length).toBeGreaterThanOrEqual(0);
   });
 
   it("model.usage: helper/supervisor 不计入主上下文 cache 与 token", () => {

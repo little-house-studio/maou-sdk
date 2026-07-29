@@ -49,6 +49,7 @@ export const CODING_TOOL_WHITELIST = [
   "lsp",
   "use_terminal",
   "search_internet",
+  "use_browser",
   "use_skill",
   "find_skill",
   "todo_manage",
@@ -59,8 +60,19 @@ export const CODING_TOOL_WHITELIST = [
   "yield",
 ] as const;
 
-/** coding 默认嵌套子 Agent（物化到 agents/coding/subagents/） */
-export const CODING_DEFAULT_SUBAGENTS = ["explore", "reviewer", "tester"] as const;
+/**
+ * coding 默认嵌套子 Agent（物化到 agents/coding/subagents/）
+ * - explore：搜代码并报告
+ * - research：查网络资料并报告
+ * - reviewer：只读审查
+ * - tester：单测/集成 + 可选浏览器
+ */
+export const CODING_DEFAULT_SUBAGENTS = [
+  "explore",
+  "research",
+  "reviewer",
+  "tester",
+] as const;
 
 /** coding agent 默认名称（即 agents/<name>/）。 */
 export const DEFAULT_CODING_AGENT_NAME = "coding";

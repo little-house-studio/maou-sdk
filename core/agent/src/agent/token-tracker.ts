@@ -11,6 +11,7 @@ import {
   renameSync,
 } from "node:fs";
 import { join } from "node:path";
+import { normalizeCacheUsage } from "@little-house-studio/llm";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
@@ -63,9 +64,10 @@ export interface DailyData {
 // ─── 用量解析（CLI 事件栏 / 计费共用） ─────────────────────────────────────
 
 /**
- * 本轮「未缓存的新输入」token 数。
- * = prompt/input − cache_read（缓存破坏后 cache_read=0，即全量 input）。
- * 与 computeCost.effective_input_tokens 一致。
+ * 本轮「未缓存的新输入」token 数（缓存破坏后 cache_read=0，即全量 prompt）。
+ *
+ * 直接写 `input − cache_read` 在 Anthropic 上会得到 0：那边的 `input_tokens`
+ * 本就**不含**命中部分，减一次等于扣两遍。口径归一交给 LLM 层。
  */
 export function uncachedInputTokens(usage: {
   prompt_tokens?: number;
@@ -77,20 +79,9 @@ export function uncachedInputTokens(usage: {
   [key: string]: unknown;
 } | null | undefined): number {
   if (!usage) return 0;
-  const input = Math.trunc(
-    Number(usage.input_tokens ?? usage.inputTokens ?? usage.prompt_tokens ?? 0) || 0,
-  );
-  const details = usage.prompt_tokens_details as { cached_tokens?: number } | undefined;
-  const cache = Math.trunc(
-    Number(
-      usage.cache_hit_tokens
-      ?? usage.cache_read_input_tokens
-      ?? usage.cached_tokens
-      ?? details?.cached_tokens
-      ?? 0,
-    ) || 0,
-  );
-  return Math.max(0, input - cache);
+  const n = normalizeCacheUsage(usage as Record<string, unknown>);
+  // 建缓存的部分也是本轮真金白银的新输入，计入未缓存量
+  return n.uncached + n.cacheWrite;
 }
 
 // ─── 工具函数 ──────────────────────────────────────────────────────────────

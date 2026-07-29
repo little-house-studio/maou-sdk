@@ -14,6 +14,7 @@ const srcRoot = join(root, "src");
 const distRoot = join(root, "dist");
 
 const ASSETS = new Set(["schema.json", "TOOL.md"]);
+const ASSET_EXT = new Set([".py"]); // condition_eval.py 等
 
 function walk(dir, out = []) {
   if (!existsSync(dir)) return out;
@@ -21,7 +22,9 @@ function walk(dir, out = []) {
     const p = join(dir, name);
     const st = statSync(p);
     if (st.isDirectory()) walk(p, out);
-    else if (ASSETS.has(name)) out.push(p);
+    else if (ASSETS.has(name) || [...ASSET_EXT].some((ext) => name.endsWith(ext))) {
+      out.push(p);
+    }
   }
   return out;
 }

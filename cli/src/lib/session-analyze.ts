@@ -10,6 +10,7 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { projectSessionFile, projectSessionsDir, projectMaouRoot } from "../config/paths.js";
+import { normalizeCacheUsage } from "@little-house-studio/llm";
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -57,21 +58,14 @@ export interface SessionAnalyzeReport {
 
 // ── parse helpers ──────────────────────────────────────────────────────────
 
+/**
+ * `input` 为归一后的 prompt 总量（含命中/写入），命中率才有统一分母。
+ * 各家字段语义差异见 LLM 层 `normalizeCacheUsage`。
+ */
 function parseUsage(raw: unknown): { input: number; output: number; cacheRead: number } {
   if (!raw || typeof raw !== "object") return { input: 0, output: 0, cacheRead: 0 };
-  const u = raw as Record<string, unknown>;
-  const input = Number(u.prompt_tokens ?? u.input_tokens ?? 0) || 0;
-  const output = Number(u.completion_tokens ?? u.output_tokens ?? 0) || 0;
-  const details = u.prompt_tokens_details as { cached_tokens?: number } | undefined;
-  const cacheRead =
-    Number(
-      u.cached_tokens ??
-        u.cache_read_input_tokens ??
-        u.cache_hit_tokens ??
-        details?.cached_tokens ??
-        0,
-    ) || 0;
-  return { input, output, cacheRead };
+  const n = normalizeCacheUsage(raw as Record<string, unknown>);
+  return { input: n.promptTotal, output: n.output, cacheRead: n.cacheRead };
 }
 
 function toolNameFromCall(tc: Record<string, unknown>): string {
@@ -199,6 +193,7 @@ export function analyzeSessionJsonl(sessionId: string, raw: string, sessionFile 
       if (usage.input > 0 || usage.cacheRead > 0) {
         prevCacheRead = usage.cacheRead;
       }
+      // usage.input 已是 prompt 总量（含命中），比值天然落在 0–1
       const hitRate =
         usage.input > 0 ? Math.min(1, usage.cacheRead / usage.input) : null;
 
@@ -344,8 +339,6 @@ export function analyzeSessionJsonl(sessionId: string, raw: string, sessionFile 
   let wasteP = 0;
   let assistantTurns = 0;
   let toolCalls = 0;
-  let hitSum = 0;
-  let hitN = 0;
 
   for (const s of steps) {
     totalInput += s.inputTokens;
@@ -356,10 +349,6 @@ export function analyzeSessionJsonl(sessionId: string, raw: string, sessionFile 
     if (s.waste === "p") wasteP++;
     if (s.kind === "assistant") assistantTurns++;
     if (s.kind === "tool" && s.purpose.startsWith("call ")) toolCalls++;
-    if (s.cacheHitRate != null) {
-      hitSum += s.cacheHitRate;
-      hitN++;
-    }
   }
 
   return {
@@ -376,7 +365,9 @@ export function analyzeSessionJsonl(sessionId: string, raw: string, sessionFile 
       cacheBreaks,
       wasteY,
       wasteP,
-      avgCacheHitRate: hitN > 0 ? hitSum / hitN : null,
+      // 合并命中率（总命中/总 prompt），与 InfoBar 的 avgCacheHitPct 同口径。
+      // 旧实现按步取算术平均（mean-of-rates），小 prompt 的步会被放大成同等权重。
+      avgCacheHitRate: totalInput > 0 ? Math.min(1, totalCacheRead / totalInput) : null,
     },
   };
 }
