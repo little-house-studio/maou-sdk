@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import type { DraftBgTask } from "../types";
 import { ChromeMark, TaskMark } from "../icons/Marks";
 
@@ -12,7 +12,7 @@ const STATUS_ZH: Record<DraftBgTask["status"], string> = {
   queued: "排队",
 };
 
-/** 后台任务 — 悬浮在上下文上方；收纳时仍保留一条摘要条 */
+/** 后台任务 — 上下文顶栏 in-flow 条；无任务时不渲染，避免空壳占位 */
 export function BackgroundTasks({ tasks }: BackgroundTasksProps) {
   const [open, setOpen] = useState(false);
   const running = tasks.filter((t) => t.status === "running").length;
@@ -23,16 +23,17 @@ export function BackgroundTasks({ tasks }: BackgroundTasksProps) {
     tasks[0] ??
     null;
 
+  // Don't paint empty chrome over the thread
+  if (tasks.length === 0) return null;
+
   const summary =
-    tasks.length === 0
-      ? "暂无后台任务"
-      : running > 0
-        ? `${running} 运行中${primary ? ` · ${primary.title}` : ""}`
-        : queued > 0
-          ? `${queued} 排队 · ${primary?.title ?? ""}`
-          : primary
-            ? `${STATUS_ZH[primary.status]} · ${primary.title}`
-            : `${tasks.length} 项任务`;
+    running > 0
+      ? `${running} 运行中${primary ? ` · ${primary.title}` : ""}`
+      : queued > 0
+        ? `${queued} 排队 · ${primary?.title ?? ""}`
+        : primary
+          ? `${STATUS_ZH[primary.status]} · ${primary.title}`
+          : `${tasks.length} 项任务`;
 
   return (
     <section

@@ -155,7 +155,7 @@ type Props = {
   onOpenTerminal?: (id: string, agentName?: string) => void;
   defaultAgent?: string;
   onMetaChange?: (meta: Meta) => void;
-  /** codex = 侧栏线程 + 居中对话 + 底部 composer */
+  /** codex = 侧栏线程 + 居中对话 + 底部 composer (also used inside draft-aligned live shell) */
   layout?: "default" | "codex";
   /** 将线程列表 portal 到侧栏容器 */
   threadRailId?: string;
@@ -163,6 +163,8 @@ type Props = {
   onBusyChange?: (busy: boolean) => void;
   /** Active session title for topbar */
   onSessionTitleChange?: (title: string | null) => void;
+  /** Extra class on root (e.g. wire-context for draft-aligned live shell) */
+  className?: string;
 };
 
 export function ChatPanel({
@@ -173,6 +175,7 @@ export function ChatPanel({
   threadRailId,
   onBusyChange,
   onSessionTitleChange,
+  className,
 }: Props) {
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [input, setInput] = useState("");
@@ -1506,10 +1509,12 @@ export function ChatPanel({
     </div>
   );
 
+  const rootExtra = className ? ` ${className}` : "";
+
   // legacy default layout
   if (!isCodex) {
     return (
-      <div className="panel chat-panel">
+      <div className={`panel chat-panel${rootExtra}`.trim()}>
         <div className="panel-header chat-toolbar">
           <span className="chat-toolbar-title">Chat</span>
           <button
@@ -1530,7 +1535,7 @@ export function ChatPanel({
   }
 
   return (
-    <div className="chat-panel codex-chat">
+    <div className={`chat-panel codex-chat${rootExtra}`.trim()}>
       {railHost && threadRail ? createPortal(threadRail, railHost) : null}
       {busy && (
         <div className="stream-banner" role="status">

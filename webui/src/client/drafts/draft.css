@@ -1,7 +1,14 @@
 /**
- * Draft shell — modern minimal graphite + mint.
- * 8px spacing scale, calm surfaces, restrained chrome.
- * Visual marks: shape + tone (never color alone).
+ * Draft shell — CLI design language (tau-ceti).
+ * Source: cli/assets/themes/tau-ceti.json
+ *
+ * Language: brown-warm greys (no olive) + acid signal.
+ *  1. Canvas #1A1817; panels #282522 / #2F2B28 / #3D3834
+ *  2. Text cream → fg → muted (#F5F0E8 / #C9C2B6 / #8A8278)
+ *  3. Primary signal acid #C7FF20 + black ink on fills
+ *  4. ok/cyan #3BFFA7 · warn #FFD900 · err #FF741D
+ *  5. violet #8363FF scarce (system/md) · deepBlue #2121FF for info/link only
+ *  6. Hard solid blocks; nav-style high-contrast chips
  */
 
 /* ── Shared mark tones ── */
@@ -13,25 +20,25 @@
 }
 
 .wire-shell .tone-accent {
-  color: var(--n-accent, #7dd3c0);
+  color: var(--n-accent, #c7ff20);
 }
 .wire-shell .tone-ok {
-  color: var(--n-ok, #5ecf8e);
+  color: var(--n-ok, #3bffa7);
 }
 .wire-shell .tone-warn {
-  color: var(--n-warn, #e0b45a);
+  color: var(--n-warn, #ffd900);
 }
 .wire-shell .tone-err {
-  color: var(--n-err, #e07070);
+  color: var(--n-err, #ff741d);
 }
 .wire-shell .tone-info {
-  color: var(--n-info, #6ba3d4);
+  color: var(--n-info, #2121ff);
 }
 .wire-shell .tone-muted {
-  color: var(--n-tertiary, #6b6b74);
+  color: var(--n-tertiary, #8a8278);
 }
 .wire-shell .tone-neutral {
-  color: var(--n-secondary, #9b9ba3);
+  color: var(--n-secondary, #c9c2b6);
 }
 
 .wire-shell .draft-mark-pulse-ring {
@@ -139,58 +146,86 @@
 
 
 .wire-shell.draft-shell {
-  /* frost-branch-mint-sand tokens */
-  --n-bg: #0a0a0b;
-  --n-elevated: #121214;
-  --n-surface: #1a1a1e;
-  --n-fill: #1a1a1e;
-  --n-hover: #222226;
-  --n-line: #26262c;
-  --n-line-strong: #36363e;
-  --n-label: #f0f0f2;
-  --n-secondary: #9b9ba3;
-  --n-tertiary: #6b6b74;
-  --n-quaternary: #52525a;
+  /*
+   * Warm greys — slightly brown (R≥G≥B), never olive/green cast.
+   * Dark ladder:
+   *   #1A1817 void → #211E1C paper → #282522 panel/rail
+   *   → #2F2B28 raised → #3D3834 surface → #524C45 hover
+   * Light: #8A8278 → #B8B0A4 → #C9C2B6 → #F5F0E8
+   */
+  --n-bg: #1a1817;
+  --n-elevated: #282522;
+  --n-rail: #282522;
+  --n-rail-alt: #2f2b28;
+  --n-surface: #3d3834;
+  --n-fill: #3d3834;
+  --n-float: #282522;
+  --n-float-hi: #3d3834;
+  --n-hover: #524c45;
+  /* Flat: hierarchy via background; borders transparent unless solid needed */
+  --n-line: transparent;
+  --n-line-strong: transparent;
+  --n-line-solid: #3d3834;
+  --n-label: #f5f0e8;
+  --n-secondary: #c9c2b6;
+  --n-tertiary: #8a8278;
+  --n-quaternary: #8a8278;
   --n-white: #ffffff;
-  /* primary = mint; ring matches primary */
-  --n-accent: #7dd3c0;
-  --n-accent-dim: rgba(125, 211, 192, 0.14);
-  --n-accent-strong: #6bc4b0;
-  --n-accent-fg: #0a0a0b;
-  --n-ring: #7dd3c0;
-  --n-ok: #5ecf8e;
-  --n-ok-dim: rgba(94, 207, 142, 0.14);
-  --n-warn: #e0b45a;
-  --n-warn-dim: rgba(224, 180, 90, 0.14);
-  --n-err: #e07070;
-  --n-err-dim: rgba(224, 112, 112, 0.14);
-  --n-info: #6ba3d4;
-  --n-info-dim: rgba(107, 163, 212, 0.14);
-  --n-code-bg: #0e0e11;
-  --n-tool: #1c1c22;
-  --n-diff-add: #14301f;
-  --n-diff-add-fg: #8fdfb0;
-  --n-diff-del: #3a1515;
-  --n-diff-del-fg: #f0a0a0;
-  /* File type tints */
-  --n-file-ts: #6ba3d4;
-  --n-file-js: #d4b84a;
-  --n-file-json: #c9b44a;
-  --n-file-md: #8b9cf0;
-  --n-file-html: #e0895a;
-  --n-file-css: #7dd3c0;
-  --n-file-git: #e07070;
-  --n-file-folder: #d4b06a;
-  /* radii: xs/sm/md/lg like frost */
-  --n-radius-xs: 4px;
-  --n-radius: 8px;
-  --n-radius-md: 12px;
-  --n-radius-lg: 16px;
-  --n-shadow-panel: 0 1px 0 0 #ffffff0a inset, 0 8px 24px -12px #0000008c;
+  /* Acid primary + black ink (CLI nav/settings pattern) */
+  --n-accent: #c7ff20;
+  --n-accent-dim: color-mix(in srgb, #c7ff20 18%, transparent);
+  --n-accent-strong: #d4ff4a;
+  --n-accent-fg: #000000;
+  --n-ring: #c7ff20;
+  --n-ok: #3bffa7;
+  --n-ok-dim: color-mix(in srgb, #3bffa7 16%, transparent);
+  --n-warn: #ffd900;
+  --n-warn-dim: color-mix(in srgb, #ffd900 16%, transparent);
+  --n-err: #ff741d;
+  --n-err-dim: color-mix(in srgb, #ff741d 16%, transparent);
+  /* CLI: violet = system (scarce); deepBlue = info/link */
+  --n-violet: #8363ff;
+  --n-violet-dim: color-mix(in srgb, #8363ff 16%, transparent);
+  --n-info: #2121ff;
+  --n-info-dim: color-mix(in srgb, #2121ff 16%, transparent);
+  --n-code-bg: #1a1817;
+  --n-tool: #211e1c;
+  --n-diff-add-fg: #3bffa7;
+  --n-diff-del-fg: #ff741d;
+  --n-diff-add: #1a1817;
+  --n-diff-del: #1a1817;
+  /* File types — CLI syntax map */
+  --n-file-ts: #2121ff;
+  --n-file-js: #ffd900;
+  --n-file-json: #ffd900;
+  --n-file-md: #8363ff;
+  --n-file-html: #ff741d;
+  --n-file-css: #c7ff20;
+  --n-file-git: #ff741d;
+  --n-file-folder: #ffd900;
+  /* Same brown-warm family as panels */
+  --n-assistant-bg: #211e1c;
+  --n-user-bg: #2f2b28;
+  --n-input-chip: #b8b0a4;
+  /* Flat: zero soft-radius; chamfer only on optional-param chips */
+  --n-radius-xs: 0;
+  --n-radius: 0;
+  --n-radius-md: 0;
+  --n-radius-lg: 0;
+  --n-shadow-panel: none;
+  /* Single-corner cut size (optional-param controls only) */
+  --cut: 6px;
+  --clip-br: polygon(
+    0 0,
+    100% 0,
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    0 100%
+  );
   --n-font: "Segoe UI", ui-sans-serif, system-ui, -apple-system, "Helvetica Neue",
     "Noto Sans SC", sans-serif;
   --n-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
-  /* 8px spacing scale */
+  /* 8px grid spacing scale (prefer --s-2 / --s-4 / --s-6 / --s-8) */
   --s-1: 4px;
   --s-2: 8px;
   --s-3: 12px;
@@ -200,6 +235,7 @@
   --s-8: 32px;
   --center-max: 100%;
   --center-pad-x: 16px;
+  --float-inset: 16px;
 
   display: flex;
   flex-direction: column;
@@ -217,20 +253,23 @@
   text-rendering: optimizeLegibility;
   scrollbar-width: thin;
   scrollbar-color: var(--n-line-strong) transparent;
+  /* Anchor settings overlay (absolute inset:0) */
+  position: relative;
 }
 
-/* ── Top ── */
+/* ── Top — saturated pure accent (CLI acid) + black ink ── */
 .wire-topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--s-3);
   flex-shrink: 0;
-  height: 48px;
+  height: 40px;
   padding: 0 var(--s-3);
-  border-bottom: 1px solid var(--n-line);
-  background: color-mix(in srgb, var(--n-elevated) 88%, transparent);
-  backdrop-filter: blur(12px);
+  border-bottom: none;
+  background: var(--n-accent);
+  color: var(--n-accent-fg);
+  backdrop-filter: none;
 }
 
 .wire-topbar-left,
@@ -259,7 +298,7 @@
   align-items: center;
   gap: 2px;
   padding: 2px;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   background: transparent;
 }
 
@@ -271,38 +310,100 @@
   height: 32px;
   padding: 0;
   border: none;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   background: transparent;
-  color: var(--n-secondary);
+  color: var(--n-accent-fg);
   cursor: pointer;
   transition: color 0.15s ease, background 0.15s ease;
 }
 
 .wire-icon-only:hover {
-  color: var(--n-label);
-  background: var(--n-hover);
+  color: var(--n-accent-fg);
+  background: color-mix(in srgb, var(--n-accent-fg) 12%, transparent);
 }
 
+/* ── CLI logo language (seal + bar + title) ── */
 .wire-wordmark {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.025em;
-  color: var(--n-label);
-  margin-right: 6px;
+  gap: 0;
+  margin-right: var(--s-3);
+  color: var(--n-accent-fg);
+  flex-shrink: 0;
 }
 
-.wire-wordmark .draft-mark {
+.maou-logo {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
+  color: inherit;
+  line-height: 1;
+  user-select: none;
+}
+
+.maou-seal {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.maou-seal-row {
+  display: flex;
+  gap: 1px;
+  height: 5px;
+}
+
+.maou-seal-cell {
+  width: 5px;
+  height: 5px;
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.maou-seal-cell.is-on {
+  background: currentColor;
+}
+
+.maou-logo-bar {
+  width: 2px;
+  align-self: stretch;
+  min-height: 17px;
+  background: currentColor;
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+
+.maou-logo-text {
+  display: flex;
+  flex-direction: column;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: var(--n-label);
-  color: var(--n-accent-fg);
+  gap: 1px;
+  min-width: 0;
+}
+
+.maou-logo-title {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: inherit;
+  line-height: 1.1;
+}
+
+.maou-logo-ver {
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--n-mono);
+  letter-spacing: 0.02em;
+  color: inherit;
+  opacity: 0.75;
+  line-height: 1.1;
+}
+
+.maou-logo.is-compact .maou-logo-title {
+  font-size: 12px;
+  letter-spacing: 0.08em;
 }
 
 .wire-mode-tabs button,
@@ -316,7 +417,7 @@
   display: flex;
   gap: 2px;
   padding: 3px;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   background: var(--n-bg);
   border: 1px solid var(--n-line);
 }
@@ -330,7 +431,7 @@
   font-size: 12.5px;
   font-weight: 500;
   padding: 5px 10px;
-  border-radius: 6px;
+  border-radius: 0;
   cursor: pointer;
   line-height: 1.25;
   min-height: 28px;
@@ -340,14 +441,14 @@
 .wire-mode-tabs button:hover,
 .wire-text-btn:hover {
   color: var(--n-label);
-  background: color-mix(in srgb, var(--n-hover) 70%, transparent);
+  background: var(--n-hover);
 }
 
 .wire-mode-tabs button.active {
   color: var(--n-label);
   font-weight: 500;
   background: var(--n-surface);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: none;
 }
 
 .wire-text-btn.on {
@@ -378,7 +479,7 @@
   font-family: inherit;
   font-size: 12px;
   padding: 6px 8px;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   cursor: pointer;
   max-width: 160px;
 }
@@ -395,7 +496,7 @@
   font-size: 11px;
   color: var(--n-secondary);
   padding: 4px 10px;
-  border-radius: 999px;
+  border-radius: 0;
   border: 1px solid var(--n-line);
   background: transparent;
   max-width: min(220px, 26vw);
@@ -436,7 +537,7 @@
   flex-shrink: 0;
   min-width: 0;
   min-height: 0;
-  background: var(--n-elevated);
+  background: var(--n-rail, var(--n-elevated));
   border-right: 1px solid var(--n-line);
 }
 
@@ -453,7 +554,7 @@
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--n-line);
-  background: var(--n-elevated);
+  background: var(--n-rail-alt, var(--n-surface));
 }
 
 .wire-v-split,
@@ -476,9 +577,9 @@
   /* shared center-column content track (tasks + thread + composer) */
   --center-max: 100%;
   --center-pad-x: 16px;
-  --float-inset: 12px;
-  --float-tasks-h: 44px;
-  --float-composer-h: 132px;
+  --float-inset: 16px;
+  --float-tasks-h: 40px;
+  --float-composer-h: 136px;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -488,6 +589,8 @@
   position: relative;
   overflow: hidden;
 }
+
+/* right rail uses --n-rail */
 
 .wire-center-track {
   width: 100%;
@@ -504,7 +607,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--n-elevated);
+  background: var(--n-rail, var(--n-elevated));
   border-left: 1px solid var(--n-line);
 }
 
@@ -552,47 +655,40 @@
   text-align: left;
 }
 
-/* Status dots — semantic color */
+/* Status dots — exclusive signal ownership, hard square (no glow wash) */
 .wire-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 0;
   flex-shrink: 0;
   background: var(--n-quaternary);
+  box-shadow: none;
 }
 
 .wire-status-dot.status-running {
   background: var(--n-accent);
-  box-shadow: 0 0 0 3px var(--n-accent-dim);
 }
 
 .wire-status-dot.status-blocked {
   background: var(--n-warn);
-  box-shadow: 0 0 0 3px var(--n-warn-dim);
 }
 
 .wire-status-dot.status-done,
-.wire-status-dot.status-done_read {
-  background: var(--n-ok);
-}
-
+.wire-status-dot.status-done_read,
 .wire-status-dot.status-done_unread {
   background: var(--n-ok);
-  box-shadow: 0 0 0 3px var(--n-ok-dim);
 }
 
 .wire-status-dot.status-queued {
   background: var(--n-info);
 }
 
-.wire-status-dot.status-needs_reply,
 .wire-status-dot.status-idle {
   background: var(--n-quaternary);
 }
 
 .wire-status-dot.status-needs_reply {
   background: var(--n-err);
-  box-shadow: 0 0 0 3px var(--n-err-dim);
 }
 
 /* Agent tree — collapsible sections + parent/child hierarchy */
@@ -635,13 +731,13 @@
   text-align: left;
   padding: 8px 6px 6px;
   cursor: pointer;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   transition: color 0.12s ease, background 0.12s ease;
 }
 
 .wire-agent-section-head:hover {
   color: var(--n-secondary);
-  background: color-mix(in srgb, var(--n-hover) 50%, transparent);
+  background: var(--n-hover);
 }
 
 .wire-agent-chevron,
@@ -675,7 +771,7 @@
   text-transform: none;
   color: var(--n-quaternary);
   background: var(--n-surface);
-  border-radius: 999px;
+  border-radius: 0;
   min-width: 18px;
   height: 16px;
   padding: 0 5px;
@@ -717,7 +813,7 @@
   padding: 0;
   margin: 8px 0 0 2px;
   align-self: flex-start;
-  border-radius: 4px;
+  border-radius: 0;
 }
 
 .wire-agent-expand:hover {
@@ -739,7 +835,7 @@
   min-width: 0;
   text-align: left;
   border: none;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   background: transparent;
   color: var(--n-secondary);
   padding: 6px 8px;
@@ -798,7 +894,7 @@
   color: var(--n-quaternary);
   background: var(--n-bg);
   border: 1px solid var(--n-line);
-  border-radius: 999px;
+  border-radius: 0;
   padding: 0 5px;
   min-height: 15px;
   display: inline-flex;
@@ -868,7 +964,7 @@
 
 .wire-session-row {
   position: relative;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   margin-bottom: 1px;
 }
 
@@ -889,7 +985,7 @@
   width: 100%;
   text-align: left;
   border: none;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   background: transparent;
   color: var(--n-secondary);
   padding: 6px 28px 6px 8px;
@@ -902,7 +998,7 @@
 }
 
 .wire-session-row:hover .wire-session-btn {
-  background: color-mix(in srgb, var(--n-hover) 80%, transparent);
+  background: var(--n-hover);
   color: var(--n-label);
 }
 
@@ -961,7 +1057,7 @@
   color: var(--n-tertiary);
   width: 28px;
   height: 28px;
-  border-radius: var(--n-radius-xs);
+  border-radius: 0;
   cursor: pointer;
   display: none;
   align-items: center;
@@ -978,7 +1074,7 @@
 
 .wire-session-del:hover {
   color: var(--n-err);
-  background: color-mix(in srgb, var(--n-err) 15%, transparent);
+  background: var(--n-err-dim);
 }
 
 /* Floating layers over context */
@@ -1007,18 +1103,18 @@
   overflow: auto;
 }
 
-/* Tasks — floating glass panel over thread */
+/* Tasks — floating panel over thread (solid board float) */
 .wire-bg-tasks,
 .wire-bg-tasks.wire-bg-tasks-float {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--n-line);
-  border-radius: var(--n-radius-md);
-  background: color-mix(in srgb, var(--n-elevated) 88%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  box-shadow: var(--n-shadow-panel), 0 8px 28px -16px rgba(0, 0, 0, 0.55);
+  border-radius: 0;
+  background: var(--n-float);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
   max-height: min(42vh, 280px);
   overflow: hidden;
 }
@@ -1053,7 +1149,7 @@
 
 .wire-tasks-head:hover {
   color: var(--n-secondary);
-  background: color-mix(in srgb, var(--n-hover) 45%, transparent);
+  background: var(--n-hover);
 }
 
 .wire-tasks-chevron {
@@ -1136,7 +1232,7 @@
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   font-size: 13px;
   min-height: 36px;
   background: transparent;
@@ -1145,7 +1241,7 @@
 }
 
 .wire-bg-item:hover {
-  background: color-mix(in srgb, var(--n-hover) 70%, transparent);
+  background: var(--n-hover);
 }
 
 .wire-tasks-count {
@@ -1155,7 +1251,7 @@
   min-width: 18px;
   height: 18px;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--n-surface);
   color: var(--n-secondary);
   font-size: 10px;
@@ -1198,7 +1294,7 @@
   min-width: 0;
   text-align: center;
   padding: 3px 8px;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--n-surface);
   border: 1px solid var(--n-line);
   letter-spacing: 0.02em;
@@ -1206,23 +1302,23 @@
 
 .wire-bg-meta.status-running {
   color: var(--n-accent);
-  border-color: color-mix(in srgb, var(--n-accent) 30%, transparent);
+  border-color: transparent;
   background: var(--n-accent-dim);
 }
 
 .wire-bg-meta.status-done {
   color: var(--n-ok);
-  border-color: color-mix(in srgb, var(--n-ok) 28%, transparent);
+  border-color: transparent;
   background: var(--n-ok-dim);
 }
 
 .wire-bg-meta.status-queued {
   color: var(--n-warn);
-  border-color: color-mix(in srgb, var(--n-warn) 28%, transparent);
+  border-color: transparent;
   background: var(--n-warn-dim);
 }
 
-/* Context — fills center; floats stack above thread */
+/* Context — void canvas; floats stack above thread */
 .wire-context.chat-panel.codex-chat {
   flex: 1;
   min-height: 0;
@@ -1250,34 +1346,163 @@
   overflow: auto;
   display: flex !important;
   flex-direction: column !important;
-  /* room so first/last messages aren't hidden under floats */
-  padding: calc(var(--float-tasks-h, 44px) + 28px) var(--center-pad-x, 16px)
+  /* room so last messages aren't hidden under composer (tasks pad only when present) */
+  padding: 28px var(--center-pad-x, 16px)
     calc(var(--float-composer-h, 132px) + 28px) !important;
   max-width: var(--center-max, 100%) !important;
   width: 100%;
   margin: 0 auto !important;
-  gap: 18px !important;
+  gap: var(--s-4) !important;
   box-sizing: border-box;
 }
 
-.wire-context .wire-center-banner {
+/* Tasks live in-flow under jump/banner — no overlay padding needed.
+   Keep a small top pad so first message isn't flush against chrome. */
+.wire-context.has-tasks .wire-context-scroll {
+  padding-top: 16px !important;
+}
+
+/* In-flow tasks strip: full width, solid, no absolute float math */
+.wire-context-tasks-chrome {
+  flex-shrink: 0;
+  z-index: 21;
+  width: 100%;
+  background: var(--n-float, var(--n-elevated));
   border-bottom: 1px solid var(--n-line);
-  background: color-mix(in srgb, var(--n-accent) 6%, var(--n-bg));
+}
+
+.wire-context-tasks-chrome .wire-bg-tasks,
+.wire-context-tasks-chrome .wire-bg-tasks.wire-bg-tasks-float {
+  border: none;
+  border-radius: 0;
+  max-height: min(36vh, 240px);
+  background: transparent;
+  box-shadow: none;
+}
+
+.wire-context .wire-composer-input {
+  overflow-y: auto;
+  resize: none;
+  min-height: 44px;
+  max-height: 160px;
+  field-sizing: content;
+}
+
+/* CLI JumpPrev — only when scrolled up; user_bg + bold preview */
+.wire-jump-prev {
+  flex-shrink: 0;
+  z-index: 22;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 var(--s-4);
+  border: none;
+  border-bottom: 1px solid var(--n-line);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--n-label);
+  background: var(--n-user-bg);
+  /* Solid — never let thread paint through jump bar */
+  isolation: isolate;
+}
+
+.wire-jump-prev:hover {
+  filter: brightness(1.08);
+}
+
+.wire-jump-prev-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* CLI show_back — float near bottom chrome */
+.wire-jump-bottom {
+  position: absolute;
+  z-index: 28;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--float-composer-h, 132px) + 28px);
+  min-height: 28px;
+  padding: 4px 12px;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--n-accent-fg);
+  background: var(--n-accent);
+  box-shadow: none;
+}
+
+.wire-context.has-approval .wire-jump-bottom {
+  bottom: calc(var(--float-composer-h, 132px) + 168px);
+}
+
+/* Busy stream strip + approval card both eat bottom chrome */
+.wire-context.has-busy.has-approval .wire-jump-bottom {
+  bottom: calc(var(--float-composer-h, 132px) + 168px);
+}
+
+.wire-context .wire-stream-stop:not(:disabled) {
+  color: var(--n-label);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.wire-context .wire-stream-stop:not(:disabled):hover {
+  color: var(--n-err);
+}
+
+.wire-context .wire-stream-stop:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.wire-jump-bottom:hover {
+  background: var(--n-accent-strong);
+}
+
+/* Stream banner — scarce acid signal strip (coexists with approval float) */
+.wire-context .wire-center-banner {
+  flex-shrink: 0;
+  z-index: 20;
+  background: var(--n-accent-dim);
   padding: 0;
+  border-bottom: 1px solid var(--n-line);
 }
 
 .wire-context .wire-banner-inner {
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  min-height: 36px;
-  padding-top: 8px;
-  padding-bottom: 8px;
+  min-height: 32px;
+  padding: var(--s-1) var(--s-4);
   font-size: 12px;
-  color: var(--n-secondary);
+  font-weight: 600;
+  color: var(--n-label);
 }
 
-/* Unified minimalist avatars: same circle shell, monoline glyph */
+.wire-context .wire-stream-label {
+  flex: 1;
+  min-width: 0;
+  letter-spacing: 0.02em;
+}
+
+.wire-context.has-busy .wire-banner-inner .linkish {
+  color: var(--n-accent);
+  font-weight: 600;
+}
+
+/* Unified avatar chips — tone via role */
 .wire-context .msg-avatar-wrap {
   width: 28px;
   height: 28px;
@@ -1285,11 +1510,31 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  border: 1px solid var(--n-line);
+  border-radius: 0;
   background: var(--n-elevated);
   color: var(--n-secondary);
   margin-top: 1px;
+}
+
+.wire-context .msg-avatar-wrap.tone-accent {
+  color: var(--n-accent);
+  background: var(--n-accent-dim);
+}
+.wire-context .msg-avatar-wrap.tone-info {
+  color: var(--n-label);
+  background: var(--n-surface);
+}
+.wire-context .msg-avatar-wrap.tone-err {
+  color: var(--n-err);
+  background: var(--n-err-dim);
+}
+.wire-context .msg-avatar-wrap.tone-warn {
+  color: var(--n-warn);
+  background: var(--n-warn-dim);
+}
+.wire-context .msg-avatar-wrap.tone-muted {
+  color: var(--n-tertiary);
+  background: var(--n-elevated);
 }
 
 .wire-context .msg-avatar,
@@ -1301,45 +1546,125 @@
   color: inherit;
 }
 
-.wire-context .bubble.codex-bubble.user .msg-avatar-wrap,
-.wire-context .bubble.codex-bubble.assistant .msg-avatar-wrap,
-.wire-context .bubble.codex-bubble.system .msg-avatar-wrap {
-  color: var(--n-secondary);
-  border-color: var(--n-line);
-  background: var(--n-elevated);
-}
-
-.wire-context .bubble.codex-bubble.user .msg-avatar-wrap {
-  /* slight cooler edge — still monochrome-adjacent */
-  color: var(--n-secondary);
-}
-
-.wire-context .bubble.codex-bubble.assistant .msg-avatar-wrap {
-  color: var(--n-secondary);
-}
-
-/* Nested internal parts: smaller matching chip */
 .wire-internal-head .draft-role-avatar {
   width: 14px;
   height: 14px;
-  color: var(--n-tertiary);
+  color: inherit;
 }
 
 .wire-context .msg-role {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--n-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--n-tertiary);
   margin-bottom: 4px;
-  letter-spacing: -0.01em;
-  text-transform: none;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.wire-context .bubble.codex-bubble.assistant .msg-role {
+/* CLI MessageRow head: shortId | who | ts | (dur) | ↑↓tok · LIVE */
+.wire-context .msg-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-family: var(--n-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--n-tertiary);
+  line-height: 1.35;
+}
+
+.wire-context .msg-head-logo {
+  flex-shrink: 0;
+  color: var(--n-secondary);
+}
+
+.wire-context .msg-head-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-context .msg-head-live {
+  flex-shrink: 0;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #000;
+  background: var(--n-accent);
+  animation: n-pulse 1.2s ease-in-out infinite;
+}
+
+.wire-context .msg-head-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--n-warn);
+  text-transform: lowercase;
+}
+
+.wire-context .bubble.codex-bubble.user .msg-head {
+  color: var(--n-secondary);
+}
+
+.wire-context .bubble.codex-bubble.assistant .msg-head {
+  color: var(--n-tertiary);
+}
+
+.wire-context .bubble.codex-bubble.assistant.is-live .msg-head,
+.wire-context .msg-head.is-live {
   color: var(--n-accent);
 }
 
+.wire-context .msg-head.is-error {
+  color: var(--n-err);
+}
+
+.wire-context .bubble.codex-bubble.assistant .msg-role {
+  color: var(--n-secondary);
+}
+
 .wire-context .bubble.codex-bubble.user .msg-role {
-  color: var(--n-info);
+  color: var(--n-label);
+}
+
+.wire-context .bubble.codex-bubble.system .msg-role,
+.wire-orphan-label {
+  color: var(--n-quaternary);
+  letter-spacing: 0.06em;
+}
+
+/* CLI thinking line */
+.wire-think-head {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--n-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--n-tertiary);
+}
+
+.wire-think-head:hover:not(:disabled) {
+  color: var(--n-warn);
+}
+
+.wire-think-head:disabled {
+  cursor: default;
+  opacity: 0.9;
+}
+
+.wire-internal-part.role-thinking.is-streaming .wire-think-head {
+  color: var(--n-accent);
 }
 
 .wire-context .bubble.codex-bubble.wire-msg,
@@ -1357,11 +1682,10 @@
   padding-top: 1px;
 }
 
-/* 用户消息：灰色背景块，便于扫读「我说了什么」 */
+/* User — raised warm block (what I said) */
 .wire-context .bubble.codex-bubble.user .msg-body {
-  background: var(--n-surface);
-  border: 1px solid var(--n-line);
-  border-radius: var(--n-radius-md);
+  background: var(--n-user-bg);
+  border-radius: 0;
   padding: 10px 12px 12px;
 }
 
@@ -1369,7 +1693,24 @@
   margin-bottom: 6px;
 }
 
-/* 助手回复树：tool / thinking 嵌套在回复内部 */
+/* System — compact telemetry, not a chat bubble */
+.wire-context .bubble.codex-bubble.system.is-telemetry .msg-body {
+  background: transparent;
+  padding: 0;
+}
+.wire-context .bubble.codex-bubble.system .bubble-text {
+  font-size: 12px;
+  color: var(--n-tertiary);
+  letter-spacing: 0.01em;
+}
+.wire-context .bubble.codex-bubble.system .msg-avatar-wrap {
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  color: var(--n-quaternary);
+}
+
+/* Assistant — open on void (no card); nest carries hierarchy */
 .wire-reply-turn {
   display: flex;
   flex-direction: column;
@@ -1383,13 +1724,19 @@
   min-width: 0;
 }
 
+/* Nested internals — paper block + indent (no border line; flat language) */
 .wire-reply-internals {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 2px;
-  padding: 10px 0 0 12px;
-  border-left: 2px solid var(--n-line);
+  gap: 10px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  background: var(--n-assistant-bg);
+  box-shadow: inset 3px 0 0 0 var(--n-surface);
+}
+
+.wire-reply-turn.is-orphan .wire-reply-internals {
+  box-shadow: inset 3px 0 0 0 var(--n-quaternary);
 }
 
 .wire-internal-part {
@@ -1404,6 +1751,7 @@
   align-items: center;
   gap: 6px;
   color: var(--n-tertiary);
+  min-height: 18px;
 }
 
 .wire-internal-label {
@@ -1411,13 +1759,26 @@
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--n-tertiary);
+  flex: 1;
+  min-width: 0;
+}
+
+.wire-internal-affordance {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--n-quaternary);
+  opacity: 0.85;
 }
 
 .wire-internal-part.role-tool .wire-internal-label {
   color: var(--n-accent);
   font-family: var(--n-mono);
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0;
+  text-transform: none;
+  font-weight: 700;
 }
 
 .wire-internal-part.role-thinking .wire-internal-label {
@@ -1438,6 +1799,8 @@
 .wire-internal-body.is-thinking {
   color: var(--n-tertiary);
   font-size: 12.5px;
+  font-style: italic;
+  padding: 2px 0 2px 2px;
 }
 
 .wire-internal-body.is-tool {
@@ -1447,9 +1810,8 @@
 .wire-tool-pre {
   margin: 0;
   padding: 10px 12px;
-  border-radius: var(--n-radius);
-  border: 1px solid var(--n-line);
-  background: var(--n-tool);
+  border-radius: 0;
+  background: var(--n-code-bg);
   font-family: var(--n-mono);
   font-size: 12px;
   line-height: 1.55;
@@ -1457,12 +1819,149 @@
   white-space: pre-wrap;
   word-break: break-word;
   overflow-x: auto;
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+}
+
+/* ── CLI ToolCard (title chip + fold) ── */
+.wire-tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.wire-tool-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: 100%;
+  margin: 0;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+}
+
+.wire-tool-name {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-family: var(--n-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  /* CLI: black ink on acid (tool) / err */
+  color: #000000;
+  background: var(--n-accent);
+  border-radius: 0;
+  line-height: 1.4;
+}
+
+.wire-tool-name.is-error {
+  background: var(--n-err);
+  color: #000000;
+}
+
+.wire-tool-meta {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--n-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-tool-mark {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--n-quaternary);
+  font-family: var(--n-mono);
+}
+
+.wire-tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding-left: 2px;
+}
+
+.wire-tool-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--n-quaternary);
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+
+.wire-tool-pre.is-input {
+  color: var(--n-warn);
+  max-height: 10em;
+}
+
+.wire-tool-pre.is-output {
+  color: var(--n-ok);
+}
+
+.wire-tool-pre.is-output.is-error {
+  color: var(--n-err);
+}
+
+.wire-tool-pre.is-diff .diff-add {
+  color: var(--n-ok);
+}
+.wire-tool-pre.is-diff .diff-del {
+  color: var(--n-err);
+}
+.wire-tool-pre.is-diff .diff-ctx {
+  color: var(--n-secondary);
+}
+
+.wire-tool-fold {
+  align-self: flex-start;
+  margin: 0;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--n-tertiary);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wire-tool-fold:hover {
+  color: var(--n-label);
+}
+
+.wire-internal-part.is-tool-card {
+  gap: 0;
+}
+
+.wire-msg.tool .msg-role {
+  display: none; /* CLI: tool has no separate role row; chip is the title */
 }
 
 .wire-internal-body.is-err {
   color: var(--n-err);
-  border-left: 2px solid var(--n-err);
-  padding-left: 10px;
+  background: var(--n-err-dim);
+  padding: 8px 10px;
+  box-shadow: inset 3px 0 0 0 var(--n-err);
+}
+
+.wire-internal-part.clickable .wire-tool-pre {
+  cursor: pointer;
+}
+.wire-internal-part.clickable:hover .wire-tool-pre,
+.wire-msg.tool.clickable:hover .wire-tool-pre {
+  background: var(--n-elevated);
+  color: var(--n-label);
 }
 
 /* Draft markdown */
@@ -1484,17 +1983,15 @@
   font-family: var(--n-mono);
   font-size: 0.9em;
   padding: 1px 5px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--n-surface) 80%, var(--n-bg));
-  border: 1px solid var(--n-line);
+  border-radius: 0;
+  background: var(--n-code-bg);
   color: var(--n-accent);
 }
 
 .wire-context .draft-md .dm-pre {
   margin: 0.5em 0;
   padding: 10px 12px;
-  border-radius: var(--n-radius);
-  border: 1px solid var(--n-line);
+  border-radius: 0;
   background: var(--n-code-bg);
   overflow-x: auto;
 }
@@ -1527,59 +2024,62 @@
   color: var(--n-label);
 }
 
-
+.wire-context .draft-md em {
+  font-style: italic;
+  color: var(--n-secondary);
+}
 
 .wire-context .bubble.codex-bubble .bubble-text {
   font-size: 14.5px;
   line-height: 1.65;
-  color: color-mix(in srgb, var(--n-label) 95%, transparent);
+  color: var(--n-label);
   letter-spacing: -0.01em;
 }
 
 .wire-context .bubble.codex-bubble.system .bubble-text,
 .wire-context .bubble.codex-bubble.thinking .bubble-text {
   color: var(--n-secondary);
-  font-size: 13.5px;
+  font-size: 13px;
 }
 
+.wire-context .bubble.codex-bubble.tool .bubble-text.is-tool,
 .wire-context .bubble.codex-bubble.tool .bubble-text {
   font-family: var(--n-mono);
   font-size: 12px;
-  background: var(--n-tool);
-  border: 1px solid var(--n-line);
-  border-radius: var(--n-radius);
-  padding: 10px 12px;
-  color: var(--n-secondary);
-  line-height: 1.55;
   margin-top: 4px;
+  padding: 0;
+  background: transparent;
 }
 
-.wire-context .bubble.codex-bubble.err .bubble-text {
+.wire-context .bubble.codex-bubble.err .bubble-text,
+.wire-context .bubble.codex-bubble.err .bubble-text.is-err {
   color: var(--n-err);
-  border-left: 2px solid var(--n-err);
-  padding-left: 8px;
+  background: var(--n-err-dim);
+  padding: 8px 10px;
+  box-shadow: inset 3px 0 0 0 var(--n-err);
 }
 
 .wire-context .empty-hint {
-  border: 1px solid var(--n-line) !important;
-  border-radius: var(--n-radius-md) !important;
+  border-radius: 0;
   background: var(--n-elevated) !important;
-  padding: 20px 22px !important;
-  margin: 12px 0 !important;
+  padding: 24px 22px !important;
+  margin: 24px auto !important;
+  max-width: 420px;
+  text-align: center;
 }
 
 .wire-context .empty-title {
   font-size: 15px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--n-label);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .wire-context .empty-sub {
   font-size: 13px;
   color: var(--n-tertiary);
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 /* Composer — elevated card; toolbar inside; beats styles.css .composer-row */
@@ -1606,10 +2106,10 @@
 
 .wire-float-bottom .composer-row.wire-composer-card,
 .wire-context .wire-float-bottom .composer-row {
-  background: color-mix(in srgb, var(--n-elevated) 92%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  box-shadow: var(--n-shadow-panel), 0 12px 36px -18px rgba(0, 0, 0, 0.6);
+  background: var(--n-float);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
 }
 
 .wire-context .composer-row-wrap {
@@ -1625,7 +2125,7 @@
   flex-wrap: nowrap !important;
   gap: 0;
   padding: 14px 16px 12px;
-  border-radius: var(--n-radius-lg);
+  border-radius: 0;
   background: var(--n-elevated);
   border: 1px solid var(--n-line);
   box-shadow: var(--n-shadow-panel);
@@ -1634,9 +2134,8 @@
 
 .wire-context .composer-row.wire-composer-card:focus-within,
 .wire-context .composer-row:focus-within {
-  border-color: var(--n-line-strong);
-  box-shadow: var(--n-shadow-panel),
-    0 0 0 1px color-mix(in srgb, var(--n-ring) 40%, transparent);
+  border-color: var(--n-line);
+  box-shadow: none;
 }
 
 .wire-context .composer-row textarea.wire-composer-input,
@@ -1715,7 +2214,7 @@
   background: var(--n-bg);
   color: var(--n-secondary);
   border: 1px solid var(--n-line);
-  border-radius: var(--n-radius);
+  border-radius: 0;
   padding: 5px 26px 5px 10px;
   font-size: 12px;
   font-family: inherit;
@@ -1747,7 +2246,7 @@
   color: var(--n-tertiary);
   background: var(--n-bg);
   border: 1px solid var(--n-line);
-  border-radius: var(--n-radius);
+  border-radius: 0;
   padding: 5px 10px;
   min-height: 30px;
   align-self: center;
@@ -1770,7 +2269,7 @@
   height: 30px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   background: transparent;
   color: var(--n-tertiary);
   cursor: pointer;
@@ -1806,7 +2305,7 @@
   background: var(--n-accent);
   color: var(--n-accent-fg);
   border: none;
-  border-radius: 999px;
+  border-radius: 0;
   padding: 0 !important;
   width: 32px;
   height: 32px;
@@ -1821,18 +2320,27 @@
   transition: background 0.15s ease, opacity 0.15s ease, transform 0.1s ease;
 }
 
-/* force arrow icon contrast on mint fill (override any .tone-* on marks) */
+/* force arrow icon contrast — black on acid */
 .wire-context .composer-row .send-btn .draft-mark,
 .wire-context .composer-row .send-btn svg {
   color: var(--n-accent-fg) !important;
   stroke: currentColor;
   opacity: 1;
 }
+.wire-shell.draft-shell .send-btn .draft-mark,
+.wire-shell.draft-shell .send-btn svg {
+  color: var(--n-accent-fg) !important;
+}
 
 .wire-context .composer-row .send-btn:hover:not(:disabled) {
   background: var(--n-accent-strong);
+  color: var(--n-accent-fg);
   filter: none;
   opacity: 1;
+}
+.wire-context .composer-row .send-btn:hover:not(:disabled) .draft-mark,
+.wire-context .composer-row .send-btn:hover:not(:disabled) svg {
+  color: var(--n-accent-fg) !important;
 }
 
 .wire-context .composer-row .send-btn:active:not(:disabled) {
@@ -1851,7 +2359,7 @@
   background: transparent;
   color: var(--n-secondary);
   border: 1px solid var(--n-line);
-  border-radius: 999px;
+  border-radius: 0;
   padding: 0 !important;
   width: 32px;
   height: 32px;
@@ -1871,19 +2379,18 @@
 }
 
 .wire-context .stream-banner {
-  /* layout via .wire-center-banner + .wire-banner-inner */
   display: block;
   padding: 0;
   font-size: 12px;
-  color: var(--n-secondary);
+  color: var(--n-label);
   border-bottom: none;
-  background: transparent;
+  background: var(--n-accent-dim);
 }
 
 .wire-context .stream-dot {
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: 0;
   background: var(--n-accent);
   box-shadow: 0 0 8px var(--n-accent-dim);
   animation: n-pulse 1.2s ease-in-out infinite;
@@ -1904,22 +2411,23 @@
   font-size: 11px;
 }
 
-/* Approval — floating card just above composer */
+/* Approval — floating card just above composer (solid board) */
 .wire-context .approval-banner.wire-approval-float,
 .wire-context .wire-approval-float {
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--n-warn) 35%, var(--n-line));
-  border-radius: var(--n-radius-md);
-  background: color-mix(in srgb, var(--n-elevated) 92%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  box-shadow: var(--n-shadow-panel), 0 10px 32px -16px rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--n-line);
+  border-radius: 0;
+  background: var(--n-float-hi);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
   overflow: hidden;
   flex-shrink: 0;
 }
 
 .wire-context .wire-approval-float.risk-high {
-  border-color: color-mix(in srgb, var(--n-err) 45%, var(--n-line));
+  background: var(--n-float-hi);
+  box-shadow: inset 3px 0 0 0 var(--n-err);
 }
 
 .wire-context .wire-approval-float .approval-card {
@@ -1930,7 +2438,7 @@
 }
 
 .wire-context .wire-approval-float.risk-high .approval-card {
-  background: color-mix(in srgb, var(--n-err) 8%, transparent);
+  background: var(--n-err-dim);
 }
 
 .wire-context .approval-head {
@@ -1941,6 +2449,54 @@
   font-weight: 600;
   color: var(--n-label);
   margin-bottom: 6px;
+}
+
+.wire-context .approval-keys-hint {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--n-quaternary);
+  font-variant-numeric: tabular-nums;
+}
+
+.wire-context .approval-cmd-row {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+
+.wire-context .approval-cmd-row .approval-cmd {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.wire-context .approval-copy {
+  flex-shrink: 0;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.wire-context .approval-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  margin-right: 6px;
+  font-family: var(--n-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--n-quaternary);
+}
+
+.wire-context .approval-actions button:focus-visible {
+  outline: 2px solid var(--n-accent);
+  outline-offset: 1px;
 }
 
 .wire-context .approval-head-title {
@@ -1957,8 +2513,8 @@
   font-weight: 600;
   color: var(--n-err);
   background: var(--n-err-dim);
-  border: 1px solid color-mix(in srgb, var(--n-err) 30%, transparent);
-  border-radius: 999px;
+  border: 1px solid transparent;
+  border-radius: 0;
   padding: 2px 8px;
 }
 
@@ -1975,7 +2531,7 @@
   font-size: 12px;
   background: var(--n-code-bg);
   border: 1px solid var(--n-line);
-  border-radius: var(--n-radius);
+  border-radius: 0;
   padding: 8px 10px;
   color: var(--n-secondary);
   margin-bottom: 10px;
@@ -1996,8 +2552,8 @@
   font-weight: 500;
   padding: 6px 12px;
   min-height: 32px;
-  border-radius: var(--n-radius);
-  border: 1px solid color-mix(in srgb, var(--n-accent) 35%, transparent);
+  border-radius: 0;
+  border: 1px solid transparent;
   background: var(--n-accent-dim);
   color: var(--n-accent);
   cursor: pointer;
@@ -2016,13 +2572,18 @@
 
 .wire-context .approval-actions button.ghost:hover {
   color: var(--n-err);
-  border-color: rgba(224, 112, 112, 0.4);
+  border-color: transparent;
   background: var(--n-err-dim);
 }
 
 /* Extra bottom padding when approval floats above composer */
 .wire-context.has-approval .wire-context-scroll {
-  padding-bottom: calc(var(--float-composer-h, 132px) + 160px) !important;
+  padding-bottom: calc(var(--float-composer-h, 132px) + 168px) !important;
+}
+/* Tasks are in-flow under banner/jump — no float-top offset needed.
+   Keep a no-op-safe rule so older selectors don't leave tasks hanging. */
+.wire-context.has-busy .wire-float-top {
+  top: var(--float-inset, 16px);
 }
 
 /* Files panel head: diff + title */
@@ -2050,7 +2611,7 @@
   padding: 6px 8px;
   font-size: 11px;
   font-family: var(--n-mono);
-  border-radius: var(--n-radius);
+  border-radius: 0;
   background: var(--n-bg);
   border: 1px solid var(--n-line);
 }
@@ -2083,7 +2644,568 @@
   color: var(--n-tertiary);
 }
 
-/* Bottom — multi-tab panel, collapsible */
+/* ── Bottom dock: pixel-locked folder paths (tab / preview / expand) ──
+ * tab:     M3.5 4.5V7.5H15V4.5H14L13 3.5H4.5L3.5 4.5Z   vb 19×11
+ * preview: M3.5 4.5V7.5H{w}V4.5H14L13 3.5H4.5L3.5 4.5Z  vb grows right
+ * expand:  M3.5 4.5V{h}H{w}V4.5H14L13 3.5H4.5L3.5 4.5Z   float window
+ * scale ×3 from design units; ear fixed; right+bottom scale.
+ */
+.wire-bottom-dock {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 0;
+  position: relative;
+  z-index: 40;
+  /* no black strip — only the folder chips */
+  background: transparent;
+  overflow: visible;
+  height: var(--dock-track-h, 32px);
+}
+
+.wire-dock-track {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  height: var(--dock-track-h, 32px);
+  min-height: var(--dock-track-h, 32px);
+  padding: 0 8px 0;
+  /* fully transparent — no dark rail behind tabs */
+  background: transparent;
+  border: none;
+  border-top: none;
+  position: relative;
+  z-index: 2;
+  overflow: visible;
+}
+
+/*
+ * Right rail / filler: height = body band only (折角 shoulder → bottom).
+ * Top edge aligns with folder bodyTop, NOT ear tip — ears stick up above.
+ * z-index under chips so left-cast tab shadows paint over the rail.
+ */
+.wire-dock-track-fill {
+  position: relative;
+  z-index: 0;
+  flex: 1;
+  min-width: 12px;
+  height: var(--dock-strip-body-h, 24px);
+  max-height: var(--dock-strip-body-h, 24px);
+  align-self: flex-end;
+  margin: 0;
+  opacity: 1;
+  background: color-mix(in srgb, var(--n-surface, #c9c2b6) 72%, #8e887f);
+  border: none;
+  pointer-events: none;
+  border-radius: 0 2px 0 0;
+}
+
+/* Slot placeholder while card is free-floating */
+.wire-dock-slot-spacer {
+  flex-shrink: 0;
+  align-self: flex-end;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* Tones — fill + ink for label/badge contrast on the solid path */
+.wire-dock-card.tone-logs {
+  --dock-fill: #ff5a2e;
+  --dock-ink: #3a1208;
+  --dock-ink-soft: color-mix(in srgb, #3a1208 50%, #fff);
+  --dock-fill-hi: #ff7a55;
+  /* light label on saturated orange */
+  --dock-ear-label: #fff8f4;
+  --dock-badge-bg: #fff;
+  --dock-badge-ink: #3a1208;
+}
+.wire-dock-card.tone-tasks {
+  --dock-fill: #c9c2b6;
+  --dock-ink: #2a2622;
+  --dock-ink-soft: color-mix(in srgb, #2a2622 58%, #c9c2b6);
+  --dock-fill-hi: #ddd6cb;
+  /* dark label on light tan fill */
+  --dock-ear-label: #2a2622;
+  --dock-badge-bg: #fff;
+  --dock-badge-ink: #2a2622;
+}
+.wire-dock-card.tone-terminal {
+  --dock-fill: #b8ff00;
+  --dock-ink: #1a2a00;
+  --dock-ink-soft: color-mix(in srgb, #1a2a00 55%, #b8ff00);
+  --dock-fill-hi: #d0ff4a;
+  /* dark label on neon lime */
+  --dock-ear-label: #152200;
+  --dock-badge-bg: #fff;
+  --dock-badge-ink: #1a2a00;
+}
+.wire-dock-card.tone-agent {
+  --dock-fill: #a182ff;
+  --dock-ink: #2a1f55;
+  --dock-ink-soft: color-mix(in srgb, #2a1f55 48%, #fff);
+  --dock-fill-hi: #b49bff;
+  /* light label on purple */
+  --dock-ear-label: #f6f2ff;
+  --dock-badge-bg: #fff;
+  --dock-badge-ink: #2a1f55;
+}
+
+/*
+ * One continuous card: same DOM + one SVG for tab / preview / expand.
+ * Stack: rightmost higher z; each tab casts a small LEFT shadow onto the
+ * previous tab's right edge (folder board depth). No gap between tabs.
+ */
+.wire-dock-card {
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  align-self: flex-end;
+  /* slight overlap so higher (right) board covers left neighbor */
+  margin: 0 0 0 -6px;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--dock-ink);
+  /* pixel / mono UI font for folder chips */
+  font-family: var(--n-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  overflow: visible;
+  white-space: nowrap;
+  touch-action: none;
+  user-select: none;
+  /* width only — never translateY on hover (right edge morph only) */
+  will-change: width, height, left, top;
+  transform: none;
+}
+/* leftmost slot/tab: flush start, no overlap pull */
+.wire-dock-track > .wire-dock-card:first-child,
+.wire-dock-track > .wire-dock-slot-spacer:first-child {
+  margin-left: 0;
+}
+
+.wire-dock-card-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  z-index: 0;
+  overflow: visible;
+  /* left-cast stack shadow only — no heavy black halo */
+  filter: drop-shadow(-2px 0 1.5px rgba(0, 0, 0, 0.22));
+}
+
+/* Hover: NO vertical lift — only path right edge grows via JS */
+.wire-dock-card.is-preview {
+  transform: none;
+}
+.wire-dock-card.is-preview .wire-dock-card-svg {
+  filter: drop-shadow(-2.5px 0 2px rgba(0, 0, 0, 0.26));
+}
+.wire-dock-card.is-lifting .wire-dock-card-svg {
+  filter:
+    drop-shadow(-3px 0 2px rgba(0, 0, 0, 0.28))
+    drop-shadow(0 4px 6px rgba(0, 0, 0, 0.2));
+}
+.wire-dock-card.is-live .wire-dock-card-svg,
+.wire-dock-card.is-float .wire-dock-card-svg {
+  filter:
+    drop-shadow(-3px 1px 2px rgba(0, 0, 0, 0.26))
+    drop-shadow(0 6px 10px rgba(0, 0, 0, 0.24));
+}
+.wire-dock-card.is-free .wire-dock-card-svg {
+  filter:
+    drop-shadow(-2px 2px 3px rgba(0, 0, 0, 0.24))
+    drop-shadow(0 8px 12px rgba(0, 0, 0, 0.26));
+}
+/* keep fill solid; no brightness jump that “washes” text */
+.wire-dock-card.is-preview .wire-dock-card-svg path {
+  fill: var(--dock-fill, #A182FF);
+}
+.wire-dock-card.is-press .wire-dock-card-svg path {
+  fill: color-mix(in srgb, var(--dock-fill) 94%, #000);
+}
+.wire-dock-card.is-reorder {
+  opacity: 0.95;
+  transform: none;
+}
+.wire-dock-card.is-float {
+  margin: 0;
+  pointer-events: auto;
+}
+
+.wire-dock-card-ui {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  color: var(--dock-ink);
+  pointer-events: auto;
+  background: transparent;
+}
+
+/*
+ * Face row on the BODY band (below 折角 / ear rise), not the ear lip.
+ * Hover adds title/preview to the right (opacity) — never removes label+count.
+ */
+.wire-dock-card-ear {
+  position: relative;
+  z-index: 4;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  min-height: var(--dock-track-h, 32px);
+  box-sizing: border-box;
+  /* top pad = ear rise so text sits in body strip aligned with rail */
+  padding: var(--dock-ear-rise-h, 8px) 10px 2px 12px;
+  margin: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+  font-family: var(--n-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: var(--dock-ear-label, var(--dock-ink));
+  overflow: hidden;
+  white-space: nowrap;
+}
+.wire-dock-card-ear:active,
+.wire-bottom-dock.is-dragging .wire-dock-card-ear {
+  cursor: grabbing;
+}
+
+.wire-dock-card.is-live .wire-dock-card-ear {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: min(100%, 42%);
+  max-width: 140px;
+  height: var(--dock-track-h, 32px);
+  min-height: var(--dock-track-h, 32px);
+  padding: var(--dock-ear-rise-h, 8px) 10px 2px 12px;
+}
+
+.wire-dock-card-ear .wire-dock-tab-label {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-family: inherit;
+  color: var(--dock-ear-label, #fff);
+  /* no heavy shadow that reads as “black plate” */
+  text-shadow: none;
+}
+.wire-dock-tab-badge {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 16px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  border-radius: 2px;
+  border: none;
+  background: var(--dock-badge-bg, #fff);
+  color: var(--dock-badge-ink, var(--dock-ink));
+  box-shadow: none;
+}
+/* Extra: additive on hover — opacity only, never unmount label */
+.wire-dock-tab-extra {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+  margin-left: 2px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.wire-dock-tab-title {
+  flex-shrink: 1;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  color: var(--dock-ear-label, var(--dock-ink));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wire-dock-tab-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  color: var(--dock-ear-label, var(--dock-ink));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.82;
+}
+
+.wire-dock-card-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: transparent;
+  overflow: hidden;
+  /* clear absolute ear strip */
+  padding-top: var(--dock-track-h, 32px);
+}
+
+/* dock-plugin free canvas face */
+.wire-dock-plugin-body {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+.wire-dock-canvas-face {
+  width: 100%;
+  height: 100%;
+  min-height: 80px;
+  overflow: hidden;
+}
+.wire-dock-card-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: transparent;
+}
+.wire-dock-html-sample {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  font-family: var(--n-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--dock-ink, #1a1817);
+  background: color-mix(in srgb, var(--dock-fill, #c9c2b6) 88%, #fff);
+  pointer-events: none;
+}
+.wire-dock-html-sample.is-poly-source {
+  /* offscreen source for drawElementImage — keep layout but not visible */
+  opacity: 0.01;
+  z-index: 0;
+}
+.wire-dock-html-sample.is-visible-fallback {
+  opacity: 1;
+  z-index: 2;
+  pointer-events: auto;
+}
+.wire-dock-html-sample-head {
+  font-weight: 800;
+  margin-bottom: 6px;
+  letter-spacing: 0.04em;
+}
+.wire-dock-html-sample-list {
+  margin: 0;
+  padding: 0 0 0 14px;
+  line-height: 1.45;
+}
+
+.wire-dock-folder-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 10px 6px;
+  padding-left: calc(min(42%, 140px) + 4px);
+  font-weight: 700;
+  box-sizing: border-box;
+  border: none;
+  cursor: grab;
+  touch-action: none;
+}
+.wire-dock-folder-head:active {
+  cursor: grabbing;
+}
+
+.wire-dock-open-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--dock-ink-soft, var(--dock-ink));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-dock-card-close {
+  border: none;
+  outline: none;
+  background: color-mix(in srgb, var(--dock-ink) 12%, transparent);
+  color: var(--dock-ink);
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  flex-shrink: 0;
+  border-radius: 4px;
+}
+.wire-dock-card-close:hover {
+  background: color-mix(in srgb, var(--dock-ink) 20%, transparent);
+}
+
+.wire-dock-folder-content[data-folder-part="face"],
+.wire-dock-folder-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  margin: 0;
+  padding: 0 4px 6px;
+  background: transparent;
+  color: var(--dock-ink);
+  border: none;
+}
+
+.wire-dock-folder-content .wire-term-pre,
+.wire-dock-folder-content .wire-log-pre {
+  background: transparent !important;
+  color: var(--dock-ink-soft, var(--dock-ink));
+  padding: 6px 10px 10px;
+}
+
+.wire-dock-folder-content .wire-bottom-todo-list {
+  padding: 2px 8px 8px;
+}
+.wire-dock-folder-content .wire-bottom-todo {
+  color: var(--dock-ink);
+}
+.wire-dock-folder-content .wire-bottom-todo.is-done {
+  color: var(--dock-ink-soft);
+}
+.wire-dock-folder-content .wire-bottom-todo:hover {
+  background: color-mix(in srgb, #000 7%, transparent);
+}
+.wire-dock-folder-content .wire-bottom-todo-agent {
+  color: var(--dock-ink-soft);
+}
+.wire-dock-folder-content .wire-dock-agent-body {
+  padding: 6px 10px 10px;
+}
+.wire-dock-folder-content .wire-dock-agent-current {
+  background: color-mix(in srgb, #000 8%, var(--dock-fill));
+  border: none;
+  border-radius: 4px;
+}
+.wire-dock-folder-content .wire-dock-agent-name,
+.wire-dock-folder-content .wire-dock-agent-list-name {
+  color: var(--dock-ink);
+}
+.wire-dock-folder-content .wire-dock-agent-meta,
+.wire-dock-folder-content .wire-dock-agent-list-role,
+.wire-dock-folder-content .wire-dock-agent-list-st {
+  color: var(--dock-ink-soft);
+}
+.wire-dock-folder-content .wire-dock-agent-list li:hover {
+  background: color-mix(in srgb, #000 7%, transparent);
+}
+
+.wire-bottom-dock.is-dragging {
+  user-select: none;
+}
+
+.wire-dock-agent-body {
+  padding: 10px 12px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wire-dock-agent-current {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--n-elevated);
+  border: 1px solid var(--n-line-solid, var(--n-line));
+}
+.wire-dock-agent-name {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--n-label);
+}
+.wire-dock-agent-meta {
+  font-size: 11px;
+  color: var(--n-tertiary);
+  font-family: var(--n-mono);
+}
+.wire-dock-agent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wire-dock-agent-list li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  font-size: 12px;
+  color: var(--n-secondary);
+}
+.wire-dock-agent-list li:hover {
+  background: var(--n-hover);
+}
+.wire-dock-agent-list-name {
+  font-weight: 600;
+  color: var(--n-label);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wire-dock-agent-list-role {
+  color: var(--n-tertiary);
+  font-size: 11px;
+}
+.wire-dock-agent-list-st {
+  font-family: var(--n-mono);
+  font-size: 10px;
+  color: var(--n-quaternary);
+}
+
+/* legacy multi-tab (kept for any residual class use) */
 .wire-bottom-bar {
   flex-shrink: 0;
   display: flex;
@@ -2094,7 +3216,7 @@
 }
 
 .wire-bottom-bar.is-collapsed {
-  background: color-mix(in srgb, var(--n-elevated) 92%, var(--n-bg));
+  background: var(--n-elevated);
 }
 
 .wire-bottom-main {
@@ -2146,14 +3268,14 @@
   font-weight: 500;
   padding: 5px 10px;
   min-height: 28px;
-  border-radius: var(--n-radius) var(--n-radius) 0 0;
+  border-radius: 0;
   cursor: pointer;
   transition: color 0.12s ease, background 0.12s ease;
 }
 
 .wire-bottom-tab:hover {
   color: var(--n-label);
-  background: color-mix(in srgb, var(--n-hover) 60%, transparent);
+  background: var(--n-hover);
 }
 
 .wire-bottom-tab.active {
@@ -2166,7 +3288,7 @@
   min-width: 15px;
   height: 15px;
   padding: 0 4px;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--n-accent-dim);
   color: var(--n-accent);
   font-size: 10px;
@@ -2183,7 +3305,7 @@
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   background: transparent;
   color: var(--n-tertiary);
   font-size: 12px;
@@ -2245,7 +3367,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   font-size: 12.5px;
   color: var(--n-label);
 }
@@ -2302,7 +3424,7 @@
   font-size: 12px;
   padding: 0 6px;
   height: 28px;
-  border-radius: var(--n-radius);
+  border-radius: 0;
   cursor: pointer;
   text-align: left;
 }
@@ -2372,25 +3494,25 @@
   font-weight: 500;
   color: var(--n-tertiary);
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: 0;
   border: 1px solid var(--n-line);
 }
 
 .wire-agent-card-st.status-running {
   color: var(--n-accent);
-  border-color: rgba(125, 211, 192, 0.35);
+  border-color: transparent;
   background: var(--n-accent-dim);
 }
 
 .wire-agent-card-st.status-blocked {
   color: var(--n-warn);
-  border-color: rgba(224, 180, 90, 0.35);
+  border-color: transparent;
   background: var(--n-warn-dim);
 }
 
 .wire-agent-card-st.status-needs_reply {
   color: var(--n-err);
-  border-color: rgba(224, 112, 112, 0.35);
+  border-color: transparent;
   background: var(--n-err-dim);
 }
 
@@ -2479,15 +3601,31 @@
   padding: 4px 0 10px;
   overflow: auto;
   flex: 1;
+  min-height: 0;
 }
 
+.wire-shell .vsc-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+/* Critical: flex row — without this icon/label stack and indent looks broken */
 .wire-shell .vsc-tree-row {
-  height: 28px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  height: 26px;
   gap: 6px;
   padding-right: 8px;
   color: var(--n-secondary);
-  border-radius: var(--n-radius);
-  margin: 1px 8px;
+  border-radius: 0;
+  margin: 0 6px;
+  min-width: 0;
+  box-sizing: border-box;
+  cursor: pointer;
+  user-select: none;
 }
 
 .wire-shell .vsc-tree-row:hover {
@@ -2500,71 +3638,115 @@
   color: var(--n-label);
 }
 
-.wire-shell .vsc-tree-row.is-modified .vsc-tree-label {
-  color: var(--n-warn);
-}
-
-.wire-shell .vsc-icon {
+.wire-shell .vsc-tree-twistie {
+  flex-shrink: 0;
   width: 12px;
   height: 12px;
-  font-size: 9px;
-  color: var(--n-tertiary);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  font-size: 9px;
+  color: var(--n-quaternary);
+  transition: transform 0.12s ease;
+  line-height: 1;
 }
 
-.wire-shell .vsc-icon.is-dir,
-.wire-shell .vsc-icon-folder,
-.wire-shell .vsc-icon-folder-open {
+.wire-shell .vsc-tree-twistie.is-open {
+  transform: rotate(90deg);
+  color: var(--n-tertiary);
+}
+
+.wire-shell .vsc-tree-twistie.is-leaf {
+  visibility: hidden;
+}
+
+/* Type colors on icons (tone-* also set currentColor) */
+.wire-shell .draft-file-mark {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+.wire-shell .draft-file-kind-folder,
+.wire-shell .draft-file-kind-folder-open {
   color: var(--n-file-folder);
 }
 
-.wire-shell .vsc-icon-ts,
-.wire-shell .vsc-icon-tsx {
+.wire-shell .draft-file-kind-ts,
+.wire-shell .draft-file-kind-tsx {
   color: var(--n-file-ts);
 }
 
-.wire-shell .vsc-icon-js,
-.wire-shell .vsc-icon-jsx {
+.wire-shell .draft-file-kind-js,
+.wire-shell .draft-file-kind-jsx {
   color: var(--n-file-js);
 }
 
-.wire-shell .vsc-icon-json {
+.wire-shell .draft-file-kind-json,
+.wire-shell .draft-file-kind-config {
   color: var(--n-file-json);
 }
 
-.wire-shell .vsc-icon-md {
+.wire-shell .draft-file-kind-md {
   color: var(--n-file-md);
 }
 
-.wire-shell .vsc-icon-html {
+.wire-shell .draft-file-kind-html {
   color: var(--n-file-html);
 }
 
-.wire-shell .vsc-icon-css {
+.wire-shell .draft-file-kind-css {
   color: var(--n-file-css);
 }
 
-.wire-shell .vsc-icon-git {
+.wire-shell .draft-file-kind-git {
   color: var(--n-file-git);
 }
 
-.wire-shell .vsc-tree-badge {
+.wire-shell .draft-file-kind-lock {
+  color: var(--n-tertiary);
+}
+
+.wire-shell .draft-file-kind-img {
   color: var(--n-warn);
 }
 
+.wire-shell .draft-file-kind-default {
+  color: var(--n-tertiary);
+}
+
+/* Labels stay readable; modified gets M badge + soft tint */
 .wire-shell .vsc-tree-label {
-  font-size: 13px;
-  line-height: 28px;
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 26px;
   letter-spacing: -0.01em;
+  color: inherit;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-shell .vsc-tree-row.is-modified .vsc-tree-label {
+  color: var(--n-label);
+}
+
+.wire-shell .vsc-tree-mod {
+  flex-shrink: 0;
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  font-family: var(--n-mono);
+  color: var(--n-warn);
+  line-height: 1;
+  padding: 0 2px;
 }
 
 .wire-shell .vsc-tree-badge {
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--n-warn);
-  font-family: var(--n-mono);
+  display: none;
 }
 
 .wire-shell .draft-file-empty {
@@ -2576,6 +3758,13 @@
 
 .wire-shell .draft-badge {
   display: none;
+}
+
+/* Folder fill uses currentColor (already a board file tone) */
+.wire-shell .draft-file-kind-folder path,
+.wire-shell .draft-file-kind-folder-open path {
+  fill: currentColor;
+  fill-opacity: 0.22;
 }
 
 
@@ -2594,7 +3783,7 @@
   min-height: 34px;
   padding: 7px 12px;
   border: 1px solid var(--n-line);
-  border-radius: var(--n-radius);
+  border-radius: 0;
   background: transparent;
   color: var(--n-secondary);
   font-family: inherit;
@@ -2621,7 +3810,7 @@
 }
 
 .wire-shell.draft-shell ::selection {
-  background: color-mix(in srgb, var(--n-accent) 35%, transparent);
+  background: var(--n-accent-dim);
   color: var(--n-label);
 }
 
@@ -2632,7 +3821,7 @@
 
 .wire-shell.draft-shell ::-webkit-scrollbar-thumb {
   background: var(--n-line-strong);
-  border-radius: 999px;
+  border-radius: 0;
 }
 
 .wire-shell.draft-shell ::-webkit-scrollbar-track {
@@ -2652,3 +3841,2290 @@
 
 /* usage-chip styled above in composer toolbar */
 
+/* ── Flat style: no radius, no borders ── */
+.wire-shell.draft-shell,
+.wire-shell.draft-shell *,
+.wire-shell.draft-shell *::before,
+.wire-shell.draft-shell *::after {
+  border-radius: 0 !important;
+}
+
+/* Kill decorative outlines/borders; layout uses background steps */
+.wire-shell.draft-shell .wire-topbar,
+.wire-shell.draft-shell .wire-left,
+.wire-shell.draft-shell .wire-left-sessions,
+.wire-shell.draft-shell .wire-right,
+.wire-shell.draft-shell .wire-bottom-bar,
+.wire-shell.draft-shell .wire-bottom-main,
+.wire-shell.draft-shell .wire-bottom-toolbar,
+.wire-shell.draft-shell .wire-bg-tasks,
+.wire-shell.draft-shell .wire-bg-scroll,
+.wire-shell.draft-shell .wire-files-head,
+.wire-shell.draft-shell .wire-diff-strip,
+.wire-shell.draft-shell .wire-new-task-btn,
+.wire-shell.draft-shell .wire-meta,
+.wire-shell.draft-shell .wire-mode-tabs,
+.wire-shell.draft-shell .composer-row,
+.wire-shell.draft-shell .composer-row.wire-composer-card,
+.wire-shell.draft-shell .wire-approval-float,
+.wire-shell.draft-shell .approval-card,
+.wire-shell.draft-shell .approval-cmd,
+.wire-shell.draft-shell .approval-actions button,
+.wire-shell.draft-shell .chip-select select,
+.wire-shell.draft-shell .usage-chip,
+.wire-shell.draft-shell .wire-context .empty-hint,
+.wire-shell.draft-shell .wire-context .bubble.codex-bubble.user .msg-body,
+.wire-shell.draft-shell .wire-tool-pre,
+.wire-shell.draft-shell .wire-internal-body.is-err,
+.wire-shell.draft-shell .wire-reply-internals,
+.wire-shell.draft-shell .draft-md .dm-code,
+.wire-shell.draft-shell .draft-md .dm-pre,
+.wire-shell.draft-shell .msg-avatar-wrap,
+.wire-shell.draft-shell .wire-tasks-count,
+.wire-shell.draft-shell .wire-agent-section-count,
+.wire-shell.draft-shell .wire-agent-kid-count,
+.wire-shell.draft-shell .wire-bg-meta,
+.wire-shell.draft-shell .wire-agent-card-st,
+.wire-shell.draft-shell .wire-bottom-tab.active,
+.wire-shell.draft-shell .wire-bottom-tab-badge,
+.wire-shell.draft-shell .send-btn,
+.wire-shell.draft-shell .composer-tool-btn,
+.wire-shell.draft-shell .vsc-explorer-header,
+.wire-shell.draft-shell .panel-header {
+  border: none !important;
+  border-width: 0 !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* Explicit split lines removed (were 1px solid borders) */
+.wire-shell.draft-shell .wire-topbar {
+  border-bottom: none !important;
+}
+.wire-shell.draft-shell .wire-left {
+  border-right: none !important;
+}
+.wire-shell.draft-shell .wire-left-sessions {
+  border-top: none !important;
+}
+.wire-shell.draft-shell .wire-right {
+  border-left: none !important;
+}
+.wire-shell.draft-shell .wire-bottom-bar {
+  border-top: none !important;
+}
+.wire-shell.draft-shell .wire-float-bottom .composer-row,
+.wire-shell.draft-shell .wire-float-top .wire-bg-tasks {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Focus: use soft fill, not ring border */
+.wire-shell.draft-shell .composer-row:focus-within,
+.wire-shell.draft-shell .composer-row.wire-composer-card:focus-within {
+  border: none !important;
+  box-shadow: none !important;
+  background: var(--n-fill) !important;
+}
+
+.wire-shell.draft-shell .chip-select select:focus,
+.wire-shell.draft-shell .chip-select select:hover {
+  border: none !important;
+  outline: none !important;
+}
+
+/* Avatar squares (radius already 0), no ring */
+.wire-shell.draft-shell .msg-avatar-wrap {
+  border: none !important;
+  background: var(--n-surface);
+}
+
+/* Internal hierarchy: paper block + inset signal rail (not border stroke) */
+.wire-shell.draft-shell .wire-reply-internals {
+  border-left: none !important;
+  padding: 10px 12px !important;
+  margin-left: 0;
+  background: var(--n-assistant-bg) !important;
+  box-shadow: inset 3px 0 0 0 var(--n-surface) !important;
+}
+
+.wire-shell.draft-shell .wire-reply-turn.is-orphan .wire-reply-internals {
+  box-shadow: inset 3px 0 0 0 var(--n-quaternary) !important;
+}
+
+.wire-shell.draft-shell .wire-agent-children {
+  border-left: none !important;
+}
+
+.wire-shell.draft-shell .wire-internal-body.is-err {
+  border-left: none !important;
+  background: var(--n-err-dim) !important;
+  padding: 8px 10px !important;
+  box-shadow: inset 3px 0 0 0 var(--n-err) !important;
+}
+
+.wire-shell.draft-shell .wire-tool-pre {
+  background: var(--n-code-bg) !important;
+  max-height: min(40vh, 320px);
+}
+
+.wire-shell.draft-shell .wire-context.has-busy .stream-banner,
+.wire-shell.draft-shell .wire-context.has-busy .wire-center-banner {
+  background: var(--n-accent-dim) !important;
+}
+
+.wire-shell.draft-shell .wire-approval-float.risk-high {
+  background: var(--n-float-hi) !important;
+  box-shadow: inset 3px 0 0 0 var(--n-err) !important;
+}
+.wire-shell.draft-shell .wire-approval-float.risk-high .approval-card {
+  background: var(--n-err-dim) !important;
+}
+
+/* Bottom tabs: underline via background bar not border */
+.wire-shell.draft-shell .wire-bottom-tab.active {
+  box-shadow: none !important;
+  background: var(--n-surface) !important;
+}
+
+/* Pills become squares */
+.wire-shell.draft-shell .wire-meta,
+.wire-shell.draft-shell .usage-chip,
+.wire-shell.draft-shell .send-btn,
+.wire-shell.draft-shell .wire-status-dot,
+.wire-shell.draft-shell .wire-tasks-count,
+.wire-shell.draft-shell .wire-agent-section-count {
+  border-radius: 0 !important;
+}
+
+/* ── Zone surfaces: brown-warm greys (no olive/green) ──
+ * #1A1817 → #211E1C → #282522 → #2F2B28 → #3D3834 → #524C45
+ */
+.wire-shell.draft-shell {
+  background: var(--n-bg);
+}
+
+/* Top — pure saturated acid (CLI primary signal), black ink */
+.wire-shell.draft-shell .wire-topbar {
+  background: var(--n-accent) !important;
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-icon-only {
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-icon-only:hover {
+  background: color-mix(in srgb, var(--n-accent-fg) 14%, transparent) !important;
+  color: var(--n-accent-fg) !important;
+}
+/* Mode tabs on acid: black ink idle, inverted active */
+.wire-shell.draft-shell .wire-topbar .wire-mode-tabs {
+  background: color-mix(in srgb, var(--n-accent-fg) 10%, transparent) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-mode-tabs button {
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-mode-tabs button:hover {
+  background: color-mix(in srgb, var(--n-accent-fg) 14%, transparent) !important;
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-mode-tabs button.active {
+  background: var(--n-accent-fg) !important;
+  color: var(--n-accent) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-text-btn {
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-text-btn:hover {
+  background: color-mix(in srgb, var(--n-accent-fg) 14%, transparent) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-text-btn.on {
+  background: var(--n-accent-fg) !important;
+  color: var(--n-accent) !important;
+}
+/* Scenario select — ink on pure fill */
+.wire-shell.draft-shell .wire-topbar .wire-select {
+  background: color-mix(in srgb, var(--n-accent-fg) 10%, transparent) !important;
+  color: var(--n-accent-fg) !important;
+  border: none !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-select-wrap {
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-sep {
+  background: color-mix(in srgb, var(--n-accent-fg) 28%, transparent) !important;
+}
+/* Meta chip — black block on acid (high contrast) */
+.wire-shell.draft-shell .wire-topbar .wire-meta {
+  background: #000000 !important;
+  color: var(--n-label) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-meta .wire-meta-model {
+  color: var(--n-label) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-meta .wire-meta-dim {
+  color: var(--n-tertiary) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-meta.is-off {
+  opacity: 0.7;
+}
+.wire-shell.draft-shell .wire-topbar .maou-logo {
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .wire-bottom-bar,
+.wire-shell.draft-shell .wire-bottom-main,
+.wire-shell.draft-shell .wire-bottom-toolbar {
+  background: var(--n-elevated) !important;
+}
+.wire-shell.draft-shell .wire-bottom-panel,
+.wire-shell.draft-shell .wire-term-pre {
+  background: var(--n-code-bg) !important;
+}
+/*
+ * Manila folder face must win over generic term-pre code-bg.
+ * Specificity: (0,3,0) matches draft-shell term-pre; later + deeper wins.
+ * Without this, logs/terminal read as a dark sticky inset on the folder.
+ */
+.wire-shell.draft-shell .wire-dock-folder-content .wire-term-pre,
+.wire-shell.draft-shell .wire-dock-folder-content .wire-log-pre,
+.wire-shell.draft-shell .wire-dock-folder-content[data-folder-part="face"] .wire-term-pre,
+.wire-shell.draft-shell .wire-dock-folder-content[data-folder-part="face"] .wire-log-pre {
+  background: transparent !important;
+  color: var(--dock-ink-soft, var(--dock-ink)) !important;
+}
+/* Active tab = hard void notch into chrome (not tint wash) */
+.wire-shell.draft-shell .wire-bottom-tab.active {
+  background: var(--n-code-bg) !important;
+  color: var(--n-label) !important;
+  box-shadow: inset 0 -2px 0 0 var(--n-accent) !important;
+}
+.wire-shell.draft-shell .wire-bottom-collapsed {
+  background: var(--n-elevated);
+}
+
+/* Side rails = solid instrument panels */
+.wire-shell.draft-shell .wire-left,
+.wire-shell.draft-shell .wire-left-agents {
+  background: var(--n-rail) !important;
+}
+/* Sessions = one hard step up (color block, not gradient) */
+.wire-shell.draft-shell .wire-left-sessions {
+  background: var(--n-rail-alt) !important;
+}
+.wire-shell.draft-shell .wire-right,
+.wire-shell.draft-shell .wire-files-panel,
+.wire-shell.draft-shell .vsc-explorer,
+.wire-shell.draft-shell .vsc-explorer-body {
+  background: var(--n-rail) !important;
+}
+.wire-shell.draft-shell .wire-files-head {
+  background: var(--n-bg) !important;
+}
+.wire-shell.draft-shell .wire-diff-strip {
+  background: var(--n-surface) !important;
+}
+
+/* Center = pure void field (color only at content/HUD) */
+.wire-shell.draft-shell .wire-center,
+.wire-shell.draft-shell .wire-context,
+.wire-shell.draft-shell .wire-context .codex-thread-scroll {
+  background: var(--n-bg) !important;
+}
+
+/* Floating HUD instruments — solid blocks on void */
+.wire-shell.draft-shell .wire-float-top .wire-bg-tasks,
+.wire-shell.draft-shell .wire-bg-tasks,
+.wire-shell.draft-shell .wire-float-bottom .composer-row,
+.wire-shell.draft-shell .composer-row.wire-composer-card {
+  background: var(--n-float) !important;
+}
+.wire-shell.draft-shell .composer-row:focus-within {
+  background: var(--n-float-hi) !important;
+}
+/* Optional-param chips — CLI inputFieldBg warm chip */
+.wire-shell.draft-shell .chip-select select,
+.wire-shell.draft-shell .usage-chip {
+  background: var(--n-input-chip) !important;
+  color: var(--n-bg) !important;
+}
+.wire-shell.draft-shell .wire-approval-float {
+  background: var(--n-float-hi) !important;
+}
+
+/* Chat content — CLI userBg / assistantMdBg */
+.wire-shell.draft-shell .wire-context .bubble.codex-bubble.user .msg-body {
+  background: var(--n-user-bg) !important;
+  color: var(--n-white) !important;
+}
+.wire-shell.draft-shell .msg-avatar-wrap {
+  background: var(--n-surface) !important;
+}
+.wire-shell.draft-shell .wire-tool-pre,
+.wire-shell.draft-shell .draft-md .dm-pre {
+  background: var(--n-code-bg) !important;
+}
+.wire-shell.draft-shell .wire-reply-internals {
+  background: var(--n-assistant-bg) !important;
+}
+
+/* List controls */
+.wire-shell.draft-shell .wire-new-task-btn {
+  background: var(--n-surface) !important;
+  color: var(--n-label) !important;
+}
+.wire-shell.draft-shell .wire-mode-tabs {
+  background: var(--n-bg) !important;
+}
+
+/* Resize handles: void idle → full signal on interact */
+.wire-shell.draft-shell .draft-resize-handle {
+  background: var(--n-bg) !important;
+  width: 3px !important;
+}
+.wire-shell.draft-shell .draft-resize-handle:hover,
+.wire-shell.draft-shell .draft-resize-handle.is-dragging {
+  background: var(--n-accent) !important;
+}
+.wire-shell.draft-shell .wire-h-split {
+  background: var(--n-bg) !important;
+  height: 3px !important;
+}
+.wire-shell.draft-shell .wire-h-split:hover,
+.wire-shell.draft-shell .wire-h-split.is-collapsed-edge:hover {
+  background: var(--n-accent) !important;
+}
+.wire-shell.draft-shell .wire-v-split {
+  background: var(--n-bg) !important;
+  height: 3px !important;
+}
+
+/* ── Grid (8px); no corner chamfers ── */
+.wire-shell.draft-shell .wire-float {
+  left: var(--float-inset, 16px);
+  right: var(--float-inset, 16px);
+}
+.wire-shell.draft-shell .wire-float-top {
+  top: var(--float-inset, 16px);
+}
+/* Tasks chrome is in-flow; float-top is unused for bg-tasks now.
+   Keep selector so cascade order tests still resolve cleanly. */
+.wire-shell.draft-shell .wire-context.has-busy .wire-float-top {
+  top: var(--float-inset, 16px);
+}
+.wire-shell.draft-shell .wire-float-bottom {
+  bottom: var(--float-inset, 16px);
+  gap: var(--s-2);
+}
+
+/* In-flow top stack: solid surfaces, no thread bleed */
+.wire-shell.draft-shell .wire-context-tasks-chrome {
+  background: var(--n-float) !important;
+  border-bottom: 1px solid var(--n-line) !important;
+}
+.wire-shell.draft-shell .wire-context-tasks-chrome .wire-bg-tasks {
+  background: transparent !important;
+  border: none !important;
+}
+.wire-shell.draft-shell .wire-jump-prev {
+  background: var(--n-user-bg) !important;
+}
+
+/* Structural panels / primary chrome: square (no cut) */
+.wire-shell.draft-shell .wire-bg-tasks,
+.wire-shell.draft-shell .wire-float-top .wire-bg-tasks,
+.wire-shell.draft-shell .composer-row.wire-composer-card,
+.wire-shell.draft-shell .wire-float-bottom .composer-row,
+.wire-shell.draft-shell .wire-approval-float,
+.wire-shell.draft-shell .wire-context .bubble.codex-bubble.user .msg-body,
+.wire-shell.draft-shell .wire-diff-strip,
+.wire-shell.draft-shell .wire-new-task-btn,
+.wire-shell.draft-shell .wire-mode-tabs,
+.wire-shell.draft-shell .send-btn,
+.wire-shell.draft-shell .send-btn.wire-composer-send,
+.wire-shell.draft-shell .wire-mode-tabs button.active,
+.wire-shell.draft-shell .wire-text-btn.on,
+.wire-shell.draft-shell .wire-bottom-tab.active,
+.wire-shell.draft-shell .wire-agent-item.active,
+.wire-shell.draft-shell .wire-session-row.active .wire-session-btn,
+.wire-shell.draft-shell .msg-avatar-wrap,
+.wire-shell.draft-shell .wire-tasks-count,
+.wire-shell.draft-shell .wire-agent-section-count,
+.wire-shell.draft-shell .wire-bottom-tab-badge,
+.wire-shell.draft-shell .wire-agent-kid-count {
+  clip-path: none !important;
+  -webkit-clip-path: none !important;
+}
+
+/*
+ * Optional-param controls — bottom-right 折角 only.
+ * (composer agent/approval/usage chips, topbar model meta + scenario select)
+ */
+.wire-shell.draft-shell .chip-select select,
+.wire-shell.draft-shell .chip-select.wire-composer-chip select,
+.wire-shell.draft-shell .usage-chip,
+.wire-shell.draft-shell .usage-chip.wire-composer-usage,
+.wire-shell.draft-shell .wire-meta,
+.wire-shell.draft-shell .wire-select,
+.wire-shell.draft-shell .wire-select-wrap .wire-select {
+  clip-path: var(--clip-br) !important;
+  -webkit-clip-path: var(--clip-br) !important;
+}
+
+/* Grid-aligned chrome heights / paddings */
+.wire-shell.draft-shell .wire-topbar {
+  height: 40px;
+  padding: 0 var(--s-4);
+  gap: var(--s-2);
+}
+.wire-shell.draft-shell .wire-mode-tabs {
+  padding: var(--s-1);
+  gap: var(--s-1);
+  min-height: 32px;
+}
+.wire-shell.draft-shell .wire-mode-tabs button,
+.wire-shell.draft-shell .wire-text-btn {
+  min-height: 32px;
+  padding: var(--s-1) var(--s-3);
+}
+.wire-shell.draft-shell .wire-icon-only {
+  width: 32px;
+  height: 32px;
+}
+.wire-shell.draft-shell .wire-meta {
+  min-height: 32px;
+  padding: var(--s-1) var(--s-3);
+}
+.wire-shell.draft-shell .wire-tasks-head {
+  min-height: 40px;
+  padding: var(--s-2) var(--s-4);
+  gap: var(--s-2);
+}
+.wire-shell.draft-shell .composer-row.wire-composer-card {
+  padding: var(--s-3) var(--s-4) var(--s-3);
+  gap: var(--s-2);
+}
+.wire-shell.draft-shell .composer-toolbar {
+  min-height: 32px;
+  gap: var(--s-2);
+  padding-top: var(--s-2);
+}
+.wire-shell.draft-shell .chip-select select,
+.wire-shell.draft-shell .usage-chip {
+  min-height: 32px;
+  padding: var(--s-1) var(--s-3);
+}
+.wire-shell.draft-shell .send-btn {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+}
+.wire-shell.draft-shell .wire-session-btn {
+  min-height: 32px;
+  max-height: 32px;
+  padding: var(--s-1) 28px var(--s-1) var(--s-2);
+}
+.wire-shell.draft-shell .wire-agent-item {
+  min-height: 32px;
+  padding: var(--s-1) var(--s-2);
+}
+.wire-shell.draft-shell .vsc-tree-row {
+  height: 24px;
+  margin: 0 var(--s-2);
+  gap: var(--s-2);
+}
+.wire-shell.draft-shell .wire-context-scroll {
+  padding-left: var(--s-4) !important;
+  padding-right: var(--s-4) !important;
+  gap: var(--s-4) !important;
+}
+.wire-shell.draft-shell .wire-new-task-wrap {
+  padding: var(--s-3) var(--s-3) var(--s-2);
+}
+.wire-shell.draft-shell .wire-new-task-btn {
+  min-height: 32px;
+  padding: var(--s-2) var(--s-3);
+}
+
+/* ── Signal scarcity: full-sat blocks only where meaning lives ── */
+/* Mode active outside topbar (if any): acid + black ink */
+.wire-shell.draft-shell .wire-mode-tabs button.active {
+  background: var(--n-accent) !important;
+  color: var(--n-accent-fg) !important;
+  font-weight: 600;
+}
+/* Topbar is already pure acid — invert active (black fill / acid text) */
+.wire-shell.draft-shell .wire-topbar .wire-mode-tabs button.active {
+  background: var(--n-accent-fg) !important;
+  color: var(--n-accent) !important;
+}
+/* Active row = selectedBg panel + acid strip */
+.wire-shell.draft-shell .wire-agent-item.active,
+.wire-shell.draft-shell .wire-session-row.active .wire-session-btn {
+  background: var(--n-elevated) !important;
+  color: var(--n-label) !important;
+  box-shadow: inset 3px 0 0 0 var(--n-accent) !important;
+}
+.wire-shell.draft-shell .send-btn {
+  background: var(--n-accent) !important;
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .send-btn:hover:not(:disabled) {
+  background: var(--n-accent-strong) !important;
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .send-btn:hover:not(:disabled) .draft-mark,
+.wire-shell.draft-shell .send-btn:hover:not(:disabled) svg {
+  color: var(--n-accent-fg) !important;
+}
+/* Exclusive signal ownership for stats */
+/* CLI toolDiffAdded / toolDiffRemoved */
+.wire-shell.draft-shell .wire-diff-stat.add {
+  color: var(--n-ok);
+  font-weight: 700;
+}
+.wire-shell.draft-shell .wire-diff-stat.del {
+  color: var(--n-err);
+  font-weight: 700;
+}
+/* text-btn on (files) — on acid topbar: black fill + acid text */
+.wire-shell.draft-shell .wire-topbar .wire-text-btn.on {
+  background: var(--n-accent-fg) !important;
+  color: var(--n-accent) !important;
+}
+/* High-contrast badges: black ink on signal (CLI nav) */
+.wire-shell.draft-shell .wire-tasks-count,
+.wire-shell.draft-shell .wire-tasks-live {
+  color: var(--n-accent-fg) !important;
+  background: var(--n-ok) !important;
+  font-weight: 700;
+}
+.wire-shell.draft-shell .wire-bottom-tab-badge {
+  color: var(--n-accent-fg) !important;
+  background: var(--n-accent) !important;
+  font-weight: 700;
+}
+.wire-shell.draft-shell .wire-agent-section-count,
+.wire-shell.draft-shell .wire-agent-kid-count {
+  color: var(--n-label) !important;
+  background: var(--n-bg) !important;
+}
+.wire-shell.draft-shell .wire-bg-tasks.is-collapsed .wire-tasks-head:hover {
+  background: var(--n-float-hi) !important;
+}
+
+/* Telemetry labels — tracking + tertiary (micrographics language) */
+.wire-shell.draft-shell .wire-agent-section-label,
+.wire-shell.draft-shell .wire-tasks-title,
+.wire-shell.draft-shell .wire-files-title,
+.wire-shell.draft-shell .wire-pane-title {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--n-tertiary);
+}
+
+/* HUD floats: solid blocks only (no cut tips / no L-tick frames) */
+.wire-shell.draft-shell .wire-float-top .wire-bg-tasks,
+.wire-shell.draft-shell .composer-row.wire-composer-card {
+  background: var(--n-float) !important;
+}
+.wire-shell.draft-shell .composer-row:focus-within {
+  background: var(--n-float-hi) !important;
+}
+.wire-shell.draft-shell .wire-approval-float {
+  background: var(--n-float-hi) !important;
+}
+/* Status dots: full sat hard squares — exclusive signal ownership */
+.wire-shell.draft-shell .wire-status-dot {
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  width: 8px !important;
+  height: 8px !important;
+}
+.wire-shell.draft-shell .wire-status-dot.status-running {
+  background: var(--n-accent) !important;
+}
+.wire-shell.draft-shell .wire-status-dot.status-blocked {
+  background: var(--n-warn) !important;
+}
+.wire-shell.draft-shell .wire-status-dot.status-done,
+.wire-shell.draft-shell .wire-status-dot.status-done_read,
+.wire-shell.draft-shell .wire-status-dot.status-done_unread {
+  background: var(--n-ok) !important;
+}
+.wire-shell.draft-shell .wire-status-dot.status-needs_reply {
+  background: var(--n-err) !important;
+}
+/* queued: scarce system violet (CLI system token) */
+.wire-shell.draft-shell .wire-status-dot.status-queued {
+  background: var(--n-violet) !important;
+}
+/* mode tabs idle — warm cream text on void */
+.wire-shell.draft-shell .wire-mode-tabs button {
+  color: var(--n-secondary);
+}
+.wire-shell.draft-shell .wire-mode-tabs button:hover {
+  color: var(--n-label);
+  background: var(--n-hover);
+}
+/* topbar meta black is set in zone section; keep generic meta neutral off-topbar */
+.wire-shell.draft-shell .wire-meta {
+  background: #000000 !important;
+  color: var(--n-label) !important;
+}
+.wire-shell.draft-shell .wire-meta .wire-meta-dim {
+  color: var(--n-tertiary) !important;
+}
+.wire-shell.draft-shell .wire-status-dot.status-idle {
+  background: var(--n-quaternary) !important;
+}
+
+/* ── Project workbench (mode=project) ── */
+.wire-mid.is-project,
+.wire-mid.is-team {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--n-bg);
+}
+
+.wire-project {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--n-bg);
+  color: var(--n-label);
+}
+
+.wire-project-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: 40px;
+  padding: 0 var(--s-4);
+  background: var(--n-elevated);
+}
+
+.wire-project-bar-left,
+.wire-project-bar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.wire-project-bar-center {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+}
+
+.wire-project-bar-center button {
+  min-height: 28px;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--n-tertiary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wire-project-bar-center button:hover {
+  color: var(--n-label);
+  background: var(--n-hover);
+}
+
+.wire-project-bar-center button.active {
+  color: #000;
+  background: var(--n-accent);
+}
+
+.wire-project-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.wire-project-path {
+  font-size: 11px;
+  font-family: var(--n-mono);
+  color: var(--n-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+.wire-project-dirty-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wire-project-dirty {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #000;
+  background: var(--n-warn);
+  padding: 2px 6px;
+}
+
+.wire-project-dirty.is-graph {
+  background: color-mix(in srgb, var(--n-accent) 85%, var(--n-warn));
+}
+
+.wire-project-clean {
+  font-size: 11px;
+  color: var(--n-tertiary);
+}
+
+.wire-project-file-meta {
+  margin-left: auto;
+  margin-right: var(--s-2);
+  font-family: var(--n-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--n-quaternary);
+  white-space: nowrap;
+}
+
+.wire-project-doc-search {
+  flex: 0 1 200px;
+  min-width: 120px;
+  max-width: 240px;
+  margin: 0 var(--s-2);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wire-project-doc-search .wire-project-tree-search {
+  min-height: 24px;
+  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+}
+
+.wire-project-doc-search-hit {
+  flex-shrink: 0;
+  font-family: var(--n-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--n-tertiary);
+  white-space: nowrap;
+}
+
+.wire-project-graph-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 40px;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #000;
+  background: var(--n-accent);
+  pointer-events: none;
+}
+
+.wire-project-graph {
+  position: relative;
+}
+
+.wire-project-graph-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  pointer-events: none;
+  color: var(--n-tertiary);
+  font-size: 13px;
+  text-align: center;
+}
+
+.wire-project-graph-empty p {
+  margin: 0;
+}
+
+.wire-project-graph-empty-hint {
+  font-size: 11px;
+  color: var(--n-quaternary);
+  max-width: 280px;
+  line-height: 1.45;
+}
+
+.wire-project-status-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  z-index: 50;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #000;
+  background: var(--n-accent);
+  pointer-events: none;
+  box-shadow: 0 4px 16px color-mix(in srgb, #000 35%, transparent);
+}
+
+/* Quick open (⌘P) */
+.wire-project-quickopen {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: color-mix(in srgb, #000 55%, transparent);
+}
+
+.wire-project-quickopen-panel {
+  width: min(520px, 92vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--n-surface);
+  border: 1px solid color-mix(in srgb, var(--n-label) 12%, transparent);
+  box-shadow: 0 12px 40px color-mix(in srgb, #000 45%, transparent);
+}
+
+.wire-project-quickopen-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--n-label) 10%, transparent);
+  background: var(--n-elevated);
+  color: var(--n-label);
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.wire-project-quickopen-list {
+  max-height: min(360px, 50vh);
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.wire-project-quickopen-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  margin: 0;
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--n-secondary);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wire-project-quickopen-item:hover,
+.wire-project-quickopen-item.active {
+  background: var(--n-hover);
+  color: var(--n-label);
+}
+
+.wire-project-quickopen-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-project-quickopen-path {
+  font-family: var(--n-mono);
+  font-size: 11px;
+  color: var(--n-quaternary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-project-quickopen-foot {
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--n-quaternary);
+  border-top: 1px solid color-mix(in srgb, var(--n-label) 8%, transparent);
+  background: var(--n-elevated);
+}
+
+.wire-project {
+  position: relative;
+}
+
+.wire-project-outline .wire-project-pane-head {
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.wire-project-outline-add {
+  min-height: 22px !important;
+  padding: 2px 6px !important;
+  font-size: 11px !important;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.wire-project-tree-dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  flex-shrink: 0;
+  background: var(--n-warn);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--n-warn) 40%, transparent);
+}
+
+.wire-project-tree-row.is-dirty .wire-project-tree-name {
+  color: var(--n-label);
+}
+
+.wire-project-action {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: none;
+  background: var(--n-surface);
+  color: var(--n-label);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wire-project-action:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.wire-project-action:hover:not(:disabled) {
+  background: var(--n-hover);
+}
+
+.wire-project-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) 1fr minmax(160px, 200px);
+  gap: 0;
+}
+
+.wire-project-body.is-hide-tree {
+  grid-template-columns: 0 1fr minmax(160px, 200px);
+}
+
+.wire-project-body.is-hide-outline {
+  grid-template-columns: minmax(180px, 220px) 1fr 0;
+}
+
+.wire-project-body.is-hide-tree.is-hide-outline {
+  grid-template-columns: 0 1fr 0;
+}
+
+.wire-project-body.is-hide-tree .wire-project-tree,
+.wire-project-body.is-hide-outline .wire-project-outline {
+  overflow: hidden;
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.wire-project-rail-toggles {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: var(--s-2);
+}
+
+.wire-project-rail-toggles button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: var(--n-tertiary);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wire-project-rail-toggles button:hover {
+  color: var(--n-label);
+  background: var(--n-hover);
+}
+
+.wire-project-rail-toggles button.is-off {
+  color: var(--n-quaternary);
+  text-decoration: line-through;
+}
+
+.wire-project-path-copy {
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-project-path-copy:hover {
+  color: var(--n-accent);
+}
+
+.wire-project-tabs {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 2px;
+  min-height: 32px;
+  padding: 0 var(--s-2);
+  overflow-x: auto;
+  background: var(--n-elevated);
+  border-bottom: 1px solid color-mix(in srgb, var(--n-label) 8%, transparent);
+}
+
+.wire-project-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 160px;
+  min-height: 28px;
+  margin: 2px 0;
+  padding: 2px 8px;
+  border: none;
+  background: transparent;
+  color: var(--n-tertiary);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wire-project-tab:hover {
+  color: var(--n-label);
+  background: var(--n-hover);
+}
+
+.wire-project-tab.active {
+  color: var(--n-label);
+  background: var(--n-surface);
+  box-shadow: inset 0 -2px 0 0 var(--n-accent);
+}
+
+.wire-project-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wire-project-tab-close {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--n-quaternary);
+  border-radius: 0;
+}
+
+.wire-project-tab-close:hover {
+  color: var(--n-label);
+  background: var(--n-hover);
+}
+
+.wire-project-dirty-count {
+  min-height: 28px;
+  padding: 2px 8px;
+  border: none;
+  background: color-mix(in srgb, var(--n-warn) 22%, transparent);
+  color: var(--n-warn);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.wire-project-dirty-count:hover {
+  background: color-mix(in srgb, var(--n-warn) 35%, transparent);
+}
+
+.wire-project-drift {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px var(--s-3);
+  font-size: 12px;
+  color: var(--n-label);
+  background: color-mix(in srgb, var(--n-warn) 18%, var(--n-elevated));
+  border-bottom: 1px solid color-mix(in srgb, var(--n-warn) 35%, transparent);
+}
+
+.wire-project-drift span {
+  flex: 1;
+  min-width: 0;
+}
+
+.wire-project-zoom {
+  font-variant-numeric: tabular-nums;
+  min-width: 48px;
+}
+
+.wire-project-outline-scroll:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--n-accent);
+  outline: none;
+}
+
+.wire-project-tree,
+.wire-project-outline {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--n-rail);
+}
+
+.wire-project-editor {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--n-bg);
+  box-shadow: inset 1px 0 0 0 var(--n-elevated), inset -1px 0 0 0 var(--n-elevated);
+}
+
+.wire-project-pane-head {
+  flex-shrink: 0;
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0 var(--s-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--n-tertiary);
+  background: var(--n-elevated);
+}
+
+.wire-project-pane-count {
+  margin-left: auto;
+  font-family: var(--n-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--n-quaternary);
+}
+
+.wire-project-file-head {
+  justify-content: space-between;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--n-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--n-secondary);
+}
+
+.wire-project-kind {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #000;
+  background: var(--n-accent);
+  padding: 2px 6px;
+}
+
+.wire-project-tree-scroll,
+.wire-project-outline-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s-2) 0;
+}
+
+.wire-project-tree-filter {
+  flex-shrink: 0;
+  padding: 6px var(--s-2);
+  background: var(--n-elevated);
+  border-bottom: 1px solid color-mix(in srgb, var(--n-label) 6%, transparent);
+}
+
+.wire-project-tree-search {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: none;
+  background: var(--n-surface);
+  color: var(--n-label);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.wire-project-tree-search::placeholder {
+  color: var(--n-quaternary);
+}
+
+.wire-project-tree-search:focus {
+  box-shadow: inset 0 0 0 1px var(--n-accent);
+}
+
+.wire-project-graph-surface.is-panning {
+  cursor: grab;
+}
+
+.wire-project-graph-surface.is-panning:active {
+  cursor: grabbing;
+}
+
+.wire-project-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--n-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.wire-project-tree-row:hover {
+  background: var(--n-hover);
+  color: var(--n-label);
+}
+
+.wire-project-tree-row.active {
+  background: var(--n-surface);
+  color: var(--n-label);
+  box-shadow: inset 3px 0 0 0 var(--n-accent);
+}
+
+.wire-project-tree-row.is-folder.has-active .wire-project-tree-name {
+  color: var(--n-secondary);
+}
+
+.wire-project-twist {
+  width: 12px;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--n-quaternary);
+}
+
+.wire-project-tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-project-tree-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--n-tertiary);
+}
+
+.wire-project-canvas {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 0;
+}
+
+.wire-project-canvas.is-split {
+  grid-template-columns: 1fr 5px 1fr;
+}
+
+.wire-project-split-handle {
+  min-width: 5px;
+  cursor: col-resize;
+  background: var(--n-elevated);
+  touch-action: none;
+  position: relative;
+  z-index: 2;
+}
+
+.wire-project-split-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+}
+
+.wire-project-split-handle:hover,
+.wire-project-split-handle:focus-visible {
+  background: var(--n-accent);
+  outline: none;
+}
+
+.wire-project-canvas.is-preview,
+.wire-project-canvas.is-source,
+.wire-project-canvas.is-canvas {
+  grid-template-columns: 1fr;
+}
+
+.wire-project-source {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: none;
+  padding: var(--s-4);
+  background: var(--n-code-bg);
+  color: var(--n-secondary);
+  font-family: var(--n-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  outline: none;
+}
+
+.wire-project-source-wrap {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--n-code-bg);
+  box-shadow: inset -1px 0 0 0 var(--n-elevated);
+}
+
+.wire-project-source-wrap .md-editor,
+.wire-project-source-wrap .md-editor-full,
+.wire-project-source-wrap .cm-editor,
+.wire-project-source-wrap .cm-scroller {
+  height: 100%;
+  min-height: 0;
+}
+
+.wire-project-source-wrap .cm-editor {
+  font-size: 12.5px;
+  background: var(--n-code-bg) !important;
+}
+
+.wire-project-source-wrap .cm-gutters {
+  background: var(--n-elevated) !important;
+  border-right: 1px solid var(--n-border, transparent);
+  color: var(--n-quaternary);
+}
+
+.wire-project-preview {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s-4) var(--s-5);
+  background: var(--n-bg);
+  color: var(--n-label);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.wire-project-preview .dm-h,
+.wire-shell.draft-shell .draft-md .dm-h {
+  margin: 0.85em 0 0.4em;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  color: var(--n-label);
+}
+
+.wire-project-preview .dm-h1 { font-size: 1.55em; }
+.wire-project-preview .dm-h2 { font-size: 1.3em; }
+.wire-project-preview .dm-h3 { font-size: 1.15em; }
+.wire-project-preview .dm-h4,
+.wire-project-preview .dm-h5,
+.wire-project-preview .dm-h6 { font-size: 1.05em; }
+
+.wire-project-preview .dm-h:first-child {
+  margin-top: 0;
+}
+
+.wire-project-preview .dm-h.is-clickable {
+  cursor: pointer;
+}
+
+.wire-project-preview .dm-h.is-clickable:hover {
+  color: var(--n-accent);
+}
+
+.wire-project-preview :is(h1, h2, h3, h4, h5, h6):target,
+.wire-project-preview .wire-md-heading-focus,
+.wire-project-preview .dm-h.wire-md-heading-focus {
+  box-shadow: inset 3px 0 0 0 var(--n-accent);
+  background: color-mix(in srgb, var(--n-accent) 12%, transparent);
+}
+
+.wire-project-preview .dm-table,
+.wire-shell.draft-shell .draft-md .dm-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 0.92em;
+}
+
+.wire-project-preview .dm-table th,
+.wire-project-preview .dm-table td,
+.wire-shell.draft-shell .draft-md .dm-table th,
+.wire-shell.draft-shell .draft-md .dm-table td {
+  border: 1px solid color-mix(in srgb, var(--n-label) 14%, transparent);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.wire-project-preview .dm-table th,
+.wire-shell.draft-shell .draft-md .dm-table th {
+  background: var(--n-elevated);
+  font-weight: 700;
+  color: var(--n-label);
+}
+
+.wire-project-preview .dm-quote,
+.wire-shell.draft-shell .draft-md .dm-quote {
+  margin: 0.75em 0;
+  padding: 0.25em 0 0.25em 12px;
+  border-left: 3px solid var(--n-accent);
+  color: var(--n-secondary);
+}
+
+.wire-project-preview .dm-hr,
+.wire-shell.draft-shell .draft-md .dm-hr {
+  border: none;
+  border-top: 1px solid color-mix(in srgb, var(--n-label) 14%, transparent);
+  margin: 1.1em 0;
+}
+
+.wire-project-preview .dm-del,
+.wire-shell.draft-shell .draft-md .dm-del {
+  color: var(--n-tertiary);
+  text-decoration: line-through;
+}
+
+.wire-project-preview .dm-task-list,
+.wire-shell.draft-shell .draft-md .dm-task-list {
+  list-style: none;
+  padding-left: 0.25em;
+}
+
+.wire-project-preview .dm-task,
+.wire-shell.draft-shell .draft-md .dm-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0.25em 0;
+}
+
+.wire-project-preview .dm-task-check,
+.wire-shell.draft-shell .draft-md .dm-task-check {
+  margin-top: 0.25em;
+  accent-color: var(--n-accent);
+  cursor: pointer;
+}
+
+.wire-project-preview .dm-task-check:disabled,
+.wire-shell.draft-shell .draft-md .dm-task-check:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.wire-project-preview .dm-task.is-checked .dm-task-label,
+.wire-shell.draft-shell .draft-md .dm-task.is-checked .dm-task-label {
+  color: var(--n-tertiary);
+  text-decoration: line-through;
+}
+
+/* ── Project Graph canvas ── */
+.wire-project-graph {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--n-bg);
+}
+
+.wire-project-graph-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 6px var(--s-3);
+  background: var(--n-elevated);
+  border-bottom: 1px solid color-mix(in srgb, var(--n-label) 8%, transparent);
+}
+
+.wire-project-graph-toolbar-primary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.wire-project-graph-toolbar-more {
+  display: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--n-label) 8%, transparent);
+}
+
+.wire-project-graph-toolbar-more.is-open {
+  display: flex;
+}
+
+.wire-project-graph-toolbar .wire-project-action.is-active {
+  color: #000;
+  background: var(--n-accent);
+}
+
+.wire-project-graph-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--n-quaternary);
+  white-space: nowrap;
+}
+
+.wire-project-graph-surface {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  outline: none;
+  cursor: default;
+  overscroll-behavior: contain;
+  touch-action: none;
+  background:
+    radial-gradient(
+      circle at 1px 1px,
+      color-mix(in srgb, var(--n-label) 10%, transparent) 1px,
+      transparent 0
+    )
+    0 0 / 20px 20px;
+}
+
+.wire-project-graph-surface:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--n-accent);
+}
+
+.wire-project-graph-world {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+
+.wire-project-graph-edges {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 4000px;
+  height: 4000px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.wire-project-edge-line {
+  stroke: var(--n-tertiary);
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.wire-project-edge-line.is-selected {
+  stroke: var(--n-accent);
+  stroke-width: 2.5;
+}
+
+.wire-project-edge-hit {
+  stroke: transparent;
+  stroke-width: 12;
+  fill: none;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.wire-project-edge-line.is-draft {
+  stroke: var(--n-accent);
+  stroke-dasharray: 4 3;
+}
+
+.wire-project-graph-edges {
+  pointer-events: none;
+}
+
+.wire-project-graph-edges .wire-project-edge-hit {
+  pointer-events: stroke;
+}
+
+.wire-project-edge-arrow {
+  fill: var(--n-tertiary);
+}
+
+.wire-project-node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  box-sizing: border-box;
+  background: var(--n-surface);
+  color: var(--n-label);
+  border: 1px solid color-mix(in srgb, var(--n-label) 14%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--n-label) 8%, transparent);
+  font-size: 12.5px;
+  line-height: 1.35;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.wire-project-node:active {
+  cursor: grabbing;
+}
+
+.wire-project-node.is-selected {
+  border-color: var(--n-accent);
+  box-shadow:
+    0 0 0 1px var(--n-accent),
+    0 0 0 3px color-mix(in srgb, var(--n-accent) 28%, transparent);
+}
+
+.wire-project-node-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  text-align: center;
+}
+
+.wire-project-node-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  outline: none;
+}
+
+.wire-project-graph-status {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-3);
+  min-height: 28px;
+  padding: 4px var(--s-3);
+  font-size: 11px;
+  color: var(--n-tertiary);
+  background: var(--n-elevated);
+  border-top: 1px solid color-mix(in srgb, var(--n-label) 8%, transparent);
+}
+
+.wire-project-graph-sel {
+  color: var(--n-secondary);
+  font-weight: 600;
+}
+
+.wire-project-outline-item {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  border: none;
+  background: transparent;
+  color: var(--n-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-project-outline-item:hover {
+  color: var(--n-label);
+  background: var(--n-hover);
+}
+
+.wire-project-outline-item.active {
+  color: var(--n-label);
+  background: var(--n-surface);
+  box-shadow: inset 3px 0 0 0 var(--n-accent);
+}
+
+.wire-project-empty {
+  padding: var(--s-4);
+  font-size: 12px;
+  color: var(--n-quaternary);
+}
+
+/* Team placeholder */
+.wire-team {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--n-bg);
+}
+
+.wire-team-empty {
+  max-width: 360px;
+  text-align: center;
+  color: var(--n-secondary);
+}
+
+.wire-team-title {
+  margin: 12px 0 8px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--n-label);
+}
+
+.wire-team-sub {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--n-tertiary);
+}
+
+/* Topbar mode tabs must stay acid-aware (override generic n-bg) */
+.wire-shell.draft-shell .wire-topbar .wire-mode-tabs {
+  background: color-mix(in srgb, var(--n-accent-fg) 10%, transparent) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-mode-tabs button {
+  color: var(--n-accent-fg) !important;
+}
+.wire-shell.draft-shell .wire-topbar .wire-mode-tabs button.active {
+  background: var(--n-accent-fg) !important;
+  color: var(--n-accent) !important;
+}
+
+/* ── Settings as mode page (聊天 / 项目 / Team / 设置) ── */
+.wire-mid.is-settings {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--n-bg);
+}
+
+.wire-settings-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* Legacy overlay drawer (optional presentation) */
+.wire-settings-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.wire-settings-backdrop {
+  position: absolute;
+  inset: 0;
+  border: none;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--n-bg) 55%, transparent);
+  pointer-events: auto;
+}
+
+.wire-settings-panel {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--n-elevated, #282522);
+  border-left: none;
+  box-shadow: none;
+  overflow: hidden;
+}
+
+.wire-settings-overlay .wire-settings-panel {
+  width: min(720px, 100%);
+  border-left: 1px solid var(--n-line);
+}
+
+.wire-settings-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3, 12px);
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--n-line);
+  background: var(--n-surface, #2f2b28);
+}
+
+.wire-settings-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--n-label);
+}
+
+.wire-settings-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--n-label);
+}
+
+.wire-settings-sub {
+  font-size: 11px;
+  color: var(--n-tertiary);
+  letter-spacing: 0.04em;
+}
+
+.wire-settings-close {
+  flex-shrink: 0;
+}
+
+.wire-settings-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.wire-settings-nav {
+  flex-shrink: 0;
+  width: 140px;
+  padding: 12px 8px;
+  border-right: 1px solid var(--n-line);
+  background: var(--n-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wire-settings-nav-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--n-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 10px;
+  cursor: pointer;
+  border-radius: 0;
+}
+
+.wire-settings-nav-item:hover {
+  background: var(--n-hover);
+  color: var(--n-label);
+}
+
+.wire-settings-nav-item.active {
+  background: var(--n-accent-dim);
+  color: var(--n-label);
+  box-shadow: inset 2px 0 0 0 var(--n-accent);
+}
+
+.wire-settings-section {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 16px 18px 28px;
+}
+
+.wire-settings-section-head {
+  margin-bottom: 14px;
+}
+
+.wire-settings-h {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--n-tertiary);
+}
+
+.wire-settings-desc {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--n-secondary);
+}
+
+.wire-settings-default-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--n-label);
+}
+
+.wire-settings-muted {
+  color: var(--n-tertiary);
+  font-weight: 400;
+}
+
+.wire-settings-editor-section-label {
+  margin: 16px 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--n-tertiary);
+}
+.wire-settings-editor-section-label:first-child {
+  margin-top: 0;
+}
+
+.wire-settings-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 720px) {
+  .wire-settings-field-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.wire-settings-preset-caps {
+  display: block;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--n-tertiary);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-settings-caps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--n-line);
+  background: var(--n-surface);
+}
+
+.wire-settings-cap-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--n-label);
+  user-select: none;
+}
+.wire-settings-cap-toggle input {
+  margin-top: 3px;
+  flex-shrink: 0;
+  accent-color: var(--n-accent);
+}
+.wire-settings-cap-toggle strong {
+  display: block;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.wire-settings-cap-toggle em {
+  display: block;
+  font-style: normal;
+  font-size: 11px;
+  color: var(--n-tertiary);
+  margin-top: 2px;
+}
+
+.wire-settings-cap-summary {
+  margin: 0 0 12px;
+  font-size: 11px;
+  font-family: var(--n-mono, ui-monospace, monospace);
+  color: var(--n-secondary);
+  letter-spacing: 0.02em;
+}
+
+.wire-settings-api-layout {
+  display: grid;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.wire-settings-preset-list {
+  border: 1px solid var(--n-line);
+  background: var(--n-surface);
+  display: flex;
+  flex-direction: column;
+  max-height: min(60vh, 480px);
+  overflow: auto;
+}
+
+.wire-settings-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--n-line);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--n-tertiary);
+  position: sticky;
+  top: 0;
+  background: var(--n-surface);
+  z-index: 1;
+}
+
+.wire-settings-preset-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 2px 8px;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-bottom: 1px solid var(--n-line);
+  background: transparent;
+  color: var(--n-secondary);
+  font-family: inherit;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.wire-settings-preset-item:hover {
+  background: var(--n-hover);
+  color: var(--n-label);
+}
+
+.wire-settings-preset-item.is-selected {
+  background: var(--n-accent-dim);
+  color: var(--n-label);
+  box-shadow: inset 2px 0 0 0 var(--n-accent);
+}
+
+.wire-settings-preset-item.is-invalid .wire-settings-preset-name {
+  color: var(--n-err);
+}
+
+.wire-settings-preset-name {
+  grid-column: 1;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-settings-preset-meta {
+  grid-column: 1;
+  font-size: 11px;
+  color: var(--n-tertiary);
+  font-family: var(--n-mono, ui-monospace, monospace);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-settings-badge {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--n-accent-fg, #1a1817);
+  background: var(--n-accent);
+  padding: 2px 6px;
+}
+
+.wire-settings-preset-editor {
+  border: 1px solid var(--n-line);
+  background: var(--n-surface);
+  padding: 14px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wire-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.wire-settings-field label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--n-tertiary);
+}
+
+.wire-settings-field input,
+.wire-settings-field select {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--n-line);
+  border-radius: 0;
+  background: var(--n-input, var(--n-bg));
+  color: var(--n-label);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.wire-settings-field input:focus,
+.wire-settings-field select:focus {
+  outline: none;
+  border-color: var(--n-accent);
+  background: var(--n-float-hi, var(--n-elevated));
+}
+
+.wire-settings-err {
+  font-size: 11px;
+  color: var(--n-err);
+}
+
+.wire-settings-key-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.wire-settings-key-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.wire-settings-key-mask {
+  flex: 1;
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px solid var(--n-line);
+  background: var(--n-bg);
+  color: var(--n-tertiary);
+  font-family: var(--n-mono, ui-monospace, monospace);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-settings-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--n-line);
+  margin-top: 4px;
+}
+
+.wire-settings-danger {
+  color: var(--n-err) !important;
+}
+
+.wire-settings-danger:hover {
+  background: var(--n-err-dim) !important;
+}
+
+.wire-shell.draft-shell .wire-icon-only.on {
+  color: var(--n-accent);
+  background: var(--n-accent-dim);
+}
+
+.wire-shell.draft-shell .wire-settings-panel {
+  background: var(--n-elevated) !important;
+}
+
+.wire-shell.draft-shell .wire-settings-head {
+  background: var(--n-surface) !important;
+}
+
+.wire-shell.draft-shell .wire-settings-nav {
+  background: var(--n-bg) !important;
+}
+
+.wire-shell.draft-shell .wire-settings-preset-list,
+.wire-shell.draft-shell .wire-settings-preset-editor {
+  background: var(--n-surface) !important;
+  border-color: var(--n-line) !important;
+}
+
+.wire-shell.draft-shell .wire-settings-field input,
+.wire-shell.draft-shell .wire-settings-field select,
+.wire-shell.draft-shell .wire-settings-key-mask {
+  background: var(--n-bg) !important;
+  color: var(--n-label) !important;
+  border-color: var(--n-line) !important;
+}
+
+@media (max-width: 720px) {
+  .wire-settings-api-layout {
+    grid-template-columns: 1fr;
+  }
+  .wire-settings-nav {
+    width: 110px;
+  }
+}

@@ -6,7 +6,7 @@ import {
   type FileTreeNode,
 } from "../file-tree";
 import { fileMarkKind, hierarchyIndentPx } from "../visual-marks";
-import { ChromeMark, FileMark, ModifiedMark } from "../icons/Marks";
+import { ChromeMark, FileMark } from "../icons/Marks";
 
 export type FilesRailProps = {
   paths: string[];
@@ -39,10 +39,10 @@ function TreeRow({
   return (
     <>
       <div
-        className={`vsc-tree-row${isSelected ? " is-selected" : ""}${
+        className={`vsc-tree-row kind-${icon}${isSelected ? " is-selected" : ""}${
           node.modified ? " is-modified" : ""
-        }`}
-        style={{ paddingLeft: hierarchyIndentPx(depth, 11, 4) }}
+        }${isFolder ? " is-folder" : " is-file"}`}
+        style={{ paddingLeft: hierarchyIndentPx(depth, 14, 8) }}
         role="treeitem"
         aria-expanded={isFolder ? isOpen : undefined}
         aria-selected={isSelected}
@@ -52,9 +52,21 @@ function TreeRow({
           onSelect(node.path);
         }}
       >
-        <FileMark kind={icon} size={14} title={icon} />
+        <span
+          className={`vsc-tree-twistie${isFolder ? "" : " is-leaf"}${
+            isOpen ? " is-open" : ""
+          }`}
+          aria-hidden
+        >
+          {isFolder ? "▸" : ""}
+        </span>
+        <FileMark kind={icon} size={15} title={icon} decorative />
         <span className="vsc-tree-label">{node.name}</span>
-        {node.modified ? <ModifiedMark size={12} /> : null}
+        {node.modified ? (
+          <span className="vsc-tree-mod" title="已修改">
+            M
+          </span>
+        ) : null}
       </div>
       {isFolder && isOpen && node.children
         ? node.children.map((child) => (

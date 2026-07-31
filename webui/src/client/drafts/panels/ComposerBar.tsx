@@ -1,3 +1,4 @@
+import React, { useEffect, useRef } from "react";
 import type { DraftAgent, DraftMeta } from "../types";
 import { ChromeMark } from "../icons/Marks";
 
@@ -17,7 +18,11 @@ export type ComposerBarProps = {
   onCopyTranscript: () => void;
   onAgentChange: (agentId: string) => void;
   onApprovalModeChange: (mode: string) => void;
+  onStop?: () => void;
 };
+
+const TEXTAREA_MIN_PX = 44;
+const TEXTAREA_MAX_PX = 160;
 
 /**
  * Composer card: textarea on top, control row below (8px rhythm).
@@ -39,34 +44,60 @@ export function ComposerBar({
   onCopyTranscript,
   onAgentChange,
   onApprovalModeChange,
+  onStop,
 }: ComposerBarProps) {
-  const blocked = agentBusy && pendingApproval;
+  // Approval is a float above composer — still allow draft typing / queue send.
+  // Pure running with empty draft shows stop; with text, send stays available.
   const statusError =
     statusHint.includes("拒绝") ||
     statusHint.includes("错误") ||
     /error|denied/i.test(statusHint);
-  const canSend = Boolean(draftInput.trim()) && !blocked;
+  const canSend = Boolean(draftInput.trim());
+  const showStop = agentBusy && !pendingApproval && !canSend;
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const liveAgents = agents.filter((a) => !a.stale);
+  const placeholder = pendingApproval
+    ? "可先输入下一条… 处理审批后发送"
+    : agentBusy
+      ? "运行中也可输入… Enter 发送（草稿本地回显）"
+      : hasActiveSession
+        ? "输入消息… Enter 发送，Shift+Enter 换行"
+        : "输入消息将自动创建本地会话…";
+
+  // Auto-grow textarea with the draft (capped) — multi-line UX without manual resize
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(
+      TEXTAREA_MAX_PX,
+      Math.max(TEXTAREA_MIN_PX, el.scrollHeight),
+    );
+    el.style.height = `${next}px`;
+  }, [draftInput]);
 
   return (
     <div className="codex-composer-dock wire-composer-dock">
       <div className="composer codex-composer wire-composer">
         <div className="composer-row-wrap">
-          <div className="composer-row wire-composer-card">
+          <div
+            className={`composer-row wire-composer-card${
+              pendingApproval ? " has-pending-approval" : ""
+            }${agentBusy ? " is-busy" : ""}`}
+          >
             <textarea
+              ref={taRef}
               className="wire-composer-input"
               rows={2}
-              placeholder={
-                hasActiveSession
-                  ? "输入消息… Enter 发送，Shift+Enter 换行"
-                  : "输入消息将自动创建本地会话…"
-              }
+              placeholder={placeholder}
               value={draftInput}
-              disabled={blocked}
               onChange={(e) => onDraftInputChange(e.target.value)}
               onKeyDown={(e) => {
+                // IME composition (e.g. 中文): don't send on Enter that confirms candidate
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  if (!blocked && draftInput.trim()) onSend();
+                  if (draftInput.trim()) onSend();
                 }
               }}
             />
@@ -88,9 +119,10 @@ export function ComposerBar({
                     title="当前 agent"
                     aria-label="Agent"
                   >
-                    {agents
-                      .filter((a) => !a.stale)
-                      .map((a) => {
+                    {liveAgents.length === 0 ? (
+                      <option value="">无可用 agent</option>
+                    ) : (
+                      liveAgents.map((a) => {
                         const prefix =
                           a.group === "project"
                             ? a.projectName || "project"
@@ -102,7 +134,8 @@ export function ComposerBar({
                             {a.parent ? ` › ${a.parent}${sub}` : sub}
                           </option>
                         );
-                      })}
+                      })
+                    )}
                   </select>
                 </label>
 
@@ -150,17 +183,28 @@ export function ComposerBar({
 
               <div className="composer-toolbar-right wire-composer-actions">
                 <span
-                  className={`composer-status${statusError ? " is-error" : ""}`}
+                  className={`composer-status${statusError ? " is-error" : ""}${
+                    pendingApproval ? " is-approval" : ""
+                  }`}
                   title={statusHint}
                 >
-                  {agentBusy ? "运行中" : statusHint}
+                  {pendingApproval
+                    ? "等待审批"
+                    : agentBusy
+                      ? "运行中"
+                      : statusHint}
                 </span>
-                {agentBusy && !pendingApproval ? (
+                {showStop ? (
                   <button
                     type="button"
                     className="ghost wire-icon-btn wire-composer-stop"
-                    disabled
-                    title="停止（草稿占位）"
+                    disabled={!onStop}
+                    onClick={() => onStop?.()}
+                    title={
+                      onStop
+                        ? "停止本地 busy 态 · 输入文字可改为发送"
+                        : "停止不可用 · 输入文字可改为发送"
+                    }
                     aria-label="停止"
                   >
                     <ChromeMark kind="stop" size={14} decorative />
@@ -172,7 +216,13 @@ export function ComposerBar({
                     disabled={!canSend}
                     onClick={onSend}
                     aria-label="发送"
-                    title="发送 (Enter)"
+                    title={
+                      pendingApproval
+                        ? "发送（将清除当前审批并回显）"
+                        : agentBusy
+                          ? "发送并结束本地 busy 态"
+                          : "发送 (Enter)"
+                    }
                   >
                     <ChromeMark kind="send" size={15} decorative />
                   </button>

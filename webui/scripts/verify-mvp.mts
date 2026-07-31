@@ -191,8 +191,29 @@ assert.ok(termPanel.includes("agentTerminalWsUrl"));
 assert.ok(termPanel.includes("fetchTerminals"));
 assert.ok(app.includes("ChatPanel") && app.includes("MarkdownWorkbench"));
 assert.ok(app.includes("TerminalPanel"));
-assert.ok(app.includes('view === "chat"') && app.includes('view === "split"'));
-log("[client] api path wiring + Chat/Terminal/Markdown nav ok");
+// Draft-aligned live shell (modes + bottom dock + wire chrome)
+assert.ok(
+  app.includes("data-live-shell") || app.includes('data-live-shell="true"'),
+  "production App mounts live-shell marker",
+);
+assert.ok(app.includes("WireTopbar"), "WireTopbar mode chrome");
+assert.ok(app.includes("BottomInfoBar"), "bottom dock host");
+assert.ok(
+  app.includes("SettingsPanel") && app.includes("TeamBoard"),
+  "settings + team mode surfaces",
+);
+assert.ok(
+  (app.includes('"chat"') || app.includes("'chat'")) &&
+    (app.includes('"project"') || app.includes("'project'")) &&
+    (app.includes('"settings"') || app.includes("'settings'")),
+  "UiMode chat/project/settings present",
+);
+assert.ok(app.includes("threadRailId"), "session rail portal");
+assert.ok(
+  app.includes("wire-context") || app.includes("live-shell"),
+  "draft-aligned center host",
+);
+log("[client] api path wiring + draft-aligned live shell + Chat/Terminal/Markdown ok");
 
 writeFileSync(
   join(SCRATCH, "webui-api-paths.log"),

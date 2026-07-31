@@ -8,20 +8,25 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import {
+  FULL_CONTEXT_MESSAGES,
   REQUIRED_SCENARIO_IDS,
   SCENARIO_CATALOG,
+  SHOWCASE_REQUIRED_ROLES,
   applyApprovalDecision,
   applyLocalSend,
   applyNewSession,
   assertCatalogComplete,
+  assertContextShowcaseComplete,
   getScenario,
   hydrateFromScenario,
+  inspectContextShowcase,
   listScenarioIds,
   messagesForSession,
   pickSessionForAgent,
   sessionTitle,
   sessionsForAgent,
 } from "./fixtures";
+import { groupThreadBlocks } from "./thread-blocks";
 import { buildFileTree, fileIconKind } from "./file-tree";
 import { buildAgentListRows } from "./agent-tree";
 
@@ -56,15 +61,66 @@ describe("draft fixtures catalog", () => {
     }
   });
 
-  it("normal scenario has multi-message thread", () => {
-    const s = getScenario("normal");
+  it("default normal showcase inventory is complete (shipped assert)", () => {
+    const inv = assertContextShowcaseComplete("normal");
+    assert.equal(inv.agentBusy, true);
+    assert.equal(inv.pendingApproval, true);
+    assert.equal(inv.hasNestedReply, true);
+    assert.equal(inv.hasOrphanInternals, true);
+    assert.equal(inv.hasMarkdownHints, true);
+    assert.ok(inv.hasBgTasks);
+    assert.ok(inv.showFiles);
+  });
+
+  it("hydrateFromScenario(normal) preserves showcase inventory", () => {
+    const state = hydrateFromScenario("normal");
+    assert.equal(state.agentBusy, true);
+    assert.ok(state.pendingApproval);
+    assert.match(state.pendingApproval!.command, /rm -rf/);
+    assert.ok(state.bgTasks.length >= 1);
+    assert.equal(state.showFiles, true);
+    assert.equal(state.showDiff, true);
     const msgs = messagesForSession(
-      s.messagesBySession,
-      s.initialSessionId,
+      state.messagesBySession,
+      state.activeSessionId,
     );
-    assert.ok(msgs.length >= 3);
-    assert.ok(msgs.some((m) => m.role === "user"));
-    assert.ok(msgs.some((m) => m.role === "assistant"));
+    assert.ok(msgs.length === FULL_CONTEXT_MESSAGES.length);
+    const blocks = groupThreadBlocks(msgs);
+    assert.ok(
+      blocks.some(
+        (b) =>
+          b.kind === "reply" && b.assistant !== null && b.internals.length > 0,
+      ),
+      "nested assistant reply",
+    );
+    assert.ok(
+      blocks.some(
+        (b) =>
+          b.kind === "reply" && b.assistant === null && b.internals.length > 0,
+      ),
+      "orphan internals",
+    );
+    assert.ok(blocks.some((b) => b.kind === "solo" && b.message.role === "user"));
+    assert.ok(
+      blocks.some((b) => b.kind === "solo" && b.message.role === "system"),
+    );
+  });
+
+  it("non-empty catalog scenarios share full role inventory", () => {
+    const nonempty = SCENARIO_CATALOG.filter(
+      (s) => s.id !== "empty_thread" && s.id !== "empty_sessions",
+    );
+    for (const s of nonempty) {
+      const inv = inspectContextShowcase(s.id);
+      for (const r of SHOWCASE_REQUIRED_ROLES) {
+        assert.ok(
+          inv.roles.includes(r),
+          `${s.id} missing role ${r}`,
+        );
+      }
+      assert.ok(inv.hasNestedReply, `${s.id} nested`);
+      assert.ok(inv.hasOrphanInternals, `${s.id} orphan`);
+    }
   });
 
   it("busy scenario flags agentBusy and mixed thinking/tool", () => {
@@ -97,11 +153,26 @@ describe("draft fixtures catalog", () => {
     assert.ok(bodies.some((b) => b.length > 500));
   });
 
-  it("empty_sessions starts with no active session", () => {
-    const state = hydrateFromScenario("empty_sessions");
-    assert.equal(state.sessions.length, 0);
-    assert.equal(state.activeSessionId, "");
-    assert.equal(messagesForSession(state.messagesBySession, "").length, 0);
+  it("empty scenarios stay empty for empty-state UI", () => {
+    const emptyThread = hydrateFromScenario("empty_thread");
+    assert.ok(emptyThread.sessions.length > 0);
+    assert.equal(
+      messagesForSession(
+        emptyThread.messagesBySession,
+        emptyThread.activeSessionId,
+      ).length,
+      0,
+    );
+    assert.equal(emptyThread.agentBusy, false);
+    assert.equal(emptyThread.pendingApproval, null);
+
+    const emptySessions = hydrateFromScenario("empty_sessions");
+    assert.equal(emptySessions.sessions.length, 0);
+    assert.equal(emptySessions.activeSessionId, "");
+    assert.equal(
+      messagesForSession(emptySessions.messagesBySession, "").length,
+      0,
+    );
   });
 });
 
@@ -290,6 +361,9 @@ describe("draft tree isolation", () => {
       "panels/BottomInfoBar.tsx",
       "panels/FilesRail.tsx",
       "panels/ApprovalBanner.tsx",
+      "panels/SettingsPanel.tsx",
+      "api-settings.ts",
+      "bottom-dock.ts",
       "file-tree.ts",
       "agent-tree.ts",
       "visual-marks.ts",

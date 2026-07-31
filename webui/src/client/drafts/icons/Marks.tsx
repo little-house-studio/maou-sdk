@@ -2,7 +2,7 @@
  * Shared SVG marks — shape encodes kind; CSS tone class encodes color.
  * Accessible: title/aria-label always present when decorative=false.
  */
-import type { ReactNode } from "react";
+import React, { type ReactNode } from "react";
 import type {
   ChromeMarkKind,
   HierarchyMarkKind,
@@ -232,73 +232,111 @@ export function HierarchyMark({
   );
 }
 
+/** Minimal monoline file/folder marks — type via shape, not letter badges. */
 export function FileMark({
   kind,
   size = 14,
   className = "",
   title,
+  decorative,
 }: MarkProps & { kind: FileIconKind }) {
   const tone = fileTone(kind);
-  const t = title ?? kind;
-  const cls = `tone-${tone} ${className}`;
+  const t = decorative ? undefined : title ?? kind;
+  const cls =
+    `draft-file-mark draft-file-kind-${kind} tone-${tone} ${className}`.trim();
+  const s = strokeProps(1.4);
 
   if (kind === "folder" || kind === "folder-open") {
     return (
-      <Svg size={size} className={cls} title={t}>
+      <Svg size={size} className={cls} title={t} decorative={decorative}>
         <path
           d={
             kind === "folder-open"
-              ? "M2 4.5h4l1.2 1.5H14a1 1 0 0 1 1 1V12a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12V6a1.5 1.5 0 0 1 1.5-1.5H2z"
-              : "M2 5h4l1.5 1.5H14a1 1 0 0 1 1 1V12a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12V6.5A1.5 1.5 0 0 1 2.5 5H2z"
+              ? "M1.5 5h4l1.2 1.3H14a.8.8 0 0 1 .8.8V12a1.2 1.2 0 0 1-1.2 1.2H2.7A1.2 1.2 0 0 1 1.5 12V5.8A.8.8 0 0 1 2.3 5H1.5z"
+              : "M1.5 5.5h4l1.3 1.3H14a.8.8 0 0 1 .8.8V12a1.2 1.2 0 0 1-1.2 1.2H2.7A1.2 1.2 0 0 1 1.5 12V6.3A.8.8 0 0 1 2.3 5.5H1.5z"
           }
-          fill="currentColor"
-          opacity={kind === "folder-open" ? 0.9 : 1}
+          {...s}
         />
       </Svg>
     );
   }
-  // Document with type badge letter
-  const letter =
-    kind === "ts" || kind === "tsx"
-      ? "T"
-      : kind === "js" || kind === "jsx"
-        ? "J"
-        : kind === "json"
-          ? "{}"
-          : kind === "md"
-            ? "M"
-            : kind === "html"
-              ? "H"
-              : kind === "css"
-                ? "#"
-                : kind === "git"
-                  ? "G"
-                  : kind === "lock"
-                    ? "L"
-                    : kind === "config"
-                      ? "C"
-                      : kind === "img"
-                        ? "I"
-                        : "·";
+
+  // shared document outline
+  const doc = (
+    <>
+      <path
+        d="M4 2.5h5.2L12.5 5.8V13a1.2 1.2 0 0 1-1.2 1.2H4A1 1 0 0 1 3 13.2V3.5A1 1 0 0 1 4 2.5z"
+        {...s}
+      />
+      <path d="M9.2 2.5V5.6H12.5" {...s} />
+    </>
+  );
+
+  if (kind === "ts" || kind === "tsx" || kind === "js" || kind === "jsx") {
+    return (
+      <Svg size={size} className={cls} title={t} decorative={decorative}>
+        {doc}
+        <path d="M5.5 9.2h5M5.5 11.2h3.5" {...s} />
+      </Svg>
+    );
+  }
+  if (kind === "json" || kind === "config") {
+    return (
+      <Svg size={size} className={cls} title={t} decorative={decorative}>
+        {doc}
+        <path d="M6 9.5c.6-1 1.2-1.2 1.8 0M8.2 9.5c.6 1 1.2 1.2 1.8 0" {...s} />
+      </Svg>
+    );
+  }
+  if (kind === "md") {
+    return (
+      <Svg size={size} className={cls} title={t} decorative={decorative}>
+        {doc}
+        <path d="M5.5 9h5M5.5 11h3" {...s} />
+      </Svg>
+    );
+  }
+  if (kind === "html" || kind === "css") {
+    return (
+      <Svg size={size} className={cls} title={t} decorative={decorative}>
+        {doc}
+        <path d="M6.2 10.2l1.3-1.6 1.3 1.6M9.2 10.2l1.2 1.4" {...s} />
+      </Svg>
+    );
+  }
+  if (kind === "git") {
+    return (
+      <Svg size={size} className={cls} title={t} decorative={decorative}>
+        <circle cx="5.5" cy="11" r="1.4" {...s} />
+        <circle cx="10.5" cy="5" r="1.4" {...s} />
+        <circle cx="10.5" cy="11" r="1.4" {...s} />
+        <path d="M5.5 9.6V6.8A2 2 0 0 1 7.5 4.8h1.5" {...s} />
+        <path d="M10.5 6.4v3.2" {...s} />
+      </Svg>
+    );
+  }
+  if (kind === "lock") {
+    return (
+      <Svg size={size} className={cls} title={t} decorative={decorative}>
+        {doc}
+        <path d="M6.5 10.2V9a1.5 1.5 0 0 1 3 0v1.2" {...s} />
+        <rect x="6" y="10.2" width="4" height="2.8" rx="0.5" {...s} />
+      </Svg>
+    );
+  }
+  if (kind === "img") {
+    return (
+      <Svg size={size} className={cls} title={t} decorative={decorative}>
+        <rect x="3" y="4" width="10" height="8" rx="1.2" {...s} />
+        <circle cx="6.2" cy="7" r="1" {...s} />
+        <path d="M3.8 11.2l2.4-2.2 1.6 1.4 2.2-2.4 2.2 3.2" {...s} />
+      </Svg>
+    );
+  }
 
   return (
-    <Svg size={size} className={cls} title={t}>
-      <path
-        d="M4 2.5h5.5L13 6v7.5A1.5 1.5 0 0 1 11.5 15h-7A1.5 1.5 0 0 1 3 13.5v-10A1 1 0 0 1 4 2.5z"
-        {...strokeProps(1.3)}
-      />
-      <path d="M9.5 2.5V6H13" {...strokeProps(1.3)} />
-      <text
-        x="8"
-        y="12"
-        textAnchor="middle"
-        fill="currentColor"
-        fontSize={letter.length > 1 ? 5 : 6}
-        fontFamily="ui-monospace, monospace"
-        fontWeight="700"
-      >
-        {letter}
-      </text>
+    <Svg size={size} className={cls} title={t} decorative={decorative}>
+      {doc}
     </Svg>
   );
 }
@@ -490,11 +528,16 @@ export function ChromeMark({
   }
 }
 
-export function ModifiedMark({ size = 12, className = "" }: MarkProps) {
+/** Small muted “changed” pip — not a loud warning icon. */
+export function ModifiedMark({ size = 8, className = "", decorative }: MarkProps) {
   return (
-    <Svg size={size} className={`tone-warn ${className}`} title="已修改">
-      <circle cx="8" cy="8" r="6" {...strokeProps(1.3)} />
-      <path d="M8 4.8v4.2M8 11.2h.01" {...strokeProps(1.6)} />
+    <Svg
+      size={size}
+      className={`draft-file-mod tone-muted ${className}`.trim()}
+      title={decorative ? undefined : "已修改"}
+      decorative={decorative}
+    >
+      <circle cx="8" cy="8" r="3.2" fill="currentColor" opacity="0.85" />
     </Svg>
   );
 }

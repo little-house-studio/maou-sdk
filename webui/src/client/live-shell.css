@@ -1,0 +1,237 @@
+/**
+ * Production live shell bridges:
+ * - draft wire chrome (draft.css) as product layout
+ * - ChatPanel / ThreadRail / TerminalPanel / MarkdownWorkbench live widgets
+ */
+
+.live-shell {
+  height: 100%;
+  min-height: 0;
+}
+
+.live-shell .wire-mid.is-chat {
+  position: relative;
+}
+
+/* Session portal host fills left sessions column */
+.live-shell .live-session-rail-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 100%;
+}
+
+.live-shell .wire-left-sessions {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Restyle ChatPanel ThreadRail to sit in wire left sessions */
+.live-shell .thread-rail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 8px 8px 10px;
+  background: transparent;
+  border: none;
+}
+
+.live-shell .thread-new {
+  width: 100%;
+  margin-bottom: 8px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-surface, #3d3834);
+  color: var(--n-label, #f5f0e8);
+  border-radius: 0;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 10px;
+}
+
+.live-shell .thread-new:hover {
+  background: var(--n-hover, #524c45);
+}
+
+.live-shell .thread-list-label {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--n-tertiary, #8a8278);
+  padding: 4px 4px 6px;
+}
+
+.live-shell .thread-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.live-shell .thread-item-row {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.live-shell .thread-item {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--n-secondary, #c9c2b6);
+  padding: 8px 8px;
+  border-radius: 0;
+}
+
+.live-shell .thread-item-row.active .thread-item,
+.live-shell .thread-item-row.active {
+  background: var(--n-accent-dim, rgba(199, 255, 32, 0.14));
+}
+
+.live-shell .thread-title {
+  display: block;
+  font-size: 12px;
+  color: var(--n-label, #f5f0e8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-shell .thread-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  color: var(--n-tertiary, #8a8278);
+  margin-top: 2px;
+}
+
+.live-shell .thread-del {
+  border: none;
+  background: transparent;
+  color: var(--n-tertiary, #8a8278);
+  padding: 0 8px;
+  opacity: 0.7;
+}
+
+.live-shell .thread-del:hover {
+  color: var(--n-err, #ff741d);
+  opacity: 1;
+}
+
+.live-shell .thread-empty {
+  font-size: 12px;
+  color: var(--n-tertiary, #8a8278);
+  padding: 12px 8px;
+}
+
+/* Center: ChatPanel fills wire-center as wire-context */
+.live-shell .wire-center {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.live-shell .wire-center > .chat-panel.codex-chat.wire-context {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Files rail hosts MarkdownWorkbench */
+.live-shell .live-files-rail {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--n-rail, #282522);
+  border-left: 1px solid var(--n-line-solid, #3d3834);
+}
+
+.live-shell .live-files-rail .md-workbench,
+.live-shell .live-project-host .md-workbench {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+.live-shell .live-project-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.live-shell .wire-mid.is-project {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Terminal float — keeps prior TerminalPanel entry without old right-rail-only chrome */
+.live-shell .wire-terminal-float {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: min(520px, 42vw);
+  height: min(360px, 46vh);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--n-elevated, #282522);
+  border: 1px solid var(--n-line-solid, #3d3834);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.live-shell .wire-terminal-float-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--n-secondary, #c9c2b6);
+  border-bottom: 1px solid var(--n-line-solid, #3d3834);
+  flex: 0 0 auto;
+}
+
+.live-shell .wire-terminal-float .term-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: none;
+  background: transparent;
+}
+
+.live-shell .wire-terminal-float .term-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.live-shell .wire-terminal-float .term-wrap {
+  flex: 1;
+  min-height: 0;
+}
+
+/* When files rail + terminal both open, terminal sits above dock */
+.live-shell.has-terminal-float .wire-mid.is-chat {
+  /* room for absolute float */
+}
+
+/* Hide obsolete codex-only body if styles bleed */
+.live-shell .codex-sidebar {
+  display: none !important;
+}

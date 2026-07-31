@@ -79,6 +79,7 @@ describe("visual-marks mappers", () => {
   it("delegates file marks to shipped fileIconKind", () => {
     assert.equal(fileMarkKind("App.tsx", false), fileIconKind("App.tsx", false));
     assert.equal(fileMarkKind("src", true, true), "folder-open");
+    // colorful type map restored
     assert.equal(fileTone("tsx"), "info");
     assert.equal(fileTone("folder"), "warn");
     assert.equal(fileTone("git"), "err");
@@ -89,6 +90,7 @@ describe("visual-marks mappers", () => {
     assert.equal(taskMarkKind("queued"), "queued");
     assert.equal(chromeMarkForMode("chat"), "mode_chat");
     assert.equal(chromeMarkForMode("team"), "mode_team");
+    assert.equal(chromeMarkForMode("settings"), "settings");
   });
 
   it("agent-tree rows still carry hierarchy for visual indent", () => {

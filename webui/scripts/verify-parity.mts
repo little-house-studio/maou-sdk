@@ -261,8 +261,22 @@ assert.ok(
 );
 const appSrc = readFileSync(join(process.cwd(), "src/client/App.tsx"), "utf8");
 assert.ok(
-  appSrc.includes("setSidebarCollapsed") && appSrc.includes('e.key === "`"'),
+  appSrc.includes('e.key === "`"') &&
+    (appSrc.includes('toLowerCase() === "b"') ||
+      appSrc.includes("toLowerCase() === 'b'")),
   "layout hotkeys Ctrl+B / Ctrl+`",
+);
+assert.ok(
+  appSrc.includes("data-live-shell") && appSrc.includes("WireTopbar"),
+  "draft-aligned live shell chrome",
+);
+assert.ok(
+  appSrc.includes("BottomInfoBar") && appSrc.includes("ChatPanel"),
+  "bottom dock + live chat on production App",
+);
+assert.ok(
+  appSrc.includes("TerminalPanel") && appSrc.includes("MarkdownWorkbench"),
+  "terminal + markdown workbench remain mounted",
 );
 const apiSrc = readFileSync(join(process.cwd(), "src/client/api.ts"), "utf8");
 assert.ok(

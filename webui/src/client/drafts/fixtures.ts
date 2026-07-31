@@ -10,8 +10,10 @@ import type {
   DraftMeta,
   DraftScenario,
   DraftSession,
+  MessageRole,
   ScenarioId,
 } from "./types";
+import { groupThreadBlocks } from "./thread-blocks";
 
 /** Required catalog entries for layout QA (tests assert completeness). */
 export const REQUIRED_SCENARIO_IDS: readonly ScenarioId[] = [
@@ -263,14 +265,474 @@ const APPROVAL_RM: DraftApproval = {
   agentName: "coding",
 };
 
+const LONG_TOOL_DUMP = Array.from(
+  { length: 40 },
+  (_, i) =>
+    `${String(i + 1).padStart(4, " ")}| // 超长文件转储，用于线程与侧栏溢出`,
+).join("\n");
+
+/**
+ * 上下文窗口全量样例（视觉 QA / 布局压测）。
+ * 有序覆盖 ContextPanel 全部渲染路径：
+ *  - solo: system / user
+ *  - reply + nest: assistant → thinking / tool×N / err
+ *  - clean assistant (无 internals)
+ *  - orphan reply: tool + err 无助手头
+ *  - markdown: list / ordered / bold / italic / inline code / fence / link
+ *  - 长正文 + 超长 token + 长 tool dump
+ *  - clickable vs 非 clickable tool
+ * Chrome flags: SHOWCASE_FLAGS（stream + approval + tasks + files/diff）
+ */
+export const FULL_CONTEXT_MESSAGES: DraftMessage[] = [
+  {
+    id: "fc-sys-open",
+    role: "system",
+    body: "【样例】沙箱=ask · 模型=gpt-5 · 上下文全量清单 — 一眼扫布局问题",
+  },
+  {
+    id: "fc-u1",
+    role: "user",
+    body: "帮我做一个和当前 WebUI 一样的布局草稿。请覆盖：工具调用、思考、错误、审批、长文溢出。",
+  },
+  {
+    id: "fc-a1",
+    role: "assistant",
+    body: [
+      "好的。先把模块拆开，再用假数据把布局跑通。",
+      "",
+      "无序列表：",
+      "",
+      "- 侧栏：agent / 会话",
+      "- 中栏：上下文 + 悬浮 Tasks / Composer",
+      "- 底栏：终端 · 待办 · 日志",
+      "",
+      "有序列表：",
+      "",
+      "1. 扫路由注册",
+      "2. 对照 attach 参数",
+      "3. 汇总类型错误",
+      "",
+      "行内：**粗体**、*斜体*、`inline code`、[链接占位](https://example.com)",
+      "",
+      "```ts",
+      "export type DraftMessage = {",
+      "  id: string;",
+      "  role: MessageRole;",
+      "  body: string;",
+      "};",
+      "```",
+    ].join("\n"),
+  },
+  {
+    id: "fc-th1",
+    role: "thinking",
+    body: "计划：扫路由 → 列工具调用 → 汇总错误 → 提交审批示例",
+    thinking: { durationMs: 640, collapsed: true },
+    meta: { durationMs: 640 },
+  },
+  {
+    id: "fc-tool-term",
+    role: "tool",
+    tag: "use_terminal",
+    body: "src/server/create-server.ts:412:  app.ws(\"/ws/agent-terminal\"…",
+    clickable: true,
+    tool: {
+      name: "use_terminal",
+      description: "rg agent-terminal in server",
+      args: JSON.stringify(
+        {
+          description: "rg agent-terminal in server",
+          command: "rg -n \"agent-terminal\" src/server",
+          terminal_id: "term-draft-9",
+        },
+        null,
+        0,
+      ),
+      result:
+        "src/server/create-server.ts:412:  app.ws(\"/ws/agent-terminal\"…\nsrc/server/agent-terminals.ts:88: export function attach…",
+      done: true,
+      durationMs: 420,
+    },
+  },
+  {
+    id: "fc-tool-read",
+    role: "tool",
+    tag: "read_file",
+    body: "export type MessageRole = …",
+    clickable: true,
+    tool: {
+      name: "read_file",
+      description: "webui/src/client/drafts/types.ts",
+      args: JSON.stringify({
+        description: "webui/src/client/drafts/types.ts",
+        path: "webui/src/client/drafts/types.ts",
+      }),
+      result:
+        "export type MessageRole =\n  | \"user\"\n  | \"assistant\"\n  | \"system\"\n  | \"tool\"\n  | \"err\"\n  | \"thinking\";",
+      done: true,
+      durationMs: 18,
+    },
+  },
+  {
+    id: "fc-tool-run",
+    role: "tool",
+    tag: "run_terminal",
+    body: "exit 2",
+    clickable: true,
+    tool: {
+      name: "run_terminal",
+      description: "tsc client --noEmit",
+      args: JSON.stringify({
+        description: "tsc client --noEmit",
+        command: "npx tsc -p tsconfig.client.json --noEmit",
+      }),
+      result: "$ npx tsc -p tsconfig.client.json --noEmit\nexit 2",
+      done: true,
+      isError: true,
+      durationMs: 2100,
+    },
+  },
+  {
+    id: "fc-err1",
+    role: "err",
+    body: "类型错误：类型「DraftMeta」上不存在属性「pendingApproval」。",
+  },
+  {
+    id: "fc-a2",
+    role: "assistant",
+    body: "类型定义缺了审批字段。已在 `types.ts` 补上 `DraftApproval`；清理 dist 需要**审批**后再 build。",
+  },
+  {
+    id: "fc-tool-wait",
+    role: "tool",
+    tag: "use_terminal",
+    body: "等待审批 · rm -rf ./dist && npm run build",
+    tool: {
+      name: "use_terminal",
+      description: "清理 dist 并 rebuild（待审批）",
+      args: JSON.stringify({
+        description: "清理 dist 并 rebuild（待审批）",
+        command: "rm -rf ./dist && npm run build",
+      }),
+      done: false,
+    },
+  },
+  {
+    id: "fc-sys-trunc",
+    role: "system",
+    body: "工具结果已截断 · 省略 2.1k 字符",
+  },
+  {
+    id: "fc-u2",
+    role: "user",
+    body:
+      "再压一下长内容与路径换行：" +
+      "/Users/mac/Documents/vscodeProject/maou-sdk/webui/src/client/drafts/".repeat(
+        2,
+      ),
+  },
+  {
+    id: "fc-a3",
+    role: "assistant",
+    body: LONG_BODY,
+  },
+  {
+    id: "fc-tool-long",
+    role: "tool",
+    tag: "read_file",
+    body: LONG_TOOL_DUMP,
+    clickable: true,
+    tool: {
+      name: "read_file",
+      description: "超长文件转储压测",
+      args: JSON.stringify({
+        description: "超长文件转储压测",
+        path: "very/long/file.ts",
+      }),
+      result: LONG_TOOL_DUMP,
+      done: true,
+      durationMs: 88,
+    },
+  },
+  {
+    id: "fc-a4-clean",
+    role: "assistant",
+    body: "（干净助手气泡 · 无内嵌 tool/thinking）全部是**本地状态**；发送只会回显，不会请求后端。",
+  },
+  {
+    id: "fc-sys-mid",
+    role: "system",
+    body: "— 以下为无助手头的孤儿 tool / err 组（groupThreadBlocks orphan path）—",
+  },
+  {
+    id: "fc-orphan-tool",
+    role: "tool",
+    tag: "search_code",
+    body: "matches: 12",
+    clickable: true,
+    tool: {
+      name: "search_code",
+      description: "query: wire-shell",
+      args: JSON.stringify({
+        description: "query: wire-shell",
+        query: "wire-shell",
+      }),
+      result: "matches: 12\nwebui/src/client/drafts/draft.css:1",
+      done: true,
+      durationMs: 55,
+    },
+  },
+  {
+    id: "fc-orphan-th",
+    role: "thinking",
+    body: "孤儿组内 thinking：与 tool/err 同属 internals 无 assistant 正文",
+    thinking: { durationMs: 120, collapsed: true },
+  },
+  {
+    id: "fc-orphan-err",
+    role: "err",
+    body: "ECONNREFUSED 127.0.0.1:8787 — 后端离线（纯草稿场景下属预期）。",
+    meta: { ts: Date.UTC(2026, 6, 31, 6, 38, 12), authorLabel: "error" },
+  },
+  {
+    id: "fc-u3",
+    role: "user",
+    body: "会话切换和新建也要能点。",
+  },
+  {
+    id: "fc-a5",
+    role: "assistant",
+    body: [
+      "侧栏会话、新建任务、Composer 参数 chip、Tasks 折叠条、流式条、审批卡应同时可见。",
+      "",
+      "检查清单：",
+      "",
+      "- 用户灰底气泡",
+      "- 助手嵌套 tool / thinking / err",
+      "- 孤儿 tool 组",
+      "- 长文与超长 token 不撑破布局",
+      "- 顶流式条 + 底审批 + 浮 Tasks 不互相遮挡",
+    ].join("\n"),
+  },
+  {
+    id: "fc-th-final",
+    role: "thinking",
+    body: "仍在写入收尾说明…（嵌套在最后一条助手下）",
+    thinking: { streaming: true },
+  },
+];
+
+/** Stamp CLI MessageRow meta (ts / duration / tokens / round / LIVE). */
+function stampShowcaseMeta(msgs: DraftMessage[]): DraftMessage[] {
+  const base = Date.UTC(2026, 6, 31, 6, 30, 0);
+  let t = base;
+  let round = 0;
+  return msgs.map((m, i) => {
+    t += 12_000 + (i % 4) * 2500;
+    if (m.role === "user") {
+      return {
+        ...m,
+        meta: {
+          ts: t,
+          authorLabel: "user",
+          usageInput: 180 + i * 55,
+          kind: "human_user",
+          ...m.meta,
+        },
+      };
+    }
+    if (m.role === "assistant") {
+      round += 1;
+      const streaming = m.id === "fc-a5";
+      return {
+        ...m,
+        meta: {
+          ts: t,
+          authorLabel: "agent:coding",
+          round,
+          durationMs: streaming ? undefined : 640 + i * 90,
+          usageOutput: streaming ? undefined : 36 + i * 14,
+          streaming,
+          ...m.meta,
+        },
+      };
+    }
+    if (m.role === "system") {
+      return {
+        ...m,
+        meta: {
+          ts: t,
+          authorLabel: "system",
+          ...m.meta,
+        },
+      };
+    }
+    if (m.role === "err") {
+      return {
+        ...m,
+        meta: {
+          ts: t,
+          authorLabel: "error",
+          ...m.meta,
+        },
+      };
+    }
+    if (m.role === "thinking" && !m.thinking) {
+      return {
+        ...m,
+        thinking: { durationMs: 200 + i * 30, collapsed: true },
+        meta: { durationMs: 200 + i * 30, ...m.meta },
+      };
+    }
+    return {
+      ...m,
+      meta: { ts: t, ...m.meta },
+    };
+  });
+}
+
+const _RAW_SHOWCASE = FULL_CONTEXT_MESSAGES;
+// re-stamp export (const array already defined — replace via map at clone time)
+
+/** Clone showcase thread with id prefix (per-session uniqueness) + meta. */
+export function showcaseMessages(prefix: string): DraftMessage[] {
+  return stampShowcaseMeta(_RAW_SHOWCASE).map((m) => ({
+    ...m,
+    id: `${prefix}-${m.id}`,
+    tool: m.tool ? { ...m.tool } : undefined,
+    meta: m.meta ? { ...m.meta } : undefined,
+    thinking: m.thinking ? { ...m.thinking } : undefined,
+  }));
+}
+
+/** Default chrome for full context preview (stream + approval + diff + tasks). */
+export const SHOWCASE_FLAGS = {
+  agentBusy: true,
+  pendingApproval: APPROVAL_RM,
+  showFiles: true,
+  showDiff: true,
+  statusHint: "上下文全量 · 运行中 · 待审批",
+  usageLabel: "48.1k / 128k",
+} as const;
+
+/** Six roles the context panel must be able to render. */
+export const SHOWCASE_REQUIRED_ROLES: readonly MessageRole[] = [
+  "user",
+  "assistant",
+  "system",
+  "thinking",
+  "tool",
+  "err",
+] as const;
+
+export type ShowcaseInventory = {
+  roles: MessageRole[];
+  hasNestedReply: boolean;
+  hasOrphanInternals: boolean;
+  hasClickableTool: boolean;
+  hasLongBody: boolean;
+  hasMarkdownHints: boolean;
+  agentBusy: boolean;
+  pendingApproval: boolean;
+  hasBgTasks: boolean;
+  showFiles: boolean;
+};
+
+/**
+ * Inventory of the default kitchen-sink showcase (shipped helpers only).
+ * Used by tests — do not re-implement message grouping here.
+ */
+export function inspectContextShowcase(
+  scenarioId: ScenarioId = "normal",
+): ShowcaseInventory {
+  const s = getScenario(scenarioId);
+  const msgs = messagesForSession(s.messagesBySession, s.initialSessionId);
+  const blocks = groupThreadBlocks(msgs);
+  const roles = [...new Set(msgs.map((m) => m.role))];
+  const hasNestedReply = blocks.some(
+    (b) =>
+      b.kind === "reply" &&
+      b.assistant !== null &&
+      b.internals.length > 0,
+  );
+  const hasOrphanInternals = blocks.some(
+    (b) =>
+      b.kind === "reply" &&
+      b.assistant === null &&
+      b.internals.length > 0,
+  );
+  const joined = msgs.map((m) => m.body).join("\n");
+  // Structural markdown inventory (blank line before pure list blocks).
+  // Real DOM classes are asserted via DraftMarkdown.test.ts on shipped renderer.
+  const hasPureUlBlock = /\n\n(?:- |\* ).+(?:\n(?:- |\* ).+)*/.test(
+    `\n\n${joined}`,
+  );
+  const hasPureOlBlock = /\n\n\d+\. .+(?:\n\d+\. .+)*/.test(`\n\n${joined}`);
+  return {
+    roles,
+    hasNestedReply,
+    hasOrphanInternals,
+    hasClickableTool: msgs.some((m) => m.role === "tool" && m.clickable),
+    hasLongBody: msgs.some((m) => m.body.length > 500),
+    hasMarkdownHints:
+      joined.includes("**") &&
+      joined.includes("`") &&
+      joined.includes("```") &&
+      joined.includes("](") &&
+      hasPureUlBlock &&
+      hasPureOlBlock,
+    agentBusy: s.flags.agentBusy,
+    pendingApproval: Boolean(s.flags.pendingApproval),
+    hasBgTasks: s.bgTasks.length > 0,
+    showFiles: s.flags.showFiles !== false,
+  };
+}
+
+export function assertContextShowcaseComplete(
+  scenarioId: ScenarioId = "normal",
+): ShowcaseInventory {
+  const inv = inspectContextShowcase(scenarioId);
+  for (const r of SHOWCASE_REQUIRED_ROLES) {
+    if (!inv.roles.includes(r)) {
+      throw new Error(`Showcase ${scenarioId} missing role: ${r}`);
+    }
+  }
+  if (!inv.hasNestedReply) {
+    throw new Error(`Showcase ${scenarioId} missing nested assistant reply`);
+  }
+  if (!inv.hasOrphanInternals) {
+    throw new Error(`Showcase ${scenarioId} missing orphan internals group`);
+  }
+  if (!inv.hasClickableTool) {
+    throw new Error(`Showcase ${scenarioId} missing clickable tool`);
+  }
+  if (!inv.hasLongBody) {
+    throw new Error(`Showcase ${scenarioId} missing long body (>500)`);
+  }
+  if (!inv.hasMarkdownHints) {
+    throw new Error(`Showcase ${scenarioId} missing markdown inventory`);
+  }
+  if (!inv.agentBusy) {
+    throw new Error(`Showcase ${scenarioId} expected agentBusy`);
+  }
+  if (!inv.pendingApproval) {
+    throw new Error(`Showcase ${scenarioId} expected pendingApproval`);
+  }
+  if (!inv.hasBgTasks) {
+    throw new Error(`Showcase ${scenarioId} expected bgTasks`);
+  }
+  return inv;
+}
+
 /**
  * Full scenario catalog — each case is a self-contained Work-shell fixture.
+ * Non-empty threads share FULL_CONTEXT_MESSAGES so every layout case is visible.
  */
 export const SCENARIO_CATALOG: readonly DraftScenario[] = [
   {
     id: "normal",
     label: "正常会话",
-    description: "多轮用户/助手对话 + 侧栏多个会话",
+    description: "上下文全量样例（角色/工具/错误/长文/审批/运行中）",
     initialSessionId: "s-normal-1",
     sessions: [
       {
@@ -293,67 +755,21 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
       },
     ],
     messagesBySession: {
-      "s-normal-1": [
-        {
-          id: "n1",
-          role: "user",
-          body: "帮我做一个和当前 WebUI 一样的布局草稿，方便后面再接真实逻辑。",
-        },
-        {
-          id: "n2",
-          role: "assistant",
-          body: "好的。侧栏、顶栏、会话列表、对话区、右侧终端/文件会拆成独立模块，先用场景假数据把布局跑通。\n\n- 侧栏：agent / 会话\n- 中栏：上下文 + 悬浮 Tasks / Composer\n- 底栏：终端 · 待办 · 日志",
-        },
-        {
-          id: "n3",
-          role: "user",
-          body: "会话切换和新建也要能点。",
-        },
-        {
-          id: "n4",
-          role: "assistant",
-          body: "可以。全部是**本地状态**；发送只会回显，不会请求后端。",
-        },
-      ],
-      "s-normal-2": [
-        {
-          id: "n5",
-          role: "user",
-          body: "文档全屏工作台占位长什么样？",
-        },
-        {
-          id: "n6",
-          role: "assistant",
-          body: "中间整栏文档区 + 三块占位卡（树 / 编辑器 / 大纲）。",
-        },
-      ],
-      "s-normal-3": [
-        {
-          id: "n7",
-          role: "system",
-          body: "会话来自场景目录 · 正常会话",
-        },
-        {
-          id: "n8",
-          role: "assistant",
-          body: "ops 助手会话示例：可检查助手标签与侧栏元数据。",
-        },
-      ],
+      "s-normal-1": showcaseMessages("n1"),
+      "s-normal-2": showcaseMessages("n2"),
+      "s-normal-3": showcaseMessages("n3"),
     },
-    meta: { ...BASE_META },
-    flags: {
-      agentBusy: false,
-      pendingApproval: null,
-      showFiles: true,
-      showDiff: false,
-      statusHint: "草稿 · 仅本地",
-      usageLabel: "12.4k / 128k",
-    },
+    meta: { ...BASE_META, sandboxMode: "ask", model: "gpt-5-thinking" },
+    flags: { ...SHOWCASE_FLAGS },
     fileTree: DEFAULT_FILES,
-    termLines: DEFAULT_TERM,
-    agents: DEFAULT_AGENTS,
+    termLines: [
+      ...DEFAULT_TERM,
+      "$ # 已拦截，等待审批",
+      "command: rm -rf ./dist && npm run build",
+    ],
+    agents: BUSY_AGENTS,
     initialAgentId: "project:/Users/mac/Documents/vscodeProject/maou-sdk:coding",
-    bgTasks: DEFAULT_BG,
+    bgTasks: BUSY_BG,
   },
   {
     id: "empty_thread",
@@ -396,7 +812,7 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
   {
     id: "busy",
     label: "助手忙碌",
-    description: "运行中角标 + 流式条 + 思考/工具行",
+    description: "全量上下文 + 运行中角标 / 流式条 / Tasks",
     initialSessionId: "s-busy-1",
     sessions: [
       {
@@ -407,45 +823,18 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
       },
     ],
     messagesBySession: {
-      "s-busy-1": [
-        {
-          id: "b1",
-          role: "user",
-          body: "把 terminal-hub 的 attach 路径理一下，边改边跑测试。",
-        },
-        {
-          id: "b2",
-          role: "assistant",
-          body: "先定位 `create-server` 里的 WS 路由，再核对 **write/stop** 接口。\n\n步骤：\n1. 搜路由注册\n2. 对照 attach 参数",
-        },
-        {
-          id: "b3",
-          role: "thinking",
-          body: "正在扫描 `harness/server.ts` · agent-terminals · create-server…",
-        },
-        {
-          id: "b4",
-          role: "tool",
-          tag: "use_terminal",
-          body: "terminal_id=term-draft-9\n$ rg -n \"agent-terminal\" src/server",
-          clickable: true,
-        },
-      ],
+      "s-busy-1": showcaseMessages("b"),
     },
     meta: { ...BASE_META, model: "gpt-5-thinking" },
     flags: {
-      agentBusy: true,
+      ...SHOWCASE_FLAGS,
       pendingApproval: null,
-      showFiles: true,
-      showDiff: false,
       statusHint: "助手运行中…",
-      usageLabel: "48.1k / 128k",
     },
     fileTree: DEFAULT_FILES,
     termLines: [
       "$ rg -n \"agent-terminal\" src/server",
       "src/server/create-server.ts:412:  app.ws(\"/ws/agent-terminal\"…",
-      "src/server/agent-terminals.ts:88: export function attach…",
       "",
       "[流式] 助手仍在写入…",
     ],
@@ -456,7 +845,7 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
   {
     id: "pending_approval",
     label: "待审批",
-    description: "对话顶部审批横幅（高风险命令）",
+    description: "全量上下文 + 审批横幅（高风险命令）",
     initialSessionId: "s-appr-1",
     sessions: [
       {
@@ -467,31 +856,11 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
       },
     ],
     messagesBySession: {
-      "s-appr-1": [
-        {
-          id: "a1",
-          role: "user",
-          body: "清一下 dist 再重新 build。",
-        },
-        {
-          id: "a2",
-          role: "assistant",
-          body: "需要执行清理命令，已提交**审批请求**。",
-        },
-        {
-          id: "a3",
-          role: "tool",
-          tag: "use_terminal",
-          body: "等待审批 · rm -rf ./dist && npm run build",
-        },
-      ],
+      "s-appr-1": showcaseMessages("a"),
     },
     meta: { ...BASE_META, sandboxMode: "ask" },
     flags: {
-      agentBusy: true,
-      pendingApproval: APPROVAL_RM,
-      showFiles: true,
-      showDiff: false,
+      ...SHOWCASE_FLAGS,
       statusHint: "等待审批",
       usageLabel: "6.2k / 128k",
     },
@@ -501,14 +870,14 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
       "command: rm -rf ./dist && npm run build",
       "[草稿] 允许一次 / 始终允许 / 拒绝 / 黑名单",
     ],
-    agents: DEFAULT_AGENTS,
+    agents: BUSY_AGENTS,
     initialAgentId: "project:/Users/mac/Documents/vscodeProject/maou-sdk:coding",
-    bgTasks: DEFAULT_BG,
+    bgTasks: BUSY_BG,
   },
   {
     id: "mixed_roles",
     label: "角色混排",
-    description: "用户 / 助手 / 系统 / 工具 / 错误 / 思考 样式混排",
+    description: "全量上下文（user/assistant/system/tool/err/thinking）",
     initialSessionId: "s-mix-1",
     sessions: [
       {
@@ -525,49 +894,8 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
       },
     ],
     messagesBySession: {
-      "s-mix-1": [
-        {
-          id: "x1",
-          role: "system",
-          body: "沙箱=ask · 模型=gpt-5 · 草稿假数据",
-        },
-        { id: "x2", role: "user", body: "跑一下类型检查，失败的话把错误贴出来。" },
-        {
-          id: "x3",
-          role: "thinking",
-          body: "计划：tsc 客户端 → tsc 服务端 → 汇总错误",
-        },
-        {
-          id: "x4",
-          role: "tool",
-          tag: "run_terminal",
-          body: "$ npx tsc -p tsconfig.client.json --noEmit\nexit 2",
-          clickable: true,
-        },
-        {
-          id: "x5",
-          role: "err",
-          body: "类型错误：类型「DraftMeta」上不存在属性「pendingApproval」。",
-        },
-        {
-          id: "x6",
-          role: "assistant",
-          body: "类型定义缺了审批字段。已在 `types.ts` 补上 `DraftApproval`，请再跑一遍检查。",
-        },
-        {
-          id: "x7",
-          role: "system",
-          body: "工具结果已截断 · 省略 2.1k 字符",
-        },
-      ],
-      "s-mix-2": [
-        { id: "x8", role: "user", body: "ops 侧也要能看到错误样式。" },
-        {
-          id: "x9",
-          role: "err",
-          body: "ECONNREFUSED 127.0.0.1:8787 — 后端离线（纯草稿场景下属预期）。",
-        },
-      ],
+      "s-mix-1": showcaseMessages("x1"),
+      "s-mix-2": showcaseMessages("x2"),
     },
     meta: {
       ...BASE_META,
@@ -576,10 +904,7 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
       sandboxMode: "normal",
     },
     flags: {
-      agentBusy: false,
-      pendingApproval: null,
-      showFiles: true,
-      showDiff: true,
+      ...SHOWCASE_FLAGS,
       statusHint: "角色样式混排",
       usageLabel: "22.0k / 200k",
     },
@@ -595,14 +920,14 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
       "",
       "发现 1 个错误。",
     ],
-    agents: DEFAULT_AGENTS,
+    agents: BUSY_AGENTS,
     initialAgentId: "project:/Users/mac/Documents/vscodeProject/maou-sdk:coding",
-    bgTasks: DEFAULT_BG,
+    bgTasks: BUSY_BG,
   },
   {
     id: "long_overflow",
     label: "长内容溢出",
-    description: "超长正文、无空格长 token、多行工具输出",
+    description: "全量上下文（含超长正文 / 工具 dump）",
     initialSessionId: "s-long-1",
     sessions: [
       {
@@ -613,39 +938,11 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
       },
     ],
     messagesBySession: {
-      "s-long-1": [
-        {
-          id: "l1",
-          role: "user",
-          body:
-            "请生成很长的说明，并附带路径：" +
-            "/Users/mac/Documents/vscodeProject/maou-sdk/webui/src/client/drafts/".repeat(
-              3,
-            ),
-        },
-        {
-          id: "l2",
-          role: "assistant",
-          body: LONG_BODY,
-        },
-        {
-          id: "l3",
-          role: "tool",
-          tag: "read_file",
-          body: Array.from(
-            { length: 40 },
-            (_, i) =>
-              `${String(i + 1).padStart(4, " ")}| // 超长文件转储，用于线程与侧栏溢出`,
-          ).join("\n"),
-        },
-      ],
+      "s-long-1": showcaseMessages("l"),
     },
     meta: { ...BASE_META },
     flags: {
-      agentBusy: false,
-      pendingApproval: null,
-      showFiles: true,
-      showDiff: false,
+      ...SHOWCASE_FLAGS,
       statusHint: "溢出压测",
       usageLabel: "91k / 128k",
     },
@@ -662,9 +959,9 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
         (_, i) => `log[${i}] 终端滚动填充行`,
       ),
     ],
-    agents: DEFAULT_AGENTS,
+    agents: BUSY_AGENTS,
     initialAgentId: "project:/Users/mac/Documents/vscodeProject/maou-sdk:coding",
-    bgTasks: DEFAULT_BG,
+    bgTasks: BUSY_BG,
   },
   {
     id: "empty_sessions",
@@ -837,7 +1134,7 @@ export function hydrateFromScenario(scenarioId: ScenarioId): LocalDraftState {
     activeAgentId: s.initialAgentId,
     bgTasks: s.bgTasks.map((t) => ({ ...t })),
     showFiles: s.flags.showFiles ?? true,
-    showDiff: true,
+    showDiff: s.flags.showDiff ?? true,
   };
 }
 

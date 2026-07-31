@@ -191,24 +191,25 @@ export function fileMarkKind(
   return fileIconKind(name, isFolder, open);
 }
 
+/** File type colors (palette-aligned): type via color + shape. */
 export function fileTone(kind: FileIconKind): VisualTone {
   switch (kind) {
     case "folder":
     case "folder-open":
-      return "warn";
+      return "warn"; // warm folder gold
     case "ts":
     case "tsx":
-      return "info";
+      return "info"; // blue
     case "js":
     case "jsx":
     case "json":
-      return "warn";
+      return "warn"; // gold/yellow
     case "md":
       return "info";
     case "html":
-      return "err";
+      return "err"; // orange-red
     case "css":
-      return "accent";
+      return "accent"; // brand blue
     case "git":
       return "err";
     case "lock":
@@ -226,7 +227,10 @@ export function hierarchyIndentPx(depth: number, step = 12, base = 6): number {
   return base + Math.max(0, depth) * step;
 }
 
-export function chromeMarkForMode(mode: "chat" | "project" | "team"): ChromeMarkKind {
+export function chromeMarkForMode(
+  mode: "chat" | "project" | "team" | "settings",
+): ChromeMarkKind {
+  if (mode === "settings") return "settings";
   if (mode === "project") return "mode_project";
   if (mode === "team") return "mode_team";
   return "mode_chat";

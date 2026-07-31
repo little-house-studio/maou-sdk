@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import React, { useEffect, useRef } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
@@ -29,10 +29,12 @@ export function SourceEditor({
     if (!view) return false;
     const doc = view.state.doc;
     const ln = Math.max(0, Math.min(line, doc.lines - 1));
-    const pos = doc.line(ln + 1).from;
+    // CodeMirror lines are 1-based
+    const row = doc.line(ln + 1);
+    // Select full line so find/outline jumps are obvious
     view.dispatch({
-      selection: { anchor: pos },
-      effects: EditorView.scrollIntoView(pos, { y: "center" }),
+      selection: { anchor: row.from, head: row.to },
+      effects: EditorView.scrollIntoView(row.from, { y: "center" }),
     });
     view.focus();
     return true;

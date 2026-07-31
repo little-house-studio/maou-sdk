@@ -1,36 +1,113 @@
 /**
- * Codex-style coding agent shell
- * (layout reference: frost-branch-mint-sand.grok.me)
+ * Production SPA shell — draft-aligned wire chrome with live APIs.
  *
- *   left   — brand · New task · Sessions · Workspace card
- *   center — topbar · conversation · composer
- *   right  — Files | Terminal tabs
+ * Layout matches DraftShell product sketch:
+ *   top:    modes 聊天 / 项目 / Team / 设置 + meta + 文件
+ *   left:   agent list + session list (ChatPanel ThreadRail portal)
+ *   center: live ChatPanel (stream / slash / approval / model)
+ *   right:  MarkdownWorkbench when 文件 open
+ *   bottom: BottomInfoBar dock boards (log / tasks / terminal / agent)
  *
+ * TerminalPanel remains reachable via dock hotkey Ctrl+` / tool-card open.
+ * draft.html stays fixture-isolated (main-draft.tsx); this file is live only.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChatPanel } from "./ChatPanel";
 import { TerminalPanel, type OpenTerminalRequest } from "./TerminalPanel";
 import { MarkdownWorkbench } from "./markdown";
 import "./markdown/styles.css";
-import { fetchMeta, type Meta } from "./api";
+import { fetchMeta, fetchTerminals, type Meta } from "./api";
+import {
+  cloneApiConfig,
+  defaultApiConfig,
+  type DraftApiConfig,
+  type DraftBgTask,
+  type UiMode,
+  BottomInfoBar,
+  SettingsPanel,
+  TeamBoard,
+} from "./drafts";
+import { WireTopbar } from "./drafts/layout/WireTopbar";
+import { ResizeHandle } from "./drafts/layout/ResizeHandle";
+import { AgentList } from "./drafts/panels/AgentList";
+import {
+  metaToAgents,
+  metaToDraftMeta,
+  terminalsToBgTasks,
+  terminalsToTermLines,
+  usageLabelFromMeta,
+} from "./live/adapters";
+import "./drafts/draft.css";
+import "./live-shell.css";
 
-type Workspace = "work" | "docs";
-type RightTab = "none" | "terminal" | "docs";
+const LEFT_DEFAULT = 260;
+const LEFT_MIN = 200;
+const LEFT_MAX = 360;
+const AGENT_H_DEFAULT = 38;
+const RAIL_DEFAULT = 320;
+const RAIL_MIN = 220;
+const RAIL_MAX = 520;
+
+const LIVE_SESSION_RAIL_ID = "live-session-rail";
 
 export function App() {
+  const [mode, setMode] = useState<UiMode>("chat");
   const [meta, setMeta] = useState<Meta | null>(null);
+  const [metaOffline, setMetaOffline] = useState(true);
   const [openTerm, setOpenTerm] = useState<OpenTerminalRequest>(null);
-  const [workspace, setWorkspace] = useState<Workspace>("work");
-  const [rightPanel, setRightPanel] = useState<RightTab>("terminal");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showTerminal, setShowTerminal] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
   const [agentBusy, setAgentBusy] = useState(false);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
+  const [leftW, setLeftW] = useState(LEFT_DEFAULT);
+  const [agentPct, setAgentPct] = useState(AGENT_H_DEFAULT);
+  const [railW, setRailW] = useState(RAIL_DEFAULT);
+  const [apiConfig, setApiConfig] = useState<DraftApiConfig>(() =>
+    defaultApiConfig(),
+  );
+  const [termLines, setTermLines] = useState<string[]>([
+    "$ ready · no agent terminals",
+  ]);
+  const [bgTasks, setBgTasks] = useState<DraftBgTask[]>([]);
 
   useEffect(() => {
     void fetchMeta()
-      .then(setMeta)
-      .catch(() => setMeta(null));
+      .then((m) => {
+        setMeta(m);
+        setMetaOffline(false);
+      })
+      .catch(() => {
+        setMeta(null);
+        setMetaOffline(true);
+      });
   }, []);
+
+  // Dock boards: poll live agent terminals
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const agent = meta?.agentName || "coding";
+        let ts = await fetchTerminals(agent);
+        if (ts.length === 0) {
+          ts = await fetchTerminals(undefined, { all: true });
+        }
+        if (cancelled) return;
+        setTermLines(terminalsToTermLines(ts));
+        setBgTasks(terminalsToBgTasks(ts));
+      } catch {
+        if (!cancelled) {
+          setTermLines(["$ terminal poll offline"]);
+        }
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [meta?.agentName]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -38,20 +115,21 @@ export function App() {
       if (!mod) return;
       if (e.key.toLowerCase() === "b" && !e.shiftKey) {
         e.preventDefault();
-        setSidebarCollapsed((c) => !c);
+        // Collapse/expand left column width (draft parity for Ctrl+B)
+        setLeftW((w) => (w <= LEFT_MIN + 4 ? LEFT_DEFAULT : LEFT_MIN));
         return;
       }
       if (e.key === "`" || e.key.toLowerCase() === "j") {
         if (e.shiftKey) return;
         e.preventDefault();
-        setWorkspace("work");
-        setRightPanel((p) => (p === "terminal" ? "none" : "terminal"));
+        setMode("chat");
+        setShowTerminal((v) => !v);
         return;
       }
       if (e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        setWorkspace("work");
-        setRightPanel((p) => (p === "docs" ? "none" : "docs"));
+        setMode("chat");
+        setShowFiles((v) => !v);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -61,217 +139,212 @@ export function App() {
   const onOpenTerminal = useCallback(
     (id: string, agentName?: string) => {
       setOpenTerm({ id, agentName: agentName || meta?.agentName || "coding" });
-      setWorkspace("work");
-      setRightPanel("terminal");
+      setMode("chat");
+      setShowTerminal(true);
     },
     [meta?.agentName],
   );
 
-  const projectLabel = meta?.projectRoot
-    ? meta.projectRoot.split("/").filter(Boolean).slice(-2).join("/")
-    : "project";
+  const onApiChange = useCallback((next: DraftApiConfig) => {
+    setApiConfig(cloneApiConfig(next));
+  }, []);
 
-  const projectPath = meta?.projectRoot
-    ? `~/${meta.projectRoot.split("/").filter(Boolean).slice(-2).join("/")}`
-    : "~/project";
+  const draftMeta = useMemo(
+    () => metaToDraftMeta(meta, { offline: metaOffline }),
+    [meta, metaOffline],
+  );
+  const agents = useMemo(
+    () => metaToAgents(meta, agentBusy),
+    [meta, agentBusy],
+  );
+  const activeAgent = agents[0] ?? null;
+  const usageLabel = useMemo(
+    () => usageLabelFromMeta(meta, agentBusy),
+    [meta, agentBusy],
+  );
 
-  const modelLabel =
-    meta?.provider || meta?.model
-      ? `${meta.provider || "—"}${meta.model ? ` · ${meta.model}` : ""}`
-      : "model offline";
+  const onAgentSplitDrag = useCallback((clientY: number, rect: DOMRect) => {
+    const y = clientY - rect.top;
+    const pct = Math.min(75, Math.max(20, (y / rect.height) * 100));
+    setAgentPct(pct);
+  }, []);
+
+  const onModeChange = useCallback((m: UiMode) => {
+    setMode(m);
+    if (m !== "chat") {
+      // Keep chat engine mounted only in chat mode to avoid dual workbench
+    }
+  }, []);
 
   return (
     <div
-      className={`app codex-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
+      className={`wire-shell draft-shell live-shell${
+        mode === "settings" ? " has-settings" : ""
+      }${showTerminal ? " has-terminal-float" : ""}`}
+      data-live-shell="true"
+      data-ui-mode={mode}
     >
-      <aside className="codex-sidebar" aria-label="sidebar">
-        <div className="sidebar-brand">
-          <div className="brand-left">
-            {!sidebarCollapsed && (
-              <>
-                <span className="brand-mark" aria-hidden>
-                  ⌘
-                </span>
-                <div className="brand-text">
-                  <div className="brand-name">Maou</div>
-                  <div className="brand-sub">coding agent</div>
-                </div>
-              </>
-            )}
-            {sidebarCollapsed && <span className="brand-mark">⌘</span>}
-          </div>
-          <button
-            type="button"
-            className="sidebar-collapse"
-            title={
-              sidebarCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse (Ctrl+B)"
-            }
-            onClick={() => setSidebarCollapsed((c) => !c)}
-          >
-            {sidebarCollapsed ? "›" : "‹"}
-          </button>
+      <WireTopbar
+        mode={mode}
+        onModeChange={onModeChange}
+        meta={draftMeta}
+        usageLabel={
+          sessionTitle
+            ? `${usageLabel} · ${sessionTitle.slice(0, 24)}`
+            : usageLabel
+        }
+        showFiles={showFiles}
+        onToggleFiles={() => {
+          setMode("chat");
+          setShowFiles((v) => !v);
+        }}
+      />
+
+      {mode === "settings" ? (
+        <div className="wire-mid is-settings" data-live-region="settings">
+          <SettingsPanel
+            api={apiConfig}
+            onApiChange={onApiChange}
+            presentation="page"
+            onClose={() => setMode("chat")}
+          />
         </div>
-
-        {!sidebarCollapsed && (
-          <div className="sidebar-mode-tabs" aria-label="workspace">
-            <button
-              type="button"
-              className={workspace === "work" ? "active" : ""}
-              onClick={() => setWorkspace("work")}
-            >
-              Work
-            </button>
-            <button
-              type="button"
-              className={workspace === "docs" ? "active" : ""}
-              onClick={() => setWorkspace("docs")}
-            >
-              Docs
-            </button>
+      ) : mode === "project" ? (
+        <div className="wire-mid is-project" data-live-region="project">
+          <div className="live-project-host">
+            <MarkdownWorkbench />
           </div>
-        )}
-
-        {workspace === "work" && !sidebarCollapsed && (
-          <div className="sidebar-threads" id="codex-thread-rail" />
-        )}
-
-        {!sidebarCollapsed && (
-          <div className="sidebar-footer">
-            <div className="workspace-card">
-              <p className="workspace-card-label">Workspace</p>
-              <p className="workspace-card-path" title={meta?.projectRoot || ""}>
-                {projectPath}
-              </p>
+        </div>
+      ) : mode === "team" ? (
+        <div className="wire-mid is-team" data-live-region="team">
+          <TeamBoard />
+        </div>
+      ) : (
+        <div className="wire-mid is-chat" data-live-region="chat">
+          <div className="wire-left" style={{ width: leftW }}>
+            <div
+              className="wire-left-agents"
+              style={{ flex: `0 0 ${agentPct}%` }}
+            >
+              <AgentList
+                agents={agents}
+                activeId={activeAgent?.id ?? "live-primary"}
+                onSelect={() => {
+                  /* single live agent today */
+                }}
+              />
             </div>
             <div
-              className={`sidebar-meta dim${
-                meta && !meta.provider && !meta.model ? " is-warn" : ""
-              }`}
-              style={{ marginTop: 8 }}
-              title={
-                meta?.provider
-                  ? `${meta.provider}/${meta.model}`
-                  : "Start backend :8787 if offline"
-              }
-            >
-              {meta
-                ? `${meta.agentName || "coding"} · ${meta.sandboxMode || "yolo"} · ${modelLabel}`
-                : "connecting…"}
+              className="wire-v-split"
+              role="separator"
+              aria-orientation="horizontal"
+              aria-label="拖动调整 agent / 会话 高度"
+              onPointerDown={(e) => {
+                const col = e.currentTarget.parentElement as HTMLElement;
+                const rect = col.getBoundingClientRect();
+                const move = (ev: PointerEvent) =>
+                  onAgentSplitDrag(ev.clientY, rect);
+                const up = () => {
+                  window.removeEventListener("pointermove", move);
+                  window.removeEventListener("pointerup", up);
+                  document.body.style.cursor = "";
+                  document.body.style.userSelect = "";
+                };
+                document.body.style.cursor = "row-resize";
+                document.body.style.userSelect = "none";
+                window.addEventListener("pointermove", move);
+                window.addEventListener("pointerup", up);
+              }}
+            />
+            <div className="wire-left-sessions">
+              <div
+                id={LIVE_SESSION_RAIL_ID}
+                className="live-session-rail-host"
+                data-live-session-rail="true"
+              />
             </div>
           </div>
-        )}
-      </aside>
 
-      <div className="codex-main">
-        <header className="codex-topbar">
-          <div className="topbar-left">
-            <div className="topbar-path" title={meta?.projectRoot || ""}>
-              <span aria-hidden>📁</span>
-              <span>{projectLabel}</span>
-              {sessionTitle || meta?.sessionId ? (
-                <>
-                  <span className="topbar-path-sep">/</span>
-                  <span className="topbar-title">
-                    {sessionTitle ||
-                      (meta?.sessionId
-                        ? meta.sessionId.slice(0, 12) + "…"
-                        : "Agent")}
-                  </span>
-                </>
-              ) : (
-                <span className="topbar-title">
-                  {workspace === "work" ? "Agent" : "Documents"}
-                </span>
-              )}
-            </div>
-            {workspace === "work" && (
-              <span
-                className={`topbar-chip${agentBusy ? " busy" : ""}`}
-              >
-                {agentBusy ? "running" : "ready"}
-              </span>
-            )}
-          </div>
-          <div className="topbar-right">
-            {workspace === "work" && (
-              <>
-                <span className="model-pill" title="Current model">
-                  <span className="dot" />
-                  {meta?.model || meta?.provider || "—"}
-                </span>
-                <div className="rail-tabs" role="tablist" aria-label="right panel">
-                  <button
-                    type="button"
-                    role="tab"
-                    className={rightPanel === "docs" ? "active" : ""}
-                    title="Ctrl+Shift+F"
-                    onClick={() =>
-                      setRightPanel((p) => (p === "docs" ? "none" : "docs"))
-                    }
-                  >
-                    Files
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    className={rightPanel === "terminal" ? "active" : ""}
-                    title="Ctrl+` / Ctrl+J"
-                    onClick={() =>
-                      setRightPanel((p) =>
-                        p === "terminal" ? "none" : "terminal",
-                      )
-                    }
-                  >
-                    Terminal
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </header>
+          <ResizeHandle
+            edge="right"
+            size={leftW}
+            min={LEFT_MIN}
+            max={LEFT_MAX}
+            onResize={setLeftW}
+            label="拖动调整左侧栏宽度"
+          />
 
-        <div
-          className={`codex-body${
-            workspace === "work" && rightPanel !== "none" ? " with-rail" : ""
-          }`}
-        >
-          {workspace === "work" && (
+          <div className="wire-center" data-live-region="thread">
+            <ChatPanel
+              layout="codex"
+              className="wire-context"
+              defaultAgent={meta?.agentName || "coding"}
+              onOpenTerminal={onOpenTerminal}
+              onMetaChange={(m) => {
+                setMeta(m);
+                setMetaOffline(false);
+              }}
+              threadRailId={LIVE_SESSION_RAIL_ID}
+              onBusyChange={setAgentBusy}
+              onSessionTitleChange={setSessionTitle}
+            />
+          </div>
+
+          {showFiles && (
             <>
-              <div className="codex-thread">
-                <ChatPanel
-                  layout="codex"
-                  defaultAgent={meta?.agentName || "coding"}
-                  onOpenTerminal={onOpenTerminal}
-                  onMetaChange={setMeta}
-                  threadRailId="codex-thread-rail"
-                  onBusyChange={setAgentBusy}
-                  onSessionTitleChange={setSessionTitle}
-                />
+              <ResizeHandle
+                edge="left"
+                size={railW}
+                min={RAIL_MIN}
+                max={RAIL_MAX}
+                onResize={setRailW}
+                label="拖动调整文件栏宽度"
+              />
+              <div
+                className="wire-right live-files-rail"
+                style={{ width: railW }}
+                data-live-region="files"
+              >
+                <MarkdownWorkbench />
               </div>
-              {rightPanel === "terminal" && (
-                <aside className="codex-rail" aria-label="terminal">
-                  <TerminalPanel
-                    defaultAgent={meta?.agentName || "coding"}
-                    openRequest={openTerm}
-                    onOpenConsumed={() => setOpenTerm(null)}
-                  />
-                </aside>
-              )}
-              {rightPanel === "docs" && (
-                <aside className="codex-rail codex-rail-wide" aria-label="files">
-                  <MarkdownWorkbench />
-                </aside>
-              )}
             </>
           )}
 
-          {workspace === "docs" && (
-            <div className="codex-full">
-              <MarkdownWorkbench />
-            </div>
+          {showTerminal && (
+            <aside
+              className="wire-terminal-float"
+              aria-label="agent terminal"
+              data-live-region="terminal"
+            >
+              <div className="wire-terminal-float-head">
+                <span>Terminal</span>
+                <button
+                  type="button"
+                  className="wire-text-btn"
+                  onClick={() => setShowTerminal(false)}
+                  title="Close terminal (Ctrl+`)"
+                >
+                  关闭
+                </button>
+              </div>
+              <TerminalPanel
+                defaultAgent={meta?.agentName || "coding"}
+                openRequest={openTerm}
+                onOpenConsumed={() => setOpenTerm(null)}
+              />
+            </aside>
           )}
         </div>
-      </div>
+      )}
+
+      <BottomInfoBar
+        termLines={termLines}
+        bgTasks={bgTasks}
+        meta={draftMeta}
+        activeAgent={activeAgent}
+        agentBusy={agentBusy}
+        agents={agents}
+      />
     </div>
   );
 }
