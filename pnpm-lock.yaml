@@ -382,9 +382,15 @@ importers:
       '@little-house-studio/coding-agent':
         specifier: workspace:*
         version: link:../agent/coding-agent
+      '@little-house-studio/context':
+        specifier: workspace:*
+        version: link:../core/context
       '@little-house-studio/terminal-engine':
         specifier: workspace:*
         version: link:../terminal-engine
+      '@little-house-studio/tools':
+        specifier: workspace:*
+        version: link:../core/tools
       '@little-house-studio/types':
         specifier: workspace:*
         version: link:../core/types

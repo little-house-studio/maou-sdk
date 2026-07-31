@@ -53,6 +53,15 @@ pnpm --filter @little-house-studio/webui exec tsx src/server/cli.ts
 | `POST /api/chat` | NDJSON StreamEvent |
 | `POST /api/chat/abort` | 中断 |
 | `GET /api/meta` | session / model / cwd / agentName |
+| `GET/POST /api/sessions` | 列出会话 / 新建 |
+| `POST /api/sessions/switch` | 切换会话并加载历史 |
+| `POST /api/sessions/clear` · `delete` · `rename` | 清空 / 删除 / 重命名 |
+| `GET /api/sessions/active/export` · `stats` · `messages` | 导出 / 用量 / 历史 |
+| `POST /api/model` | 切换 provider/model |
+| `GET /api/models` | 列表 |
+| `GET/POST /api/approval` | 审批模式 normal\|auto\|yolo |
+| `GET /api/approvals/pending` · `POST /api/approvals/:id` | 终端审批 |
+| `POST /api/command` | slash 等价 |
 | `GET /api/fs/md-tree` | 项目内 Markdown 文件树 |
 | `GET /api/fs/file?path=` | 读 `.md` |
 | `PUT /api/fs/file` | 写 `.md` |

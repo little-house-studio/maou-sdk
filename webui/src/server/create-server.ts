@@ -55,6 +55,7 @@ function resolveStaticDir(explicit?: string): string | null {
 }
 
 export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
+  // MVP security: loopback-only by default (DESIGN.md)
   const host = opts.host ?? "127.0.0.1";
   const port = opts.port ?? 8787;
   const agentName = opts.agentName ?? "coding";
@@ -76,9 +77,12 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
   });
 
   app.get("/api/meta", (_req, res) => {
+    const meta = hub.getMeta();
     res.json({
-      ...hub.getMeta(),
+      ...meta,
       agentName: hub.agentName || agentName,
+      // 启动恢复：附带活动会话历史，供前端首屏 hydrate
+      messages: hub.loadSessionMessages(meta.sessionId),
     });
   });
 
@@ -91,6 +95,362 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     }
     hub.setModel(provider, model);
     res.json({ ok: true, ...hub.getMeta() });
+  });
+
+  app.get("/api/models", (req, res) => {
+    const provider = String(req.query.provider ?? "");
+    const meta = hub.getMeta();
+    res.json({
+      ok: true,
+      ...meta,
+      providers: hub.listProviders(),
+      models: hub.listModels(provider || undefined),
+    });
+  });
+
+  // ── Sessions（项目 .maou/sessions，与 CLI coding 同源 SessionStore）──
+  app.get("/api/sessions", (_req, res) => {
+    try {
+      res.json({
+        ok: true,
+        sessions: hub.listSessions(),
+        activeSessionId: hub.getMeta().sessionId,
+      });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.post("/api/sessions", (req, res) => {
+    try {
+      const title =
+        req.body?.title != null ? String(req.body.title) : undefined;
+      const { sessionId } = hub.newSession(title);
+      res.json({
+        ok: true,
+        ...hub.getMeta(),
+        sessionId,
+        sessions: hub.listSessions(),
+        messages: hub.loadSessionMessages(sessionId),
+      });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.post("/api/sessions/switch", (req, res) => {
+    const id = String(req.body?.id ?? req.body?.sessionId ?? "").trim();
+    if (!id) {
+      res.status(400).json({ ok: false, error: "id required" });
+      return;
+    }
+    try {
+      const { sessionId } = hub.switchSession(id);
+      res.json({
+        ok: true,
+        ...hub.getMeta(),
+        sessionId,
+        messages: hub.loadSessionMessages(sessionId),
+      });
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.post("/api/sessions/clear", (req, res) => {
+    try {
+      const id =
+        req.body?.id != null ? String(req.body.id) : undefined;
+      const { sessionId } = hub.clearSessionMessages(id);
+      res.json({
+        ok: true,
+        ...hub.getMeta(),
+        sessionId,
+        messages: hub.loadSessionMessages(sessionId),
+        sessions: hub.listSessions(),
+      });
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.post("/api/sessions/rename", (req, res) => {
+    const id = String(req.body?.id ?? req.body?.sessionId ?? "").trim();
+    const title = String(req.body?.title ?? "").trim();
+    if (!id || !title) {
+      res.status(400).json({ ok: false, error: "id and title required" });
+      return;
+    }
+    try {
+      const r = hub.renameSession(id, title);
+      res.json({
+        ok: true,
+        ...r,
+        sessions: hub.listSessions(),
+        ...hub.getMeta(),
+      });
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/sessions/active/export", (_req, res) => {
+    try {
+      const text = hub.exportTranscript();
+      res.type("text/plain; charset=utf-8").send(text);
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.post("/api/sessions/delete", (req, res) => {
+    const id = String(req.body?.id ?? req.body?.sessionId ?? "").trim();
+    if (!id) {
+      res.status(400).json({ ok: false, error: "id required" });
+      return;
+    }
+    try {
+      const r = hub.deleteSession(id);
+      let sessionId = r.sessionId;
+      let messages = hub.loadSessionMessages(sessionId);
+      // 删掉当前会话后自动开一个新的，避免空 active
+      if (!sessionId) {
+        const n = hub.newSession();
+        sessionId = n.sessionId;
+        messages = [];
+      }
+      res.json({
+        ok: true,
+        deleted: r.deleted,
+        ...hub.getMeta(),
+        sessionId,
+        messages,
+        sessions: hub.listSessions(),
+      });
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/sessions/active/messages", (_req, res) => {
+    try {
+      res.json({
+        ok: true,
+        sessionId: hub.getMeta().sessionId,
+        messages: hub.loadSessionMessages(),
+      });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/sessions/active/stats", (_req, res) => {
+    try {
+      const stats = hub.getSessionStats();
+      res.json({
+        ok: true,
+        sessionId: hub.getMeta().sessionId,
+        stats,
+        text: hub.getSessionStatsText(),
+      });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  // ── Approval mode + pending terminal approvals ──
+  app.get("/api/approval", (_req, res) => {
+    res.json({
+      ok: true,
+      mode: hub.getApprovalMode(),
+      pending: hub.listPendingApprovals(),
+    });
+  });
+
+  app.post("/api/approval", (req, res) => {
+    const mode = String(req.body?.mode ?? "").trim();
+    if (!["normal", "auto", "yolo"].includes(mode)) {
+      res.status(400).json({
+        ok: false,
+        error: "mode must be normal|auto|yolo",
+      });
+      return;
+    }
+    const next = hub.setApprovalMode(mode);
+    res.json({ ok: true, mode: next, ...hub.getMeta() });
+  });
+
+  app.get("/api/approvals/pending", (_req, res) => {
+    res.json({ ok: true, pending: hub.listPendingApprovals() });
+  });
+
+  app.post("/api/approvals/:id", (req, res) => {
+    const id = req.params.id;
+    const choice = String(req.body?.choice ?? "deny") as
+      | "once"
+      | "always"
+      | "deny"
+      | "blacklist";
+    if (!["once", "always", "deny", "blacklist"].includes(choice)) {
+      res.status(400).json({ ok: false, error: "invalid choice" });
+      return;
+    }
+    const ok = hub.answerApproval(id, choice);
+    if (!ok) {
+      res.status(404).json({ ok: false, error: "approval not found" });
+      return;
+    }
+    res.json({ ok: true, pending: hub.listPendingApprovals() });
+  });
+
+  /** 核心 slash 等价：new / stop / model / help / sessions 由客户端分流；此处提供统一入口 */
+  app.post("/api/command", (req, res) => {
+    const id = String(req.body?.id ?? req.body?.command ?? "").trim();
+    const args = (req.body?.args ?? {}) as Record<string, unknown>;
+    try {
+      switch (id) {
+        case "new":
+        case "new_session": {
+          const { sessionId } = hub.newSession(
+            args.title != null ? String(args.title) : undefined,
+          );
+          res.json({
+            ok: true,
+            command: id,
+            ...hub.getMeta(),
+            sessionId,
+            messages: [],
+          });
+          return;
+        }
+        case "stop":
+        case "abort": {
+          hub.abortRun();
+          res.json({ ok: true, command: id });
+          return;
+        }
+        case "model": {
+          const provider = String(args.provider ?? "");
+          const model = String(args.model ?? "");
+          if (provider && model) hub.setModel(provider, model);
+          res.json({ ok: true, command: id, ...hub.getMeta() });
+          return;
+        }
+        case "approval": {
+          const mode = String(args.mode ?? "");
+          if (mode) hub.setApprovalMode(mode);
+          res.json({
+            ok: true,
+            command: id,
+            mode: hub.getApprovalMode(),
+            ...hub.getMeta(),
+          });
+          return;
+        }
+        case "help": {
+          res.json({
+            ok: true,
+            command: id,
+            help: [
+              "/new — 新会话",
+              "/clear — 清空会话消息",
+              "/stop — 停止生成（并清空排队）",
+              "/model <provider> <model> — 切换模型",
+              "/sessions [id] — 列表或切换会话",
+              "/approval normal|auto|yolo — 终端审批",
+              "/export — 复制 transcript",
+              "/usage · /cost · /analyze — 会话用量 / 诊断",
+              "/compact · /context · /init · /goal — 经 chat 走 Runtime",
+              "/help — 本帮助",
+            ],
+          });
+          return;
+        }
+        case "clear": {
+          try {
+            const { sessionId } = hub.clearSessionMessages();
+            res.json({
+              ok: true,
+              command: id,
+              ...hub.getMeta(),
+              sessionId,
+              messages: [],
+              sessions: hub.listSessions(),
+            });
+          } catch {
+            res.json({ ok: true, command: id, clientOnly: true });
+          }
+          return;
+        }
+        case "usage":
+        case "cost": {
+          res.json({
+            ok: true,
+            command: id,
+            text: hub.getSessionStatsText(),
+            stats: hub.getSessionStats(),
+          });
+          return;
+        }
+        case "analyze": {
+          res.json({
+            ok: true,
+            command: id,
+            text: hub.analyzeSession(),
+            stats: hub.getSessionStats(),
+          });
+          return;
+        }
+        default:
+          res.status(400).json({
+            ok: false,
+            error: `unknown local command: ${id} (try send as chat slash for Runtime)`,
+            supported: [
+              "new",
+              "stop",
+              "model",
+              "approval",
+              "help",
+              "clear",
+              "usage",
+              "cost",
+              "analyze",
+            ],
+          });
+      }
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
   });
 
   app.post("/api/chat/abort", (_req, res) => {
@@ -108,13 +468,26 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
+    // Client disconnect / fetch abort must stop Runtime (CLI cancel stack parity)
+    const onClientGone = () => {
+      if (!res.writableEnded) {
+        hub.abortRun();
+      }
+    };
+    req.on("close", onClientGone);
+    res.on("close", onClientGone);
     const write = (obj: unknown) => {
-      res.write(`${JSON.stringify(obj)}\n`);
+      if (res.writableEnded) return;
+      try {
+        res.write(`${JSON.stringify(obj)}\n`);
+      } catch {
+        hub.abortRun();
+      }
     };
     try {
       for await (const ev of hub.runChat(message)) {
+        if (res.writableEnded || req.aborted) break;
         write(ev);
-        if (res.writableEnded) break;
       }
     } catch (e) {
       write({
@@ -122,6 +495,8 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
         message: e instanceof Error ? e.message : String(e),
       });
     } finally {
+      req.off("close", onClientGone);
+      res.off("close", onClientGone);
       if (!res.writableEnded) res.end();
     }
   });
@@ -303,6 +678,7 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     close() {
       return new Promise((resolve) => {
         hub.abortRun();
+        hub.cancelAllApprovals("server close");
         copilot.abortRun();
         wssAgent.close();
         http.close(() => resolve());

@@ -36,6 +36,8 @@ export function TerminalPanel({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const activeRef = useRef<{ id: string; agent: string } | null>(null);
+  activeRef.current = active;
 
   const refreshList = useCallback(async () => {
     try {
@@ -62,15 +64,16 @@ export function TerminalPanel({
     if (!host) return;
     const term = new Terminal({
       cursorBlink: true,
-      fontSize: 13,
+      fontSize: 12,
       fontFamily: '"SF Mono", Menlo, Consolas, monospace',
       theme: {
         background: "#000000",
         foreground: "#e8e6e0",
-        cursor: "#c7ff20",
-        selectionBackground: "#3a3a20",
+        cursor: "#10a37f",
+        selectionBackground: "#2a2a2e",
       },
       convertEol: true,
+      allowProposedApi: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -78,9 +81,7 @@ export function TerminalPanel({
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
-    term.writeln(
-      "\x1b[90m[webui] 选择左侧 Agent 终端，或点击聊天里的 use_terminal 打开\x1b[0m",
-    );
+    // Keep buffer quiet until attach; CSS overlay explains idle state
 
     const onResize = () => {
       try {
@@ -108,75 +109,103 @@ export function TerminalPanel({
     };
   }, []);
 
-  const attach = useCallback((id: string, agent: string) => {
-    const term = termRef.current;
-    if (!term) return;
+  /**
+   * Attach to agent terminal. Re-open of the same live session is a no-op
+   * (avoids xterm reset flash when chat auto-opens on every tool_result).
+   * Pass force=true to hard-reconnect (list click / manual refresh).
+   */
+  const attach = useCallback(
+    (id: string, agent: string, opts?: { force?: boolean }) => {
+      const term = termRef.current;
+      if (!term) return;
 
-    wsRef.current?.close();
-    setActive({ id, agent });
-    setStatus("connecting…");
-    term.reset();
-    term.writeln(`\x1b[90m[webui] attach ${agent}/${id}…\x1b[0m`);
-
-    const ws = new WebSocket(agentTerminalWsUrl(id, agent));
-    wsRef.current = ws;
-
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(String(ev.data)) as {
-          type: string;
-          data?: string;
-          message?: string;
-          state?: string;
-          exitCode?: number | null;
-          command?: string;
-          description?: string;
-          code?: number | null;
-        };
-        if (msg.type === "ready") {
-          setStatus(msg.state || "attached");
-          if (msg.data) term.write(msg.data);
-          try {
-            fitRef.current?.fit();
-          } catch {
-            /* ignore */
-          }
-          term.focus();
-        } else if (msg.type === "data" && msg.data) {
-          term.write(msg.data);
-        } else if (msg.type === "reset" && msg.data != null) {
-          term.reset();
-          term.write(msg.data);
-        } else if (msg.type === "status") {
-          setStatus(
-            `${msg.state ?? ""}${msg.exitCode != null ? ` exit=${msg.exitCode}` : ""}`,
-          );
-        } else if (msg.type === "exit") {
-          setStatus(`exited ${msg.code ?? ""}`);
-          term.writeln(
-            `\r\n\x1b[90m[webui] process ended (${msg.code ?? "?"})\x1b[0m`,
-          );
-        } else if (msg.type === "error") {
-          setStatus("error");
-          term.writeln(
-            `\r\n\x1b[31m[webui] ${msg.message ?? "error"}\x1b[0m`,
-          );
+      const cur = activeRef.current;
+      const live =
+        wsRef.current?.readyState === WebSocket.OPEN ||
+        wsRef.current?.readyState === WebSocket.CONNECTING;
+      if (
+        !opts?.force &&
+        cur?.id === id &&
+        cur?.agent === agent &&
+        live
+      ) {
+        try {
+          fitRef.current?.fit();
+        } catch {
+          /* ignore */
         }
-      } catch {
-        /* ignore */
+        term.focus();
+        return;
       }
-    };
-    ws.onclose = () => {
-      if (wsRef.current === ws) {
-        setStatus((s) => (s.startsWith("exited") ? s : "disconnected"));
-      }
-    };
-  }, []);
 
-  // 外部 openRequest（聊天点击）
+      wsRef.current?.close();
+      setActive({ id, agent });
+      setStatus("connecting…");
+      term.reset();
+      term.writeln(`\x1b[90m[webui] attach ${agent}/${id}…\x1b[0m`);
+
+      const ws = new WebSocket(agentTerminalWsUrl(id, agent));
+      wsRef.current = ws;
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(String(ev.data)) as {
+            type: string;
+            data?: string;
+            message?: string;
+            state?: string;
+            exitCode?: number | null;
+            command?: string;
+            description?: string;
+            code?: number | null;
+          };
+          if (msg.type === "ready") {
+            setStatus(msg.state || "attached");
+            if (msg.data) term.write(msg.data);
+            try {
+              fitRef.current?.fit();
+            } catch {
+              /* ignore */
+            }
+            term.focus();
+          } else if (msg.type === "data" && msg.data) {
+            term.write(msg.data);
+          } else if (msg.type === "reset" && msg.data != null) {
+            term.reset();
+            term.write(msg.data);
+          } else if (msg.type === "status") {
+            setStatus(
+              `${msg.state ?? ""}${msg.exitCode != null ? ` exit=${msg.exitCode}` : ""}`,
+            );
+          } else if (msg.type === "exit") {
+            setStatus(`exited ${msg.code ?? ""}`);
+            term.writeln(
+              `\r\n\x1b[90m[webui] process ended (${msg.code ?? "?"})\x1b[0m`,
+            );
+          } else if (msg.type === "error") {
+            setStatus("error");
+            term.writeln(
+              `\r\n\x1b[31m[webui] ${msg.message ?? "error"}\x1b[0m`,
+            );
+          }
+        } catch {
+          /* ignore */
+        }
+      };
+      ws.onclose = () => {
+        if (wsRef.current === ws) {
+          setStatus((s) => (s.startsWith("exited") ? s : "disconnected"));
+        }
+      };
+    },
+    [],
+  );
+
+  // 外部 openRequest（聊天点击 / tool_result 自动打开）
   useEffect(() => {
     if (!openRequest?.id) return;
     const agent = openRequest.agentName || defaultAgent;
+    // no force: keep live stream if already attached to this id
     attach(openRequest.id, agent);
     onOpenConsumed?.();
     void refreshList();
@@ -191,11 +220,10 @@ export function TerminalPanel({
   return (
     <div className="panel term-panel">
       <div className="panel-header">
-        Agent terminals
+        <span>Agent terminals</span>
         {active ? (
-          <span className="term-active-label">
-            {" "}
-            · {active.id}
+          <span className="term-active-label" title={status || active.id}>
+            {active.id}
             {status ? ` · ${status}` : ""}
           </span>
         ) : null}
@@ -203,18 +231,26 @@ export function TerminalPanel({
       <div className="term-body">
         <div className="term-list">
           <div className="term-list-head">
-            <button type="button" className="linkish" onClick={() => void refreshList()}>
+            <button
+              type="button"
+              className="linkish"
+              onClick={() => void refreshList()}
+            >
               刷新
             </button>
             {active ? (
-              <button type="button" className="linkish danger" onClick={() => void onStop()}>
+              <button
+                type="button"
+                className="linkish danger"
+                onClick={() => void onStop()}
+              >
                 停止
               </button>
             ) : null}
           </div>
           {list.length === 0 ? (
             <div className="term-empty">
-              暂无会话。Agent 调用 use_terminal 后会出现在这里。
+              暂无会话。Agent 调用 <code>use_terminal</code> 后会出现在此。
             </div>
           ) : (
             list.map((t) => (
@@ -226,22 +262,27 @@ export function TerminalPanel({
                   (active?.id === t.id ? " active" : "") +
                   (t.exitCode != null || t.state === "exited" ? " done" : "")
                 }
-                onClick={() => attach(t.id, t.agentName || defaultAgent)}
-                title={t.command}
+                onClick={() =>
+                  attach(t.id, t.agentName || defaultAgent, { force: true })
+                }
+                title={t.command || t.description}
               >
                 <div className="term-item-id">{t.id}</div>
                 <div className="term-item-desc">
-                  {t.description || t.command || t.state}
+                  {t.description || t.command || t.state || "terminal"}
                 </div>
                 <div className="term-item-meta">
-                  {t.state}
+                  {t.state || "—"}
                   {t.exitCode != null ? ` · ${t.exitCode}` : ""}
                 </div>
               </button>
             ))
           )}
         </div>
-        <div className="term-wrap" ref={hostRef} />
+        <div
+          className={`term-wrap${active ? "" : " is-idle"}`}
+          ref={hostRef}
+        />
       </div>
     </div>
   );

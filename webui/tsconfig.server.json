@@ -12,5 +12,6 @@
     "sourceMap": true,
     "skipLibCheck": true
   },
-  "include": ["src/server/**/*"]
+  "include": ["src/server/**/*"],
+  "exclude": ["src/server/**/*.test.ts", "src/server/**/*.test.js"]
 }

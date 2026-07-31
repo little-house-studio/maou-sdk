@@ -17,5 +17,11 @@ export default defineConfig({
   build: {
     outDir: resolve(__dirname, "dist/client"),
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, "src/client/index.html"),
+        draft: resolve(__dirname, "src/client/draft.html"),
+      },
+    },
   },
 });

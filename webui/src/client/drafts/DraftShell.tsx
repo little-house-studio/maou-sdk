@@ -1,0 +1,362 @@
+import { useCallback, useMemo, useState } from "react";
+import {
+  applyApprovalDecision,
+  applyLocalSend,
+  applyNewSession,
+  hydrateFromScenario,
+  messagesForSession,
+  pickSessionForAgent,
+  sessionsForAgent,
+} from "./fixtures";
+import { ResizeHandle } from "./layout/ResizeHandle";
+import { WireTopbar } from "./layout/WireTopbar";
+import { AgentList } from "./panels/AgentList";
+import { SessionList } from "./panels/SessionList";
+import { BackgroundTasks } from "./panels/BackgroundTasks";
+import { ContextPanel } from "./panels/ContextPanel";
+import { FilesRail } from "./panels/FilesRail";
+import {
+  BottomInfoBar,
+  type BottomTabId,
+} from "./panels/BottomInfoBar";
+import type { DraftShellProps, ScenarioId, UiMode } from "./types";
+import "./draft.css";
+
+/** frost-branch defaults: ~260px sidebar, roomier bottom chrome */
+const LEFT_DEFAULT = 260;
+const LEFT_MIN = 200;
+const LEFT_MAX = 360;
+const AGENT_H_DEFAULT = 38; // percent of left column
+const RAIL_DEFAULT = 280;
+const RAIL_MIN = 200;
+const RAIL_MAX = 440;
+const BOTTOM_DEFAULT = 148;
+const BOTTOM_MIN = 88;
+const BOTTOM_MAX = 360;
+/** Collapsed status strip — drag below this tucks the panel away */
+const BOTTOM_COLLAPSED = 36;
+const BOTTOM_COLLAPSE_THRESHOLD = 56;
+
+/**
+ * Wireframe shell (see product sketch):
+ *  top:  界面模式 | 功能按键 | 设置与 token | 文件 / diff
+ *  left: agent 列表 / 会话列表
+ *  mid:  后台列表 / 上下文 / 输入
+ *  right: 文件列表
+ *  bottom: 终端与 agent 信息栏
+ */
+export function DraftShell({ initialScenarioId = "normal" }: DraftShellProps) {
+  const [mode, setMode] = useState<UiMode>("chat");
+  const [leftW, setLeftW] = useState(LEFT_DEFAULT);
+  const [agentPct, setAgentPct] = useState(AGENT_H_DEFAULT);
+  const [railW, setRailW] = useState(RAIL_DEFAULT);
+  const [bottomH, setBottomH] = useState(BOTTOM_DEFAULT);
+  const [bottomExpandedH, setBottomExpandedH] = useState(BOTTOM_DEFAULT);
+  const [bottomCollapsed, setBottomCollapsed] = useState(false);
+  const [bottomTab, setBottomTab] = useState<BottomTabId>("terminal");
+  const [draftInput, setDraftInput] = useState("");
+  const [state, setState] = useState(() =>
+    hydrateFromScenario(initialScenarioId),
+  );
+
+  const messages = useMemo(
+    () => messagesForSession(state.messagesBySession, state.activeSessionId),
+    [state.messagesBySession, state.activeSessionId],
+  );
+
+  const activeAgent =
+    state.agents.find((a) => a.id === state.activeAgentId) ?? null;
+
+  /** Session list is scoped to the currently selected agent */
+  const agentSessions = useMemo(
+    () =>
+      sessionsForAgent(
+        state.sessions,
+        activeAgent?.name ?? state.meta.agentName,
+      ),
+    [state.sessions, activeAgent?.name, state.meta.agentName],
+  );
+
+  const onScenarioChange = useCallback((id: ScenarioId) => {
+    setState(hydrateFromScenario(id));
+    setDraftInput("");
+  }, []);
+
+  const onNewSession = useCallback(() => {
+    setState((prev) => applyNewSession(prev));
+  }, []);
+
+  const onDeleteSession = useCallback((id: string) => {
+    setState((prev) => {
+      const sessions = prev.sessions.filter((s) => s.id !== id);
+      const { [id]: _r, ...rest } = prev.messagesBySession;
+      const agentName =
+        prev.agents.find((a) => a.id === prev.activeAgentId)?.name ??
+        prev.meta.agentName;
+      let activeSessionId = prev.activeSessionId;
+      if (activeSessionId === id) {
+        activeSessionId = pickSessionForAgent(sessions, agentName, "");
+      }
+      return { ...prev, sessions, messagesBySession: rest, activeSessionId };
+    });
+  }, []);
+
+  const onSend = useCallback(() => {
+    setState((prev) => applyLocalSend(prev, draftInput));
+    setDraftInput("");
+  }, [draftInput]);
+
+  const onRetryLast = useCallback(() => {
+    const msgs = messagesForSession(
+      state.messagesBySession,
+      state.activeSessionId,
+    );
+    let lastUser: string | null = null;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i]!.role === "user") {
+        lastUser = msgs[i]!.body;
+        break;
+      }
+    }
+    if (lastUser) {
+      setState((prev) => applyLocalSend(prev, lastUser!));
+    }
+  }, [state.messagesBySession, state.activeSessionId]);
+
+  const onCopyTranscript = useCallback(() => {
+    const msgs = messagesForSession(
+      state.messagesBySession,
+      state.activeSessionId,
+    );
+    const text = msgs
+      .map((m) => `[${m.role}] ${m.body}`)
+      .join("\n\n");
+    void navigator.clipboard?.writeText(text || "(空会话)");
+    setState((prev) => ({
+      ...prev,
+      statusHint: text ? "已复制 transcript" : "会话为空",
+    }));
+  }, [state.messagesBySession, state.activeSessionId]);
+
+  /** Switch agent and bind session list to that agent's sessions */
+  const selectAgent = useCallback((agentId: string) => {
+    setState((prev) => {
+      const hit = prev.agents.find((a) => a.id === agentId);
+      if (!hit) return prev;
+      return {
+        ...prev,
+        activeAgentId: hit.id,
+        activeSessionId: pickSessionForAgent(
+          prev.sessions,
+          hit.name,
+          prev.activeSessionId,
+        ),
+        meta: {
+          ...prev.meta,
+          agentName: hit.name,
+          projectLabel: hit.projectName || prev.meta.projectLabel,
+          projectPath: hit.projectPath || prev.meta.projectPath,
+        },
+      };
+    });
+  }, []);
+
+  const onAgentChange = selectAgent;
+
+  const onApprovalModeChange = useCallback((mode: string) => {
+    setState((prev) => ({
+      ...prev,
+      meta: { ...prev.meta, sandboxMode: mode },
+    }));
+  }, []);
+
+  const onApprovalDecision = useCallback(
+    (d: "once" | "always" | "deny" | "blacklist") => {
+      setState((prev) => applyApprovalDecision(prev, d));
+    },
+    [],
+  );
+
+  /** Vertical split inside left column: drag changes agent list % height */
+  const onAgentSplitDrag = useCallback(
+    (clientY: number, rect: DOMRect) => {
+      const y = clientY - rect.top;
+      const pct = Math.min(75, Math.max(20, (y / rect.height) * 100));
+      setAgentPct(pct);
+    },
+    [],
+  );
+
+  return (
+    <div className="wire-shell draft-shell">
+      <WireTopbar
+        mode={mode}
+        onModeChange={setMode}
+        meta={state.meta}
+        usageLabel={state.usageLabel}
+        showFiles={state.showFiles}
+        onToggleFiles={() =>
+          setState((p) => ({ ...p, showFiles: !p.showFiles }))
+        }
+        scenarioId={state.scenarioId}
+        onScenarioChange={onScenarioChange}
+      />
+
+      <div className="wire-mid">
+        <div className="wire-left" style={{ width: leftW }}>
+          <div
+            className="wire-left-agents"
+            style={{ flex: `0 0 ${agentPct}%` }}
+          >
+            <AgentList
+              agents={state.agents}
+              activeId={state.activeAgentId}
+              onSelect={selectAgent}
+            />
+          </div>
+          <div
+            className="wire-v-split"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="拖动调整 agent / 会话 高度"
+            onPointerDown={(e) => {
+              const col = (e.currentTarget.parentElement as HTMLElement)!;
+              const rect = col.getBoundingClientRect();
+              const move = (ev: PointerEvent) =>
+                onAgentSplitDrag(ev.clientY, rect);
+              const up = () => {
+                window.removeEventListener("pointermove", move);
+                window.removeEventListener("pointerup", up);
+                document.body.style.cursor = "";
+                document.body.style.userSelect = "";
+              };
+              document.body.style.cursor = "row-resize";
+              document.body.style.userSelect = "none";
+              window.addEventListener("pointermove", move);
+              window.addEventListener("pointerup", up);
+            }}
+          />
+          <div className="wire-left-sessions">
+            <SessionList
+              sessions={agentSessions}
+              activeId={state.activeSessionId}
+              agentLabel={activeAgent?.name ?? state.meta.agentName}
+              busy={state.agentBusy}
+              onSelect={(id) =>
+                setState((p) => ({ ...p, activeSessionId: id }))
+              }
+              onNew={onNewSession}
+              onDelete={onDeleteSession}
+            />
+          </div>
+        </div>
+
+        <ResizeHandle
+          edge="right"
+          size={leftW}
+          min={LEFT_MIN}
+          max={LEFT_MAX}
+          onResize={setLeftW}
+          label="拖动调整左侧栏宽度"
+        />
+
+        <div className="wire-center">
+          <ContextPanel
+            messages={messages}
+            agentBusy={state.agentBusy}
+            pendingApproval={state.pendingApproval}
+            hasActiveSession={Boolean(state.activeSessionId)}
+            draftInput={draftInput}
+            meta={state.meta}
+            statusHint={state.statusHint}
+            usageLabel={state.usageLabel}
+            agents={state.agents}
+            bgTasks={state.bgTasks}
+            onApprovalDecision={onApprovalDecision}
+            onDraftInputChange={setDraftInput}
+            onSend={onSend}
+            onRetryLast={onRetryLast}
+            onCopyTranscript={onCopyTranscript}
+            onAgentChange={onAgentChange}
+            onApprovalModeChange={onApprovalModeChange}
+          />
+        </div>
+
+        {state.showFiles && (
+          <>
+            <ResizeHandle
+              edge="left"
+              size={railW}
+              min={RAIL_MIN}
+              max={RAIL_MAX}
+              onResize={setRailW}
+              label="拖动调整文件栏宽度"
+            />
+            <div className="wire-right" style={{ width: railW }}>
+              <FilesRail paths={state.fileTree} rootLabel="文件" />
+            </div>
+          </>
+        )}
+      </div>
+
+      <div
+        className={`wire-h-split${bottomCollapsed ? " is-collapsed-edge" : ""}`}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="拖动调整底栏高度（向下可收纳）"
+        onPointerDown={(e) => {
+          e.preventDefault();
+          const startY = e.clientY;
+          const startH = bottomCollapsed ? BOTTOM_COLLAPSED : bottomH;
+          const move = (ev: PointerEvent) => {
+            const dy = startY - ev.clientY;
+            const raw = startH + dy;
+            if (raw < BOTTOM_COLLAPSE_THRESHOLD) {
+              setBottomCollapsed(true);
+              setBottomH(BOTTOM_COLLAPSED);
+              return;
+            }
+            const next = Math.min(
+              BOTTOM_MAX,
+              Math.max(BOTTOM_MIN, raw),
+            );
+            setBottomCollapsed(false);
+            setBottomH(next);
+            setBottomExpandedH(next);
+          };
+          const up = () => {
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+          };
+          document.body.style.cursor = "row-resize";
+          document.body.style.userSelect = "none";
+          window.addEventListener("pointermove", move);
+          window.addEventListener("pointerup", up);
+        }}
+      />
+
+      <BottomInfoBar
+        termLines={state.termLines}
+        bgTasks={state.bgTasks}
+        meta={state.meta}
+        activeAgent={activeAgent}
+        agentBusy={state.agentBusy}
+        height={bottomCollapsed ? BOTTOM_COLLAPSED : bottomH}
+        collapsed={bottomCollapsed}
+        activeTab={bottomTab}
+        onTabChange={setBottomTab}
+        onExpand={() => {
+          setBottomCollapsed(false);
+          setBottomH(bottomExpandedH);
+        }}
+        onCollapse={() => {
+          setBottomExpandedH(bottomH);
+          setBottomCollapsed(true);
+          setBottomH(BOTTOM_COLLAPSED);
+        }}
+      />
+    </div>
+  );
+}

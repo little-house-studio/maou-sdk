@@ -1,31 +1,83 @@
+/**
+ * ChatPanel —— CLI 工作流对齐 + Codex-desktop 布局
+ */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { abortChat, streamChat, type StreamEvent } from "./api";
+import { createPortal } from "react-dom";
+import {
+  abortChat,
+  answerApproval,
+  clearSession,
+  createSession,
+  deleteSession,
+  exportTranscript,
+  fetchApproval,
+  fetchMeta,
+  fetchModels,
+  fetchSessions,
+  renameSession,
+  runCommand,
+  setApprovalMode,
+  setModel,
+  streamChat,
+  switchSession,
+  type ApprovalMode,
+  type ChatHistoryLine,
+  type Meta,
+  type PendingApproval,
+  type SessionSummary,
+  type StreamEvent,
+} from "./api";
 
 export type ChatLine = {
   id: string;
-  role: "user" | "assistant" | "system" | "tool";
+  role: "user" | "assistant" | "system" | "tool" | "thinking";
   text: string;
   err?: boolean;
-  /** use_terminal 会话，可点开右侧 */
   terminalId?: string;
   agentName?: string;
+  /** 可一点重试的用户原文（error 行） */
+  retryText?: string;
 };
 
 function uid() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+/** Clipboard with textarea fallback (non-secure origins / older browsers) */
+async function copyToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("clipboard copy failed");
+    }
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
 function extractTerminalId(ev: StreamEvent): string | undefined {
-  const payload = ev.payload as { terminal_id?: string; terminalId?: string } | undefined;
+  const payload = ev.payload as
+    | { terminal_id?: string; terminalId?: string }
+    | undefined;
   if (payload?.terminal_id) return String(payload.terminal_id);
   if (payload?.terminalId) return String(payload.terminalId);
-  // tool 对象 / 结果里常见字段
-  const tool = ev.tool as { result?: { payload?: { terminal_id?: string } } } | undefined;
+  const tool = ev.tool as
+    | { result?: { payload?: { terminal_id?: string } } }
+    | undefined;
   if (tool?.result?.payload?.terminal_id) {
     return String(tool.result.payload.terminal_id);
   }
   if (typeof ev.terminal_id === "string") return ev.terminal_id;
-  // 文本兜底（use_terminal 正文常含「终端 ID: xxx」或 [terminal_id=bg_…]）
   const content = String(ev.content ?? ev.message ?? ev.result ?? "");
   const m =
     content.match(/\[?terminal_id[=:]\s*([^\s|,}\]]+)/i) ||
@@ -34,26 +86,273 @@ function extractTerminalId(ev: StreamEvent): string | undefined {
   return m?.[1];
 }
 
+function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
+  return msgs.map((m) => {
+    const role =
+      m.role === "user" || m.role === "assistant" || m.role === "system"
+        ? m.role
+        : m.role === "tool"
+          ? "tool"
+          : "assistant";
+    return {
+      id: m.id || uid(),
+      role: role as ChatLine["role"],
+      text: m.content || "",
+    };
+  });
+}
+
+const HELP_TEXT = [
+  "斜杠命令（与 CLI coding 工作流对齐）:",
+  "/new — 新会话",
+  "/clear — 清空当前会话消息（磁盘会话保留 id）",
+  "/export — 复制 transcript 到剪贴板",
+  "/stop — 停止生成",
+  "/model [provider model] — 切换模型",
+  "/sessions [id|prefix] — 列出会话，或切换（/sessions switch <id>）",
+  "/approval normal|auto|yolo — 终端审批模式",
+  "/compact — 强制压缩上下文（Runtime）",
+  "/usage · /cost · /analyze — 会话用量 / 诊断",
+  "/context — 上下文占用与压缩阈值（Runtime）",
+  "/init — 初始化项目说明（Runtime 任务注入）",
+  "/goal [任务] — 监督模式（若 Runtime 启用）",
+  "/help — 本帮助",
+  "",
+  "热键: Enter 发送（忙碌时入队） · / 补全 ↑↓ Tab · Ctrl+N 新会话 · Ctrl+M 模型 · Ctrl+. / Esc 停止 · Shift+Tab 审批 · Ctrl+Shift+C 复制 · R 重试",
+].join("\n");
+
+const SLASH_SUGGESTIONS = [
+  "new",
+  "clear",
+  "export",
+  "stop",
+  "model",
+  "sessions",
+  "approval",
+  "usage",
+  "cost",
+  "analyze",
+  "compact",
+  "context",
+  "init",
+  "goal",
+  "help",
+] as const;
+
+/** Cap pending user messages while a turn is running */
+const MAX_QUEUE = 20;
+
+/** 交给 Runtime.commandRegistry 的 slash（走 chat 流，不本地吞掉） */
+const RUNTIME_SLASH = new Set([
+  "compact",
+  "context",
+  "init",
+  "goal",
+  "agent",
+]);
+
 type Props = {
   onOpenTerminal?: (id: string, agentName?: string) => void;
   defaultAgent?: string;
+  onMetaChange?: (meta: Meta) => void;
+  /** codex = 侧栏线程 + 居中对话 + 底部 composer */
+  layout?: "default" | "codex";
+  /** 将线程列表 portal 到侧栏容器 */
+  threadRailId?: string;
+  /** Shell topbar busy chip */
+  onBusyChange?: (busy: boolean) => void;
+  /** Active session title for topbar */
+  onSessionTitleChange?: (title: string | null) => void;
 };
 
-export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
+export function ChatPanel({
+  onOpenTerminal,
+  defaultAgent = "coding",
+  onMetaChange,
+  layout = "default",
+  threadRailId,
+  onBusyChange,
+  onSessionTitleChange,
+}: Props) {
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusyState] = useState(false);
+  const setBusy = useCallback(
+    (v: boolean) => {
+      setBusyState(v);
+      onBusyChange?.(v);
+    },
+    [onBusyChange],
+  );
+  const [meta, setMeta] = useState<Meta | null>(null);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [providers, setProviders] = useState<{ id: string; name?: string }[]>(
+    [],
+  );
+  const [models, setModels] = useState<{ id: string; name?: string }[]>([]);
+  const [approval, setApproval] = useState<ApprovalMode>("yolo");
+  const [pending, setPending] = useState<PendingApproval[]>([]);
+  const [status, setStatus] = useState("");
+  const [turnUsage, setTurnUsage] = useState<{
+    in: number;
+    out: number;
+  } | null>(null);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashIdx, setSlashIdx] = useState(0);
+  const [queueLen, setQueueLen] = useState(0);
+  const [railEl, setRailEl] = useState<HTMLElement | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const modelSelectRef = useRef<HTMLSelectElement>(null);
+  const stickBottomRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
+  const busyRef = useRef(false);
+  /** Guards double-Enter before busyRef flips inside runUserMessage */
+  const inFlightSendRef = useRef(false);
+  const queueRef = useRef<string[]>([]);
+  const lastUserRef = useRef("");
+  /** Incremented on stop / session switch to drop stale stream finally + queue drain */
+  const runGenRef = useRef(0);
+
+  const focusComposer = useCallback(() => {
+    // Defer so layout/portal settle after session switch
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  }, []);
+
+  // Portal target for thread list (sidebar mounts independently)
+  useEffect(() => {
+    if (!threadRailId) {
+      setRailEl(null);
+      return;
+    }
+    const pick = () => document.getElementById(threadRailId);
+    setRailEl(pick());
+    const t = window.setInterval(() => {
+      const el = pick();
+      setRailEl((prev) => (prev === el ? prev : el));
+    }, 200);
+    return () => clearInterval(t);
+  }, [threadRailId]);
+
+  const pushMeta = useCallback(
+    (m: Meta) => {
+      setMeta(m);
+      onMetaChange?.(m);
+    },
+    [onMetaChange],
+  );
+
+  const refreshSessions = useCallback(async () => {
+    const s = await fetchSessions();
+    setSessions(s.sessions);
+    return s;
+  }, []);
+
+  // Push active session title to shell topbar
+  useEffect(() => {
+    if (!onSessionTitleChange) return;
+    const id = meta?.sessionId;
+    if (!id) {
+      onSessionTitleChange(null);
+      return;
+    }
+    const hit = sessions.find((x) => x.id === id);
+    onSessionTitleChange(hit?.title || null);
+  }, [meta?.sessionId, sessions, onSessionTitleChange]);
+
+  const refreshApproval = useCallback(async () => {
+    const a = await fetchApproval();
+    setApproval(a.mode);
+    setPending(a.pending);
+    return a;
+  }, []);
+
+  const bootstrap = useCallback(async () => {
+    try {
+      const m = await fetchMeta();
+      pushMeta(m);
+      setApproval(
+        (m.approvalMode as ApprovalMode) ||
+          (m.sandboxMode as ApprovalMode) ||
+          "yolo",
+      );
+      // 恢复 last-session 历史（与 CLI 启动一致）
+      if (m.sessionId && Array.isArray(m.messages) && m.messages.length > 0) {
+        setLines(historyToLines(m.messages));
+        setStatus(`已恢复会话 ${m.sessionId.slice(0, 8)}…`);
+      }
+      const md = await fetchModels(m.provider || undefined);
+      setProviders(md.providers.length ? md.providers : m.providers ?? []);
+      setModels(md.models);
+      await refreshSessions();
+      await refreshApproval();
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  }, [pushMeta, refreshApproval, refreshSessions]);
+
+  useEffect(() => {
+    void bootstrap();
+  }, [bootstrap]);
+
+  // 轮询 pending 审批（normal 模式工具阻塞时）
+  useEffect(() => {
+    const t = setInterval(() => {
+      void refreshApproval().catch(() => {});
+    }, 1500);
+    return () => clearInterval(t);
+  }, [refreshApproval]);
+
+  // Only auto-scroll when user is already near the bottom (don't yank history review)
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+      stickBottomRef.current = gap < 96;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+    if (el && stickBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [lines, pending]);
 
   const append = useCallback((line: ChatLine) => {
     setLines((prev) => [...prev, line]);
   }, []);
+
+  const enqueueMessage = useCallback(
+    (text: string, note?: string) => {
+      if (queueRef.current.length >= MAX_QUEUE) {
+        setStatus(`队列已满（${MAX_QUEUE}）`);
+        append({
+          id: uid(),
+          role: "system",
+          text: `队列已满（最多 ${MAX_QUEUE} 条），请等待当前回合或 Stop`,
+          err: true,
+        });
+        return false;
+      }
+      queueRef.current.push(text);
+      setQueueLen(queueRef.current.length);
+      setStatus(note || `已排队 #${queueRef.current.length}`);
+      append({
+        id: uid(),
+        role: "system",
+        text: `… 已排队（第 ${queueRef.current.length} 条）: ${text.slice(0, 80)}${text.length > 80 ? "…" : ""}`,
+      });
+      return true;
+    },
+    [append],
+  );
 
   const patchLastAssistant = useCallback((delta: string) => {
     setLines((prev) => {
@@ -69,6 +368,20 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
     });
   }, []);
 
+  const patchLastThinking = useCallback((delta: string) => {
+    setLines((prev) => {
+      const next = [...prev];
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i]!.role === "thinking") {
+          next[i] = { ...next[i]!, text: next[i]!.text + delta };
+          return next;
+        }
+      }
+      next.push({ id: uid(), role: "thinking", text: delta });
+      return next;
+    });
+  }, []);
+
   const onEvent = useCallback(
     (ev: StreamEvent) => {
       switch (ev.type) {
@@ -76,6 +389,20 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
         case "text_delta": {
           const d = String(ev.delta ?? ev.content ?? "");
           if (d) patchLastAssistant(d);
+          break;
+        }
+        case "thinking_delta":
+        case "reasoning_delta": {
+          const d = String(ev.delta ?? ev.content ?? "");
+          if (d) patchLastThinking(d);
+          break;
+        }
+        case "thinking":
+        case "reasoning": {
+          const content = String(ev.content ?? "");
+          if (content) {
+            append({ id: uid(), role: "thinking", text: content });
+          }
           break;
         }
         case "assistant": {
@@ -103,11 +430,14 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
             parameters?: Record<string, unknown>;
           } | undefined;
           const name =
-            tool?.name ?? String(ev.name ?? (ev as { tool_name?: string }).tool_name ?? "tool");
-          const params = tool?.parameters ?? (ev.parameters as Record<string, unknown>) ?? {};
+            tool?.name ??
+            String(ev.name ?? (ev as { tool_name?: string }).tool_name ?? "tool");
+          const params =
+            tool?.parameters ?? (ev.parameters as Record<string, unknown>) ?? {};
           const desc =
-            typeof params.description === "string" ? params.description.trim() : "";
-          // 仅当显式传入 id（后台复用会话）时 tool_call 阶段就有 terminal id
+            typeof params.description === "string"
+              ? params.description.trim()
+              : "";
           const tid =
             typeof params.id === "string"
               ? params.id
@@ -115,7 +445,6 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
                 ? params.terminal_id
                 : undefined;
           const isTerm = name === "use_terminal" || name === "bash";
-          // 折叠态只展示任务简介 description；详细参数不在此行刷
           append({
             id: uid(),
             role: "tool",
@@ -131,15 +460,46 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
           );
           const ok = ev.ok !== false;
           const tid = extractTerminalId(ev);
-          // 用 terminal_id 回填：即使 name 不是 use_terminal，有 id 也可点开
+          const snippet = String(ev.content ?? ev.result ?? "").slice(0, 200);
           append({
             id: uid(),
             role: "tool",
-            text: `${ok ? "✓" : "✗"} ${name}${tid ? ` · ${tid}` : ""}`,
+            text: `${ok ? "✓" : "✗"} ${name}${tid ? ` · ${tid}` : ""}${snippet ? `\n${snippet}` : ""}`,
             err: !ok,
             terminalId: tid,
             agentName: defaultAgent,
           });
+          // DESIGN: use_terminal 会话可在右侧附着；有 id 时自动打开终端面板
+          if (tid && onOpenTerminal) {
+            onOpenTerminal(tid, defaultAgent);
+          }
+          break;
+        }
+        case "usage":
+        case "model.usage":
+        case "assistant.usage": {
+          const u = (ev.usage ?? ev) as Record<string, unknown>;
+          const inn = Number(
+            u.prompt_tokens ?? u.input_tokens ?? u.input ?? 0,
+          );
+          const out = Number(
+            u.completion_tokens ?? u.output_tokens ?? u.output ?? 0,
+          );
+          if (inn || out) {
+            setTurnUsage((prev) => ({
+              in: (prev?.in ?? 0) + (Number.isFinite(inn) ? inn : 0),
+              out: (prev?.out ?? 0) + (Number.isFinite(out) ? out : 0),
+            }));
+          }
+          break;
+        }
+        case "done": {
+          const u = ev.usage as Record<string, unknown> | undefined;
+          if (u) {
+            const inn = Number(u.prompt_tokens ?? u.input ?? 0);
+            const out = Number(u.completion_tokens ?? u.output ?? 0);
+            if (inn || out) setTurnUsage({ in: inn, out });
+          }
           break;
         }
         case "error":
@@ -148,17 +508,55 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
             role: "system",
             text: String(ev.message ?? ev.error ?? "error"),
             err: true,
+            retryText: lastUserRef.current || undefined,
           });
           break;
+        case "model_switched": {
+          // Runtime switchPreset mid-run (CLI TUI status bar parity)
+          const model = String(ev.model ?? "");
+          const prev = String(
+            (ev as { previousModel?: string }).previousModel ?? "",
+          );
+          if (model) {
+            append({
+              id: uid(),
+              role: "system",
+              text: `模型切换: ${prev || "?"} → ${model}`,
+            });
+            setMeta((m) => {
+              if (!m) return m;
+              const next = { ...m, model };
+              onMetaChange?.(next);
+              return next;
+            });
+          }
+          break;
+        }
+        case "system":
+        case "system_notice":
+        case "session_inject": {
+          const msg = String(ev.content ?? ev.message ?? "");
+          if (msg) append({ id: uid(), role: "system", text: msg });
+          break;
+        }
         case "log": {
-          const msg = String(ev.message ?? "");
-          if (msg && (ev.level === "error" || ev.level === "warning")) {
+          const msg = String(ev.message ?? ev.content ?? "");
+          if (!msg) break;
+          const level = String(ev.level ?? "info");
+          if (level === "error" || level === "warning") {
             append({
               id: uid(),
               role: "system",
               text: msg,
-              err: ev.level === "error",
+              err: level === "error",
             });
+          } else if (
+            // Surface context compress / model switch (CLI shows these)
+            /压缩|归档|模型切换|compact|archive|summaryStage|archiveStage/i.test(
+              msg,
+            )
+          ) {
+            append({ id: uid(), role: "system", text: msg });
           }
           break;
         }
@@ -166,24 +564,205 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
           break;
       }
     },
-    [append, patchLastAssistant, defaultAgent],
+    [
+      append,
+      patchLastAssistant,
+      patchLastThinking,
+      defaultAgent,
+      onOpenTerminal,
+      onMetaChange,
+    ],
   );
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || busy) return;
-    setInput("");
-    append({ id: uid(), role: "user", text });
-    append({ id: uid(), role: "assistant", text: "" });
-    setBusy(true);
-    const ac = new AbortController();
-    abortRef.current = ac;
-    try {
-      for await (const ev of streamChat(text, ac.signal)) {
-        onEvent(ev);
+  const handleSlash = async (raw: string): Promise<"local" | "runtime" | "none"> => {
+    if (!raw.startsWith("/")) return "none";
+    const body = raw.slice(1).trim();
+    const [cmd, ...rest] = body.split(/\s+/);
+    const c = (cmd || "").toLowerCase();
+
+    // Runtime-handled slash: stream as user message so Agent commandRegistry runs
+    if (
+      RUNTIME_SLASH.has(c) &&
+      c !== "stop" // stop handled locally below
+    ) {
+      return "runtime";
+    }
+
+    if (c === "help" || c === "?") {
+      append({ id: uid(), role: "system", text: HELP_TEXT });
+      return "local";
+    }
+    if (c === "clear") {
+      await stopRun(false);
+      try {
+        const r = await clearSession();
+        pushMeta(r.meta);
+        setLines([]);
+        setTurnUsage(null);
+        await refreshSessions();
+        append({
+          id: uid(),
+          role: "system",
+          text: `✓ 已清空会话消息 ${r.sessionId}`,
+        });
+      } catch {
+        setLines([]);
+        setTurnUsage(null);
+        append({
+          id: uid(),
+          role: "system",
+          text: "✓ 已清空视图（无活动会话）",
+        });
       }
-    } catch (e) {
-      if ((e as Error)?.name !== "AbortError") {
+      return "local";
+    }
+    if (c === "new") {
+      await stopRun(false);
+      const r = await createSession();
+      pushMeta(r.meta);
+      setLines([]);
+      setTurnUsage(null);
+      await refreshSessions();
+      setStatus(`新会话 ${r.sessionId.slice(0, 8)}…`);
+      append({ id: uid(), role: "system", text: `✓ 新会话 ${r.sessionId}` });
+      return "local";
+    }
+    if (c === "stop" || c === "abort") {
+      abortRef.current?.abort();
+      try {
+        await abortChat();
+      } catch {
+        /* ignore */
+      }
+      try {
+        await runCommand("stop");
+      } catch {
+        /* ignore */
+      }
+      queueRef.current = [];
+      setQueueLen(0);
+      busyRef.current = false;
+      setBusy(false);
+      append({ id: uid(), role: "system", text: "■ 已停止（队列已清空）" });
+      return "local";
+    }
+    if (c === "sessions") {
+      const rawId =
+        rest[0] === "switch" || rest[0] === "open" ? rest[1] : rest[0];
+      if (rawId) {
+        await stopRun(false);
+        const s = await refreshSessions();
+        const q = rawId.toLowerCase();
+        const hit =
+          s.sessions.find((x) => x.id === rawId) ||
+          s.sessions.find((x) => x.id.startsWith(rawId)) ||
+          s.sessions.find((x) => (x.title || "").toLowerCase().includes(q));
+        if (!hit) {
+          append({
+            id: uid(),
+            role: "system",
+            text: `未找到会话: ${rawId}\n用法: /sessions 或 /sessions <id|前缀|标题片段>`,
+            err: true,
+          });
+          return "local";
+        }
+        try {
+          const r = await switchSession(hit.id);
+          pushMeta(r.meta);
+          setLines(historyToLines(r.messages));
+          setTurnUsage(null);
+          await refreshSessions();
+          append({
+            id: uid(),
+            role: "system",
+            text: `✓ 切换会话 ${hit.id} · ${hit.title || "Untitled"}`,
+          });
+        } catch (e) {
+          append({
+            id: uid(),
+            role: "system",
+            text: e instanceof Error ? e.message : String(e),
+            err: true,
+          });
+        }
+        return "local";
+      }
+      const s = await refreshSessions();
+      const list =
+        s.sessions
+          .slice(0, 20)
+          .map(
+            (x) =>
+              `${x.id === s.activeSessionId ? "→ " : "  "}${x.id.slice(0, 12)}… ${x.title} (${x.messageCount})`,
+          )
+          .join("\n") || "(无会话)";
+      append({
+        id: uid(),
+        role: "system",
+        text: `会话列表:\n${list}\n\n切换: /sessions <id|前缀>`,
+      });
+      return "local";
+    }
+    if (c === "model") {
+      if (rest.length >= 2) {
+        const provider = rest[0]!;
+        const model = rest.slice(1).join(" ");
+        const m = await setModel(provider, model);
+        pushMeta(m);
+        const md = await fetchModels(provider);
+        setModels(md.models);
+        append({
+          id: uid(),
+          role: "system",
+          text: `✓ 模型 ${provider}/${model}`,
+        });
+      } else {
+        const md = await fetchModels(meta?.provider);
+        setProviders(md.providers);
+        setModels(md.models);
+        append({
+          id: uid(),
+          role: "system",
+          text: `当前 ${meta?.provider}/${meta?.model}\nproviders: ${md.providers.map((p) => p.id).join(", ")}\nmodels: ${md.models.map((m) => m.id).slice(0, 12).join(", ")}`,
+        });
+      }
+      return "local";
+    }
+    if (c === "approval") {
+      const mode = (rest[0] || "") as ApprovalMode;
+      if (["normal", "auto", "yolo"].includes(mode)) {
+        const m = await setApprovalMode(mode);
+        pushMeta(m);
+        setApproval(mode);
+        append({ id: uid(), role: "system", text: `✓ 审批模式 ${mode}` });
+      } else {
+        append({
+          id: uid(),
+          role: "system",
+          text: `当前审批: ${approval}\n用法: /approval normal|auto|yolo`,
+        });
+      }
+      return "local";
+    }
+    if (c === "usage" || c === "cost" || c === "analyze") {
+      const r = await runCommand(c === "cost" ? "usage" : c);
+      const text =
+        typeof r.text === "string"
+          ? r.text
+          : JSON.stringify(r).slice(0, 400);
+      append({ id: uid(), role: "system", text });
+      return "local";
+    }
+    if (c === "export") {
+      try {
+        const text = await exportTranscript();
+        await copyToClipboard(text);
+        append({
+          id: uid(),
+          role: "system",
+          text: `✓ 已复制 transcript（${text.length} 字符）`,
+        });
+      } catch (e) {
         append({
           id: uid(),
           role: "system",
@@ -191,72 +770,899 @@ export function ChatPanel({ onOpenTerminal, defaultAgent = "coding" }: Props) {
           err: true,
         });
       }
+      return "local";
+    }
+
+    // 其它未知 slash：先试 server /api/command，失败再 runtime 透传
+    try {
+      const r = await runCommand(c, { args: rest });
+      if (r.help && Array.isArray(r.help)) {
+        append({
+          id: uid(),
+          role: "system",
+          text: (r.help as string[]).join("\n"),
+        });
+        return "local";
+      }
+      if (r.ok !== false) {
+        append({
+          id: uid(),
+          role: "system",
+          text:
+            typeof r.text === "string"
+              ? r.text
+              : `✓ /${c} ${JSON.stringify(r).slice(0, 200)}`,
+        });
+        return "local";
+      }
+    } catch {
+      /* fall through to runtime */
+    }
+    return "runtime";
+  };
+
+  const runUserMessage = useCallback(
+    async (text: string) => {
+      const gen = ++runGenRef.current;
+      lastUserRef.current = text;
+      // New turn: re-stick so stream stays in view after history review
+      stickBottomRef.current = true;
+      append({ id: uid(), role: "user", text });
+      append({ id: uid(), role: "assistant", text: "" });
+      busyRef.current = true;
+      setBusy(true);
+      setTurnUsage(null);
+      setSlashOpen(false);
+      const ac = new AbortController();
+      abortRef.current = ac;
+      try {
+        for await (const ev of streamChat(text, ac.signal)) {
+          if (gen !== runGenRef.current) break;
+          onEvent(ev);
+        }
+        if (gen === runGenRef.current) {
+          void refreshApproval();
+          void refreshSessions();
+        }
+      } catch (e) {
+        if (gen === runGenRef.current && (e as Error)?.name !== "AbortError") {
+          append({
+            id: uid(),
+            role: "system",
+            text: e instanceof Error ? e.message : String(e),
+            err: true,
+            retryText: text,
+          });
+        }
+      } finally {
+        // Stale run after stop/session switch: do not touch busy or drain queue
+        if (gen !== runGenRef.current) {
+          return;
+        }
+        busyRef.current = false;
+        setBusy(false);
+        abortRef.current = null;
+        setLines((prev) =>
+          prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
+        );
+        // drain queue
+        const next = queueRef.current.shift();
+        setQueueLen(queueRef.current.length);
+        if (next) void runUserMessage(next);
+      }
+    },
+    [append, onEvent, refreshApproval, refreshSessions],
+  );
+
+  const clearQueue = useCallback(() => {
+    const n = queueRef.current.length;
+    if (!n) return;
+    queueRef.current = [];
+    setQueueLen(0);
+    setStatus(`已清空 ${n} 条排队（生成继续）`);
+  }, []);
+
+  const stopRun = useCallback(async (announce = true) => {
+    // Bump generation so in-flight runUserMessage finally skips queue drain
+    runGenRef.current += 1;
+    inFlightSendRef.current = false;
+    abortRef.current?.abort();
+    try {
+      await abortChat();
+    } catch {
+      /* ignore */
+    }
+    queueRef.current = [];
+    setQueueLen(0);
+    busyRef.current = false;
+    setBusy(false);
+    setPending([]);
+    setLines((prev) =>
+      prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
+    );
+    void refreshApproval().catch(() => {});
+    if (announce) {
+      setStatus("已停止");
+    }
+  }, [refreshApproval]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text) return;
+    setInput("");
+    // Reset auto-grown textarea height after send
+    if (inputRef.current) {
+      inputRef.current.style.height = "";
+    }
+
+    if (text.startsWith("/")) {
+      try {
+        // /stop always local even while a turn is running
+        const mode = await handleSlash(text);
+        if (mode === "local") return;
+        if (mode === "none") return;
+        // mode === "runtime" → fall through as chat message
+      } catch (e) {
+        append({
+          id: uid(),
+          role: "system",
+          text: e instanceof Error ? e.message : String(e),
+          err: true,
+        });
+        return;
+      }
+    }
+
+    // Busy or send already in-flight: queue (prevents double-Enter dual streams)
+    if (busyRef.current || inFlightSendRef.current) {
+      enqueueMessage(text);
+      return;
+    }
+
+    inFlightSendRef.current = true;
+    try {
+      await runUserMessage(text);
     } finally {
-      setBusy(false);
-      abortRef.current = null;
-      setLines((prev) =>
-        prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
-      );
+      inFlightSendRef.current = false;
     }
   };
 
-  return (
-    <div className="panel">
-      <div className="panel-header">Chat</div>
-      <div className="chat-log" ref={logRef}>
-        {lines.length === 0 && (
-          <div className="bubble system">
-            输入消息开始。Agent 的 use_terminal 会出现在右侧列表；点击工具行可打开真实终端输出并交互。
-          </div>
-        )}
-        {lines.map((l) => (
-          <div
-            key={l.id}
-            className={`bubble ${l.role}${l.err ? " err" : ""}${l.role === "tool" ? " tool-line" : ""}${l.terminalId ? " clickable" : ""}`}
-            onClick={() => {
-              if (l.terminalId && onOpenTerminal) {
-                onOpenTerminal(l.terminalId, l.agentName);
-              }
-            }}
-            title={l.terminalId ? `打开终端 ${l.terminalId}` : undefined}
-          >
-            <div className="tag">
-              {l.role}
-              {l.terminalId ? " · 点击打开终端" : ""}
+  const onSessionChange = async (id: string) => {
+    if (!id) return;
+    // Abort turn + drop queue so queued msgs don't land on the wrong session
+    await stopRun(false);
+    try {
+      const r = await switchSession(id);
+      pushMeta(r.meta);
+      setLines(historyToLines(r.messages));
+      setTurnUsage(null);
+      stickBottomRef.current = true;
+      await refreshSessions();
+      setStatus(`切换会话 ${id.slice(0, 8)}…`);
+      focusComposer();
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const onNewSession = async () => {
+    await stopRun(false);
+    const r = await createSession();
+    pushMeta(r.meta);
+    setLines([]);
+    setTurnUsage(null);
+    stickBottomRef.current = true;
+    await refreshSessions();
+    setStatus("新会话");
+    focusComposer();
+  };
+
+  const onDeleteSession = async (id: string) => {
+    if (!id) return;
+    if (!window.confirm(`删除会话 ${id.slice(0, 12)}…？`)) return;
+    await stopRun(false);
+    try {
+      const r = await deleteSession(id);
+      pushMeta(r.meta);
+      setSessions(r.sessions);
+      setLines(historyToLines(r.messages));
+      setTurnUsage(null);
+      stickBottomRef.current = true;
+      setStatus("已删除会话");
+      focusComposer();
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const onRenameSession = async (id: string, current: string) => {
+    const next = window.prompt("会话标题", current || "");
+    if (next == null) return;
+    const title = next.trim();
+    if (!title) return;
+    try {
+      const r = await renameSession(id, title);
+      setSessions(r.sessions);
+      setStatus(`已重命名: ${r.title}`);
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const retryLastUser = (text?: string) => {
+    const msg =
+      text ||
+      [...lines].reverse().find((l) => l.role === "user")?.text ||
+      lastUserRef.current;
+    if (!msg) return;
+    if (busyRef.current || inFlightSendRef.current) {
+      enqueueMessage(msg, "重试已排队");
+      return;
+    }
+    inFlightSendRef.current = true;
+    void runUserMessage(msg).finally(() => {
+      inFlightSendRef.current = false;
+    });
+  };
+
+  // Global shortcuts (Codex/CLI-like workflow — not full CLI chrome)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      const inField =
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLSelectElement;
+
+      if (mod && e.key.toLowerCase() === "n" && !e.shiftKey) {
+        e.preventDefault();
+        void onNewSession();
+      }
+      // Ctrl+M — focus model select (CLI /model hotkey parity)
+      if (mod && e.key.toLowerCase() === "m" && !e.shiftKey) {
+        e.preventDefault();
+        modelSelectRef.current?.focus();
+      }
+      if (mod && e.key === ".") {
+        e.preventDefault();
+        void stopRun();
+      }
+      // Esc: close slash menu or cancel in-flight turn (CLI escape-cancel)
+      if (e.key === "Escape") {
+        if (slashOpen) {
+          setSlashOpen(false);
+          return;
+        }
+        if (busyRef.current) {
+          e.preventDefault();
+          void stopRun();
+        }
+      }
+      // Shift+Tab: cycle approval normal → auto → yolo (CLI nav parity)
+      if (e.key === "Tab" && e.shiftKey && !mod) {
+        e.preventDefault();
+        const order: ApprovalMode[] = ["normal", "auto", "yolo"];
+        const cur = approval;
+        const next = order[(order.indexOf(cur) + 1) % order.length]!;
+        void setApprovalMode(next)
+          .then((m) => {
+            pushMeta(m);
+            setApproval(next);
+            setStatus(`审批 ${next}`);
+          })
+          .catch((err) =>
+            setStatus(err instanceof Error ? err.message : String(err)),
+          );
+      }
+      if (mod && e.shiftKey && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        void exportTranscript()
+          .then((t) => copyToClipboard(t))
+          .then(() => setStatus("已复制 transcript"))
+          .catch((err) =>
+            setStatus(err instanceof Error ? err.message : String(err)),
+          );
+      }
+      // R when not typing in input — retry last user (CLI-like)
+      if (!mod && e.key.toLowerCase() === "r" && !inField) {
+        e.preventDefault();
+        retryLastUser();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lines, busy, stopRun, approval, slashOpen, pushMeta]);
+
+  const onProviderChange = async (provider: string) => {
+    const md = await fetchModels(provider);
+    setModels(md.models);
+    const first = md.models[0]?.id;
+    if (first) {
+      const m = await setModel(provider, first);
+      pushMeta(m);
+    }
+  };
+
+  const onModelChange = async (model: string) => {
+    const provider = meta?.provider || providers[0]?.id || "";
+    if (!provider || !model) return;
+    const m = await setModel(provider, model);
+    pushMeta(m);
+  };
+
+  const onApprovalChange = async (mode: ApprovalMode) => {
+    const m = await setApprovalMode(mode);
+    pushMeta(m);
+    setApproval(mode);
+  };
+
+  const isCodex = layout === "codex";
+
+  const threadRail =
+    isCodex && threadRailId ? (
+      <ThreadRail
+        sessions={sessions}
+        activeId={meta?.sessionId ?? null}
+        busy={busy}
+        onNew={() => void onNewSession()}
+        onSelect={(id) => void onSessionChange(id)}
+        onDelete={(id) => void onDeleteSession(id)}
+        onRename={(id, title) => void onRenameSession(id, title)}
+      />
+    ) : null;
+
+  const railHost = railEl;
+
+  const approvalBlock =
+    pending.length > 0 ? (
+      <div className="approval-banner">
+        {pending.map((p) => (
+          <div key={p.id} className={`approval-card risk-${p.risk || "low"}`}>
+            <div className="approval-head">
+              {p.label || "终端审批"} · {p.agentName}
+              {p.risk === "high" ? " · 高风险" : ""}
             </div>
-            {l.text || (busy && l.role === "assistant" ? "…" : "")}
+            <div className="approval-summary">
+              {p.summary || "命令待确认"}
+            </div>
+            <code className="approval-cmd">{p.command}</code>
+            <div className="approval-actions">
+              {(
+                [
+                  ["once", "允许一次", ""],
+                  ["always", "总是允许", ""],
+                  ["deny", "拒绝", "ghost"],
+                  ["blacklist", "黑名单", "ghost"],
+                ] as const
+              ).map(([choice, label, cls]) => (
+                <button
+                  key={choice}
+                  type="button"
+                  className={cls || undefined}
+                  onClick={() =>
+                    void answerApproval(p.id, choice)
+                      .then(setPending)
+                      .catch((err) =>
+                        setStatus(
+                          err instanceof Error ? err.message : String(err),
+                        ),
+                      )
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         ))}
       </div>
-      <div className="composer">
-        <textarea
-          value={input}
-          placeholder="消息…（Enter 发送 · Shift+Enter 换行）"
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void send();
+    ) : null;
+
+  const avatarLabel = (role: ChatLine["role"]) => {
+    if (role === "user") return "You";
+    if (role === "assistant") return "M";
+    if (role === "tool") return "⚙";
+    if (role === "thinking") return "…";
+    return "·";
+  };
+
+  const roleLabel = (role: ChatLine["role"]) => {
+    if (role === "user") return "You";
+    if (role === "assistant") return "Maou";
+    if (role === "tool") return "Tool";
+    if (role === "thinking") return "Thinking";
+    return "System";
+  };
+
+  const messageList = (
+    <div className={`chat-log${isCodex ? " codex-log" : ""}`} ref={logRef}>
+      {lines.length === 0 && (
+        <div className="bubble system empty-hint codex-bubble">
+          {isCodex ? (
+            <div className="msg-body">
+              <div className="empty-title">What should we work on?</div>
+              <div className="empty-sub">
+                Describe a task, or type /help. Tools and terminals open on the
+                right.
+              </div>
+            </div>
+          ) : (
+            "输入消息开始，或用 /help。"
+          )}
+        </div>
+      )}
+      {lines.map((l) => (
+        <div
+          key={l.id}
+          className={`bubble ${l.role}${l.err ? " err" : ""}${l.role === "tool" ? " tool-line" : ""}${l.terminalId ? " clickable" : ""}${isCodex ? " codex-bubble" : ""}`}
+          onClick={() => {
+            if (l.terminalId && onOpenTerminal) {
+              onOpenTerminal(l.terminalId, l.agentName);
             }
           }}
-          disabled={busy}
-        />
-        {busy ? (
+          title={l.terminalId ? `Open terminal ${l.terminalId}` : undefined}
+        >
+          {isCodex ? (
+            <>
+              <div className="msg-avatar" aria-hidden>
+                {avatarLabel(l.role)}
+              </div>
+              <div className="msg-body">
+                <div className="msg-role">
+                  {roleLabel(l.role)}
+                  {l.terminalId ? " · terminal" : ""}
+                </div>
+                <pre className="bubble-text">
+                  {l.text || (busy && l.role === "assistant" ? "…" : "")}
+                </pre>
+                {l.err && l.retryText ? (
+                  <button
+                    type="button"
+                    className="retry-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      retryLastUser(l.retryText);
+                    }}
+                  >
+                    Retry
+                  </button>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="tag">
+                {l.role}
+                {l.terminalId ? " · 终端" : ""}
+              </div>
+              <pre className="bubble-text">
+                {l.text || (busy && l.role === "assistant" ? "…" : "")}
+              </pre>
+              {l.err && l.retryText ? (
+                <button
+                  type="button"
+                  className="retry-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    retryLastUser(l.retryText);
+                  }}
+                >
+                  Retry
+                </button>
+              ) : null}
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+
+  const slashPrefix = input.startsWith("/")
+    ? input.slice(1).split(/\s/)[0]?.toLowerCase() ?? ""
+    : "";
+  const slashHits = input.startsWith("/")
+    ? SLASH_SUGGESTIONS.filter((s) => s.startsWith(slashPrefix)).slice(0, 8)
+    : [];
+  const slashSel =
+    slashHits.length > 0
+      ? slashHits[Math.min(slashIdx, slashHits.length - 1)]!
+      : null;
+
+  const applySlashHit = (s: string) => {
+    setInput(`/${s} `);
+    setSlashOpen(false);
+    setSlashIdx(0);
+  };
+
+  const composer = (
+    <div className={`composer${isCodex ? " codex-composer" : ""}`}>
+      {isCodex && (
+        <div className="composer-chips">
+          <label className="chip-select">
+            <span>Model</span>
+            <select
+              value={meta?.provider ?? ""}
+              onChange={(e) => void onProviderChange(e.target.value)}
+              title="下一轮生效"
+            >
+              {(() => {
+                const opts = (
+                  providers.length
+                    ? providers
+                    : meta?.provider
+                      ? [{ id: meta.provider }]
+                      : []
+                ).filter((p) => p.id);
+                if (opts.length === 0) {
+                  return (
+                    <option value="" disabled>
+                      未连接后端
+                    </option>
+                  );
+                }
+                return opts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name || p.id}
+                  </option>
+                ));
+              })()}
+            </select>
+          </label>
+          <label className="chip-select">
+            <span> </span>
+            <select
+              ref={modelSelectRef}
+              value={meta?.model ?? ""}
+              onChange={(e) => void onModelChange(e.target.value)}
+              title="下一轮生效 · Ctrl+M"
+            >
+              {(() => {
+                const opts = (
+                  models.length
+                    ? models
+                    : meta?.model
+                      ? [{ id: meta.model }]
+                      : []
+                ).filter((m) => m.id);
+                if (opts.length === 0) {
+                  return (
+                    <option value="" disabled>
+                      —
+                    </option>
+                  );
+                }
+                return opts.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.id}
+                  </option>
+                ));
+              })()}
+            </select>
+          </label>
+          <label className="chip-select">
+            <span>Approval</span>
+            <select
+              value={approval}
+              onChange={(e) =>
+                void onApprovalChange(e.target.value as ApprovalMode)
+              }
+              title="审批模式（可随时切换）"
+            >
+              <option value="normal">normal</option>
+              <option value="auto">auto</option>
+              <option value="yolo">yolo</option>
+            </select>
+          </label>
+          {turnUsage ? (
+            <button
+              type="button"
+              className="usage-chip"
+              title="点击查看会话 /usage"
+              onClick={() => {
+                void runCommand("usage")
+                  .then((r) => {
+                    const text =
+                      typeof r.text === "string"
+                        ? r.text
+                        : JSON.stringify(r).slice(0, 400);
+                    append({ id: uid(), role: "system", text });
+                  })
+                  .catch((err) =>
+                    setStatus(
+                      err instanceof Error ? err.message : String(err),
+                    ),
+                  );
+              }}
+            >
+              ↑{turnUsage.in.toLocaleString()} ↓
+              {turnUsage.out.toLocaleString()}
+            </button>
+          ) : null}
+          {queueLen > 0 ? (
+            <button
+              type="button"
+              className="queue-badge"
+              title="点击清空排队（不停止当前生成）"
+              onClick={() => clearQueue()}
+            >
+              {queueLen} queued · clear
+            </button>
+          ) : null}
+          {status ? (
+            <span
+              className={`composer-status${
+                /error|失败|不可用|HTML|JSON|后端|API\s*\d/i.test(status)
+                  ? " is-error"
+                  : ""
+              }`}
+              title={status}
+            >
+              {status}
+            </span>
+          ) : null}
+        </div>
+      )}
+      <div className="composer-row-wrap">
+        {slashOpen && slashHits.length > 0 && (
+          <div className="slash-menu" role="listbox">
+            {slashHits.map((s, i) => (
+              <button
+                key={s}
+                type="button"
+                className={`slash-item${s === slashSel || i === slashIdx ? " active" : ""}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  applySlashHit(s);
+                }}
+              >
+                /{s}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="composer-row">
+          <textarea
+            ref={inputRef}
+            value={input}
+            placeholder={
+              busy
+                ? isCodex
+                  ? "Agent running… type to queue next message (Enter)"
+                  : "生成中…输入将排队，Enter 入队"
+                : isCodex
+                  ? "Message agent…  (Enter to send · Shift+Enter newline · / commands)"
+                  : "消息或 /命令…（Enter 发送 · Shift+Enter 换行）"
+            }
+            onChange={(e) => {
+              const v = e.target.value;
+              setInput(v);
+              const open = v.startsWith("/") && !v.includes("\n");
+              setSlashOpen(open);
+              if (open) setSlashIdx(0);
+              // Auto-grow for multi-line (Shift+Enter)
+              const el = e.target;
+              el.style.height = "auto";
+              el.style.height = `${Math.min(Math.max(el.scrollHeight, 56), 180)}px`;
+            }}
+            onKeyDown={(e) => {
+              if (slashOpen && slashHits.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSlashIdx((i) => (i + 1) % slashHits.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSlashIdx(
+                    (i) => (i - 1 + slashHits.length) % slashHits.length,
+                  );
+                  return;
+                }
+                if (e.key === "Tab" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (slashSel) applySlashHit(slashSel);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setSlashOpen(false);
+                  return;
+                }
+              } else if (e.key === "Escape") {
+                setSlashOpen(false);
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+            onBlur={() => {
+              // delay so mousedown on menu fires first
+              window.setTimeout(() => setSlashOpen(false), 120);
+            }}
+            rows={isCodex ? 3 : 2}
+          />
+          {busy ? (
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => void stopRun()}
+              title="停止并清空排队"
+            >
+              Stop
+            </button>
+          ) : null}
           <button
             type="button"
-            className="ghost"
-            onClick={() => {
-              abortRef.current?.abort();
-              void abortChat();
-            }}
+            className="send-btn"
+            onClick={() => void send()}
+            disabled={!input.trim()}
+            title={busy ? "排队发送" : "发送"}
           >
-            停止
+            {busy ? "Queue" : "Send"}
           </button>
-        ) : (
-          <button type="button" onClick={() => void send()} disabled={!input.trim()}>
-            发送
+        </div>
+      </div>
+    </div>
+  );
+
+  // legacy default layout
+  if (!isCodex) {
+    return (
+      <div className="panel chat-panel">
+        <div className="panel-header chat-toolbar">
+          <span className="chat-toolbar-title">Chat</span>
+          <button
+            type="button"
+            className="ghost tb-btn"
+            onClick={() => void onNewSession()}
+            title={busy ? "将停止当前生成" : "新会话"}
+          >
+            新会话
           </button>
+          {status ? <span className="tb-status">{status}</span> : null}
+        </div>
+        {approvalBlock}
+        {messageList}
+        {composer}
+      </div>
+    );
+  }
+
+  return (
+    <div className="chat-panel codex-chat">
+      {railHost && threadRail ? createPortal(threadRail, railHost) : null}
+      {busy && (
+        <div className="stream-banner" role="status">
+          <span className="stream-dot" />
+          Agent running…
+          {queueLen > 0 ? (
+            <span className="queue-badge">{queueLen} queued</span>
+          ) : null}
+          <button
+            type="button"
+            className="linkish"
+            onClick={() => void stopRun()}
+          >
+            Stop
+          </button>
+        </div>
+      )}
+      {approvalBlock}
+      <div className="codex-thread-scroll">{messageList}</div>
+      <div className="codex-composer-dock">
+        <div className="thread-actions">
+          <button
+            type="button"
+            className="ghost-link"
+            onClick={() => retryLastUser()}
+            title={busy ? "忙碌时入队重试" : "R · 重试上一条"}
+          >
+            Retry last
+          </button>
+          <button
+            type="button"
+            className="ghost-link"
+            onClick={() =>
+              void exportTranscript()
+                .then((t) => copyToClipboard(t))
+                .then(() => setStatus("已复制 transcript"))
+                .catch((err) =>
+                  setStatus(err instanceof Error ? err.message : String(err)),
+                )
+            }
+          >
+            Copy transcript
+          </button>
+        </div>
+        {composer}
+      </div>
+    </div>
+  );
+}
+
+function relativeTime(iso?: string): string {
+  if (!iso) return "";
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "";
+  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (sec < 60) return "just now";
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  if (sec < 86400 * 7) return `${Math.floor(sec / 86400)}d ago`;
+  return String(iso).slice(5, 10);
+}
+
+function ThreadRail(props: {
+  sessions: SessionSummary[];
+  activeId: string | null;
+  busy: boolean;
+  onNew: () => void;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+}) {
+  const busyHint = props.busy ? " · stops current run" : "";
+  return (
+    <div className={`thread-rail${props.busy ? " is-busy" : ""}`}>
+      <button
+        type="button"
+        className="thread-new"
+        onClick={props.onNew}
+        title={`New task${busyHint}`}
+      >
+        New task
+      </button>
+      <div className="thread-list-label">Sessions</div>
+      <div className="thread-list">
+        {props.sessions.length === 0 && (
+          <div className="thread-empty">No sessions yet</div>
         )}
+        {props.sessions.map((s) => {
+          const active = s.id === props.activeId;
+          const sub =
+            s.messageCount > 0
+              ? `${s.messageCount} message${s.messageCount === 1 ? "" : "s"}`
+              : "Empty session";
+          return (
+            <div
+              key={s.id}
+              className={`thread-item-row${active ? " active" : ""}`}
+            >
+              <button
+                type="button"
+                className="thread-item"
+                onClick={() => props.onSelect(s.id)}
+                onDoubleClick={() =>
+                  props.onRename(s.id, s.title || "Untitled")
+                }
+                title={`Double-click to rename${busyHint}`}
+              >
+                <span className="thread-title">
+                  {(s.title || "Untitled").slice(0, 40)}
+                </span>
+                <span className="thread-meta">
+                  <span className="thread-meta-sub">{sub}</span>
+                  <span className="thread-meta-time">
+                    {relativeTime(s.lastMsgAt || s.updatedAt)}
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="thread-del"
+                title={`Delete session${busyHint}`}
+                aria-label="Delete session"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  props.onDelete(s.id);
+                }}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

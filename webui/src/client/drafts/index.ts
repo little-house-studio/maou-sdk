@@ -1,0 +1,45 @@
+export { DraftShell } from "./DraftShell";
+export {
+  SCENARIO_CATALOG,
+  REQUIRED_SCENARIO_IDS,
+  assertCatalogComplete,
+  getScenario,
+  listScenarioIds,
+  hydrateFromScenario,
+  applyLocalSend,
+  applyNewSession,
+  applyApprovalDecision,
+  messagesForSession,
+  sessionTitle,
+  sessionsForAgent,
+  pickSessionForAgent,
+} from "./fixtures";
+export {
+  statusMarkKind,
+  statusTone,
+  statusShape,
+  roleMarkKind,
+  roleTone,
+  roleLabelZh,
+  hierarchyMarkKind,
+  hierarchyTone,
+  hierarchyIndentPx,
+  fileMarkKind,
+  fileTone,
+  taskMarkKind,
+  chromeMarkForMode,
+} from "./visual-marks";
+export type {
+  DraftShellProps,
+  DraftSession,
+  DraftMessage,
+  DraftMeta,
+  DraftApproval,
+  DraftScenario,
+  DraftAgent,
+  DraftBgTask,
+  ScenarioId,
+  UiMode,
+  MessageRole,
+} from "./types";
+

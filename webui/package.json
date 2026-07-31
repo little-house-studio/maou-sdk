@@ -28,14 +28,20 @@
     "dev:server": "tsx watch src/server/cli.ts",
     "dev:client": "vite",
     "start": "node dist/server/cli.js",
-    "typecheck": "tsc -p tsconfig.server.json --noEmit"
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test": "tsx --test src/server/markdown/fs-api.test.ts src/server/agent-hub.test.ts src/server/session-stats.test.ts src/client/drafts/fixtures.test.ts",
+    "test:drafts": "tsx --test src/client/drafts/fixtures.test.ts src/client/drafts/visual-marks.test.ts src/client/drafts/thread-blocks.test.ts",
+    "test:mvp": "tsx scripts/verify-mvp.mts",
+    "test:parity": "tsx scripts/verify-parity.mts"
   },
   "dependencies": {
     "@codemirror/lang-markdown": "^6.3.2",
     "@codemirror/view": "^6.36.0",
     "@little-house-studio/agent": "workspace:*",
     "@little-house-studio/coding-agent": "workspace:*",
+    "@little-house-studio/context": "workspace:*",
     "@little-house-studio/terminal-engine": "workspace:*",
+    "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/types": "workspace:*",
     "@lydell/node-pty": "1.2.0-beta.12",
     "@uiw/react-codemirror": "^4.23.7",

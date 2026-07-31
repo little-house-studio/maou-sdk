@@ -81,6 +81,19 @@ logs/
 coverage/
 .nyc_output/
 
+# ─── Vite / 前端本地缓存 ───
+.vite/
+**/.vite/
+webui/.vite/
+
+# ─── WebUI 本地校验 / 抓取产物（勿提交） ───
+webui/verify-out/
+**/verify-out/
+webui/**/draft-audit*.png
+webui/**/.preview-*.png
+webui/**/composer-*.png
+webui/**/center-*.png
+
 # ═══════════════════════════════════════════════════════════
 # 不面向终端用户：实验 / 历史 / 内部文档 / 本地 demo
 # （用户从 GitHub 拉代码装 coding agent 不需要这些）
