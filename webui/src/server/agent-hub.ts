@@ -30,6 +30,12 @@ import {
   latestSessionId,
   type SessionStats,
 } from "./session-stats.js";
+import {
+  listLiveAgents,
+  parseAgentSwitchId,
+  resolveDefaultSwitchId,
+  type LiveAgentDto,
+} from "./agent-list.js";
 
 function lastSessionPath(projectRoot: string): string {
   return join(projectRoot, ".maou", "last-session.json");
@@ -87,6 +93,8 @@ export interface AgentHubOpts {
   maouRoot?: string;
   /** 默认 yolo：本机 Web 可改 normal/auto */
   sandboxMode?: string;
+  /** Initial active agent name (default coding) */
+  agentName?: string;
 }
 
 export type SessionSummary = {
@@ -140,8 +148,12 @@ function asApprovalMode(v: string | undefined): ApprovalMode {
 export class AgentHub {
   readonly projectRoot: string;
   readonly maouRoot: string;
-  /** coding-agent 实例名（terminal-engine 按此过滤） */
-  readonly agentName: string;
+  /** Active agent name (terminal / session scoping; switchable via /api/agents/active) */
+  private _agentName: string;
+  /** CLI switch_id: system:<name> | project:<path>:<name> */
+  private _activeSwitchId: string;
+  /** Project path when active agent is project-scoped */
+  private _activeProjectPath: string | null = null;
   private handle: ReturnType<typeof createCodingAgent> | null = null;
   private sessionStore: SessionStore | null = null;
   private sessionId: string | null = null;
@@ -158,7 +170,50 @@ export class AgentHub {
     this.projectRoot = opts.projectRoot ?? process.cwd();
     this.maouRoot = opts.maouRoot ?? join(homedir(), ".maou");
     this.sandboxMode = asApprovalMode(opts.sandboxMode);
-    this.agentName = "coding";
+    this._agentName = opts.agentName?.trim() || "coding";
+    // CLI switch_id: project path when this hub serves a registered project
+    const def = resolveDefaultSwitchId(
+      this.projectRoot,
+      this._agentName,
+      this.maouRoot,
+    );
+    this._activeSwitchId = def.switchId;
+    this._activeProjectPath = def.projectPath;
+  }
+
+  get agentName(): string {
+    return this._agentName;
+  }
+
+  get activeSwitchId(): string {
+    return this._activeSwitchId;
+  }
+
+  get activeProjectPath(): string | null {
+    return this._activeProjectPath;
+  }
+
+  /**
+   * Switch active agent by CLI switch_id (preferred) or bare name.
+   * project:<path>:<name> scopes terminal/session agent label + project path.
+   */
+  setActiveAgent(nameOrSwitchId: string): void {
+    const raw = String(nameOrSwitchId || "").trim();
+    if (!raw) return;
+    const parsed = parseAgentSwitchId(raw);
+    if (parsed) {
+      this._agentName = parsed.agentName;
+      this._activeProjectPath =
+        parsed.kind === "project" ? parsed.projectPath ?? null : null;
+      this._activeSwitchId =
+        parsed.kind === "project" && parsed.projectPath
+          ? `project:${parsed.projectPath}:${parsed.agentName}`
+          : `system:${parsed.agentName}`;
+      return;
+    }
+    this._agentName = raw;
+    this._activeProjectPath = null;
+    this._activeSwitchId = `system:${raw}`;
   }
 
   private rememberSession(id: string | null) {
@@ -322,6 +377,22 @@ export class AgentHub {
   setModel(provider: string, model: string) {
     this.provider = provider;
     this.model = model;
+  }
+
+  /**
+   * CLI-aligned agent list (AgentRegistry + presence file).
+   * Busy/approval from this hub affect the *active* agent's status light.
+   */
+  listAgents(): LiveAgentDto[] {
+    return listLiveAgents({
+      maouRoot: this.maouRoot,
+      projectRoot: this.projectRoot,
+      activeSwitchId: this._activeSwitchId,
+      activeAgentName: this.agentName,
+      activeProjectPath: this._activeProjectPath,
+      agentBusy: Boolean(this.abort),
+      hasPendingApproval: this.pendingApprovals.size > 0,
+    });
   }
 
   getApprovalMode(): ApprovalMode {

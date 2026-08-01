@@ -108,6 +108,49 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     });
   });
 
+  // ── Agents（CLI AgentRegistry + presence lights）──
+  app.get("/api/agents", (_req, res) => {
+    try {
+      res.json({
+        ok: true,
+        activeAgentName: hub.agentName,
+        activeSwitchId: hub.activeSwitchId,
+        activeProjectPath: hub.activeProjectPath,
+        agents: hub.listAgents(),
+      });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.post("/api/agents/active", (req, res) => {
+    // Prefer CLI switch_id (project:<path>:<name>); fall back to bare name
+    const id = String(
+      req.body?.switchId ??
+        req.body?.switch_id ??
+        req.body?.id ??
+        req.body?.name ??
+        req.body?.agentName ??
+        "",
+    ).trim();
+    if (!id) {
+      res.status(400).json({ ok: false, error: "switchId or name required" });
+      return;
+    }
+    hub.setActiveAgent(id);
+    res.json({
+      ok: true,
+      activeAgentName: hub.agentName,
+      activeSwitchId: hub.activeSwitchId,
+      activeProjectPath: hub.activeProjectPath,
+      ...hub.getMeta(),
+      agents: hub.listAgents(),
+    });
+  });
+
   // ── Sessions（项目 .maou/sessions，与 CLI coding 同源 SessionStore）──
   app.get("/api/sessions", (_req, res) => {
     try {

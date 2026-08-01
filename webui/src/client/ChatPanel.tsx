@@ -1,7 +1,15 @@
 /**
  * ChatPanel —— CLI 工作流对齐 + Codex-desktop 布局
+ * wire chrome reuses draft DraftMarkdown / RoleAvatar / ToolCard for shell parity.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   abortChat,
@@ -13,6 +21,7 @@ import {
   fetchApproval,
   fetchMeta,
   fetchModels,
+  fetchSessionStats,
   fetchSessions,
   renameSession,
   runCommand,
@@ -27,6 +36,17 @@ import {
   type SessionSummary,
   type StreamEvent,
 } from "./api";
+import {
+  buildPrevUserJumpLabel,
+  shouldShowJumpBar,
+} from "./drafts/jump-prev-user";
+import {
+  WireThreadView,
+  chatLinesToDraftMessages,
+} from "./drafts/panels/WireThreadView";
+import { ApprovalBanner } from "./drafts/panels/ApprovalBanner";
+import { ChromeMark } from "./drafts/icons/Marks";
+import type { DraftApproval } from "./drafts/types";
 
 export type ChatLine = {
   id: string;
@@ -165,6 +185,13 @@ type Props = {
   onSessionTitleChange?: (title: string | null) => void;
   /** Extra class on root (e.g. wire-context for draft-aligned live shell) */
   className?: string;
+  /**
+   * wire = draft-shell chrome labels/classes (Chinese SessionList-like rail,
+   * wire composer dock). Default keeps legacy English codex chrome.
+   */
+  chrome?: "default" | "wire";
+  /** Push recent system/tool/err lines for bottom dock log board */
+  onDockLogLines?: (lines: string[]) => void;
 };
 
 export function ChatPanel({
@@ -176,7 +203,12 @@ export function ChatPanel({
   onBusyChange,
   onSessionTitleChange,
   className,
+  chrome = "default",
+  onDockLogLines,
 }: Props) {
+  const isWire =
+    chrome === "wire" ||
+    (typeof className === "string" && className.includes("wire-context"));
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusyState] = useState(false);
@@ -308,13 +340,32 @@ export function ChatPanel({
     return () => clearInterval(t);
   }, [refreshApproval]);
 
+  const [showBackToBottom, setShowBackToBottom] = useState(false);
+  const [showJumpPrev, setShowJumpPrev] = useState(false);
+  const [jumpPrevLabel, setJumpPrevLabel] = useState("↑ 上一条 user（点击）");
+  const fromBottomRef = useRef(0);
+
   // Only auto-scroll when user is already near the bottom (don't yank history review)
   useEffect(() => {
     const el = logRef.current;
     if (!el) return;
     const onScroll = () => {
       const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
-      stickBottomRef.current = gap < 96;
+      fromBottomRef.current = gap;
+      const stick = gap < 96;
+      stickBottomRef.current = stick;
+      setShowBackToBottom(!stick && el.scrollHeight > el.clientHeight + 48);
+      const empty = el.scrollHeight <= el.clientHeight + 8;
+      setShowJumpPrev(shouldShowJumpBar(empty, gap));
+      // Label from last user bubble fully above viewport
+      const nodes = el.querySelectorAll<HTMLElement>('[data-msg-role="user"]');
+      let preview: string | null = null;
+      for (const n of nodes) {
+        if (n.offsetTop + n.offsetHeight <= el.scrollTop + 8) {
+          preview = n.dataset.msgPreview || n.textContent || "";
+        } else break;
+      }
+      setJumpPrevLabel(buildPrevUserJumpLabel(preview));
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     onScroll();
@@ -325,8 +376,65 @@ export function ChatPanel({
     const el = logRef.current;
     if (el && stickBottomRef.current) {
       el.scrollTop = el.scrollHeight;
+      setShowBackToBottom(false);
+      setShowJumpPrev(false);
     }
   }, [lines, pending]);
+
+  // Dock log board: recent system / tool / err lines
+  useEffect(() => {
+    if (!onDockLogLines) return;
+    const bag = lines
+      .filter(
+        (l) =>
+          l.role === "system" ||
+          l.role === "tool" ||
+          l.role === "thinking" ||
+          l.err,
+      )
+      .slice(-24)
+      .map((l) => {
+        const tag = l.err ? "err" : l.role;
+        const body = (l.text || "").replace(/\s+/g, " ").trim().slice(0, 80);
+        return body ? `[${tag}] ${body}` : `[${tag}]`;
+      });
+    onDockLogLines(
+      bag.length
+        ? bag
+        : busy
+          ? ["[status] agent running…"]
+          : ["[status] idle · no system lines"],
+    );
+  }, [lines, busy, onDockLogLines]);
+
+  const scrollThreadToBottom = useCallback(() => {
+    const el = logRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stickBottomRef.current = true;
+    setShowBackToBottom(false);
+    setShowJumpPrev(false);
+  }, []);
+
+  const jumpPrevUser = useCallback(() => {
+    const el = logRef.current;
+    if (!el) return;
+    const nodes = el.querySelectorAll<HTMLElement>('[data-msg-role="user"]');
+    let target: HTMLElement | null = null;
+    for (const n of nodes) {
+      if (n.offsetTop + n.offsetHeight <= el.scrollTop + 8) {
+        target = n;
+      } else break;
+    }
+    if (!target && nodes.length > 0) {
+      target = nodes[0]!;
+    }
+    if (!target) return;
+    el.scrollTop = Math.max(0, target.offsetTop - 12);
+    stickBottomRef.current = false;
+    setShowBackToBottom(true);
+    setShowJumpPrev(true);
+  }, []);
 
   const append = useCallback((line: ChatLine) => {
     setLines((prev) => [...prev, line]);
@@ -1107,6 +1215,8 @@ export function ChatPanel({
         sessions={sessions}
         activeId={meta?.sessionId ?? null}
         busy={busy}
+        wire={isWire}
+        agentLabel={meta?.agentName || defaultAgent}
         onNew={() => void onNewSession()}
         onSelect={(id) => void onSessionChange(id)}
         onDelete={(id) => void onDeleteSession(id)}
@@ -1116,8 +1226,39 @@ export function ChatPanel({
 
   const railHost = railEl;
 
+  const decideApproval = useCallback(
+    (id: string, choice: "once" | "always" | "deny" | "blacklist") => {
+      void answerApproval(id, choice)
+        .then(setPending)
+        .catch((err) =>
+          setStatus(err instanceof Error ? err.message : String(err)),
+        );
+    },
+    [],
+  );
+
+  /** Draft ApprovalBanner for wire; legacy multi-card for codex */
   const approvalBlock =
-    pending.length > 0 ? (
+    pending.length > 0 && isWire ? (
+      <>
+        {pending.map((p) => {
+          const draftAppr: DraftApproval = {
+            id: p.id,
+            summary: p.summary || p.label || "命令待确认",
+            command: p.command,
+            risk: p.risk === "high" ? "high" : "normal",
+            agentName: p.agentName || defaultAgent,
+          };
+          return (
+            <ApprovalBanner
+              key={p.id}
+              approval={draftAppr}
+              onDecision={(d) => decideApproval(p.id, d)}
+            />
+          );
+        })}
+      </>
+    ) : pending.length > 0 ? (
       <div className="approval-banner">
         {pending.map((p) => (
           <div key={p.id} className={`approval-card risk-${p.risk || "low"}`}>
@@ -1142,15 +1283,7 @@ export function ChatPanel({
                   key={choice}
                   type="button"
                   className={cls || undefined}
-                  onClick={() =>
-                    void answerApproval(p.id, choice)
-                      .then(setPending)
-                      .catch((err) =>
-                        setStatus(
-                          err instanceof Error ? err.message : String(err),
-                        ),
-                      )
-                  }
+                  onClick={() => decideApproval(p.id, choice)}
                 >
                   {label}
                 </button>
@@ -1177,17 +1310,38 @@ export function ChatPanel({
     return "System";
   };
 
-  const messageList = (
-    <div className={`chat-log${isCodex ? " codex-log" : ""}`} ref={logRef}>
+  const emptyTitle = isWire ? "从哪里开始？" : "What should we work on?";
+  const emptySub = isWire
+    ? "描述任务，或输入 /help。终端从工具卡或 Ctrl+` 打开；任务与日志在底部 dock。"
+    : "Describe a task, or type /help. Tools and terminals open on the right.";
+
+  // Wire: same groupThreadBlocks tree as draft ContextPanel
+  const wireDraftMessages = isWire
+    ? chatLinesToDraftMessages(lines, {
+        agentBusy: busy,
+        agentName: meta?.agentName || defaultAgent,
+      })
+    : [];
+
+  const messageList = isWire ? (
+    <WireThreadView
+      messages={wireDraftMessages}
+      emptyTitle={emptyTitle}
+      emptySub={emptySub}
+      onOpenTerminal={onOpenTerminal}
+      scrollRef={logRef}
+    />
+  ) : (
+    <div
+      className={`chat-log${isCodex ? " codex-log" : ""}`}
+      ref={logRef}
+    >
       {lines.length === 0 && (
         <div className="bubble system empty-hint codex-bubble">
           {isCodex ? (
             <div className="msg-body">
-              <div className="empty-title">What should we work on?</div>
-              <div className="empty-sub">
-                Describe a task, or type /help. Tools and terminals open on the
-                right.
-              </div>
+              <div className="empty-title">{emptyTitle}</div>
+              <div className="empty-sub">{emptySub}</div>
             </div>
           ) : (
             "输入消息开始，或用 /help。"
@@ -1198,6 +1352,13 @@ export function ChatPanel({
         <div
           key={l.id}
           className={`bubble ${l.role}${l.err ? " err" : ""}${l.role === "tool" ? " tool-line" : ""}${l.terminalId ? " clickable" : ""}${isCodex ? " codex-bubble" : ""}`}
+          data-msg-id={l.id}
+          data-msg-role={l.role}
+          data-msg-preview={
+            l.role === "user"
+              ? (l.text || "").replace(/\s+/g, " ").trim().slice(0, 64)
+              : undefined
+          }
           onClick={() => {
             if (l.terminalId && onOpenTerminal) {
               onOpenTerminal(l.terminalId, l.agentName);
@@ -1277,7 +1438,306 @@ export function ChatPanel({
     setSlashIdx(0);
   };
 
-  const composer = (
+  const providerOptions = (
+    providers.length
+      ? providers
+      : meta?.provider
+        ? [{ id: meta.provider }]
+        : []
+  ).filter((p) => p.id);
+  const modelOptions = (
+    models.length ? models : meta?.model ? [{ id: meta.model }] : []
+  ).filter((m) => m.id);
+  const canRetry = lines.some((l) => l.role === "user");
+  const canSend = Boolean(input.trim());
+  /** Draft ComposerBar: stop only when busy and empty draft */
+  const showStopWire = busy && !canSend && pending.length === 0;
+  const statusError = /error|失败|不可用|HTML|JSON|后端|API\s*\d|拒绝/i.test(
+    status,
+  );
+
+  const slashMenu = slashOpen && slashHits.length > 0 && (
+    <div className="slash-menu" role="listbox">
+      {slashHits.map((s, i) => (
+        <button
+          key={s}
+          type="button"
+          className={`slash-item${s === slashSel || i === slashIdx ? " active" : ""}`}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            applySlashHit(s);
+          }}
+        >
+          /{s}
+        </button>
+      ))}
+    </div>
+  );
+
+  const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (slashOpen && slashHits.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIdx((i) => (i + 1) % slashHits.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIdx((i) => (i - 1 + slashHits.length) % slashHits.length);
+        return;
+      }
+      if (e.key === "Tab" && !e.shiftKey) {
+        e.preventDefault();
+        if (slashSel) applySlashHit(slashSel);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashOpen(false);
+        return;
+      }
+    } else if (e.key === "Escape") {
+      setSlashOpen(false);
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void send();
+    }
+  };
+
+  const onComposerChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const v = e.target.value;
+    setInput(v);
+    const open = v.startsWith("/") && !v.includes("\n");
+    setSlashOpen(open);
+    if (open) setSlashIdx(0);
+    const el = e.target;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 56), 180)}px`;
+  };
+
+  const usageClick = () => {
+    // Prefer dedicated stats route; fall back to /api/command usage
+    void fetchSessionStats()
+      .then((r) => {
+        const text =
+          r.text ||
+          (r.stats
+            ? JSON.stringify(r.stats, null, 0)
+            : "（无 session stats）");
+        append({ id: uid(), role: "system", text });
+      })
+      .catch(() =>
+        runCommand("usage")
+          .then((r) => {
+            const text =
+              typeof r.text === "string"
+                ? r.text
+                : JSON.stringify(r).slice(0, 400);
+            append({ id: uid(), role: "system", text });
+          })
+          .catch((err) =>
+            setStatus(err instanceof Error ? err.message : String(err)),
+          ),
+      );
+  };
+
+  /** Wire: draft ComposerBar card layout (textarea + toolbar icons) */
+  const wireComposer = (
+    <div className="composer codex-composer wire-composer">
+      <div className="composer-row-wrap">
+        {slashMenu}
+        <div
+          className={`composer-row wire-composer-card${
+            pending.length > 0 ? " has-pending-approval" : ""
+          }${busy ? " is-busy" : ""}`}
+        >
+          <textarea
+            ref={inputRef}
+            className="wire-composer-input"
+            value={input}
+            rows={2}
+            placeholder={
+              pending.length > 0
+                ? "可先输入下一条… 处理审批后发送"
+                : busy
+                  ? "运行中也可输入… Enter 发送（将排队）"
+                  : "输入消息… Enter 发送，Shift+Enter 换行 · / 命令"
+            }
+            onChange={onComposerChange}
+            onKeyDown={onComposerKeyDown}
+            onBlur={() => {
+              window.setTimeout(() => setSlashOpen(false), 120);
+            }}
+          />
+          <div className="composer-toolbar wire-composer-toolbar">
+            <div className="composer-toolbar-left wire-composer-tools">
+              <label className="chip-select wire-composer-chip">
+                <span className="visually-hidden">Provider</span>
+                <select
+                  value={meta?.provider ?? ""}
+                  onChange={(e) => void onProviderChange(e.target.value)}
+                  title="Provider · 下一轮生效"
+                  aria-label="Provider"
+                >
+                  {providerOptions.length === 0 ? (
+                    <option value="" disabled>
+                      未连接后端
+                    </option>
+                  ) : (
+                    providerOptions.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name || p.id}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+              <label className="chip-select wire-composer-chip">
+                <span className="visually-hidden">模型</span>
+                <select
+                  ref={modelSelectRef}
+                  value={meta?.model ?? ""}
+                  onChange={(e) => void onModelChange(e.target.value)}
+                  title="模型 · Ctrl+M"
+                  aria-label="模型"
+                >
+                  {modelOptions.length === 0 ? (
+                    <option value="" disabled>
+                      —
+                    </option>
+                  ) : (
+                    modelOptions.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name || m.id}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+              <label className="chip-select wire-composer-chip">
+                <span className="visually-hidden">Approval</span>
+                <select
+                  value={approval}
+                  onChange={(e) =>
+                    void onApprovalChange(e.target.value as ApprovalMode)
+                  }
+                  title="审批模式"
+                  aria-label="Approval"
+                >
+                  <option value="normal">normal</option>
+                  <option value="auto">auto</option>
+                  <option value="yolo">yolo</option>
+                </select>
+              </label>
+              {turnUsage ? (
+                <button
+                  type="button"
+                  className="usage-chip wire-composer-usage"
+                  title="点击查看会话 /usage"
+                  onClick={usageClick}
+                >
+                  ↑{turnUsage.in.toLocaleString()} ↓
+                  {turnUsage.out.toLocaleString()}
+                </button>
+              ) : (
+                <span
+                  className="usage-chip wire-composer-usage"
+                  title="上下文用量"
+                >
+                  {busy ? "运行中" : meta?.model || "ready"}
+                </span>
+              )}
+              {queueLen > 0 ? (
+                <button
+                  type="button"
+                  className="queue-badge"
+                  title="点击清空排队（不停止当前生成）"
+                  onClick={() => clearQueue()}
+                >
+                  {queueLen} 排队
+                </button>
+              ) : null}
+              <span className="wire-composer-tool-sep" aria-hidden />
+              <button
+                type="button"
+                className="composer-tool-btn"
+                disabled={!canRetry}
+                onClick={() => retryLastUser()}
+                title="重试上一条"
+                aria-label="重试上一条"
+              >
+                <ChromeMark kind="retry" size={14} decorative />
+              </button>
+              <button
+                type="button"
+                className="composer-tool-btn"
+                onClick={() =>
+                  void exportTranscript()
+                    .then((t) => copyToClipboard(t))
+                    .then(() => setStatus("已复制 transcript"))
+                    .catch((err) =>
+                      setStatus(
+                        err instanceof Error ? err.message : String(err),
+                      ),
+                    )
+                }
+                title="复制 transcript"
+                aria-label="复制 transcript"
+              >
+                <ChromeMark kind="copy" size={14} decorative />
+              </button>
+            </div>
+            <div className="composer-toolbar-right wire-composer-actions">
+              <span
+                className={`composer-status${statusError ? " is-error" : ""}${
+                  pending.length > 0 ? " is-approval" : ""
+                }`}
+                title={status || undefined}
+              >
+                {pending.length > 0
+                  ? "等待审批"
+                  : busy
+                    ? "运行中"
+                    : status || ""}
+              </span>
+              {showStopWire ? (
+                <button
+                  type="button"
+                  className="ghost wire-icon-btn wire-composer-stop"
+                  onClick={() => void stopRun()}
+                  title="停止并清空排队 · 输入文字可改为发送"
+                  aria-label="停止"
+                >
+                  <ChromeMark kind="stop" size={14} decorative />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="send-btn wire-icon-btn wire-composer-send"
+                  disabled={!canSend}
+                  onClick={() => void send()}
+                  aria-label={busy ? "排队发送" : "发送"}
+                  title={
+                    busy
+                      ? "排队发送 (Enter)"
+                      : "发送 (Enter)"
+                  }
+                >
+                  <ChromeMark kind="send" size={15} decorative />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const composer = isWire ? (
+    wireComposer
+  ) : (
     <div className={`composer${isCodex ? " codex-composer" : ""}`}>
       {isCodex && (
         <div className="composer-chips">
@@ -1288,27 +1748,17 @@ export function ChatPanel({
               onChange={(e) => void onProviderChange(e.target.value)}
               title="下一轮生效"
             >
-              {(() => {
-                const opts = (
-                  providers.length
-                    ? providers
-                    : meta?.provider
-                      ? [{ id: meta.provider }]
-                      : []
-                ).filter((p) => p.id);
-                if (opts.length === 0) {
-                  return (
-                    <option value="" disabled>
-                      未连接后端
-                    </option>
-                  );
-                }
-                return opts.map((p) => (
+              {providerOptions.length === 0 ? (
+                <option value="" disabled>
+                  未连接后端
+                </option>
+              ) : (
+                providerOptions.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name || p.id}
                   </option>
-                ));
-              })()}
+                ))
+              )}
             </select>
           </label>
           <label className="chip-select">
@@ -1319,27 +1769,17 @@ export function ChatPanel({
               onChange={(e) => void onModelChange(e.target.value)}
               title="下一轮生效 · Ctrl+M"
             >
-              {(() => {
-                const opts = (
-                  models.length
-                    ? models
-                    : meta?.model
-                      ? [{ id: meta.model }]
-                      : []
-                ).filter((m) => m.id);
-                if (opts.length === 0) {
-                  return (
-                    <option value="" disabled>
-                      —
-                    </option>
-                  );
-                }
-                return opts.map((m) => (
+              {modelOptions.length === 0 ? (
+                <option value="" disabled>
+                  —
+                </option>
+              ) : (
+                modelOptions.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.name || m.id}
                   </option>
-                ));
-              })()}
+                ))
+              )}
             </select>
           </label>
           <label className="chip-select">
@@ -1361,21 +1801,7 @@ export function ChatPanel({
               type="button"
               className="usage-chip"
               title="点击查看会话 /usage"
-              onClick={() => {
-                void runCommand("usage")
-                  .then((r) => {
-                    const text =
-                      typeof r.text === "string"
-                        ? r.text
-                        : JSON.stringify(r).slice(0, 400);
-                    append({ id: uid(), role: "system", text });
-                  })
-                  .catch((err) =>
-                    setStatus(
-                      err instanceof Error ? err.message : String(err),
-                    ),
-                  );
-              }}
+              onClick={usageClick}
             >
               ↑{turnUsage.in.toLocaleString()} ↓
               {turnUsage.out.toLocaleString()}
@@ -1393,11 +1819,7 @@ export function ChatPanel({
           ) : null}
           {status ? (
             <span
-              className={`composer-status${
-                /error|失败|不可用|HTML|JSON|后端|API\s*\d/i.test(status)
-                  ? " is-error"
-                  : ""
-              }`}
+              className={`composer-status${statusError ? " is-error" : ""}`}
               title={status}
             >
               {status}
@@ -1406,23 +1828,7 @@ export function ChatPanel({
         </div>
       )}
       <div className="composer-row-wrap">
-        {slashOpen && slashHits.length > 0 && (
-          <div className="slash-menu" role="listbox">
-            {slashHits.map((s, i) => (
-              <button
-                key={s}
-                type="button"
-                className={`slash-item${s === slashSel || i === slashIdx ? " active" : ""}`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  applySlashHit(s);
-                }}
-              >
-                /{s}
-              </button>
-            ))}
-          </div>
-        )}
+        {slashMenu}
         <div className="composer-row">
           <textarea
             ref={inputRef}
@@ -1436,51 +1842,9 @@ export function ChatPanel({
                   ? "Message agent…  (Enter to send · Shift+Enter newline · / commands)"
                   : "消息或 /命令…（Enter 发送 · Shift+Enter 换行）"
             }
-            onChange={(e) => {
-              const v = e.target.value;
-              setInput(v);
-              const open = v.startsWith("/") && !v.includes("\n");
-              setSlashOpen(open);
-              if (open) setSlashIdx(0);
-              // Auto-grow for multi-line (Shift+Enter)
-              const el = e.target;
-              el.style.height = "auto";
-              el.style.height = `${Math.min(Math.max(el.scrollHeight, 56), 180)}px`;
-            }}
-            onKeyDown={(e) => {
-              if (slashOpen && slashHits.length > 0) {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setSlashIdx((i) => (i + 1) % slashHits.length);
-                  return;
-                }
-                if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setSlashIdx(
-                    (i) => (i - 1 + slashHits.length) % slashHits.length,
-                  );
-                  return;
-                }
-                if (e.key === "Tab" && !e.shiftKey) {
-                  e.preventDefault();
-                  if (slashSel) applySlashHit(slashSel);
-                  return;
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setSlashOpen(false);
-                  return;
-                }
-              } else if (e.key === "Escape") {
-                setSlashOpen(false);
-              }
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
+            onChange={onComposerChange}
+            onKeyDown={onComposerKeyDown}
             onBlur={() => {
-              // delay so mousedown on menu fires first
               window.setTimeout(() => setSlashOpen(false), 120);
             }}
             rows={isCodex ? 3 : 2}
@@ -1499,7 +1863,7 @@ export function ChatPanel({
             type="button"
             className="send-btn"
             onClick={() => void send()}
-            disabled={!input.trim()}
+            disabled={!canSend}
             title={busy ? "排队发送" : "发送"}
           >
             {busy ? "Queue" : "Send"}
@@ -1534,28 +1898,12 @@ export function ChatPanel({
     );
   }
 
-  return (
-    <div className={`chat-panel codex-chat${rootExtra}`.trim()}>
-      {railHost && threadRail ? createPortal(threadRail, railHost) : null}
-      {busy && (
-        <div className="stream-banner" role="status">
-          <span className="stream-dot" />
-          Agent running…
-          {queueLen > 0 ? (
-            <span className="queue-badge">{queueLen} queued</span>
-          ) : null}
-          <button
-            type="button"
-            className="linkish"
-            onClick={() => void stopRun()}
-          >
-            Stop
-          </button>
-        </div>
-      )}
-      {approvalBlock}
-      <div className="codex-thread-scroll">{messageList}</div>
-      <div className="codex-composer-dock">
+  const composerDock = (
+    <div
+      className={`codex-composer-dock${isWire ? " wire-composer-dock" : ""}`}
+    >
+      {/* Wire: retry/copy live in ComposerBar-style toolbar; codex keeps links */}
+      {!isWire ? (
         <div className="thread-actions">
           <button
             type="button"
@@ -1580,21 +1928,91 @@ export function ChatPanel({
             Copy transcript
           </button>
         </div>
-        {composer}
+      ) : null}
+      {composer}
+    </div>
+  );
+
+  return (
+    <div
+      className={`chat-panel codex-chat${rootExtra}${
+        busy ? " has-busy" : ""
+      }${pending.length > 0 ? " has-approval" : ""}${
+        showBackToBottom && isWire ? " has-jump" : ""
+      }`.trim()}
+      aria-label={isWire ? "上下文" : undefined}
+    >
+      {railHost && threadRail ? createPortal(threadRail, railHost) : null}
+      {/* Draft wire: busy lives in bottom dock + composer stop — no top stream-banner */}
+      {busy && !isWire ? (
+        <div className="stream-banner" role="status">
+          <span className="stream-dot" />
+          Agent running…
+          {queueLen > 0 ? (
+            <span className="queue-badge">{queueLen} queued</span>
+          ) : null}
+          <button
+            type="button"
+            className="linkish"
+            onClick={() => void stopRun()}
+          >
+            Stop
+          </button>
+        </div>
+      ) : null}
+      {/* Draft ContextPanel: jump-prev at top when scrolled */}
+      {isWire && showJumpPrev ? (
+        <button
+          type="button"
+          className="wire-jump-prev"
+          onClick={jumpPrevUser}
+          title="跳转到上一条用户消息"
+          aria-label={jumpPrevLabel}
+        >
+          <span className="wire-jump-prev-text">{jumpPrevLabel}</span>
+        </button>
+      ) : null}
+      {!isWire ? approvalBlock : null}
+      <div
+        className={`codex-thread-scroll${
+          isWire ? " wire-thread-scroll" : ""
+        }`}
+      >
+        {messageList}
       </div>
+      {isWire && showBackToBottom ? (
+        <button
+          type="button"
+          className="wire-jump-bottom"
+          onClick={scrollThreadToBottom}
+          title="回到底部"
+          aria-label="回到底部"
+        >
+          ↓ 回到底部
+        </button>
+      ) : null}
+      {isWire ? (
+        <div className="wire-float wire-float-bottom">
+          {approvalBlock}
+          {composerDock}
+        </div>
+      ) : (
+        composerDock
+      )}
     </div>
   );
 }
 
-function relativeTime(iso?: string): string {
+function relativeTime(iso?: string, wire = false): string {
   if (!iso) return "";
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "";
   const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  if (sec < 60) return "just now";
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
-  if (sec < 86400 * 7) return `${Math.floor(sec / 86400)}d ago`;
+  if (sec < 60) return wire ? "刚刚" : "just now";
+  if (sec < 3600) return `${Math.floor(sec / 60)}${wire ? "分前" : "m ago"}`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}${wire ? "时前" : "h ago"}`;
+  if (sec < 86400 * 7)
+    return `${Math.floor(sec / 86400)}${wire ? "天前" : "d ago"}`;
   return String(iso).slice(5, 10);
 }
 
@@ -1602,62 +2020,128 @@ function ThreadRail(props: {
   sessions: SessionSummary[];
   activeId: string | null;
   busy: boolean;
+  wire?: boolean;
+  agentLabel?: string;
   onNew: () => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
 }) {
-  const busyHint = props.busy ? " · stops current run" : "";
+  const wire = Boolean(props.wire);
+  const busyHint = props.busy
+    ? wire
+      ? " · 将停止当前生成"
+      : " · stops current run"
+    : "";
+  const untitled = wire ? "未命名" : "Untitled";
   return (
-    <div className={`thread-rail${props.busy ? " is-busy" : ""}`}>
-      <button
-        type="button"
-        className="thread-new"
-        onClick={props.onNew}
-        title={`New task${busyHint}`}
+    <div
+      className={`thread-rail${props.busy ? " is-busy" : ""}${
+        wire ? " wire-session-list" : ""
+      }`}
+      aria-label={
+        wire
+          ? props.agentLabel
+            ? `${props.agentLabel} 的会话`
+            : "会话列表"
+          : "Sessions"
+      }
+    >
+      <div className={wire ? "wire-new-task-wrap" : undefined}>
+        <button
+          type="button"
+          className={wire ? "wire-new-task-btn thread-new" : "thread-new"}
+          onClick={props.onNew}
+          title={
+            wire ? `新建会话${busyHint}` : `New task${busyHint}`
+          }
+        >
+          {wire ? "新建会话" : "New task"}
+        </button>
+      </div>
+      <div
+        className={
+          wire ? "wire-pane-title thread-list-label" : "thread-list-label"
+        }
       >
-        New task
-      </button>
-      <div className="thread-list-label">Sessions</div>
-      <div className="thread-list">
+        {wire ? (
+          <span className="wire-pane-title-with-icon">
+            会话
+            {props.agentLabel ? (
+              <span className="wire-session-agent-label">
+                {props.agentLabel}
+              </span>
+            ) : null}
+          </span>
+        ) : (
+          "Sessions"
+        )}
+      </div>
+      <div className={wire ? "wire-session-scroll thread-list" : "thread-list"}>
         {props.sessions.length === 0 && (
-          <div className="thread-empty">No sessions yet</div>
+          <div className={wire ? "wire-empty sm thread-empty" : "thread-empty"}>
+            {wire
+              ? props.agentLabel
+                ? `暂无 ${props.agentLabel} 的会话`
+                : "暂无会话"
+              : "No sessions yet"}
+          </div>
         )}
         {props.sessions.map((s) => {
           const active = s.id === props.activeId;
           const sub =
             s.messageCount > 0
-              ? `${s.messageCount} message${s.messageCount === 1 ? "" : "s"}`
-              : "Empty session";
+              ? wire
+                ? `${s.messageCount} 条消息`
+                : `${s.messageCount} message${s.messageCount === 1 ? "" : "s"}`
+              : wire
+                ? "空会话"
+                : "Empty session";
           return (
             <div
               key={s.id}
-              className={`thread-item-row${active ? " active" : ""}`}
+              className={`thread-item-row${wire ? " wire-session-row" : ""}${
+                active ? " active" : ""
+              }`}
             >
               <button
                 type="button"
-                className="thread-item"
+                className={wire ? "wire-session-btn thread-item" : "thread-item"}
                 onClick={() => props.onSelect(s.id)}
                 onDoubleClick={() =>
-                  props.onRename(s.id, s.title || "Untitled")
+                  props.onRename(s.id, s.title || untitled)
                 }
-                title={`Double-click to rename${busyHint}`}
+                title={
+                  wire
+                    ? `双击重命名${busyHint}`
+                    : `Double-click to rename${busyHint}`
+                }
               >
-                <span className="thread-title">
-                  {(s.title || "Untitled").slice(0, 40)}
+                <span
+                  className={
+                    wire ? "wire-session-title thread-title" : "thread-title"
+                  }
+                >
+                  {(s.title || untitled).slice(0, 40)}
                 </span>
-                <span className="thread-meta">
+                <span
+                  className={
+                    wire ? "wire-session-time thread-meta" : "thread-meta"
+                  }
+                >
                   <span className="thread-meta-sub">{sub}</span>
                   <span className="thread-meta-time">
-                    {relativeTime(s.lastMsgAt || s.updatedAt)}
+                    {relativeTime(s.lastMsgAt || s.updatedAt, wire)}
                   </span>
                 </span>
               </button>
               <button
                 type="button"
-                className="thread-del"
-                title={`Delete session${busyHint}`}
-                aria-label="Delete session"
+                className={wire ? "wire-session-del thread-del" : "thread-del"}
+                title={
+                  wire ? `删除会话${busyHint}` : `Delete session${busyHint}`
+                }
+                aria-label={wire ? "删除会话" : "Delete session"}
                 onClick={(e) => {
                   e.stopPropagation();
                   props.onDelete(s.id);

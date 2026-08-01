@@ -58,6 +58,11 @@ export type ProjectWorkbenchProps = {
   projectLabel: string;
   projectPath: string;
   docs?: ProjectDoc[];
+  /**
+   * Optional live host: when user accepts baseline ("同步"), persist markdown
+   * to real storage. Draft shell omits this (session-local only).
+   */
+  onPersistMarkdown?: (path: string, content: string) => void | Promise<void>;
 };
 
 const VIEW_STORAGE_KEY = "maou-draft-project-view";
@@ -87,6 +92,7 @@ export function ProjectWorkbench({
   projectLabel,
   projectPath,
   docs = PROJECT_DOCS,
+  onPersistMarkdown,
 }: ProjectWorkbenchProps) {
   const restored = useMemo(
     () => readProjectSession(projectPath),
@@ -371,25 +377,38 @@ export function ProjectWorkbench({
     flashStatus("已重置当前文档");
   };
 
-  /** Draft "save": accept current MD + graph as clean baseline (no disk I/O). */
+  /** Draft "save": accept current MD + graph as clean baseline; optional live persist. */
   const onAcceptBaseline = () => {
     setContentBaselines((prev) => ({ ...prev, [activePath]: content }));
     setGraphBaselines((b) => ({
       ...b,
       [activePath]: graphFingerprint(graph),
     }));
-    flashStatus("已同步当前文档");
+    if (onPersistMarkdown) {
+      void Promise.resolve(onPersistMarkdown(activePath, content))
+        .then(() => flashStatus("已同步当前文档 · 已写入"))
+        .catch((e) =>
+          flashStatus(
+            e instanceof Error ? e.message : `写入失败: ${String(e)}`,
+          ),
+        );
+    } else {
+      flashStatus("已同步当前文档");
+    }
   };
 
   /** Accept baselines for every dirty path (session "save all"). */
   const onAcceptAllBaselines = () => {
     if (dirtyPathList.length === 0) return;
     const n = dirtyPathList.length;
+    const payloads: { path: string; content: string }[] = [];
     setContentBaselines((prev) => {
       const next = { ...prev };
       for (const path of dirtyPathList) {
         const doc = getProjectDoc(path, docs);
-        next[path] = drafts[path] ?? doc?.content ?? "";
+        const body = drafts[path] ?? doc?.content ?? "";
+        next[path] = body;
+        payloads.push({ path, content: body });
       }
       return next;
     });
@@ -405,7 +424,21 @@ export function ProjectWorkbench({
       }
       return next;
     });
-    flashStatus(`已同步 ${n} 个文档`);
+    if (onPersistMarkdown) {
+      void Promise.all(
+        payloads.map((p) =>
+          Promise.resolve(onPersistMarkdown(p.path, p.content)),
+        ),
+      )
+        .then(() => flashStatus(`已同步 ${n} 个文档 · 已写入`))
+        .catch((e) =>
+          flashStatus(
+            e instanceof Error ? e.message : `写入失败: ${String(e)}`,
+          ),
+        );
+    } else {
+      flashStatus(`已同步 ${n} 个文档`);
+    }
   };
 
   const onGraphChange = (next: ProjectGraphState) => {

@@ -13,6 +13,12 @@
   position: relative;
 }
 
+/* Keep ChatPanel mounted across modes without flashing layout */
+.live-shell .wire-mid.is-chat.is-hidden-mode,
+.live-shell .wire-mid.is-chat[hidden] {
+  display: none !important;
+}
+
 /* Session portal host fills left sessions column */
 .live-shell .live-session-rail-host {
   flex: 1;
@@ -30,8 +36,9 @@
   overflow: hidden;
 }
 
-/* Restyle ChatPanel ThreadRail to sit in wire left sessions */
-.live-shell .thread-rail {
+/* Restyle ChatPanel ThreadRail to sit in wire left sessions (SessionList-like) */
+.live-shell .thread-rail,
+.live-shell .thread-rail.wire-session-list {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -41,7 +48,8 @@
   border: none;
 }
 
-.live-shell .thread-new {
+.live-shell .thread-new,
+.live-shell .wire-new-task-btn.thread-new {
   width: 100%;
   margin-bottom: 8px;
   border: 1px solid var(--n-line-solid, #3d3834);
@@ -53,8 +61,17 @@
   padding: 8px 10px;
 }
 
-.live-shell .thread-new:hover {
+.live-shell .thread-new:hover,
+.live-shell .wire-new-task-btn.thread-new:hover {
   background: var(--n-hover, #524c45);
+}
+
+.live-shell .wire-session-agent-label {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--n-tertiary, #8a8278);
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .live-shell .thread-list-label {
@@ -144,9 +161,32 @@
 .live-shell .wire-center > .chat-panel.codex-chat.wire-context {
   flex: 1;
   min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
-/* Files rail hosts MarkdownWorkbench */
+/* Draft ContextPanel parity: floating composer + approval stack */
+.live-shell .wire-context .wire-float-bottom {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: var(--center-max, 100%);
+  margin: 0 auto;
+  padding: 0 var(--center-pad-x, 16px) 12px;
+  box-sizing: border-box;
+  z-index: 6;
+}
+
+.live-shell .wire-context .wire-float-bottom .codex-composer-dock {
+  padding-top: 0;
+}
+
+/* No top stream-banner in wire (busy → dock + composer 停止) */
+.live-shell .wire-context .stream-banner {
+  display: none !important;
+}
+
+/* Files rail: draft FilesRail + optional live editor */
 .live-shell .live-files-rail {
   min-width: 0;
   min-height: 0;
@@ -157,7 +197,56 @@
   border-left: 1px solid var(--n-line-solid, #3d3834);
 }
 
+.live-shell .live-files-rail-stack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.live-shell .live-files-tree {
+  flex: 0 1 45%;
+  min-height: 120px;
+  overflow: auto;
+}
+
+.live-shell .live-files-editor {
+  flex: 1 1 55%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--n-line-solid, #3d3834);
+  overflow: hidden;
+}
+
+.live-shell .live-files-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--n-secondary, #c9c2b6);
+  flex: 0 0 auto;
+}
+
+.live-shell .live-files-editor-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--n-mono, monospace);
+}
+
+.live-shell .live-files-err {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--n-warn, #ffd900);
+}
+
 .live-shell .live-files-rail .md-workbench,
+.live-shell .live-files-editor .md-workbench,
 .live-shell .live-project-host .md-workbench {
   flex: 1;
   min-height: 0;
@@ -172,10 +261,96 @@
   overflow: hidden;
 }
 
+.live-shell .live-project-host > .wire-project,
+.live-shell .live-project-host .wire-project-workbench,
+.live-shell .live-project-host > div:last-child {
+  flex: 1;
+  min-height: 0;
+}
+
+.live-shell .live-project-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--n-secondary, #c9c2b6);
+  border-bottom: 1px solid var(--n-line-solid, #3d3834);
+  flex: 0 0 auto;
+}
+
+.live-shell .live-project-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .live-shell .wire-mid.is-project {
   display: flex;
   flex-direction: column;
   min-height: 0;
+}
+
+/* Live settings (backend-driven connection/model) */
+.live-shell .wire-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.live-shell .wire-settings-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.live-shell .wire-settings-field-row .wire-settings-field {
+  flex: 1 1 120px;
+}
+
+.live-shell .wire-settings-label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--n-tertiary, #8a8278);
+}
+
+.live-shell .wire-settings-input,
+.live-shell .wire-settings-readonly {
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-elevated, #282522);
+  color: var(--n-label, #f5f0e8);
+  border-radius: 0;
+}
+
+.live-shell .wire-settings-readonly {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--n-mono, monospace);
+  font-size: 12px;
+}
+
+.live-shell .wire-settings-error {
+  color: var(--n-err, #ff741d);
+  font-size: 12px;
+}
+
+.live-shell .wire-settings-status {
+  color: var(--n-ok, #3bffa7);
+  font-size: 12px;
+}
+
+.live-shell .wire-settings-empty {
+  padding: 12px 8px;
+  font-size: 12px;
+  color: var(--n-tertiary, #8a8278);
 }
 
 /* Terminal float — keeps prior TerminalPanel entry without old right-rail-only chrome */

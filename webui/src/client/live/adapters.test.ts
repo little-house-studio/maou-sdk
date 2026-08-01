@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Meta, TerminalInfo } from "../api";
 import {
+  liveAgentsToDraftAgents,
   metaToAgents,
   metaToDraftMeta,
   projectLabelFromRoot,
@@ -47,13 +48,52 @@ describe("live adapters", () => {
     assert.equal(d.agentName, "coding");
   });
 
-  it("metaToAgents reflects busy status", () => {
+  it("metaToAgents reflects busy status (fallback single row)", () => {
     const idle = metaToAgents(sampleMeta, false);
     assert.equal(idle.length, 1);
     assert.equal(idle[0]!.status, "idle");
     assert.equal(idle[0]!.name, "coding");
     const busy = metaToAgents(sampleMeta, true);
     assert.equal(busy[0]!.status, "running");
+  });
+
+  it("liveAgentsToDraftAgents maps multi-agent registry rows", () => {
+    const list = liveAgentsToDraftAgents(
+      [
+        {
+          id: "system:coding",
+          name: "coding",
+          displayName: "Coding",
+          role: "coding",
+          status: "idle",
+          group: "system",
+        },
+        {
+          id: "system:coding:ops",
+          name: "ops",
+          displayName: "Ops",
+          role: "ops",
+          status: "blocked",
+          group: "system",
+          parent: "coding",
+        },
+        {
+          id: "project:/p:explore",
+          name: "explore",
+          displayName: "Explore",
+          role: "explore",
+          status: "running",
+          group: "project",
+          projectPath: "/p",
+          projectName: "p",
+        },
+      ],
+      { activeAgentName: "coding", agentBusy: true },
+    );
+    assert.equal(list.length, 3);
+    assert.equal(list[0]!.status, "running"); // busy active
+    assert.equal(list[1]!.parent, "coding");
+    assert.equal(list[2]!.group, "project");
   });
 
   it("terminalsToTermLines and bgTasks from TerminalInfo", () => {

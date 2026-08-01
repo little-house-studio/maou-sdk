@@ -5,38 +5,45 @@
  *   top:    modes 聊天 / 项目 / Team / 设置 + meta + 文件
  *   left:   agent list + session list (ChatPanel ThreadRail portal)
  *   center: live ChatPanel (stream / slash / approval / model)
- *   right:  MarkdownWorkbench when 文件 open
+ *   right:  LiveFilesRail (FilesRail + live FS) when 文件 open
  *   bottom: BottomInfoBar dock boards (log / tasks / terminal / agent)
  *
- * TerminalPanel remains reachable via dock hotkey Ctrl+` / tool-card open.
+ * TerminalPanel: dock terminal board expand or Ctrl+` / tool-card open.
  * draft.html stays fixture-isolated (main-draft.tsx); this file is live only.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChatPanel } from "./ChatPanel";
 import { TerminalPanel, type OpenTerminalRequest } from "./TerminalPanel";
-import { MarkdownWorkbench } from "./markdown";
 import "./markdown/styles.css";
-import { fetchMeta, fetchTerminals, type Meta } from "./api";
 import {
-  cloneApiConfig,
-  defaultApiConfig,
-  type DraftApiConfig,
+  fetchAgents,
+  fetchMeta,
+  fetchTerminals,
+  setActiveAgent,
+  type LiveAgentInfo,
+  type Meta,
+} from "./api";
+import {
   type DraftBgTask,
   type UiMode,
   BottomInfoBar,
-  SettingsPanel,
   TeamBoard,
+  type DockCardId,
 } from "./drafts";
 import { WireTopbar } from "./drafts/layout/WireTopbar";
 import { ResizeHandle } from "./drafts/layout/ResizeHandle";
 import { AgentList } from "./drafts/panels/AgentList";
 import {
+  liveAgentsToDraftAgents,
   metaToAgents,
   metaToDraftMeta,
   terminalsToBgTasks,
   terminalsToTermLines,
   usageLabelFromMeta,
 } from "./live/adapters";
+import { LiveFilesRail } from "./live/LiveFilesRail";
+import { LiveProjectHost } from "./live/LiveProjectHost";
+import { LiveSettingsPanel } from "./live/LiveSettingsPanel";
 import "./drafts/draft.css";
 import "./live-shell.css";
 
@@ -56,30 +63,70 @@ export function App() {
   const [metaOffline, setMetaOffline] = useState(true);
   const [openTerm, setOpenTerm] = useState<OpenTerminalRequest>(null);
   const [showTerminal, setShowTerminal] = useState(false);
-  const [showFiles, setShowFiles] = useState(false);
+  /** Match draft fixtures default: files rail open */
+  const [showFiles, setShowFiles] = useState(true);
   const [agentBusy, setAgentBusy] = useState(false);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [leftW, setLeftW] = useState(LEFT_DEFAULT);
   const [agentPct, setAgentPct] = useState(AGENT_H_DEFAULT);
   const [railW, setRailW] = useState(RAIL_DEFAULT);
-  const [apiConfig, setApiConfig] = useState<DraftApiConfig>(() =>
-    defaultApiConfig(),
-  );
-  const [termLines, setTermLines] = useState<string[]>([
+  const [termLinesRaw, setTermLinesRaw] = useState<string[]>([
     "$ ready · no agent terminals",
   ]);
+  const [chatLogLines, setChatLogLines] = useState<string[]>([]);
   const [bgTasks, setBgTasks] = useState<DraftBgTask[]>([]);
+  /** Live agent registry list (CLI-aligned); null = not loaded yet */
+  const [liveAgentRows, setLiveAgentRows] = useState<LiveAgentInfo[] | null>(
+    null,
+  );
+  const [activeAgentName, setActiveAgentName] = useState<string>("coding");
+  /** Empty until /api/agents hydrates — never assume system:coding (ops list may only have system:main). */
+  const [activeSwitchId, setActiveSwitchId] = useState<string>("");
+  const [activeProjectPath, setActiveProjectPath] = useState<string | null>(
+    null,
+  );
+  /** Dock log board: live chat system/tool lines + agent terminals */
+  const termLines = useMemo(() => {
+    if (!chatLogLines.length) return termLinesRaw;
+    return [...chatLogLines.slice(-12), ...termLinesRaw.slice(0, 12)];
+  }, [chatLogLines, termLinesRaw]);
 
   useEffect(() => {
     void fetchMeta()
       .then((m) => {
         setMeta(m);
         setMetaOffline(false);
+        if (m.agentName) setActiveAgentName(m.agentName);
       })
       .catch(() => {
         setMeta(null);
         setMetaOffline(true);
       });
+  }, []);
+
+  // CLI-aligned agent list poll (ops list + presence)
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await fetchAgents();
+        if (cancelled) return;
+        setLiveAgentRows(r.agents);
+        if (r.activeAgentName) setActiveAgentName(r.activeAgentName);
+        if (r.activeSwitchId) setActiveSwitchId(r.activeSwitchId);
+        setActiveProjectPath(r.activeProjectPath);
+      } catch {
+        if (!cancelled) {
+          setLiveAgentRows((prev) => prev);
+        }
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
   }, []);
 
   // Dock boards: poll live agent terminals
@@ -93,11 +140,11 @@ export function App() {
           ts = await fetchTerminals(undefined, { all: true });
         }
         if (cancelled) return;
-        setTermLines(terminalsToTermLines(ts));
+        setTermLinesRaw(terminalsToTermLines(ts));
         setBgTasks(terminalsToBgTasks(ts));
       } catch {
         if (!cancelled) {
-          setTermLines(["$ terminal poll offline"]);
+          setTermLinesRaw(["$ terminal poll offline"]);
         }
       }
     };
@@ -115,7 +162,6 @@ export function App() {
       if (!mod) return;
       if (e.key.toLowerCase() === "b" && !e.shiftKey) {
         e.preventDefault();
-        // Collapse/expand left column width (draft parity for Ctrl+B)
         setLeftW((w) => (w <= LEFT_MIN + 4 ? LEFT_DEFAULT : LEFT_MIN));
         return;
       }
@@ -145,19 +191,69 @@ export function App() {
     [meta?.agentName],
   );
 
-  const onApiChange = useCallback((next: DraftApiConfig) => {
-    setApiConfig(cloneApiConfig(next));
+  const onDockTabChange = useCallback((tab: DockCardId) => {
+    if (tab === "terminal") {
+      setMode("chat");
+      setShowTerminal(true);
+    }
   }, []);
 
-  const draftMeta = useMemo(
-    () => metaToDraftMeta(meta, { offline: metaOffline }),
-    [meta, metaOffline],
-  );
-  const agents = useMemo(
-    () => metaToAgents(meta, agentBusy),
-    [meta, agentBusy],
-  );
-  const activeAgent = agents[0] ?? null;
+  const draftMeta = useMemo(() => {
+    const base = metaToDraftMeta(meta, { offline: metaOffline });
+    if (activeAgentName && activeAgentName !== base.agentName) {
+      return { ...base, agentName: activeAgentName };
+    }
+    return base;
+  }, [meta, metaOffline, activeAgentName]);
+
+  const agents = useMemo(() => {
+    if (liveAgentRows && liveAgentRows.length > 0) {
+      return liveAgentsToDraftAgents(liveAgentRows, {
+        activeAgentName,
+        activeSwitchId,
+        agentBusy,
+      });
+    }
+    return metaToAgents(meta, agentBusy);
+  }, [liveAgentRows, activeAgentName, activeSwitchId, agentBusy, meta]);
+
+  const activeAgent = useMemo(() => {
+    // Prefer exact switch_id match (unique across multi-project coding rows)
+    const bySwitch = agents.find((a) => a.id === activeSwitchId);
+    if (bySwitch) return bySwitch;
+    // Scoped name+path before bare name (avoid maou-example vs maou-sdk collision)
+    if (activeProjectPath) {
+      const byPath = agents.find(
+        (a) =>
+          a.name === activeAgentName && a.projectPath === activeProjectPath,
+      );
+      if (byPath) return byPath;
+    }
+    // System-only name match (no projectPath)
+    const bySystemName = agents.find(
+      (a) => a.name === activeAgentName && a.group === "system",
+    );
+    if (bySystemName) return bySystemName;
+    return null;
+  }, [agents, activeSwitchId, activeAgentName, activeProjectPath]);
+
+  /** agentId is CLI switch_id from AgentList (project:<path>:<name> or system:<name>) */
+  const onSelectAgent = useCallback(async (agentId: string) => {
+    const hit = agents.find((a) => a.id === agentId);
+    const switchId = hit?.id || agentId;
+    try {
+      const r = await setActiveAgent(switchId);
+      setActiveAgentName(r.activeAgentName);
+      setActiveSwitchId(r.activeSwitchId || switchId);
+      setActiveProjectPath(r.activeProjectPath);
+      setLiveAgentRows(r.agents);
+      setMeta(r.meta);
+      setMetaOffline(false);
+    } catch {
+      setActiveSwitchId(switchId);
+      if (hit?.name) setActiveAgentName(hit.name);
+    }
+  }, [agents]);
   const usageLabel = useMemo(
     () => usageLabelFromMeta(meta, agentBusy),
     [meta, agentBusy],
@@ -171,16 +267,26 @@ export function App() {
 
   const onModeChange = useCallback((m: UiMode) => {
     setMode(m);
-    if (m !== "chat") {
-      // Keep chat engine mounted only in chat mode to avoid dual workbench
-    }
   }, []);
+
+  /** Stable callback for LiveSettingsPanel (avoid mount reload identity thrash) */
+  const onSettingsMetaChange = useCallback((m: Meta) => {
+    setMeta(m);
+    setMetaOffline(false);
+  }, []);
+
+  const onSettingsClose = useCallback(() => {
+    setMode("chat");
+  }, []);
+
+  /** Chat mid stays mounted so stream/session state survives mode switches */
+  const chatVisible = mode === "chat";
 
   return (
     <div
       className={`wire-shell draft-shell live-shell${
         mode === "settings" ? " has-settings" : ""
-      }${showTerminal ? " has-terminal-float" : ""}`}
+      }${showTerminal && chatVisible ? " has-terminal-float" : ""}`}
       data-live-shell="true"
       data-ui-mode={mode}
     >
@@ -202,140 +308,153 @@ export function App() {
 
       {mode === "settings" ? (
         <div className="wire-mid is-settings" data-live-region="settings">
-          <SettingsPanel
-            api={apiConfig}
-            onApiChange={onApiChange}
+          <LiveSettingsPanel
             presentation="page"
-            onClose={() => setMode("chat")}
+            onClose={onSettingsClose}
+            onMetaChange={onSettingsMetaChange}
           />
         </div>
-      ) : mode === "project" ? (
+      ) : null}
+
+      {mode === "project" ? (
         <div className="wire-mid is-project" data-live-region="project">
-          <div className="live-project-host">
-            <MarkdownWorkbench />
-          </div>
+          <LiveProjectHost
+            projectLabel={draftMeta.projectLabel}
+            projectPath={draftMeta.projectPath}
+          />
         </div>
-      ) : mode === "team" ? (
+      ) : null}
+
+      {mode === "team" ? (
         <div className="wire-mid is-team" data-live-region="team">
           <TeamBoard />
         </div>
-      ) : (
-        <div className="wire-mid is-chat" data-live-region="chat">
-          <div className="wire-left" style={{ width: leftW }}>
-            <div
-              className="wire-left-agents"
-              style={{ flex: `0 0 ${agentPct}%` }}
-            >
-              <AgentList
-                agents={agents}
-                activeId={activeAgent?.id ?? "live-primary"}
-                onSelect={() => {
-                  /* single live agent today */
-                }}
-              />
-            </div>
-            <div
-              className="wire-v-split"
-              role="separator"
-              aria-orientation="horizontal"
-              aria-label="拖动调整 agent / 会话 高度"
-              onPointerDown={(e) => {
-                const col = e.currentTarget.parentElement as HTMLElement;
-                const rect = col.getBoundingClientRect();
-                const move = (ev: PointerEvent) =>
-                  onAgentSplitDrag(ev.clientY, rect);
-                const up = () => {
-                  window.removeEventListener("pointermove", move);
-                  window.removeEventListener("pointerup", up);
-                  document.body.style.cursor = "";
-                  document.body.style.userSelect = "";
-                };
-                document.body.style.cursor = "row-resize";
-                document.body.style.userSelect = "none";
-                window.addEventListener("pointermove", move);
-                window.addEventListener("pointerup", up);
+      ) : null}
+
+      {/* Always mount chat engine; hide when other modes active */}
+      <div
+        className={`wire-mid is-chat${chatVisible ? "" : " is-hidden-mode"}`}
+        data-live-region="chat"
+        hidden={!chatVisible}
+        aria-hidden={!chatVisible}
+      >
+        <div className="wire-left" style={{ width: leftW }}>
+          <div
+            className="wire-left-agents"
+            style={{ flex: `0 0 ${agentPct}%` }}
+          >
+            <AgentList
+              agents={agents}
+              activeId={activeAgent?.id ?? activeSwitchId ?? ""}
+              onSelect={(id) => {
+                void onSelectAgent(id);
               }}
             />
-            <div className="wire-left-sessions">
-              <div
-                id={LIVE_SESSION_RAIL_ID}
-                className="live-session-rail-host"
-                data-live-session-rail="true"
-              />
-            </div>
           </div>
-
-          <ResizeHandle
-            edge="right"
-            size={leftW}
-            min={LEFT_MIN}
-            max={LEFT_MAX}
-            onResize={setLeftW}
-            label="拖动调整左侧栏宽度"
+          <div
+            className="wire-v-split"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="拖动调整 agent / 会话 高度"
+            onPointerDown={(e) => {
+              const col = e.currentTarget.parentElement as HTMLElement;
+              const rect = col.getBoundingClientRect();
+              const move = (ev: PointerEvent) =>
+                onAgentSplitDrag(ev.clientY, rect);
+              const up = () => {
+                window.removeEventListener("pointermove", move);
+                window.removeEventListener("pointerup", up);
+                document.body.style.cursor = "";
+                document.body.style.userSelect = "";
+              };
+              document.body.style.cursor = "row-resize";
+              document.body.style.userSelect = "none";
+              window.addEventListener("pointermove", move);
+              window.addEventListener("pointerup", up);
+            }}
           />
-
-          <div className="wire-center" data-live-region="thread">
-            <ChatPanel
-              layout="codex"
-              className="wire-context"
-              defaultAgent={meta?.agentName || "coding"}
-              onOpenTerminal={onOpenTerminal}
-              onMetaChange={(m) => {
-                setMeta(m);
-                setMetaOffline(false);
-              }}
-              threadRailId={LIVE_SESSION_RAIL_ID}
-              onBusyChange={setAgentBusy}
-              onSessionTitleChange={setSessionTitle}
+          <div className="wire-left-sessions">
+            <div
+              id={LIVE_SESSION_RAIL_ID}
+              className="live-session-rail-host"
+              data-live-session-rail="true"
             />
           </div>
-
-          {showFiles && (
-            <>
-              <ResizeHandle
-                edge="left"
-                size={railW}
-                min={RAIL_MIN}
-                max={RAIL_MAX}
-                onResize={setRailW}
-                label="拖动调整文件栏宽度"
-              />
-              <div
-                className="wire-right live-files-rail"
-                style={{ width: railW }}
-                data-live-region="files"
-              >
-                <MarkdownWorkbench />
-              </div>
-            </>
-          )}
-
-          {showTerminal && (
-            <aside
-              className="wire-terminal-float"
-              aria-label="agent terminal"
-              data-live-region="terminal"
-            >
-              <div className="wire-terminal-float-head">
-                <span>Terminal</span>
-                <button
-                  type="button"
-                  className="wire-text-btn"
-                  onClick={() => setShowTerminal(false)}
-                  title="Close terminal (Ctrl+`)"
-                >
-                  关闭
-                </button>
-              </div>
-              <TerminalPanel
-                defaultAgent={meta?.agentName || "coding"}
-                openRequest={openTerm}
-                onOpenConsumed={() => setOpenTerm(null)}
-              />
-            </aside>
-          )}
         </div>
-      )}
+
+        <ResizeHandle
+          edge="right"
+          size={leftW}
+          min={LEFT_MIN}
+          max={LEFT_MAX}
+          onResize={setLeftW}
+          label="拖动调整左侧栏宽度"
+        />
+
+        <div className="wire-center" data-live-region="thread">
+          <ChatPanel
+            layout="codex"
+            chrome="wire"
+            className="wire-context"
+            defaultAgent={activeAgentName || meta?.agentName || "coding"}
+            onOpenTerminal={onOpenTerminal}
+            onMetaChange={(m) => {
+              setMeta(m);
+              setMetaOffline(false);
+              if (m.agentName) setActiveAgentName(m.agentName);
+            }}
+            threadRailId={LIVE_SESSION_RAIL_ID}
+            onBusyChange={setAgentBusy}
+            onSessionTitleChange={setSessionTitle}
+            onDockLogLines={setChatLogLines}
+          />
+        </div>
+
+        {showFiles && (
+          <>
+            <ResizeHandle
+              edge="left"
+              size={railW}
+              min={RAIL_MIN}
+              max={RAIL_MAX}
+              onResize={setRailW}
+              label="拖动调整文件栏宽度"
+            />
+            <div
+              className="wire-right live-files-rail"
+              style={{ width: railW }}
+              data-live-region="files"
+            >
+              <LiveFilesRail />
+            </div>
+          </>
+        )}
+
+        {showTerminal && (
+          <aside
+            className="wire-terminal-float"
+            aria-label="agent terminal"
+            data-live-region="terminal"
+          >
+            <div className="wire-terminal-float-head">
+              <span>终端</span>
+              <button
+                type="button"
+                className="wire-text-btn"
+                onClick={() => setShowTerminal(false)}
+                title="关闭终端 (Ctrl+`)"
+              >
+                关闭
+              </button>
+            </div>
+            <TerminalPanel
+              defaultAgent={activeAgentName || meta?.agentName || "coding"}
+              openRequest={openTerm}
+              onOpenConsumed={() => setOpenTerm(null)}
+            />
+          </aside>
+        )}
+      </div>
 
       <BottomInfoBar
         termLines={termLines}
@@ -344,6 +463,10 @@ export function App() {
         activeAgent={activeAgent}
         agentBusy={agentBusy}
         agents={agents}
+        onTabChange={onDockTabChange}
+        onExpand={() => {
+          /* dock board expand — terminal handled via onTabChange */
+        }}
       />
     </div>
   );

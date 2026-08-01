@@ -12,6 +12,8 @@ export type FilesRailProps = {
   paths: string[];
   rootLabel?: string;
   diff?: { add: number; del: number; file: string };
+  /** Optional: file open for live shell (draft ignores). */
+  onFileOpen?: (path: string) => void;
 };
 
 const DEFAULT_DIFF = { add: 24, del: 8, file: "DraftShell.tsx" };
@@ -90,6 +92,7 @@ export function FilesRail({
   paths,
   rootLabel = "文件",
   diff = DEFAULT_DIFF,
+  onFileOpen,
 }: FilesRailProps) {
   const tree = useMemo(() => buildFileTree(paths), [paths]);
   const [expanded, setExpanded] = useState<Set<string>>(() =>
@@ -110,6 +113,14 @@ export function FilesRail({
       else next.add(path);
       return next;
     });
+  };
+
+  const onSelect = (path: string) => {
+    setSelected(path);
+    // Only open files (not folders) for live host
+    if (onFileOpen && !path.endsWith("/")) {
+      onFileOpen(path);
+    }
   };
 
   return (
@@ -140,7 +151,7 @@ export function FilesRail({
                 expanded={expanded}
                 selected={selected}
                 onToggle={onToggle}
-                onSelect={setSelected}
+                onSelect={onSelect}
               />
             ))}
           </div>

@@ -359,6 +359,80 @@ export async function abortChat(): Promise<void> {
   await fetch("/api/chat/abort", { method: "POST" });
 }
 
+/** Live agent row from GET /api/agents (CLI ops list + presence). */
+export type LiveAgentInfo = {
+  id: string;
+  name: string;
+  displayName: string;
+  role: string;
+  status:
+    | "idle"
+    | "running"
+    | "done_unread"
+    | "done_read"
+    | "blocked"
+    | "needs_reply";
+  group: "system" | "project";
+  parent?: string;
+  projectPath?: string;
+  projectName?: string;
+  overview?: string;
+  stale?: boolean;
+  /** CLI switch_id when present */
+  switchId?: string;
+};
+
+export async function fetchAgents(): Promise<{
+  agents: LiveAgentInfo[];
+  activeAgentName: string | null;
+  activeSwitchId: string | null;
+  activeProjectPath: string | null;
+}> {
+  const r = await fetch("/api/agents");
+  const j = await jsonOrThrow<{
+    ok: boolean;
+    agents?: LiveAgentInfo[];
+    activeAgentName?: string | null;
+    activeSwitchId?: string | null;
+    activeProjectPath?: string | null;
+  }>(r);
+  return {
+    agents: j.agents ?? [],
+    activeAgentName: j.activeAgentName ?? null,
+    activeSwitchId: j.activeSwitchId ?? null,
+    activeProjectPath: j.activeProjectPath ?? null,
+  };
+}
+
+/** Activate by CLI switch_id (project:<path>:<name>) or bare name. */
+export async function setActiveAgent(switchIdOrName: string): Promise<{
+  activeAgentName: string;
+  activeSwitchId: string;
+  activeProjectPath: string | null;
+  meta: Meta;
+  agents: LiveAgentInfo[];
+}> {
+  const r = await fetch("/api/agents/active", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ switchId: switchIdOrName, name: switchIdOrName }),
+  });
+  const j = await jsonOrThrow<{
+    ok: boolean;
+    activeAgentName?: string;
+    activeSwitchId?: string;
+    activeProjectPath?: string | null;
+    agents?: LiveAgentInfo[];
+  } & Meta>(r);
+  return {
+    activeAgentName: j.activeAgentName ?? switchIdOrName,
+    activeSwitchId: j.activeSwitchId ?? switchIdOrName,
+    activeProjectPath: j.activeProjectPath ?? null,
+    meta: j,
+    agents: j.agents ?? [],
+  };
+}
+
 export async function fetchTerminals(
   agent?: string,
   opts?: { all?: boolean },

@@ -13,6 +13,9 @@ export type AgentListProps = {
 type AgentBranch = {
   root: DraftAgent;
   children: DraftAgent[];
+  /** Project-only: how many children are running/blocked (CLI expand policy) */
+  runningChildCount?: number;
+  idleChildCount?: number;
 };
 
 type AgentSection = {
@@ -35,6 +38,10 @@ function subtitleOf(a: DraftAgent, isRoot: boolean): string {
   return a.overview || a.role || "";
 }
 
+function isRunningLike(status: DraftAgent["status"]): boolean {
+  return status === "running" || status === "blocked";
+}
+
 function buildSections(agents: DraftAgent[]): AgentSection[] {
   const systemRoots = agents.filter((a) => a.group === "system" && !a.parent);
   const systemChildren = agents.filter((a) => a.group === "system" && a.parent);
@@ -50,18 +57,25 @@ function buildSections(agents: DraftAgent[]): AgentSection[] {
     children: systemChildren.filter((c) => c.parent === root.name),
   }));
 
-  const projectBranches: AgentBranch[] = fresh.map((root) => ({
-    root,
-    children: projectChildren.filter(
+  // CLI: project subs only expand when running/blocked; idle stay folded
+  const projectBranches: AgentBranch[] = fresh.map((root) => {
+    const all = projectChildren.filter(
       (c) => c.parent === root.name && c.projectPath === root.projectPath,
-    ),
-  }));
+    );
+    const running = all.filter((c) => isRunningLike(c.status));
+    return {
+      root,
+      // Prefer running children in expanded view; full list still available via expand
+      children: all,
+      runningChildCount: running.length,
+      idleChildCount: all.length - running.length,
+    };
+  });
 
+  // Stale section: CLI only shows main agent (no children)
   const staleBranches: AgentBranch[] = stale.map((root) => ({
     root,
-    children: projectChildren.filter(
-      (c) => c.parent === root.name && c.projectPath === root.projectPath,
-    ),
+    children: [],
   }));
 
   const sections: AgentSection[] = [];
@@ -75,14 +89,14 @@ function buildSections(agents: DraftAgent[]): AgentSection[] {
   if (projectBranches.length > 0) {
     sections.push({
       id: "project",
-      label: "项目 Agent",
+      label: "项目 Agent · 最近活跃",
       branches: projectBranches,
     });
   }
   if (staleBranches.length > 0) {
     sections.push({
       id: "stale",
-      label: "休眠项目",
+      label: "休眠项目 · 超过 7 天未运行",
       branches: staleBranches,
     });
   }
@@ -93,16 +107,30 @@ function sectionCount(section: AgentSection): number {
   return section.branches.reduce((n, b) => n + 1 + b.children.length, 0);
 }
 
-/** 可折叠分组 + 可折叠父级，层次一眼可读 */
+/** 可折叠分组 + 可折叠父级，层次一眼可读（默认对齐 CLI：未运行项目子 agent 折叠） */
 export function AgentList({ agents, activeId, onSelect }: AgentListProps) {
   const sections = useMemo(() => buildSections(agents), [agents]);
 
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(
     () => new Set(["stale"]),
   );
-  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(
-    () => new Set(),
-  );
+  // Seed: collapse project parents with no running children (CLI fold idle subs)
+  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(() => {
+    const init = new Set<string>();
+    for (const a of agents) {
+      if (a.group !== "project" || a.parent) continue;
+      const kids = agents.filter(
+        (c) =>
+          c.parent === a.name &&
+          c.projectPath === a.projectPath &&
+          c.group === "project",
+      );
+      if (kids.length === 0) continue;
+      const anyRunning = kids.some((c) => isRunningLike(c.status));
+      if (!anyRunning) init.add(a.id);
+    }
+    return init;
+  });
 
   const toggleSection = (id: string) => {
     setCollapsedSections((prev) => {

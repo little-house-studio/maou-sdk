@@ -50,7 +50,10 @@ export function metaToDraftMeta(
   };
 }
 
-/** Single live coding agent row for AgentList (multi-agent hub optional later). */
+/**
+ * Fallback when /api/agents is unavailable: single row from meta.
+ * Prefer liveAgentsToDraftAgents when registry list is present.
+ */
 export function metaToAgents(
   meta: Meta | null,
   agentBusy: boolean,
@@ -58,7 +61,7 @@ export function metaToAgents(
   const name = meta?.agentName || "coding";
   return [
     {
-      id: "live-primary",
+      id: `system:${name}`,
       name,
       displayName: name,
       role: "coding",
@@ -71,6 +74,57 @@ export function metaToAgents(
       projectName: projectLabelFromRoot(meta?.projectRoot),
     },
   ];
+}
+
+/** Map GET /api/agents rows into DraftAgent props for AgentList. */
+export function liveAgentsToDraftAgents(
+  agents: Array<{
+    id: string;
+    name: string;
+    displayName?: string;
+    role?: string;
+    status?: DraftAgent["status"];
+    group?: "system" | "project" | string;
+    parent?: string;
+    projectPath?: string;
+    projectName?: string;
+    overview?: string;
+    stale?: boolean;
+    switchId?: string;
+  }>,
+  opts?: {
+    activeAgentName?: string | null;
+    activeSwitchId?: string | null;
+    agentBusy?: boolean;
+  },
+): DraftAgent[] {
+  const activeName = opts?.activeAgentName || "";
+  const activeSwitch = opts?.activeSwitchId || "";
+  return agents.map((a) => {
+    const switchId = a.switchId || a.id || `system:${a.name}`;
+    let status: DraftAgent["status"] = a.status ?? "idle";
+    // Reflect shell busy onto active agent even if presence disk is stale
+    const isActive =
+      (activeSwitch && switchId === activeSwitch) ||
+      (!activeSwitch && a.name === activeName);
+    if (opts?.agentBusy && isActive && status === "idle") {
+      status = "running";
+    }
+    return {
+      // AgentList selects by id — use switch_id for multi-project uniqueness
+      id: switchId,
+      name: a.name,
+      displayName: a.displayName || a.name,
+      role: a.role || "agent",
+      status,
+      group: a.group === "project" ? "project" : "system",
+      parent: a.parent || undefined,
+      projectPath: a.projectPath,
+      projectName: a.projectName,
+      overview: a.overview,
+      stale: a.stale,
+    };
+  });
 }
 
 /** One-line dock summaries from terminal list. */
