@@ -14,6 +14,7 @@ import {
 } from "../../dock-plugin";
 import {
   DOCK_CLICK_SLOP_PX,
+  DOCK_EXPAND_H_MAX,
   DOCK_EXPAND_H_UI,
   DOCK_EXPAND_W_UI,
   DOCK_PREVIEW_W_MIN,
@@ -70,9 +71,86 @@ export type BottomInfoBarProps = {
   onExpand?: () => void;
   onCollapse?: () => void;
   onReservedHeightChange?: (px: number) => void;
+  /**
+   * Live shell: real TerminalPanel (or other react face) for the terminal card.
+   * When set, expanded terminal board hosts this instead of canvas-ui lines.
+   */
+  terminalFace?: React.ReactNode;
+  /**
+   * Live shell: 主动智能卡片内容（ProactiveHost），非顶栏独立页。
+   */
+  proactiveFace?: React.ReactNode;
+  /**
+   * Programmatic open (e.g. Ctrl+` / tool-card attach).
+   * Bump `nonce` each request so the same tab re-opens after stow.
+   */
+  openTabRequest?: { tab: DockCardId; nonce: number } | null;
 };
 
+/** Terminal board defaults / clamp (viewport-relative max ≈ center+right of live shell). */
+const TERM_SIZE_KEY = "maou-webui-dock-terminal-size";
+const TERM_W_DEFAULT = 520;
+const TERM_H_DEFAULT = 360; // panel content height (excludes ear tab)
+const TERM_W_MIN = 360;
+const TERM_H_MIN = 180;
+
+function termSizeLimits(): { wMax: number; hMax: number } {
+  if (typeof window === "undefined") {
+    return { wMax: 960, hMax: 640 };
+  }
+  return {
+    wMax: Math.max(TERM_W_MIN, Math.floor(window.innerWidth * 0.72)),
+    // leave room for topbar + bottom dock track
+    hMax: Math.max(TERM_H_MIN, Math.floor(window.innerHeight * 0.62) - DOCK_TAB_H),
+  };
+}
+
+function readTermSize(): { w: number; h: number } {
+  const { wMax, hMax } = termSizeLimits();
+  try {
+    const raw =
+      typeof localStorage !== "undefined"
+        ? localStorage.getItem(TERM_SIZE_KEY)
+        : null;
+    if (!raw) {
+      return {
+        w: Math.min(wMax, TERM_W_DEFAULT),
+        h: Math.min(hMax, TERM_H_DEFAULT),
+      };
+    }
+    const j = JSON.parse(raw) as { w?: unknown; h?: unknown };
+    const w = Number(j.w);
+    const h = Number(j.h);
+    return {
+      w: Math.min(wMax, Math.max(TERM_W_MIN, Number.isFinite(w) ? w : TERM_W_DEFAULT)),
+      h: Math.min(hMax, Math.max(TERM_H_MIN, Number.isFinite(h) ? h : TERM_H_DEFAULT)),
+    };
+  } catch {
+    return {
+      w: Math.min(wMax, TERM_W_DEFAULT),
+      h: Math.min(hMax, TERM_H_DEFAULT),
+    };
+  }
+}
+
+function writeTermSize(w: number, h: number): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    const { wMax, hMax } = termSizeLimits();
+    localStorage.setItem(
+      TERM_SIZE_KEY,
+      JSON.stringify({
+        w: Math.min(wMax, Math.max(TERM_W_MIN, Math.round(w))),
+        h: Math.min(hMax, Math.max(TERM_H_MIN, Math.round(h))),
+      }),
+    );
+  } catch {
+    /* ignore quota */
+  }
+}
+
 type FloatPos = BoardPos;
+type TermResizeEdge = "e" | "s" | "se";
 
 function resolveStatus(
   agentBusy: boolean,
@@ -137,6 +215,8 @@ function cardTitle(
         : ctx.taskTotal > 0
           ? `${ctx.taskTotal} 项后台任务`
           : "暂无后台任务";
+    case "proactive":
+      return "主动智能 · 扫描 / 看板 / 派发";
   }
 }
 
@@ -162,6 +242,8 @@ function cardPreviewLine(
       const run = (ctx.bgTasks ?? []).find((t) => t.status === "running");
       return run?.title || (ctx.bgTasks?.[0]?.title ?? "暂无后台任务");
     }
+    case "proactive":
+      return "挂靠 coding · 打开卡片管理待办";
   }
 }
 
@@ -184,6 +266,8 @@ function cardCount(
       return ctx.agentBusy ? 1 : 0;
     case "tasks":
       return ctx.taskRunning || ctx.taskTotal;
+    case "proactive":
+      return 0;
   }
 }
 
@@ -274,6 +358,9 @@ export function BottomInfoBar({
   onExpand,
   onCollapse,
   onReservedHeightChange,
+  terminalFace,
+  proactiveFace,
+  openTabRequest,
 }: BottomInfoBarProps) {
   const name = activeAgent?.name ?? meta.agentName;
   const st = resolveStatus(agentBusy, activeAgent);
@@ -309,6 +396,10 @@ export function BottomInfoBar({
   };
 
   const [order, setOrder] = useState<DockCardId[]>(() => defaultDockOrder());
+  /** Remembered terminal board width (height uses panelH when terminal open). */
+  const [termW, setTermW] = useState(() => readTermSize().w);
+  const termWRef = useRef(termW);
+  termWRef.current = termW;
   const [hoverId, setHoverId] = useState<DockCardId | null>(null);
   /**
    * Continuous strip morph: which card is expanding + progress 0..1.
@@ -473,10 +564,28 @@ export function BottomInfoBar({
    * Place / re-place board with bottom edge on the slot strip
    * (folder board lifting out of the rack).
    */
+  const boardWFor = useCallback((id: DockCardId, panel: number) => {
+    if (id === "terminal") return termWRef.current;
+    // 主动卡片：默认更宽，便于看板
+    if (id === "proactive") return Math.max(DOCK_EXPAND_W_UI, 560);
+    return boardWidthForPanel(panel);
+  }, []);
+
+  const terminalOpenH = useCallback(() => {
+    const { h } = readTermSize();
+    const { hMax } = termSizeLimits();
+    return Math.min(hMax, Math.max(TERM_H_MIN, h));
+  }, []);
+
+  const proactiveOpenH = useCallback(() => {
+    const { hMax } = termSizeLimits();
+    return Math.min(hMax, Math.max(280, 400));
+  }, []);
+
   const placeBoardOnSlot = useCallback(
     (id: DockCardId, panel: number) => {
       const anchor = slotAnchorRef.current ?? captureSlotAnchor(id);
-      const boardW = boardWidthForPanel(panel);
+      const boardW = boardWFor(id, panel);
       const boardH = boardHeightForPanel(panel);
       const pos = boardPlacementFromSlot(
         anchor,
@@ -488,7 +597,63 @@ export function BottomInfoBar({
       setFloat(pos);
       return pos;
     },
-    [captureSlotAnchor, setFloat],
+    [boardWFor, captureSlotAnchor, setFloat],
+  );
+
+  /** Edge resize for expanded terminal board; persists w/h to localStorage. */
+  const beginTermResize = useCallback(
+    (edge: TermResizeEdge, e: React.PointerEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      stopSpring();
+      setBoardTilt(0);
+      // free-hand resize: leave slot anchor so SE grows down/right naturally
+      if (edge !== "e") {
+        setSlotAnchored(false);
+        slotAnchoredRef.current = false;
+      }
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startW = termWRef.current;
+      const startH = panelHRef.current;
+      const startLeft = floatPosRef.current?.left ?? 0;
+      const startTop = floatPosRef.current?.top ?? 0;
+      // After optional un-anchor above, treat as free so top-left stays put
+      const free = !slotAnchoredRef.current;
+
+      const onMove = (ev: PointerEvent) => {
+        const { wMax, hMax } = termSizeLimits();
+        let w = startW;
+        let h = startH;
+        if (edge === "e" || edge === "se") {
+          w = Math.min(wMax, Math.max(TERM_W_MIN, startW + (ev.clientX - startX)));
+        }
+        if (edge === "s" || edge === "se") {
+          h = Math.min(hMax, Math.max(TERM_H_MIN, startH + (ev.clientY - startY)));
+        }
+        termWRef.current = w;
+        setTermW(w);
+        panelHRef.current = h;
+        setPanel(h);
+        springRef.current = { x: h, v: 0 };
+        if (free) {
+          setFloat({ left: startLeft, top: startTop });
+        } else if (openIdRef.current === "terminal") {
+          placeBoardOnSlot("terminal", h);
+        }
+      };
+      const onUp = () => {
+        writeTermSize(termWRef.current, panelHRef.current);
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    },
+    [placeBoardOnSlot, setFloat, setPanel, stopSpring],
   );
 
   const runSpringTo = useCallback(
@@ -539,7 +704,10 @@ export function BottomInfoBar({
           // Slide + shrink back into rack
           const prog = stowProgressFromHeight(x, stowFromRef.current.height);
           const boardH = boardHeightForPanel(x);
-          const boardW = boardWidthForPanel(x);
+          const stowId = (id ?? openIdRef.current) as DockCardId | null;
+          const boardW = stowId
+            ? boardWFor(stowId, x)
+            : boardWidthForPanel(x);
           const slotTarget = boardPlacementFromSlot(
             stowFromRef.current.slot,
             boardW,
@@ -580,6 +748,7 @@ export function BottomInfoBar({
       rafRef.current = requestAnimationFrame(tick);
     },
     [
+      boardWFor,
       captureSlotAnchor,
       onCollapse,
       onExpand,
@@ -591,6 +760,36 @@ export function BottomInfoBar({
       stopSpring,
     ],
   );
+
+  // Live shell / tool-card: open a dock board by request (not the old float panel)
+  useEffect(() => {
+    if (!openTabRequest?.tab) return;
+    const id = openTabRequest.tab;
+    if (id === "terminal") {
+      const saved = readTermSize();
+      termWRef.current = saved.w;
+      setTermW(saved.w);
+    }
+    const targetH =
+      id === "terminal"
+        ? terminalOpenH()
+        : id === "proactive"
+          ? proactiveOpenH()
+          : DOCK_EXPAND_H_UI;
+    setHoverId(null);
+    setPullingId(null);
+    setSlotAnchored(true);
+    slotAnchoredRef.current = true;
+    captureSlotAnchor(id);
+    setOpen(id);
+    placeBoardOnSlot(id, panelHRef.current || targetH * 0.2);
+    onTabChange?.(id);
+    onExpand?.();
+    springRef.current = { x: panelHRef.current, v: 420 };
+    runSpringTo(targetH, id);
+    // openTabRequest.nonce intentionally drives re-open
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openTabRequest?.nonce, openTabRequest?.tab]);
 
   useEffect(
     () => () => {
@@ -642,6 +841,11 @@ export function BottomInfoBar({
       ) {
         setHoverId(null);
         setPullingId(null);
+        if (result.id === "terminal") {
+          const saved = readTermSize();
+          termWRef.current = saved.w;
+          setTermW(saved.w);
+        }
         setOpen(result.id);
         setSlotAnchored(true);
         slotAnchoredRef.current = true;
@@ -653,7 +857,13 @@ export function BottomInfoBar({
           x: panelHRef.current,
           v: result.velocityKick,
         };
-        runSpringTo(result.targetH, result.id);
+        const targetH =
+          result.id === "terminal"
+            ? terminalOpenH()
+            : result.id === "proactive"
+              ? proactiveOpenH()
+              : result.targetH;
+        runSpringTo(targetH, result.id);
         return;
       }
 
@@ -663,6 +873,11 @@ export function BottomInfoBar({
       };
       if (result.open) {
         setPullingId(null);
+        if (result.id === "terminal") {
+          const saved = readTermSize();
+          termWRef.current = saved.w;
+          setTermW(saved.w);
+        }
         setOpen(result.id);
         setSlotAnchored(true);
         slotAnchoredRef.current = true;
@@ -670,7 +885,13 @@ export function BottomInfoBar({
         placeBoardOnSlot(result.id, panelHRef.current);
         onTabChange?.(result.id);
         onExpand?.();
-        runSpringTo(result.targetH, result.id);
+        const targetH =
+          result.id === "terminal"
+            ? terminalOpenH()
+            : result.id === "proactive"
+              ? proactiveOpenH()
+              : result.targetH;
+        runSpringTo(targetH, result.id);
       } else {
         if (openIdRef.current == null) setPullingId(session.id);
         else setPullingId(null);
@@ -682,8 +903,10 @@ export function BottomInfoBar({
       onExpand,
       onTabChange,
       placeBoardOnSlot,
+      proactiveOpenH,
       runSpringTo,
       setOpen,
+      terminalOpenH,
     ],
   );
 
@@ -802,7 +1025,7 @@ export function BottomInfoBar({
         d.maxTravel = Math.max(d.maxTravel, travel);
         const left = d.originLeft + (ev.clientX - d.startX);
         const top = d.originTop + (ev.clientY - d.startY);
-        const w = boardWidthForPanel(panelHRef.current);
+        const w = boardWFor(d.id, panelHRef.current);
         const h = boardHeightForPanel(panelHRef.current);
         const clamped: FloatPos = {
           left: Math.max(4, Math.min(window.innerWidth - w - 4, left)),
@@ -956,14 +1179,37 @@ export function BottomInfoBar({
           const textOp = isLive ? 1 : geo.textOpacity;
 
           // Live board is always fixed once we have a placement (from slot lift)
+          // Terminal board: remembered width + panel height (resizable)
+          const liveW =
+            isLive && card.id === "terminal"
+              ? termW
+              : isLive && card.id === "proactive"
+                ? Math.max(geo.cssW, 560)
+                : geo.cssW;
+          const liveGeo =
+            isLive && card.id === "terminal"
+              ? (() => {
+                  const rightX = rightXFromCssWidth(liveW);
+                  const bottomY = bottomYFromCssHeight(geo.cssH);
+                  return {
+                    ...geo,
+                    cssW: liveW,
+                    rightX,
+                    bottomY,
+                    pathD: buildFolderPath(rightX, bottomY),
+                    viewBox: folderViewBox(rightX, bottomY),
+                  };
+                })()
+              : geo;
+
           const floatStyle: React.CSSProperties =
             isLive && floatPos
               ? {
                   position: "fixed",
                   left: floatPos.left,
                   top: floatPos.top,
-                  width: geo.cssW,
-                  height: geo.cssH,
+                  width: liveGeo.cssW,
+                  height: liveGeo.cssH,
                   zIndex: z,
                   transform:
                     boardTilt !== 0
@@ -972,8 +1218,8 @@ export function BottomInfoBar({
                   transformOrigin: "50% 100%",
                 }
               : {
-                  width: geo.cssW,
-                  height: geo.cssH,
+                  width: liveGeo.cssW,
+                  height: liveGeo.cssH,
                   zIndex: z,
                 };
 
@@ -1018,8 +1264,8 @@ export function BottomInfoBar({
                 >
                   <FolderShapeSvg
                     className="wire-dock-card-svg"
-                    pathD={geo.pathD}
-                    viewBox={geo.viewBox}
+                    pathD={liveGeo.pathD}
+                    viewBox={liveGeo.viewBox}
                   />
                   <div className="wire-dock-card-ui" data-folder-ui="overlay">
                     <button
@@ -1081,12 +1327,37 @@ export function BottomInfoBar({
                               bgTasks={bgTasks}
                               title={title}
                               count={count}
+                              terminalFace={terminalFace}
+                              proactiveFace={proactiveFace}
                             />
                           ) : null}
                         </div>
                       </div>
                     ) : null}
                   </div>
+                  {/* Terminal: drag edges / corner to resize (size remembered) */}
+                  {card.id === "terminal" && panelH > 24 ? (
+                    <>
+                      <div
+                        className="wire-dock-resize wire-dock-resize-e"
+                        data-resize="e"
+                        title="拖动调整宽度"
+                        onPointerDown={(ev) => beginTermResize("e", ev)}
+                      />
+                      <div
+                        className="wire-dock-resize wire-dock-resize-s"
+                        data-resize="s"
+                        title="拖动调整高度"
+                        onPointerDown={(ev) => beginTermResize("s", ev)}
+                      />
+                      <div
+                        className="wire-dock-resize wire-dock-resize-se"
+                        data-resize="se"
+                        title="拖动调整大小"
+                        onPointerDown={(ev) => beginTermResize("se", ev)}
+                      />
+                    </>
+                  ) : null}
                 </div>
               </React.Fragment>
             );
@@ -1192,6 +1463,8 @@ export function BottomInfoBar({
                           bgTasks={bgTasks}
                           title={title}
                           count={count}
+                          terminalFace={terminalFace}
+                          proactiveFace={proactiveFace}
                         />
                       ) : null}
                     </div>
@@ -1244,6 +1517,7 @@ const TONE_ACCENT: Record<string, string> = {
   tasks: "#c9c2b6",
   terminal: "#b8ff00",
   agent: "#a182ff",
+  proactive: "#5ad4ff",
 };
 
 /** Shared plugin registry for draft dock boards (canvas-ui / html-canvas). */
@@ -1265,6 +1539,8 @@ function DockCardBody({
   bgTasks,
   title,
   count,
+  terminalFace,
+  proactiveFace,
 }: {
   id: DockCardId;
   termLines: string[];
@@ -1277,6 +1553,8 @@ function DockCardBody({
   bgTasks?: DraftBgTask[];
   title: string;
   count: number;
+  terminalFace?: React.ReactNode;
+  proactiveFace?: React.ReactNode;
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [faceSize, setFaceSize] = useState({ w: 240, h: 160 });
@@ -1295,6 +1573,34 @@ function DockCardBody({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  // Live: real TerminalPanel inside the folder card (not canvas preview / float)
+  if (id === "terminal" && terminalFace) {
+    return (
+      <div
+        className="wire-dock-plugin-body wire-dock-terminal-host"
+        data-dock-body={id}
+        data-dock-plugin="react"
+        data-dock-terminal="live"
+      >
+        {terminalFace}
+      </div>
+    );
+  }
+
+  // Live: 主动智能卡片（附属驻扎，非顶栏独立页）
+  if (id === "proactive" && proactiveFace) {
+    return (
+      <div
+        className="wire-dock-plugin-body wire-dock-proactive-host"
+        data-dock-body={id}
+        data-dock-plugin="react"
+        data-dock-proactive="live"
+      >
+        {proactiveFace}
+      </div>
+    );
+  }
 
   const plugin = getDockPlugin(DOCK_PLUGIN_REG, id);
   const contentKind = plugin?.contentKind ?? "canvas-ui";

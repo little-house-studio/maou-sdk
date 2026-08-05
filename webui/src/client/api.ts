@@ -141,16 +141,62 @@ export async function fetchModels(provider?: string): Promise<{
 export async function fetchSessions(): Promise<{
   sessions: SessionSummary[];
   activeSessionId: string | null;
+  /** 当前焦点 Agent 下正在生成的会话 */
+  runningSessionIds: string[];
+  allRunning?: Array<{
+    sessionId: string;
+    switchId: string;
+    agentName: string;
+  }>;
+  agentsWithRunningTerminals?: string[];
 }> {
   const r = await fetch("/api/sessions");
   const j = await jsonOrThrow<{
     ok: boolean;
     sessions?: SessionSummary[];
     activeSessionId?: string | null;
+    runningSessionIds?: string[];
+    allRunning?: Array<{
+      sessionId: string;
+      switchId: string;
+      agentName: string;
+    }>;
+    agentsWithRunningTerminals?: string[];
   }>(r);
   return {
     sessions: j.sessions ?? [],
     activeSessionId: j.activeSessionId ?? null,
+    runningSessionIds: j.runningSessionIds ?? [],
+    allRunning: j.allRunning ?? [],
+    agentsWithRunningTerminals: j.agentsWithRunningTerminals ?? [],
+  };
+}
+
+/** 跨 Agent 运行态（chat run + 终端） */
+export async function fetchRuntimeRunning(): Promise<{
+  allRunning: Array<{
+    sessionId: string;
+    switchId: string;
+    agentName: string;
+  }>;
+  busySwitchIds: string[];
+  agentsWithRunningTerminals: string[];
+}> {
+  const r = await fetch("/api/runtime/running");
+  const j = await jsonOrThrow<{
+    ok?: boolean;
+    allRunning?: Array<{
+      sessionId: string;
+      switchId: string;
+      agentName: string;
+    }>;
+    busySwitchIds?: string[];
+    agentsWithRunningTerminals?: string[];
+  }>(r);
+  return {
+    allRunning: j.allRunning ?? [],
+    busySwitchIds: j.busySwitchIds ?? [],
+    agentsWithRunningTerminals: j.agentsWithRunningTerminals ?? [],
   };
 }
 
@@ -295,6 +341,259 @@ export async function setApprovalMode(mode: ApprovalMode): Promise<Meta> {
   return jsonOrThrow<Meta & { ok: boolean }>(r);
 }
 
+/** Global LLM preset DTO (keys masked) — LLM 层单模型配置 */
+export type LlmConfigPresetDto = {
+  name: string;
+  vendor: string;
+  protocol: string;
+  url: string;
+  urlParams: string;
+  model: string;
+  maxContext: number;
+  maxTokens: number;
+  supportsImage: boolean;
+  supportsAudio: boolean;
+  supportsVideo: boolean;
+  supportsReasoning: boolean;
+  nativeToolCalling: boolean;
+  inputPricePerMt: string;
+  outputPricePerMt: string;
+  cacheHitPricePerMt: string;
+  maxConcurrent: string;
+  temperature: string;
+  topP: string;
+  presencePenalty: string;
+  frequencyPenalty: string;
+  customRequestJson: string;
+  keyMasked: string;
+  hasKey: boolean;
+};
+
+export type LlmConfigRoles = {
+  main?: string;
+  fast?: string;
+  vision?: string;
+  helper?: string;
+};
+
+export type LlmConfigSnapshot = {
+  configPath: string;
+  defaultPreset: number;
+  presets: LlmConfigPresetDto[];
+  roles: LlmConfigRoles;
+  vendors: Array<{
+    id: string;
+    label: string;
+    protocol: string;
+    defaultUrl: string;
+  }>;
+  roleDefs: Array<{ id: string; label: string; hint: string }>;
+};
+
+export type LlmConfigPresetWrite = {
+  name: string;
+  vendor?: string;
+  protocol?: string;
+  url: string;
+  urlParams?: string;
+  model: string;
+  key?: string;
+  maxContext?: number;
+  maxTokens?: number;
+  supportsImage?: boolean;
+  supportsAudio?: boolean;
+  supportsVideo?: boolean;
+  supportsReasoning?: boolean;
+  nativeToolCalling?: boolean;
+  inputPricePerMt?: string;
+  outputPricePerMt?: string;
+  cacheHitPricePerMt?: string;
+  maxConcurrent?: string;
+  temperature?: string;
+  topP?: string;
+  presencePenalty?: string;
+  frequencyPenalty?: string;
+  customRequestJson?: string;
+};
+
+/** Load global LLM + Agent roles from config path (masked keys). */
+export async function fetchLlmConfig(): Promise<LlmConfigSnapshot> {
+  const r = await fetch("/api/config/llm");
+  return jsonOrThrow<LlmConfigSnapshot & { ok: boolean }>(r);
+}
+
+/** Persist presets + roles via saveGlobalApiConfig. */
+export async function saveLlmConfig(body: {
+  presets: LlmConfigPresetWrite[];
+  defaultPreset?: number;
+  roles?: LlmConfigRoles;
+  replace?: boolean;
+}): Promise<LlmConfigSnapshot> {
+  const r = await fetch("/api/config/llm", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow<LlmConfigSnapshot & { ok: boolean }>(r);
+}
+
+/** 真实 chat 探测 LLM preset（含延迟） */
+export type LlmConnectionTestResult = {
+  ok: boolean;
+  model: string;
+  latencyMs: number;
+  firstByteMs?: number;
+  httpStatus?: number | null;
+  protocol?: string;
+  replyPreview?: string;
+  error?: string;
+};
+
+export async function testLlmConnection(body: {
+  name?: string;
+  url?: string;
+  model?: string;
+  key?: string;
+  protocol?: string;
+  vendor?: string;
+  urlParams?: string;
+  maxTokens?: number;
+  maxContext?: number;
+  timeoutMs?: number;
+  probeMessage?: string;
+}): Promise<LlmConnectionTestResult> {
+  const r = await fetch("/api/config/llm/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await jsonOrThrow<{
+    ok?: boolean;
+    error?: string;
+    result?: LlmConnectionTestResult;
+  }>(r);
+  if (j.result) return j.result;
+  if (j.ok === false || !r.ok) {
+    return {
+      ok: false,
+      model: body.model || "",
+      latencyMs: 0,
+      error: j.error || `test ${r.status}`,
+    };
+  }
+  return {
+    ok: false,
+    model: body.model || "",
+    latencyMs: 0,
+    error: "empty test result",
+  };
+}
+
+/** 模型 SVG 降智探针：画廊条目 */
+export type SvgProbeGalleryItem = {
+  id: string;
+  createdAt: string;
+  model: string;
+  presetName: string;
+  subject: string;
+  latencyMs: number;
+  ok: boolean;
+  extracted: boolean;
+  error?: string;
+  imageDataUrl?: string;
+  isReference?: boolean;
+};
+
+export type ModelSvgProbeRunResult = {
+  ok: boolean;
+  error?: string;
+  result?: {
+    ok: boolean;
+    model: string;
+    subject: string;
+    latencyMs: number;
+    extracted: boolean;
+    imageDataUrl?: string;
+    error?: string;
+    rawReply?: string;
+  };
+  shot?: SvgProbeGalleryItem;
+  reference?: SvgProbeGalleryItem | null;
+  defaultSubject?: string;
+};
+
+/** 无上下文 SVG 生成 → 解析图片 → 写入画廊 */
+export async function runLlmSvgProbe(body: {
+  name?: string;
+  url?: string;
+  model?: string;
+  key?: string;
+  protocol?: string;
+  vendor?: string;
+  urlParams?: string;
+  maxTokens?: number;
+  subject?: string;
+  timeoutMs?: number;
+}): Promise<ModelSvgProbeRunResult> {
+  const r = await fetch("/api/config/llm/svg-probe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await jsonOrThrow<ModelSvgProbeRunResult & { ok?: boolean; error?: string }>(
+    r,
+  );
+  if (!r.ok && !j.result) {
+    return { ok: false, error: j.error || `svg-probe ${r.status}` };
+  }
+  return j;
+}
+
+export async function fetchSvgProbeGallery(q?: {
+  model?: string;
+  presetName?: string;
+  limit?: number;
+}): Promise<{
+  items: SvgProbeGalleryItem[];
+  reference: SvgProbeGalleryItem | null;
+  defaultSubject?: string;
+}> {
+  const sp = new URLSearchParams();
+  if (q?.model) sp.set("model", q.model);
+  if (q?.presetName) sp.set("presetName", q.presetName);
+  if (q?.limit) sp.set("limit", String(q.limit));
+  const r = await fetch(`/api/config/llm/svg-probe/gallery?${sp.toString()}`);
+  const j = await jsonOrThrow<{
+    ok?: boolean;
+    items?: SvgProbeGalleryItem[];
+    reference?: SvgProbeGalleryItem | null;
+    defaultSubject?: string;
+    error?: string;
+  }>(r);
+  return {
+    items: j.items ?? [],
+    reference: j.reference ?? null,
+    defaultSubject: j.defaultSubject,
+  };
+}
+
+export async function setSvgProbeReference(
+  shotId: string,
+): Promise<SvgProbeGalleryItem> {
+  const r = await fetch("/api/config/llm/svg-probe/reference", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shotId }),
+  });
+  const j = await jsonOrThrow<{
+    ok?: boolean;
+    reference?: SvgProbeGalleryItem;
+    error?: string;
+  }>(r);
+  if (!j.reference) throw new Error(j.error || "set reference failed");
+  return j.reference;
+}
+
 export async function answerApproval(
   id: string,
   choice: "once" | "always" | "deny" | "blacklist",
@@ -355,8 +654,93 @@ export async function fetchSessionStats(): Promise<{
   };
 }
 
-export async function abortChat(): Promise<void> {
-  await fetch("/api/chat/abort", { method: "POST" });
+/** 中断指定会话 run；不传则中断当前焦点会话 */
+export async function abortChat(sessionId?: string | null): Promise<void> {
+  await fetch("/api/chat/abort", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(sessionId ? { sessionId } : {}),
+  });
+}
+
+/** UI 发送模式：队列（等本轮结束）/ 插入（打断当前流） */
+export type ChatSendMode = "queue" | "insert";
+
+export type QueuedChatItem = {
+  id: number;
+  message: string;
+  mode: string;
+  enqueuedAt: number;
+  source: string;
+};
+
+/** 运行中入队到 Agent MessageQueue（不新建 HTTP 流） */
+export async function enqueueChat(
+  message: string,
+  mode: ChatSendMode = "queue",
+): Promise<{
+  ok: true;
+  id: number;
+  mode: ChatSendMode;
+  queueMode: string;
+  shouldAbort: boolean;
+  shouldStopRun: boolean;
+  queue: QueuedChatItem[];
+}> {
+  const r = await fetch("/api/chat/enqueue", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, mode }),
+  });
+  const j = await jsonOrThrow<{
+    ok?: boolean;
+    error?: string;
+    id?: number;
+    mode?: ChatSendMode;
+    queueMode?: string;
+    shouldAbort?: boolean;
+    shouldStopRun?: boolean;
+    queue?: QueuedChatItem[];
+  }>(r);
+  if (!r.ok || j.ok === false) {
+    throw new Error(j.error || `enqueue ${r.status}`);
+  }
+  return {
+    ok: true,
+    id: Number(j.id),
+    mode: j.mode === "insert" ? "insert" : "queue",
+    queueMode: String(j.queueMode ?? ""),
+    shouldAbort: Boolean(j.shouldAbort),
+    shouldStopRun: Boolean(j.shouldStopRun),
+    queue: j.queue ?? [],
+  };
+}
+
+export async function fetchChatQueue(): Promise<{
+  busy: boolean;
+  queue: QueuedChatItem[];
+}> {
+  const r = await fetch("/api/chat/queue");
+  const j = await jsonOrThrow<{
+    ok?: boolean;
+    busy?: boolean;
+    queue?: QueuedChatItem[];
+  }>(r);
+  return { busy: Boolean(j.busy), queue: j.queue ?? [] };
+}
+
+export async function clearChatQueue(): Promise<number> {
+  const r = await fetch("/api/chat/queue", { method: "DELETE" });
+  const j = await jsonOrThrow<{ cleared?: number }>(r);
+  return Number(j.cleared ?? 0);
+}
+
+export async function removeChatQueueItem(id: number): Promise<boolean> {
+  const r = await fetch(`/api/chat/queue/${encodeURIComponent(String(id))}`, {
+    method: "DELETE",
+  });
+  const j = await jsonOrThrow<{ removed?: boolean }>(r);
+  return Boolean(j.removed);
 }
 
 /** Live agent row from GET /api/agents (CLI ops list + presence). */

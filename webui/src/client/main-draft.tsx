@@ -5,6 +5,7 @@
  */
 import { createRoot } from "react-dom/client";
 import { DraftShell } from "./drafts";
+import "./fonts.css";
 import "./styles.css";
 
 const el = document.getElementById("root");

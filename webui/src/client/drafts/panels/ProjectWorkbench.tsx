@@ -51,7 +51,7 @@ import {
   writeProjectSession,
 } from "../project-session";
 import { ChromeMark } from "../icons/Marks";
-import { SourceEditor } from "../../markdown/editor/SourceEditor";
+import { LazySourceEditor } from "../../markdown/editor/LazySourceEditor";
 import { ProjectCanvas } from "./ProjectCanvas";
 
 export type ProjectWorkbenchProps = {
@@ -63,6 +63,11 @@ export type ProjectWorkbenchProps = {
    * to real storage. Draft shell omits this (session-local only).
    */
   onPersistMarkdown?: (path: string, content: string) => void | Promise<void>;
+  /**
+   * Live host: fired when active path changes so body can load on demand.
+   * Draft shell omits this.
+   */
+  onActivePathChange?: (path: string) => void;
 };
 
 const VIEW_STORAGE_KEY = "maou-draft-project-view";
@@ -93,18 +98,29 @@ export function ProjectWorkbench({
   projectPath,
   docs = PROJECT_DOCS,
   onPersistMarkdown,
+  onActivePathChange,
 }: ProjectWorkbenchProps) {
   const restored = useMemo(
     () => readProjectSession(projectPath),
     [projectPath],
   );
-  const [activePath, setActivePath] = useState(
-    () =>
-      (restored?.activePath &&
-      docs.some((d) => d.path === restored.activePath)
-        ? restored.activePath
-        : DEFAULT_PROJECT_DOC_PATH),
+  const pickActive = (list: ProjectDoc[], prefer?: string | null) => {
+    if (prefer && list.some((d) => d.path === prefer)) return prefer;
+    if (list.some((d) => d.path === DEFAULT_PROJECT_DOC_PATH)) {
+      return DEFAULT_PROJECT_DOC_PATH;
+    }
+    return list[0]?.path ?? DEFAULT_PROJECT_DOC_PATH;
+  };
+  const [activePath, setActivePath] = useState(() =>
+    pickActive(docs, restored?.activePath),
   );
+  // live 宿主异步替换 docs 时，纠正无效 activePath
+  useEffect(() => {
+    if (!docs.length) return;
+    if (!docs.some((d) => d.path === activePath)) {
+      setActivePath(pickActive(docs, restored?.activePath));
+    }
+  }, [docs, activePath, restored?.activePath]);
   const [view, setView] = useState<ProjectViewMode>(() => readStoredView());
   const [drafts, setDrafts] = useState<Record<string, string>>(() =>
     mergeDraftsWithFixtures(docs, restored?.drafts),
@@ -200,6 +216,28 @@ export function ProjectWorkbench({
   useEffect(() => {
     setRecentPaths((prev) => pushRecentPath(prev, activePath));
   }, [activePath]);
+
+  // Live host: request body when user switches docs (stubs start empty).
+  useEffect(() => {
+    onActivePathChange?.(activePath);
+  }, [activePath, onActivePathChange]);
+
+  // Hydrate drafts when live host fills doc.content for a previously empty stub.
+  useEffect(() => {
+    setDrafts((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const d of docs) {
+        if (!d.content) continue;
+        const cur = prev[d.path];
+        if (cur === undefined || cur === "") {
+          next[d.path] = d.content;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [docs]);
 
   // Keep active recent tab visible when many tabs overflow
   useEffect(() => {
@@ -1172,7 +1210,7 @@ export function ProjectWorkbench({
               <>
                 {showSource && (
                   <div className="wire-project-source-wrap">
-                    <SourceEditor
+                    <LazySourceEditor
                       value={content}
                       onChange={onChange}
                       pendingJumpLine={pendingJumpLine}

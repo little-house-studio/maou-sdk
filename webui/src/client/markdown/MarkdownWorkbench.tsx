@@ -16,7 +16,7 @@ import {
 import { FileTree } from "./file-tree/FileTree";
 import { TitleTree } from "./title-tree/TitleTree";
 import { DocumentCanvas } from "./canvas/DocumentCanvas";
-import { SourceEditor } from "./editor/SourceEditor";
+import { LazySourceEditor } from "./editor/LazySourceEditor";
 import { FunctionBar } from "./ui/FunctionBar";
 import { ModeToolbar, type EditorMode } from "./ui/ModeToolbar";
 import { FloatBubble } from "./ui/FloatBubble";
@@ -39,6 +39,7 @@ import {
 } from "./annotate/types";
 import { streamChat } from "../api";
 import { useDocHistory } from "./history";
+import "./styles.css";
 
 export type MarkdownWorkbenchProps = {
   openPath?: string | null;
@@ -602,7 +603,7 @@ export function MarkdownWorkbench({
 
             <div className="md-main-stage">
               {mode === "source" ? (
-                <SourceEditor
+                <LazySourceEditor
                   value={content}
                   editable={!busy}
                   onChange={setContentLive}

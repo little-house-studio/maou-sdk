@@ -1,17 +1,29 @@
 /**
- * Live agent list for webui — same source as default CLI `maou` agent page:
- * listOpsAgents (system agents + projects.json multi-project + children)
- * + presence lights from ~/.maou/run/agent-presence.json.
+ * Live agent list for webui — registry 列表权威在 @little-house-studio/agent
+ * （listOpsAgents / agent-identity），此处叠加 presence 灯与 LiveAgentDto。
+ *
+ * 产品模型：system=ops；project=coding。附属（proactive 等）不当自由人。
  */
-import {
-  existsSync,
-  readdirSync,
-  readFileSync,
-  statSync,
-} from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { listAgentsForCli } from "@little-house-studio/agent";
+import {
+  listOpsAgents,
+  parseAgentSwitchId,
+  isCodingAgentIdentity,
+  isAllowedSystemAgent,
+  isStationedAffiliateAgentName,
+  type OpsAgentListEntry,
+} from "@little-house-studio/agent";
+
+export {
+  listOpsAgents,
+  parseAgentSwitchId,
+  isCodingAgentIdentity,
+  isAllowedSystemAgent,
+  isStationedAffiliateAgentName,
+};
+export type { OpsAgentListEntry };
 
 /** CLI-compatible user maou root (MAOU_HOME or ~/.maou). */
 export function resolveUserMaouRoot(): string {
@@ -20,7 +32,7 @@ export function resolveUserMaouRoot(): string {
   return join(homedir(), ".maou");
 }
 
-/** Ops workspace under maou root (default maouRoot itself for listAgentsForCli). */
+/** Ops workspace under maou root. */
 export function resolveUserOpsRoot(userRoot?: string): string {
   const root = userRoot ?? resolveUserMaouRoot();
   const ops = join(root, "ops");
@@ -86,27 +98,6 @@ export type AgentPresenceDisk = {
   needsReply?: boolean;
   overview?: string;
 };
-
-/** Ops-shaped registry row (before presence merge). */
-export type OpsAgentListEntry = {
-  name: string;
-  display_name?: string;
-  parent?: string;
-  role?: string;
-  description?: string;
-  notes?: string;
-  group?: "system" | "project";
-  project_path?: string;
-  project_name?: string;
-  switch_id?: string;
-  last_active_at?: string;
-  stale?: boolean;
-  has_subagents?: boolean;
-  scope?: string;
-  [k: string]: unknown;
-};
-
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function agentPresenceKey(
   agentName: string,
@@ -174,9 +165,8 @@ export function resolveLivePresenceStatus(
 
 /**
  * Default CLI-aligned switch_id for a hub session:
- * - If projectRoot has .maou/agents/<agentName> (or is a registered project path),
- *   use project:<projectRoot>:<agentName>
- * - Else system:<agentName>
+ * - coding 永远 project switch（禁止 system:coding）
+ * - 其它 system 仅 isAllowedSystemAgent
  */
 export function resolveDefaultSwitchId(
   projectRoot: string,
@@ -187,7 +177,8 @@ export function resolveDefaultSwitchId(
   const root = projectRoot?.trim() || process.cwd();
   const agentDir = join(root, ".maou", "agents", name);
   const maouDir = join(root, ".maou");
-  let isProject = existsSync(agentDir) || existsSync(join(maouDir, "project.json"));
+  let isProject =
+    existsSync(agentDir) || existsSync(join(maouDir, "project.json"));
   if (!isProject && maouRoot) {
     try {
       const projects = getProjectsList(maouRoot);
@@ -196,262 +187,36 @@ export function resolveDefaultSwitchId(
       /* ignore */
     }
   }
-  if (isProject) {
-    return {
-      switchId: `project:${root}:${name}`,
-      projectPath: root,
-    };
+  if (isCodingAgentIdentity(name)) {
+    if (existsSync(root)) {
+      return { switchId: `project:${root}:${name}`, projectPath: root };
+    }
+    return { switchId: "system:ops", projectPath: null };
   }
-  // Prefer system:main when agent is coding but only main exists in registry — keep name as-is
+  if (isProject) {
+    return { switchId: `project:${root}:${name}`, projectPath: root };
+  }
+  if (!isAllowedSystemAgent(name)) {
+    return { switchId: "system:ops", projectPath: null };
+  }
   return { switchId: `system:${name}`, projectPath: null };
 }
 
-/** Parse CLI switch_id (same rules as ops-agent parseAgentSwitchId). */
-export function parseAgentSwitchId(id: string): {
-  kind: "system" | "project";
-  agentName: string;
-  projectPath?: string;
-} | null {
-  if (id.startsWith("system:")) {
-    return { kind: "system", agentName: id.slice("system:".length) };
-  }
-  if (id.startsWith("project:")) {
-    const rest = id.slice("project:".length);
-    const lastColon = rest.lastIndexOf(":");
-    if (lastColon <= 0) return null;
-    const projectPath = rest.slice(0, lastColon);
-    const agentName = rest.slice(lastColon + 1);
-    if (!projectPath || !agentName) return null;
-    return { kind: "project", agentName, projectPath };
-  }
-  if (id && !id.includes("/")) {
-    return { kind: "system", agentName: id };
-  }
-  return null;
-}
-
-function agentDirMtime(dir: string): string | undefined {
-  try {
-    return new Date(statSync(dir).mtimeMs).toISOString();
-  } catch {
-    return undefined;
-  }
-}
-
-function listProjectAgentNames(projectPath: string): string[] {
-  const dir = join(projectPath, ".maou", "agents");
-  if (!existsSync(dir)) return [];
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && !d.name.startsWith("."))
-      .map((d) => d.name)
-      .sort((a, b) => a.localeCompare(b));
-  } catch {
-    return [];
-  }
-}
-
-function loadOverview(agentDir: string, fallback = ""): string {
-  try {
-    const md = join(agentDir, "OVERVIEW.md");
-    if (existsSync(md)) {
-      const t = readFileSync(md, "utf-8")
-        .trim()
-        .split("\n")
-        .find((l) => l.trim() && !l.startsWith("#"));
-      if (t) return t.trim().slice(0, 120);
-    }
-  } catch {
-    /* ignore */
-  }
-  return fallback;
-}
-
-function projectDisplayName(path: string, fallback?: string): string {
-  if (fallback?.trim()) return fallback.trim();
-  const base = path.replace(/\/+$/, "").split("/").pop();
-  return base || path;
-}
-
 /**
- * Append one project's main + sub agents (same shape as CLI listOpsAgents).
- */
-function pushProjectAgents(
-  projectEntries: OpsAgentListEntry[],
-  p: ProjectListItem,
-  now: number,
-): void {
-  const names = listProjectAgentNames(p.path);
-  const mainName = names.includes("coding")
-    ? "coding"
-    : names.includes("main")
-      ? "main"
-      : names[0];
-  if (!mainName) {
-    const marker = join(p.path, ".maou", "project.json");
-    if (!existsSync(marker) && !existsSync(join(p.path, ".maou"))) return;
-    const last =
-      agentDirMtime(join(p.path, ".maou")) ?? agentDirMtime(marker);
-    const lastMs = last ? Date.parse(last) : 0;
-    projectEntries.push({
-      name: "coding",
-      display_name: p.name,
-      role: "coding",
-      group: "project",
-      project_path: p.path,
-      project_name: p.name,
-      switch_id: `project:${p.path}:coding`,
-      last_active_at: last ?? p.updated_at,
-      stale: lastMs > 0 ? now - lastMs > SEVEN_DAYS_MS : false,
-      notes: "尚未驻扎 coding agent；切换后将自动物化",
-      description: p.path,
-    });
-    return;
-  }
-
-  const agentDir = join(p.path, ".maou", "agents", mainName);
-  const last = agentDirMtime(agentDir) ?? p.updated_at;
-  const lastMs = last ? Date.parse(last) : 0;
-  const subs = names.filter((n) => n !== mainName);
-  const overview = loadOverview(agentDir, p.path);
-
-  projectEntries.push({
-    name: mainName,
-    display_name: p.name,
-    role: "coding",
-    group: "project",
-    project_path: p.path,
-    project_name: p.name,
-    switch_id: `project:${p.path}:${mainName}`,
-    last_active_at: last,
-    stale: lastMs > 0 ? now - lastMs > SEVEN_DAYS_MS : false,
-    description: overview,
-    notes: overview,
-  });
-
-  for (const sub of subs) {
-    const sdir = join(p.path, ".maou", "agents", sub);
-    const slast = agentDirMtime(sdir);
-    const so = loadOverview(sdir, `${p.name} / ${sub}`);
-    projectEntries.push({
-      name: sub,
-      display_name: sub,
-      role: "subagent",
-      parent: mainName,
-      group: "project",
-      project_path: p.path,
-      project_name: p.name,
-      switch_id: `project:${p.path}:${sub}`,
-      last_active_at: slast,
-      stale: false,
-      description: so,
-      notes: so,
-    });
-  }
-}
-
-/**
- * Same list construction as agent/ops-agent listOpsAgents (CLI default agent page).
- * Pure-ish: reads maouRoot FS; unit-testable with temp dirs.
- *
- * @param ensureProjectPaths  extra project roots to include even if not in
- *   projects.json (e.g. webui hub cwd / active switch project) so current
- *   selection is always visible — CLI registers via `maou coding` gate.
+ * Same list construction as agent-products/ops-agent listOpsAgents（core 权威）。
  */
 export function listOpsAgentsForWeb(
   maouRoot?: string,
   ensureProjectPaths?: string[],
 ): OpsAgentListEntry[] {
-  const root = maouRoot ?? resolveUserMaouRoot();
-  const opsRoot = resolveUserOpsRoot(root);
-  const out: OpsAgentListEntry[] = [];
-  const now = Date.now();
-
-  try {
-    const system = listAgentsForCli(root, opsRoot) as OpsAgentListEntry[];
-    for (const e of system) {
-      const dir = join(root, "agents", e.name);
-      const last = agentDirMtime(dir);
-      const lastMs = last ? Date.parse(last) : 0;
-      const overview = loadOverview(
-        dir,
-        String(e.description || e.notes || "机器级助手"),
-      );
-      out.push({
-        ...e,
-        group: "system",
-        switch_id: `system:${e.name}`,
-        last_active_at: last,
-        stale: lastMs > 0 ? now - lastMs > SEVEN_DAYS_MS : false,
-        description: overview,
-        notes: overview,
-      });
-    }
-  } catch {
-    /* ignore */
-  }
-
-  if (!out.some((e) => e.name === "ops" && e.group === "system")) {
-    out.unshift({
-      name: "ops",
-      display_name: "Ops Agent",
-      role: "ops",
-      group: "system",
-      switch_id: "system:ops",
-      description: "机器级电脑管家",
-      notes: "",
-    });
-  }
-
-  const projects = getProjectsList(root).filter((p) => existsSync(p.path));
-  const seenPaths = new Set(projects.map((p) => p.path));
-
-  // Hub / active workspace may not be in projects.json yet (CLI registers on
-  // `maou coding` confirm). Still surface it so web activeSwitchId ∈ list.
-  for (const raw of ensureProjectPaths ?? []) {
-    const path = raw?.trim();
-    if (!path || seenPaths.has(path) || !existsSync(path)) continue;
-    const hasMaou =
-      existsSync(join(path, ".maou", "agents")) ||
-      existsSync(join(path, ".maou", "project.json")) ||
-      existsSync(join(path, ".maou"));
-    if (!hasMaou) continue;
-    seenPaths.add(path);
-    projects.push({
-      name: projectDisplayName(path),
-      path,
-      updated_at: new Date().toISOString(),
-    });
-  }
-
-  const projectEntries: OpsAgentListEntry[] = [];
-  for (const p of projects) {
-    pushProjectAgents(projectEntries, p, now);
-  }
-
-  const mains = projectEntries.filter((e) => !e.parent);
-  const children = projectEntries.filter((e) => !!e.parent);
-  mains.sort((a, b) => {
-    const ta = Date.parse(a.last_active_at ?? "") || 0;
-    const tb = Date.parse(b.last_active_at ?? "") || 0;
-    return tb - ta;
+  return listOpsAgents({
+    maouRoot: maouRoot ?? resolveUserMaouRoot(),
+    ensureProjectPaths,
   });
-  for (const m of mains) {
-    out.push(m);
-    for (const c of children.filter(
-      (x) => x.project_path === m.project_path && x.parent === m.name,
-    )) {
-      out.push(c);
-    }
-  }
-
-  return out;
 }
 
 /**
  * Map ops-shaped entries + presence → LiveAgentDto.
- * Presence key: system agents → system::name; project → projectPath::name
- * (CLI overlay agentPresenceKey(name, project_path ?? null)).
  */
 export function mapOpsEntriesToLiveAgents(
   entries: OpsAgentListEntry[],
@@ -470,15 +235,26 @@ export function mapOpsEntriesToLiveAgents(
   for (const e of entries) {
     const name = String(e.name || "").trim();
     if (!name) continue;
-    const group: "system" | "project" =
+    // 附属驻扎 agent 永不出现在可切换主体列表
+    if (isStationedAffiliateAgentName(name)) continue;
+    let group: "system" | "project" =
       e.group === "project" ? "project" : "system";
+    // 安全网：coding 身份绝不能进 system
+    if (
+      group === "system" &&
+      isCodingAgentIdentity(
+        name,
+        String(e.role || ""),
+        String(e.display_name || ""),
+      )
+    ) {
+      continue;
+    }
     const projectPath =
       group === "project"
         ? String(e.project_path || "") || undefined
         : undefined;
-    // CLI: project_path only for project group; system → null key → system::name
-    const presenceProject =
-      group === "project" ? projectPath ?? null : null;
+    const presenceProject = group === "project" ? projectPath ?? null : null;
     const key = agentPresenceKey(name, presenceProject);
     const switchId =
       String(e.switch_id || "") ||
@@ -522,21 +298,20 @@ export function mapOpsEntriesToLiveAgents(
   }
 
   if (out.length === 0) {
-    const active = opts.activeAgentName || "coding";
-    const key = agentPresenceKey(active, null);
-    const switchId = `system:${active}`;
+    const key = agentPresenceKey("ops", null);
+    const switchId = "system:ops";
     out.push({
       id: switchId,
-      name: active,
-      displayName: active,
-      role: "coding",
+      name: "ops",
+      displayName: "Ops Agent",
+      role: "ops",
       status: resolveLivePresenceStatus(presence[key], {
         isCurrent: true,
         agentBusy: opts.agentBusy,
         hasPendingApproval: opts.hasPendingApproval,
       }),
       group: "system",
-      overview: "current agent",
+      overview: "机器级电脑管家",
       switchId,
     });
   }
@@ -555,11 +330,9 @@ export function listLiveAgents(opts: {
   hasPendingApproval?: boolean;
 }): LiveAgentDto[] {
   const maou = opts.maouRoot || resolveUserMaouRoot();
-  // Ensure hub cwd + active project path appear even if not yet in projects.json
   const ensure: string[] = [];
   if (opts.projectRoot?.trim()) ensure.push(opts.projectRoot.trim());
   if (opts.activeProjectPath?.trim()) ensure.push(opts.activeProjectPath.trim());
-  // Parse project path out of activeSwitchId when set
   if (opts.activeSwitchId) {
     const parsed = parseAgentSwitchId(opts.activeSwitchId);
     if (parsed?.kind === "project" && parsed.projectPath) {
@@ -589,9 +362,15 @@ export function mapRegistryEntriesToLiveAgents(
     presence?: Record<string, AgentPresenceDisk>;
   },
 ): LiveAgentDto[] {
-  // Normalize bare registry rows into ops shape (system if no project path)
   const normalized: OpsAgentListEntry[] = entries.map((e) => {
+    const name = String(e.name || "");
+    const coding = isCodingAgentIdentity(
+      name,
+      String(e.role || ""),
+      String(e.display_name || ""),
+    );
     const project =
+      coding ||
       e.group === "project" ||
       e._source === "project" ||
       e.scope === "project" ||

@@ -1,0 +1,32 @@
+{
+  "name": "proactive",
+  "display_name": "主动智能（附属驻扎）",
+  "role": "proactive",
+  "scope": "subagent",
+  "subagent_kind": "task",
+  "parent_agent": "coding",
+  "stationed": true,
+  "description": "挂靠主 coding 的持久附属 agent：只读扫描与看板；不作为可切换主体；落地由主 coding 执行。",
+  "status": "active",
+  "round_limit": 24,
+  "enable_loop": true,
+  "persist_context": true,
+  "inherit_full_context": false,
+  "permission": "readonly",
+  "tool_preset": "explore",
+  "tools": [
+    "reader",
+    "glob",
+    "grep",
+    "find_code",
+    "lsp",
+    "search_internet",
+    "use_skill",
+    "find_skill"
+  ],
+  "list_in_manager": false,
+  "use_executor": true,
+  "over_round_policy": "wrap_up",
+  "ephemeral": false,
+  "storage_scope": "nested"
+}

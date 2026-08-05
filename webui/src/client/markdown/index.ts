@@ -21,6 +21,10 @@ export {
 
 export { FileTree, type FileTreeProps } from "./file-tree/FileTree";
 export { SourceEditor, type SourceEditorProps } from "./editor/SourceEditor";
+export {
+  LazySourceEditor,
+  type LazySourceEditorProps,
+} from "./editor/LazySourceEditor";
 export { DocumentCanvas } from "./canvas/DocumentCanvas";
 export { TitleTree } from "./title-tree/TitleTree";
 export { CopilotPanel } from "./copilot/CopilotPanel";

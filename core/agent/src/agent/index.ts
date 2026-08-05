@@ -91,6 +91,31 @@ export {
   overviewPath,
 } from "./overview.js";
 
+// ── Agent 身份（产品主体 ops/coding vs 附属服务）──────────────────────────
+
+export {
+  STATIONED_AFFILIATE_AGENT_NAMES,
+  isStationedAffiliateAgentName,
+  isCodingAgentIdentity,
+  isProductAgentTemplateName,
+  isAllowedSystemAgent,
+  isSwitchableSubjectAgent,
+  isSwitchableSystemAgent,
+} from "./agent-identity.js";
+export type {
+  ProductAgentTemplate,
+  StationedAffiliateAgentName,
+} from "./agent-identity.js";
+
+export {
+  listOpsAgents,
+  parseAgentSwitchId,
+} from "./list-ops-agents.js";
+export type {
+  OpsAgentListEntry,
+  ListOpsAgentsOptions,
+} from "./list-ops-agents.js";
+
 // ── Agent 注册表与工厂 ─────────────────────────────────────────────────────
 
 export { AgentRegistry } from "./registry.js";
@@ -294,6 +319,71 @@ export type {
   McpCatalogServerBlock,
   McpCatalogSnapshot,
 } from "./mcp/index.js";
+
+// ── 主动智能（附属驻扎 subagent，挂靠 coding）──────────────────────────────
+
+export {
+  PROACTIVE_ZONES,
+  DEFAULT_PROACTIVE_SETTINGS,
+  isProactiveZone,
+  itemId,
+  parseItemLine,
+  formatItemLine,
+  emptyBoardMarkdown,
+  parseProactiveMarkdown,
+  serializeProactiveBoard,
+  mergeSuggestions,
+  setItemDone,
+  setItemChecked,
+  isQueued,
+  normalizeSettings,
+  canRunToday,
+  bumpRun,
+  parseSuggestionsFromModelText,
+  buildScanUserPrompt,
+  buildDispatchUserMessage,
+  BOARD_REL,
+  SETTINGS_REL,
+  boardPath,
+  settingsPath,
+  readBoard,
+  writeBoard,
+  writeBoardRaw,
+  readSettings,
+  writeSettings,
+  patchSettings,
+  findItem,
+  DEFAULT_PROACTIVE_AGENT_NAME,
+  DEFAULT_PROACTIVE_PARENT_AGENT,
+  DEFAULT_PROACTIVE_ROUND_LIMIT,
+  PROACTIVE_SCAN_TOOL_WHITELIST,
+  PROACTIVE_BOARD_REL,
+  PROACTIVE_SETTINGS_REL,
+  // STATIONED_AFFILIATE_* 身份权威在 agent-identity（上方已 export）
+  ensureProactiveStationed,
+  resolveProactiveStationDir,
+  createProactiveAffiliateRunner,
+  ProactiveService,
+  ProactiveHub,
+} from "./proactive/index.js";
+export type {
+  ProactiveZone,
+  ProactiveRisk,
+  ProactiveItem,
+  ProactiveBoard,
+  ProactiveFrequency,
+  ProactiveSettings,
+  ProactiveJobState,
+  ProactiveChatLine,
+  EnsureProactiveStationedOpts,
+  ProactiveStation,
+  ProactiveRunner,
+  ProactiveRunnerOpts,
+  ProactiveServiceOpts,
+  ProactiveHubOpts,
+  ProactiveSnapshot,
+  CodingDispatchPort,
+} from "./proactive/index.js";
 
 // ── 子 Agent 注册表 ────────────────────────────────────────────────────────
 

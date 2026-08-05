@@ -65,7 +65,7 @@ export function TerminalPanel({
     const term = new Terminal({
       cursorBlink: true,
       fontSize: 12,
-      fontFamily: '"SF Mono", Menlo, Consolas, monospace',
+      fontFamily: '"Fusion Pixel 12 Mono", "Fusion Pixel 12", "HarmonyOS Sans SC"',
       theme: {
         background: "#000000",
         foreground: "#e8e6e0",

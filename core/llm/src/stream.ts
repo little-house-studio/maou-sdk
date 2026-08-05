@@ -23,7 +23,8 @@ import { ModelCaller, type CallerStreamEvent, type ModelCallResult } from "./cal
 import type { APIPreset, LLMToolCall, LLMUsage } from "./adapters/types.js";
 import type { ToolSchema } from "./tools/index.js";
 import { reasoningParamsFor, type ReasoningLevel } from "./reasoning.js";
-import { computeCost, type Pricing } from "./compute-cost.js";
+import { computeCost } from "./compute-cost.js";
+import { resolvePricingFromPreset } from "./preset-normalize.js";
 import { normalizeStopReason } from "./stop-reason.js";
 
 // ─── Context / Message 类型（pi-ai 核心数据结构，我们更规整）──────────────────
@@ -272,7 +273,7 @@ function computeUsage(raw: LLMUsage | null, preset: APIPreset): Usage {
   const cacheWrite1h = Number((raw as Record<string, unknown> | null)?.cache_write_1h ?? 0);
   const totalTokens = Number(raw?.total_tokens ?? input + output);
 
-  const pricing = ((preset as Record<string, unknown>).pricing as Pricing | undefined) ?? null;
+  const pricing = resolvePricingFromPreset(preset);
   let cost: Usage["cost"] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   if (pricing) {
     const c = computeCost(

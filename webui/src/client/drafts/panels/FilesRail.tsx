@@ -101,9 +101,26 @@ export function FilesRail({
   const [selected, setSelected] = useState<string | null>(null);
   const pathsKey = paths.join("\n");
 
+  // Only re-seed expand when path *set* changes — not every poll with same paths
+  // (LiveFilesRail refreshes md-tree every few seconds; resetting expand caused flicker).
   useEffect(() => {
-    setExpanded(defaultExpandedPaths(buildFileTree(paths)));
-    setSelected(null);
+    setExpanded((prev) => {
+      const defaults = defaultExpandedPaths(buildFileTree(paths));
+      const pathSet = new Set(paths);
+      // Keep user expand state for paths still present; open new folders by default
+      const next = new Set<string>();
+      for (const p of prev) {
+        if (pathSet.has(p) || [...pathSet].some((x) => x.startsWith(p + "/"))) {
+          next.add(p);
+        }
+      }
+      for (const p of defaults) next.add(p);
+      if (next.size === prev.size && [...next].every((p) => prev.has(p))) {
+        return prev;
+      }
+      return next;
+    });
+    setSelected((sel) => (sel && paths.includes(sel) ? sel : null));
   }, [pathsKey, paths]);
 
   const onToggle = (path: string) => {

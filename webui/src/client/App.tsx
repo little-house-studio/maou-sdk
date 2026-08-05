@@ -11,10 +11,16 @@
  * TerminalPanel: dock terminal board expand or Ctrl+` / tool-card open.
  * draft.html stays fixture-isolated (main-draft.tsx); this file is live only.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { ChatPanel } from "./ChatPanel";
-import { TerminalPanel, type OpenTerminalRequest } from "./TerminalPanel";
-import "./markdown/styles.css";
+import type { OpenTerminalRequest } from "./TerminalPanel";
 import {
   fetchAgents,
   fetchMeta,
@@ -23,13 +29,10 @@ import {
   type LiveAgentInfo,
   type Meta,
 } from "./api";
-import {
-  type DraftBgTask,
-  type UiMode,
-  BottomInfoBar,
-  TeamBoard,
-  type DockCardId,
-} from "./drafts";
+import type { DraftBgTask, UiMode } from "./drafts/types";
+import type { DockCardId } from "./drafts/bottom-dock";
+import { BottomInfoBar } from "./drafts/panels/BottomInfoBar";
+import { TeamBoard } from "./drafts/panels/TeamBoard";
 import { WireTopbar } from "./drafts/layout/WireTopbar";
 import { ResizeHandle } from "./drafts/layout/ResizeHandle";
 import { AgentList } from "./drafts/panels/AgentList";
@@ -42,10 +45,28 @@ import {
   usageLabelFromMeta,
 } from "./live/adapters";
 import { LiveFilesRail } from "./live/LiveFilesRail";
-import { LiveProjectHost } from "./live/LiveProjectHost";
 import { LiveSettingsPanel } from "./live/LiveSettingsPanel";
 import "./drafts/draft.css";
 import "./live-shell.css";
+
+/** xterm TerminalPanel — only when user opens terminal (not chat first paint). */
+const TerminalPanelLazy = lazy(() =>
+  import("./TerminalPanel").then((m) => ({ default: m.TerminalPanel })),
+);
+
+/** Project workbench + optional CodeMirror path — only in 项目 mode. */
+const LiveProjectHostLazy = lazy(() =>
+  import("./live/LiveProjectHost").then((m) => ({
+    default: m.LiveProjectHost,
+  })),
+);
+
+/** 主动智能 — 底栏 dock 卡片（非顶栏独立页） */
+const ProactiveHostLazy = lazy(() =>
+  import("./live/ProactiveHost").then((m) => ({
+    default: m.ProactiveHost,
+  })),
+);
 
 const LEFT_DEFAULT = 260;
 const LEFT_MIN = 200;
@@ -62,7 +83,11 @@ export function App() {
   const [meta, setMeta] = useState<Meta | null>(null);
   const [metaOffline, setMetaOffline] = useState(true);
   const [openTerm, setOpenTerm] = useState<OpenTerminalRequest>(null);
-  const [showTerminal, setShowTerminal] = useState(false);
+  /** Request bottom-dock board open (terminal lives in the 终端 folder card). */
+  const [dockOpenReq, setDockOpenReq] = useState<{
+    tab: DockCardId;
+    nonce: number;
+  } | null>(null);
   /** Match draft fixtures default: files rail open */
   const [showFiles, setShowFiles] = useState(true);
   const [agentBusy, setAgentBusy] = useState(false);
@@ -104,21 +129,45 @@ export function App() {
       });
   }, []);
 
-  // CLI-aligned agent list poll (ops list + presence)
+  // CLI-aligned agent list poll (ops list + presence) — only commit on real change
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
         const r = await fetchAgents();
         if (cancelled) return;
-        setLiveAgentRows(r.agents);
-        if (r.activeAgentName) setActiveAgentName(r.activeAgentName);
-        if (r.activeSwitchId) setActiveSwitchId(r.activeSwitchId);
-        setActiveProjectPath(r.activeProjectPath);
-      } catch {
-        if (!cancelled) {
-          setLiveAgentRows((prev) => prev);
+        setLiveAgentRows((prev) => {
+          const next = r.agents;
+          if (
+            prev &&
+            prev.length === next.length &&
+            prev.every(
+              (a, i) =>
+                a.id === next[i]?.id &&
+                a.status === next[i]?.status &&
+                a.name === next[i]?.name &&
+                a.displayName === next[i]?.displayName &&
+                a.overview === next[i]?.overview,
+            )
+          ) {
+            return prev;
+          }
+          return next;
+        });
+        if (r.activeAgentName) {
+          const name = r.activeAgentName;
+          setActiveAgentName((prev) => (prev === name ? prev : name));
         }
+        if (r.activeSwitchId) {
+          const sid = r.activeSwitchId;
+          setActiveSwitchId((prev) => (prev === sid ? prev : sid));
+        }
+        {
+          const proj = r.activeProjectPath ?? null;
+          setActiveProjectPath((prev) => (prev === proj ? prev : proj));
+        }
+      } catch {
+        /* keep previous agents on poll failure */
       }
     };
     void tick();
@@ -129,22 +178,47 @@ export function App() {
     };
   }, []);
 
-  // Dock boards: poll live agent terminals
+  // Dock boards: poll live agent terminals — 含全部 Agent 持久终端（切换不杀）
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
-        const agent = meta?.agentName || "coding";
-        let ts = await fetchTerminals(agent);
+        // 始终拉全部 Agent 终端，背景 Agent 的 running 终端也能进 dock / 任务板
+        let ts = await fetchTerminals(undefined, { all: true });
         if (ts.length === 0) {
-          ts = await fetchTerminals(undefined, { all: true });
+          const agent = meta?.agentName || "coding";
+          ts = await fetchTerminals(agent);
         }
         if (cancelled) return;
-        setTermLinesRaw(terminalsToTermLines(ts));
-        setBgTasks(terminalsToBgTasks(ts));
+        const nextLines = terminalsToTermLines(ts);
+        const nextTasks = terminalsToBgTasks(ts);
+        setTermLinesRaw((prev) =>
+          prev.length === nextLines.length &&
+          prev.every((l, i) => l === nextLines[i])
+            ? prev
+            : nextLines,
+        );
+        setBgTasks((prev) => {
+          if (
+            prev.length === nextTasks.length &&
+            prev.every(
+              (t, i) =>
+                t.id === nextTasks[i]?.id &&
+                t.status === nextTasks[i]?.status &&
+                t.title === nextTasks[i]?.title,
+            )
+          ) {
+            return prev;
+          }
+          return nextTasks;
+        });
       } catch {
         if (!cancelled) {
-          setTermLinesRaw(["$ terminal poll offline"]);
+          setTermLinesRaw((prev) =>
+            prev.length === 1 && prev[0] === "$ terminal poll offline"
+              ? prev
+              : ["$ terminal poll offline"],
+          );
         }
       }
     };
@@ -169,7 +243,7 @@ export function App() {
         if (e.shiftKey) return;
         e.preventDefault();
         setMode("chat");
-        setShowTerminal((v) => !v);
+        setDockOpenReq({ tab: "terminal", nonce: Date.now() });
         return;
       }
       if (e.shiftKey && e.key.toLowerCase() === "f") {
@@ -186,17 +260,53 @@ export function App() {
     (id: string, agentName?: string) => {
       setOpenTerm({ id, agentName: agentName || meta?.agentName || "coding" });
       setMode("chat");
-      setShowTerminal(true);
+      setDockOpenReq({ tab: "terminal", nonce: Date.now() });
     },
     [meta?.agentName],
   );
 
   const onDockTabChange = useCallback((tab: DockCardId) => {
-    if (tab === "terminal") {
+    // dock 卡片叠在聊天上；打开时保持 chat 可见
+    if (tab === "terminal" || tab === "proactive") {
       setMode("chat");
-      setShowTerminal(true);
     }
   }, []);
+
+  const terminalFace = useMemo(
+    () => (
+      <Suspense
+        fallback={
+          <div className="live-project-hint" data-term-loading="true">
+            加载终端…
+          </div>
+        }
+      >
+        <TerminalPanelLazy
+          defaultAgent={activeAgentName || meta?.agentName || "coding"}
+          openRequest={openTerm}
+          onOpenConsumed={() => setOpenTerm(null)}
+        />
+      </Suspense>
+    ),
+    [activeAgentName, meta?.agentName, openTerm],
+  );
+
+  const proactiveFace = useMemo(
+    () => (
+      <Suspense
+        fallback={
+          <div className="proactive-host is-loading is-card">
+            <div className="proactive-bar">
+              <span className="proactive-hint">加载主动智能…</span>
+            </div>
+          </div>
+        }
+      >
+        <ProactiveHostLazy presentation="card" />
+      </Suspense>
+    ),
+    [],
+  );
 
   const draftMeta = useMemo(() => {
     const base = metaToDraftMeta(meta, { offline: metaOffline });
@@ -216,6 +326,15 @@ export function App() {
     }
     return metaToAgents(meta, agentBusy);
   }, [liveAgentRows, activeAgentName, activeSwitchId, agentBusy, meta]);
+
+  /** 有持久终端在跑的 agent 名（左侧列表终端角标） */
+  const terminalAgentNames = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of bgTasks) {
+      if (t.status === "running" && t.agent) s.add(t.agent);
+    }
+    return s;
+  }, [bgTasks]);
 
   const activeAgent = useMemo(() => {
     // Prefer exact switch_id match (unique across multi-project coding rows)
@@ -241,6 +360,8 @@ export function App() {
   const onSelectAgent = useCallback(async (agentId: string) => {
     const hit = agents.find((a) => a.id === agentId);
     const switchId = hit?.id || agentId;
+    // No-op if already active (avoid ChatPanel remount flicker)
+    if (switchId === activeSwitchId) return;
     try {
       const r = await setActiveAgent(switchId);
       setActiveAgentName(r.activeAgentName);
@@ -249,11 +370,15 @@ export function App() {
       setLiveAgentRows(r.agents);
       setMeta(r.meta);
       setMetaOffline(false);
-    } catch {
+    } catch (e) {
+      console.error("[webui] setActiveAgent failed", e);
       setActiveSwitchId(switchId);
       if (hit?.name) setActiveAgentName(hit.name);
+      if (hit?.projectPath !== undefined) {
+        setActiveProjectPath(hit.projectPath ?? null);
+      }
     }
-  }, [agents]);
+  }, [agents, activeSwitchId]);
   const usageLabel = useMemo(
     () => usageLabelFromMeta(meta, agentBusy),
     [meta, agentBusy],
@@ -275,6 +400,17 @@ export function App() {
     setMetaOffline(false);
   }, []);
 
+  /**
+   * ChatPanel pushMeta → onMetaChange. Must be stable: agent/terminal polls
+   * re-render App every 2s; an inline onMetaChange remade bootstrap() and
+   * re-hydrated sessions/history → left rail + composer flicker.
+   */
+  const onChatMetaChange = useCallback((m: Meta) => {
+    setMeta(m);
+    setMetaOffline(false);
+    if (m.agentName) setActiveAgentName(m.agentName);
+  }, []);
+
   const onSettingsClose = useCallback(() => {
     setMode("chat");
   }, []);
@@ -286,7 +422,7 @@ export function App() {
     <div
       className={`wire-shell draft-shell live-shell${
         mode === "settings" ? " has-settings" : ""
-      }${showTerminal && chatVisible ? " has-terminal-float" : ""}`}
+      }`}
       data-live-shell="true"
       data-ui-mode={mode}
     >
@@ -318,10 +454,20 @@ export function App() {
 
       {mode === "project" ? (
         <div className="wire-mid is-project" data-live-region="project">
-          <LiveProjectHost
-            projectLabel={draftMeta.projectLabel}
-            projectPath={draftMeta.projectPath}
-          />
+          <Suspense
+            fallback={
+              <div className="live-project-host is-loading">
+                <div className="live-project-bar">
+                  <span className="live-project-hint">加载项目界面…</span>
+                </div>
+              </div>
+            }
+          >
+            <LiveProjectHostLazy
+              projectLabel={draftMeta.projectLabel}
+              projectPath={draftMeta.projectPath}
+            />
+          </Suspense>
         </div>
       ) : null}
 
@@ -349,6 +495,7 @@ export function App() {
               onSelect={(id) => {
                 void onSelectAgent(id);
               }}
+              terminalAgentNames={terminalAgentNames}
             />
           </div>
           <div
@@ -392,17 +539,15 @@ export function App() {
         />
 
         <div className="wire-center" data-live-region="thread">
+          {/* key remount: agent switch rebuilds session rail + history for new workspace */}
           <ChatPanel
+            key={activeSwitchId || activeAgentName || "agent"}
             layout="codex"
             chrome="wire"
             className="wire-context"
             defaultAgent={activeAgentName || meta?.agentName || "coding"}
             onOpenTerminal={onOpenTerminal}
-            onMetaChange={(m) => {
-              setMeta(m);
-              setMetaOffline(false);
-              if (m.agentName) setActiveAgentName(m.agentName);
-            }}
+            onMetaChange={onChatMetaChange}
             threadRailId={LIVE_SESSION_RAIL_ID}
             onBusyChange={setAgentBusy}
             onSessionTitleChange={setSessionTitle}
@@ -430,30 +575,6 @@ export function App() {
           </>
         )}
 
-        {showTerminal && (
-          <aside
-            className="wire-terminal-float"
-            aria-label="agent terminal"
-            data-live-region="terminal"
-          >
-            <div className="wire-terminal-float-head">
-              <span>终端</span>
-              <button
-                type="button"
-                className="wire-text-btn"
-                onClick={() => setShowTerminal(false)}
-                title="关闭终端 (Ctrl+`)"
-              >
-                关闭
-              </button>
-            </div>
-            <TerminalPanel
-              defaultAgent={activeAgentName || meta?.agentName || "coding"}
-              openRequest={openTerm}
-              onOpenConsumed={() => setOpenTerm(null)}
-            />
-          </aside>
-        )}
       </div>
 
       <BottomInfoBar
@@ -464,9 +585,9 @@ export function App() {
         agentBusy={agentBusy}
         agents={agents}
         onTabChange={onDockTabChange}
-        onExpand={() => {
-          /* dock board expand — terminal handled via onTabChange */
-        }}
+        terminalFace={terminalFace}
+        proactiveFace={proactiveFace}
+        openTabRequest={dockOpenReq}
       />
     </div>
   );

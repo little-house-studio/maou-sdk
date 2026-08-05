@@ -48,14 +48,20 @@ describe("DraftMarkdown on showcase inventory", () => {
     assert.match(html, /class="dm-link"/);
   });
 
-  it("isolated pure list paragraphs become lists (contract of blank-line split)", () => {
+  it("isolated pure list paragraphs become lists (GFM)", () => {
     const ul = renderMd("- a\n- b");
     assert.match(ul, /<ul class="dm-list">/);
     const ol = renderMd("1. a\n2. b");
     assert.match(ol, /<ol class="dm-list">/);
-    // label glued to items without blank line must NOT be a list
+    // GFM treats glued label + list as paragraph + list (mature parser, not the old homegrown rule)
     const glued = renderMd("无序列表：\n- a\n- b");
-    assert.equal(/class="dm-list"/.test(glued), false);
+    assert.match(glued, /class="dm-list"/);
+  });
+
+  it("uses react-markdown engine", () => {
+    const html = renderMd("hello **x**");
+    assert.match(html, /data-md-engine="react-markdown"/);
+    assert.match(html, /<strong>x<\/strong>/);
   });
 
   it("renders ATX headings as h1–h6 for project outline jump targets", () => {

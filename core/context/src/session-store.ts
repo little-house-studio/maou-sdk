@@ -272,28 +272,29 @@ export class SessionStore {
       const sessionId = meta.id;
       seen.add(sessionId);
 
-      let messageCount = 0;
-      let lastMsgTime = meta.created_at || "";
+      // Prefer meta timestamps; avoid full JSONL parse + JSON.parse of every line
+      // (large sessions used to blow list() memory). Count via cheap substring scan.
+      let messageCount =
+        typeof meta.message_count === "number"
+          ? (meta.message_count as number)
+          : typeof meta.messageCount === "number"
+            ? (meta.messageCount as number)
+            : 0;
+      let lastMsgTime = meta.updated_at || meta.created_at || "";
       const jsonl = this.jsonlPath(sessionId);
-      if (existsSync(jsonl)) {
-        const lines = readFileSync(jsonl, "utf-8").split("\n");
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const event = JSON.parse(line);
-            if (event.type === "message") {
-              messageCount++;
-              if (event.role === "user") {
-              lastMsgTime = event.createdAt || event.created_at || lastMsgTime;
-              }
-            }
-          } catch {
-            continue;
+      if (existsSync(jsonl) && messageCount === 0) {
+        try {
+          const raw = readFileSync(jsonl, "utf-8");
+          // Approximate message rows without allocating parsed objects
+          const re = /"type"\s*:\s*"message"/g;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(raw)) !== null) {
+            messageCount++;
+            void m;
           }
+        } catch {
+          /* ignore */
         }
-      }
-      if (!lastMsgTime || lastMsgTime === meta.created_at) {
-        lastMsgTime = meta.updated_at || meta.created_at || "";
       }
 
       sessions.push({

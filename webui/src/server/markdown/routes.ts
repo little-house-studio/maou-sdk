@@ -14,6 +14,8 @@ import {
 export type MarkdownRoutesOpts = {
   /** 解析项目根目录 */
   getProjectRoot: () => string;
+  /** 文件写入后回调（主动智能 after_edit 等） */
+  onWrite?: () => void;
 };
 
 export function mountMarkdownRoutes(
@@ -21,6 +23,13 @@ export function mountMarkdownRoutes(
   opts: MarkdownRoutesOpts,
 ): void {
   const root = () => opts.getProjectRoot();
+  const afterWrite = () => {
+    try {
+      opts.onWrite?.();
+    } catch {
+      /* ignore */
+    }
+  };
 
   app.get("/api/fs/md-tree", (_req, res) => {
     try {
@@ -56,6 +65,7 @@ export function mountMarkdownRoutes(
     const content = String(req.body?.content ?? "");
     try {
       const out = writeProjectFile(root(), path, content);
+      afterWrite();
       res.json({ ok: true, ...out });
     } catch (e) {
       res.status(400).json({
@@ -73,6 +83,7 @@ export function mountMarkdownRoutes(
         : "# New document\n\n";
     try {
       const out = createMarkdownFile(root(), path, content);
+      afterWrite();
       res.json({ ok: true, ...out });
     } catch (e) {
       res.status(400).json({

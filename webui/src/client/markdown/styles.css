@@ -220,7 +220,7 @@
 }
 
 .md-editor .cm-scroller {
-  font-family: "SF Mono", Menlo, Consolas, "Noto Sans SC", monospace !important;
+  font-family: var(--font-pixel-mono) !important;
 }
 
 .md-editor-empty {
@@ -870,7 +870,7 @@
 }
 
 .do-code-block code {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   white-space: pre;
 }
 

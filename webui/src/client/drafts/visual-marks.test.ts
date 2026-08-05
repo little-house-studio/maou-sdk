@@ -90,6 +90,7 @@ describe("visual-marks mappers", () => {
     assert.equal(taskMarkKind("queued"), "queued");
     assert.equal(chromeMarkForMode("chat"), "mode_chat");
     assert.equal(chromeMarkForMode("team"), "mode_team");
+    assert.equal(chromeMarkForMode("proactive"), "mode_proactive");
     assert.equal(chromeMarkForMode("settings"), "settings");
   });
 

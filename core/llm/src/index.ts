@@ -30,6 +30,7 @@ export type {
   ModelInfo,
   LLMEventType,
 } from './chat-session.js'
+// ConnectionTestResult 与 connection-test 同源语义；chat-session 保留类型 re-export
 
 // ─── stream / complete + Context（无状态核心 API，对标 pi-ai）─────────────────
 export { stream, complete, StreamResult } from './stream.js'
@@ -138,6 +139,14 @@ export type { CompressedBody, ReconstructedPost } from './raw-codec.js'
 // ─── 成本计算 ───────────────────────────────────────────────────────────────
 export { computeCost, formatCost } from './compute-cost.js'
 export type { Pricing, CostBreakdown } from './compute-cost.js'
+
+// ─── preset 规范化（pricing / extraBody / reasoning / maxConcurrent）────────
+export {
+  normalizeApiPreset,
+  normalizeApiPresets,
+  resolvePricingFromPreset,
+  getPresetMaxConcurrent,
+} from './preset-normalize.js'
 export { normalizeCacheUsage, cacheHitPct } from './cache-usage.js'
 export type { NormalizedCacheUsage } from './cache-usage.js'
 
@@ -259,6 +268,27 @@ export { ConcurrencyLimiter, RateLimiter, withLimiters } from './rate-limit.js'
 // ─── 账户能力：余额查询 + 跨协议模型扫描（best-effort）────────────────────────
 export { queryBalance, scanModels } from './account.js'
 export type { BalanceResult, ScannedModel } from './account.js'
+
+// ─── 连接测试（真实 chat 探测 + 延迟）──────────────────────────────────────
+export { testConnection } from './connection-test.js'
+export type {
+  ConnectionTestResult as LlmConnectionTestResult,
+  TestConnectionOptions,
+} from './connection-test.js'
+
+// ─── 模型 SVG 降智探针（无上下文画图 → 解析 SVG 图片）──────────────────────
+export {
+  runModelSvgProbe,
+  extractSvgFromModelText,
+  sanitizeSvg,
+  svgToImageDataUrl,
+  buildModelSvgProbePrompt,
+  DEFAULT_SVG_PROBE_SUBJECT,
+} from './model-svg-probe.js'
+export type {
+  ModelSvgProbeResult,
+  ModelSvgProbeOptions,
+} from './model-svg-probe.js'
 
 // ─── WebSocket 传输（对标 pi-ai websocket/websocket-cached；经 fetchImpl 注入）──
 export { createWebSocketFetch } from './transport.js'

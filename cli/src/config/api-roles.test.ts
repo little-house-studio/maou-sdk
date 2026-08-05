@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveApiRolePreset,
+  resolveGlobalHelperPreset,
   findPresetByRef,
   type LLMPreset,
   type ApiConfig,
 } from "@little-house-studio/types";
+import { resolveHelperPreset } from "@little-house-studio/llm";
 
 const presets = [
   {
@@ -46,6 +48,19 @@ const presets = [
     nativeToolCalling: true,
     nativeStructuredOutput: true,
   },
+  {
+    name: "ds-flash/deepseek-v4-flash-free",
+    url: "https://d.example/v1",
+    key: "k4",
+    model: "deepseek-v4-flash-free",
+    maxTokens: 1,
+    protocol: "openai",
+    stream: true,
+    supportsVision: false,
+    supportsReasoning: true,
+    nativeToolCalling: true,
+    nativeStructuredOutput: true,
+  },
 ] as LLMPreset[];
 
 function api(partial: Partial<ApiConfig>): ApiConfig {
@@ -59,9 +74,13 @@ function api(partial: Partial<ApiConfig>): ApiConfig {
 }
 
 describe("api roles", () => {
-  it("find by name / index", () => {
+  it("find by name / index / model / provider prefix", () => {
     expect(findPresetByRef(presets, "fast-model")?.name).toBe("fast-model");
     expect(findPresetByRef(presets, 2)?.name).toBe("vision-model");
+    expect(findPresetByRef(presets, "small")?.name).toBe("fast-model");
+    expect(findPresetByRef(presets, "ds-flash")?.name).toBe(
+      "ds-flash/deepseek-v4-flash-free",
+    );
   });
 
   it("main from roles / defaultPreset", () => {
@@ -88,9 +107,51 @@ describe("api roles", () => {
         ?.name,
     ).toBe("fast-model");
 
-    // vision 未设 → 找 supportsVision
+    // vision 未设 → 找 supportsVision（不走 fast）
     expect(resolveApiRolePreset(api({ roles: { main: 0 } }), "vision")?.name).toBe(
       "vision-model",
     );
+  });
+
+  it("resolveGlobalHelperPreset 不含 main 回退", () => {
+    expect(
+      resolveGlobalHelperPreset(api({ roles: { main: 0 } })),
+    ).toBeUndefined();
+    expect(
+      resolveGlobalHelperPreset(api({ roles: { fast: "fast-model" } }))?.name,
+    ).toBe("fast-model");
+  });
+
+  it("resolveHelperPreset 与全局链一致，并保留 agent 覆盖", () => {
+    const main = presets[0]!;
+    const asApi = presets as unknown as import("@little-house-studio/llm").APIPreset[];
+
+    // 无 agent：与 resolveApiRolePreset helper 一致（除 main 回退用传入 main）
+    expect(
+      resolveHelperPreset(undefined, asApi, undefined, main as never, undefined, "fast-model")
+        .name,
+    ).toBe("fast-model");
+
+    // agent 覆盖优先于 roles.helper
+    expect(
+      resolveHelperPreset(
+        "vision-model",
+        asApi,
+        undefined,
+        main as never,
+        "fast-model",
+        undefined,
+      ).name,
+    ).toBe("vision-model");
+
+    // agent 可用厂商前缀
+    expect(
+      resolveHelperPreset("ds-flash", asApi, undefined, main as never).name,
+    ).toBe("ds-flash/deepseek-v4-flash-free");
+
+    // 全空 → mainPreset
+    expect(
+      resolveHelperPreset(undefined, asApi, undefined, main as never).name,
+    ).toBe("main-model");
   });
 });

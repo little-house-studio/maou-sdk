@@ -120,7 +120,7 @@ export const PROJECT_DOCS: ProjectDoc[] = [
       "- 项目：文档树 | 编辑/预览 | 大纲",
       "",
       "```ts",
-      "type UiMode = \"chat\" | \"project\" | \"team\";",
+      "type UiMode = \"chat\" | \"project\" | \"team\" | \"proactive\" | \"settings\";",
       "```",
     ].join("\n"),
   },

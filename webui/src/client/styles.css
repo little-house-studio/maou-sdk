@@ -35,9 +35,9 @@
   --radius: 12px;
   --sidebar-w: 260px;
   --rail-w: min(420px, 36vw);
-  --font: "Segoe UI", ui-sans-serif, system-ui, -apple-system, "Noto Sans SC",
-    sans-serif;
-  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  /* 默认鸿蒙 · 代码系统等宽 · 像素仅壳层（见 fonts.css） */
+  --font: var(--font-text, var(--font-ui));
+  --mono: var(--font-code, var(--font-pixel-mono));
   --shadow-panel: 0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
     0 8px 24px -12px rgba(0, 0, 0, 0.55);
   font-family: var(--font);
@@ -295,6 +295,24 @@ button {
   font-size: 12px;
   color: var(--fg-subtle);
   text-align: center;
+}
+
+.thread-run-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--border, #444);
+}
+.thread-run-dot.is-on {
+  background: var(--accent, #c7ff20);
+  border-color: var(--accent, #c7ff20);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent, #c7ff20) 50%, transparent);
+  animation: wire-session-run-pulse 1.2s ease-in-out infinite;
+}
+.thread-item-row.is-running .thread-title {
+  color: var(--accent, #c7ff20);
 }
 
 .thread-item-row {
@@ -620,7 +638,13 @@ button {
 
 .chat-log.codex-log {
   flex: 1;
-  overflow: auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: var(--border, #444) var(--panel, #16161a);
   padding: 24px 0 12px;
   display: flex;
   flex-direction: column;
@@ -630,6 +654,25 @@ button {
   margin: 0 auto;
   padding-left: 16px;
   padding-right: 16px;
+}
+
+.chat-log.codex-log::-webkit-scrollbar {
+  width: 12px;
+}
+
+.chat-log.codex-log::-webkit-scrollbar-track {
+  background: var(--panel, #16161a);
+  border-left: 1px solid var(--border, #333);
+}
+
+.chat-log.codex-log::-webkit-scrollbar-thumb {
+  background: var(--muted, #666);
+  border: 2px solid var(--panel, #16161a);
+  min-height: 40px;
+}
+
+.chat-log.codex-log::-webkit-scrollbar-thumb:hover {
+  background: var(--accent, #b8ff00);
 }
 
 @media (min-width: 640px) {
@@ -713,6 +756,11 @@ button {
   color: var(--fg);
   background: transparent;
   padding: 0;
+}
+
+/* 已解析为 HTML 的 markdown 不要再 pre-wrap，否则空行叠 margin 很散 */
+.bubble.codex-bubble .bubble-text:has(.draft-md) {
+  white-space: normal;
 }
 
 .bubble.codex-bubble.user .bubble-text {
@@ -1038,6 +1086,98 @@ button.queue-badge:hover {
   color: var(--fg-subtle);
 }
 
+.composer-outbox {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated, rgba(0, 0, 0, 0.15));
+  max-height: 140px;
+  overflow: auto;
+}
+
+.composer-outbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.composer-outbox-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.composer-outbox-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.composer-outbox-item.is-failed {
+  border-color: var(--err, #e55);
+}
+
+.composer-outbox-mode {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent, #8cf);
+  white-space: nowrap;
+}
+
+.composer-outbox-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted, var(--muted));
+}
+
+.composer-outbox-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.send-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-end;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.send-mode-toggle:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+
+.send-mode-kbd {
+  font-size: 10px;
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+}
+
 .composer-row .send-btn {
   align-self: flex-end;
   background: var(--fg);
@@ -1048,6 +1188,11 @@ button.queue-badge:hover {
   font-weight: 600;
   font-size: 13px;
   transition: opacity 0.15s, transform 0.1s;
+}
+
+.composer-row .send-btn.mode-insert {
+  background: var(--warn, #d4890a);
+  color: #111;
 }
 
 .composer-row .send-btn:hover:not(:disabled) {

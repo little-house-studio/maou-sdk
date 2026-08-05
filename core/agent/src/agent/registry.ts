@@ -96,8 +96,8 @@ export interface AgentEntry {
   /** 模型配置（可选），覆盖 preset 中的 model */
   model?: string;
   /** 辅助模型配置（可选）—— 用于压缩/loop判定/路由等辅助调用。
-   * 字符串匹配 preset name 或 model id；未配置时回退主模型。
-   * 优先级：agent.json helperModel > 全局 helperPreset > 主模型 preset
+   * 匹配 findPresetByRef（name / model id / 厂商前缀）。
+   * 优先级：helperModel > roles.helper > helperPreset(legacy) > roles.fast > 主模型
    */
   helperModel?: string;
   removal_request?: {

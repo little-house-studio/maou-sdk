@@ -145,7 +145,7 @@ export function installTerminalReviewer(opts: InstallTerminalReviewerOptions): v
 
 /**
  * 从 config presets 解析 helper preset（供 harness/CLI 装配用）。
- * 优先级：roles.helper > helperPreset 索引 > roles.fast > 主模型。
+ * 统一链：agent.helperModel > roles.helper > helperPreset > roles.fast > main。
  */
 export function resolveTerminalReviewPreset(
   presets: APIPreset[],

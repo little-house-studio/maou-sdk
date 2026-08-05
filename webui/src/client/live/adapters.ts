@@ -141,7 +141,7 @@ export function terminalsToTermLines(
   });
 }
 
-/** Map running terminals into dock task rows. */
+/** Map terminals into dock task rows（含非当前 Agent 的持久终端）. */
 export function terminalsToBgTasks(terminals: TerminalInfo[]): DraftBgTask[] {
   return terminals.map((t) => {
     const running =

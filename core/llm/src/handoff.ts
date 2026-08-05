@@ -24,6 +24,16 @@ export interface HandoffOptions {
   targetSupportsTools?: boolean;
   /** 目标模型是否支持视觉（false → 图片附件降级为文本占位，默认 true） */
   targetSupportsVision?: boolean;
+  /**
+   * 目标是否支持音频附件（false → 降级为文本占位）。
+   * 默认 true（未声明能力时不剥离，避免误伤旧配置）。
+   */
+  targetSupportsAudio?: boolean;
+  /**
+   * 目标是否支持视频附件（false → 降级为文本占位）。
+   * 默认 true。
+   */
+  targetSupportsVideo?: boolean;
   /** 历史 content 里已有的 <think>/<thinking> 标签如何处理（默认 "tag" 统一为 <thinking>） */
   thinking?: ThinkingMode;
 }
@@ -89,6 +99,8 @@ export function normalizeForHandoff(
 ): ChatMessage[] {
   const supportsTools = opts?.targetSupportsTools ?? true;
   const supportsVision = opts?.targetSupportsVision ?? true;
+  const supportsAudio = opts?.targetSupportsAudio ?? true;
+  const supportsVideo = opts?.targetSupportsVideo ?? true;
   const thinkingMode = opts?.thinking ?? "tag";
 
   return messages.map((msg) => {
@@ -110,12 +122,28 @@ export function normalizeForHandoff(
       toolCalls = undefined;
     }
 
-    // 3. 视觉降级（目标不支持视觉时，图片附件转文本占位）
-    if (!supportsVision && attachments?.some((a) => a.type === "image")) {
-      const kept = attachments.filter((a) => a.type !== "image");
-      const imgCount = attachments.length - kept.length;
-      if (imgCount > 0) content = `${content}\n[已省略 ${imgCount} 张图片：目标模型不支持视觉]`.trim();
-      attachments = kept.length ? kept : undefined;
+    // 3. 多模态降级（目标不支持对应模态时，附件转文本占位）
+    if (attachments?.length) {
+      const stripTypes: Array<"image" | "audio" | "video"> = [];
+      if (!supportsVision) stripTypes.push("image");
+      if (!supportsAudio) stripTypes.push("audio");
+      if (!supportsVideo) stripTypes.push("video");
+      if (stripTypes.length) {
+        const kept = attachments.filter(
+          (a) => !stripTypes.includes(a.type as "image" | "audio" | "video"),
+        );
+        const omitted = attachments.length - kept.length;
+        if (omitted > 0) {
+          const labels = stripTypes
+            .map((t) =>
+              t === "image" ? "图片" : t === "audio" ? "音频" : "视频",
+            )
+            .join("/");
+          content =
+            `${content}\n[已省略 ${omitted} 个附件（${labels}）：目标模型不支持对应模态]`.trim();
+        }
+        attachments = kept.length ? kept : undefined;
+      }
     }
 
     return { ...msg, content, toolCalls, attachments };
@@ -191,9 +219,18 @@ export function migrateSession(
   newPreset: APIPreset,
   opts?: HandoffOptions,
 ): void {
+  const p = newPreset as APIPreset & {
+    supportsAudio?: boolean;
+    supportsVideo?: boolean;
+  };
+  // 未声明的能力位默认「不剥离」（true）；仅显式 false 时降级
   const merged: HandoffOptions = {
     targetSupportsTools: opts?.targetSupportsTools ?? newPreset.nativeToolCalling !== false,
     targetSupportsVision: opts?.targetSupportsVision ?? newPreset.supportsVision !== false,
+    targetSupportsAudio:
+      opts?.targetSupportsAudio ?? p.supportsAudio !== false,
+    targetSupportsVideo:
+      opts?.targetSupportsVideo ?? p.supportsVideo !== false,
     thinking: opts?.thinking ?? "tag",
   };
   session.setHistory(normalizeForHandoff(session.getHistory(), merged));

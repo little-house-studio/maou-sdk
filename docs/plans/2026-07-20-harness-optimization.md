@@ -43,7 +43,7 @@
 
 ## 3. 工作包与分层
 
-主战场：**maou-sdk**（`core/*`、`cli`、`agent/coding-agent`）。  
+主战场：**maou-sdk**（`core/*`、`cli`、`agent-products/coding-agent`）。  
 **maou-agent harness** 默认不动。
 
 ### P0 — Session 诊断（对齐 ep04/05）
@@ -71,7 +71,7 @@
 
 | 项 | 内容 |
 |---|---|
-| **改哪些层** | `agent/coding-agent` 模板 hook + 可选 `core/tools` 硬策略；运行时 `PERMISSION.jsonc` |
+| **改哪些层** | `agent-products/coding-agent` 模板 hook + 可选 `core/tools` 硬策略；运行时 `PERMISSION.jsonc` |
 | **交付物** | 1）开箱策略：场景 `doc_extract` 下拦截 `write_file` / `edit` / 随意 `run_terminal` 写脚本；2）拦截时返回固定中文反馈（「本任务禁止写代码，请直接读文档」）；3）hook/策略放在**运行 skill 工作区外**（agent 全局或 `~/.maou` / agent 模板，不进业务 output 目录）；4）README：何时启用、如何关 |
 | **验收** | 在 fixture 会话中模型尝试 write → 被拦 ≥1 次并改读文件；业务目录内无 hook 源码可被 read 到（或明确文档说明隔离方式） |
 | **不做什么** | 通用「意图 NLP 分类器」；先做工具名/路径规则 |
@@ -141,7 +141,7 @@
 
 | 项 | 内容 |
 |---|---|
-| **改哪些层** | `agent/coding-agent` 模板（`/init` RULE、hook README、可选 prompt 片段） |
+| **改哪些层** | `agent-products/coding-agent` 模板（`/init` RULE、hook README、可选 prompt 片段） |
 | **交付物** | 1）RULE 默认段落：命名 `What_How` / case 拆分、单测边界；2）hook 示例按该命名；3）一页说明给「让模型维护安全代码」的作者 |
 | **验收** | 新 `/init` 项目 RULE 含该节；示例 hook 文件名/函数名符合约定 |
 | **不做什么** | 编译期强制 lint（可后续） |
@@ -220,8 +220,8 @@ P5  What/How 规范         ──最轻，可与 P1 同 PR
 | supervisor 工具 | `core/tools/src/agent_team/supervisor_*` |
 | hooks | `core/agent/src/agent/hooks.ts` |
 | cache 账本 | `core/agent/src/agent/prompt-cache-ledger.ts` |
-| coding hook 模板 | `agent/coding-agent/templates/coding/hook/` |
-| `/init` 项目说明 | `agent/coding-agent/templates/coding/command/init.md` |
+| coding hook 模板 | `agent-products/coding-agent/templates/coding/hook/` |
+| `/init` 项目说明 | `agent-products/coding-agent/templates/coding/command/init.md` |
 
 ---
 

@@ -1,139 +1,165 @@
+/**
+ * 左侧 Agent 列表布局（对齐产品线框图，非视觉抄袭）：
+ *   [系统 | 项目 | IM]
+ *   · 系统：按「机器/本机」分组 → agent 树（含子 agent）
+ *   · 项目：按「项目名称」分组 → project agent 树
+ *   · IM：占位
+ * 选中高亮 = 当前会话 agent；终端图标 = 有持久终端在跑
+ */
 import { useMemo, useState } from "react";
 import type { DraftAgent } from "../types";
 import { STATUS_LABEL_ZH } from "../agent-tree";
-import { hierarchyMarkKind } from "../visual-marks";
-import { ChromeMark, HierarchyMark, StatusMark } from "../icons/Marks";
+import { StatusMark } from "../icons/Marks";
+import { UiEmoji } from "../../ui-emoji";
 
 export type AgentListProps = {
   agents: DraftAgent[];
   activeId: string;
   onSelect: (id: string) => void;
+  /** 正在跑持久终端的 agent name 集合 */
+  terminalAgentNames?: ReadonlySet<string> | string[];
 };
+
+type ScopeTab = "system" | "project" | "im";
 
 type AgentBranch = {
   root: DraftAgent;
   children: DraftAgent[];
-  /** Project-only: how many children are running/blocked (CLI expand policy) */
-  runningChildCount?: number;
-  idleChildCount?: number;
 };
 
-type AgentSection = {
+type HostOrProjectGroup = {
   id: string;
   label: string;
   branches: AgentBranch[];
 };
 
-function titleOf(a: DraftAgent): string {
-  if (a.group === "project" && !a.parent) {
-    return a.projectName || a.displayName || a.name;
+const TABS: { id: ScopeTab; label: string }[] = [
+  { id: "system", label: "系统" },
+  { id: "project", label: "项目" },
+  { id: "im", label: "IM" },
+];
+
+function titleOf(a: DraftAgent, isRoot: boolean): string {
+  if (isRoot && a.group === "project") {
+    return a.displayName || a.name;
   }
   return a.displayName || a.name;
-}
-
-function subtitleOf(a: DraftAgent, isRoot: boolean): string {
-  if (isRoot && a.group === "project") {
-    return a.name !== titleOf(a) ? a.name : a.role || a.overview || "";
-  }
-  return a.overview || a.role || "";
 }
 
 function isRunningLike(status: DraftAgent["status"]): boolean {
   return status === "running" || status === "blocked";
 }
 
-function buildSections(agents: DraftAgent[]): AgentSection[] {
-  const systemRoots = agents.filter((a) => a.group === "system" && !a.parent);
-  const systemChildren = agents.filter((a) => a.group === "system" && a.parent);
-  const projectRoots = agents.filter((a) => a.group === "project" && !a.parent);
-  const projectChildren = agents.filter(
-    (a) => a.group === "project" && a.parent,
-  );
-  const fresh = projectRoots.filter((a) => !a.stale);
-  const stale = projectRoots.filter((a) => a.stale);
-
-  const systemBranches: AgentBranch[] = systemRoots.map((root) => ({
-    root,
-    children: systemChildren.filter((c) => c.parent === root.name),
-  }));
-
-  // CLI: project subs only expand when running/blocked; idle stay folded
-  const projectBranches: AgentBranch[] = fresh.map((root) => {
-    const all = projectChildren.filter(
-      (c) => c.parent === root.name && c.projectPath === root.projectPath,
-    );
-    const running = all.filter((c) => isRunningLike(c.status));
-    return {
-      root,
-      // Prefer running children in expanded view; full list still available via expand
-      children: all,
-      runningChildCount: running.length,
-      idleChildCount: all.length - running.length,
-    };
-  });
-
-  // Stale section: CLI only shows main agent (no children)
-  const staleBranches: AgentBranch[] = stale.map((root) => ({
-    root,
-    children: [],
-  }));
-
-  const sections: AgentSection[] = [];
-  if (systemBranches.length > 0) {
-    sections.push({
-      id: "system",
-      label: "系统 Agent",
-      branches: systemBranches,
-    });
-  }
-  if (projectBranches.length > 0) {
-    sections.push({
-      id: "project",
-      label: "项目 Agent · 最近活跃",
-      branches: projectBranches,
-    });
-  }
-  if (staleBranches.length > 0) {
-    sections.push({
-      id: "stale",
-      label: "休眠项目 · 超过 7 天未运行",
-      branches: staleBranches,
-    });
-  }
-  return sections;
+function toNameSet(
+  names?: ReadonlySet<string> | string[],
+): Set<string> {
+  if (!names) return new Set();
+  if (names instanceof Set) return names;
+  return new Set(names);
 }
 
-function sectionCount(section: AgentSection): number {
-  return section.branches.reduce((n, b) => n + 1 + b.children.length, 0);
+/** 系统 Tab：按 host 分组（暂无多机数据时整组「本机」） */
+function buildSystemGroups(agents: DraftAgent[]): HostOrProjectGroup[] {
+  const roots = agents.filter((a) => a.group === "system" && !a.parent);
+  const children = agents.filter((a) => a.group === "system" && a.parent);
+
+  // hostLabel 预留；当前统一本机
+  const byHost = new Map<string, DraftAgent[]>();
+  for (const r of roots) {
+    const host = (r as DraftAgent & { hostLabel?: string }).hostLabel || "本机";
+    if (!byHost.has(host)) byHost.set(host, []);
+    byHost.get(host)!.push(r);
+  }
+
+  const groups: HostOrProjectGroup[] = [];
+  for (const [host, hostRoots] of byHost) {
+    groups.push({
+      id: `host:${host}`,
+      label: host,
+      branches: hostRoots.map((root) => ({
+        root,
+        children: children.filter((c) => c.parent === root.name),
+      })),
+    });
+  }
+  return groups;
 }
 
-/** 可折叠分组 + 可折叠父级，层次一眼可读（默认对齐 CLI：未运行项目子 agent 折叠） */
-export function AgentList({ agents, activeId, onSelect }: AgentListProps) {
-  const sections = useMemo(() => buildSections(agents), [agents]);
+/** 项目 Tab：按项目名分组 */
+function buildProjectGroups(agents: DraftAgent[]): HostOrProjectGroup[] {
+  const roots = agents.filter((a) => a.group === "project" && !a.parent);
+  const children = agents.filter((a) => a.group === "project" && a.parent);
 
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(
-    () => new Set(["stale"]),
+  const byProject = new Map<string, DraftAgent[]>();
+  for (const r of roots) {
+    const key =
+      r.projectName ||
+      (r.projectPath
+        ? r.projectPath.split(/[/\\]/).filter(Boolean).pop() || r.projectPath
+        : "") ||
+      "未命名项目";
+    if (!byProject.has(key)) byProject.set(key, []);
+    byProject.get(key)!.push(r);
+  }
+
+  const groups: HostOrProjectGroup[] = [];
+  for (const [proj, projRoots] of byProject) {
+    // 休眠项目排后
+    const ordered = [
+      ...projRoots.filter((a) => !a.stale),
+      ...projRoots.filter((a) => a.stale),
+    ];
+    groups.push({
+      id: `proj:${proj}`,
+      label: proj,
+      branches: ordered.map((root) => ({
+        root,
+        children: children.filter(
+          (c) =>
+            c.parent === root.name &&
+            (c.projectPath === root.projectPath || !root.projectPath),
+        ),
+      })),
+    });
+  }
+  return groups;
+}
+
+export function AgentList({
+  agents,
+  activeId,
+  onSelect,
+  terminalAgentNames,
+}: AgentListProps) {
+  const [tab, setTab] = useState<ScopeTab>("system");
+  const termNames = useMemo(
+    () => toNameSet(terminalAgentNames),
+    [terminalAgentNames],
   );
-  // Seed: collapse project parents with no running children (CLI fold idle subs)
+
+  const systemGroups = useMemo(() => buildSystemGroups(agents), [agents]);
+  const projectGroups = useMemo(() => buildProjectGroups(agents), [agents]);
+
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [collapsedParents, setCollapsedParents] = useState<Set<string>>(() => {
     const init = new Set<string>();
     for (const a of agents) {
-      if (a.group !== "project" || a.parent) continue;
+      if (a.parent) continue;
       const kids = agents.filter(
         (c) =>
           c.parent === a.name &&
-          c.projectPath === a.projectPath &&
-          c.group === "project",
+          (a.group !== "project" || c.projectPath === a.projectPath),
       );
       if (kids.length === 0) continue;
-      const anyRunning = kids.some((c) => isRunningLike(c.status));
-      if (!anyRunning) init.add(a.id);
+      if (!kids.some((c) => isRunningLike(c.status))) init.add(a.id);
     }
     return init;
   });
 
-  const toggleSection = (id: string) => {
-    setCollapsedSections((prev) => {
+  const toggleGroup = (id: string) => {
+    setCollapsedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -150,120 +176,130 @@ export function AgentList({ agents, activeId, onSelect }: AgentListProps) {
     });
   };
 
+  const groups =
+    tab === "system" ? systemGroups : tab === "project" ? projectGroups : [];
+
   return (
     <section className="wire-agent-list" aria-label="agent 列表">
-      <div className="wire-pane-title row">
-        <span className="wire-pane-title-with-icon">
-          <ChromeMark kind="agent_info" size={12} decorative />
-          Agent
-        </span>
+      <div className="wire-agent-scope-tabs" role="tablist" aria-label="Agent 范围">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            className={`wire-agent-scope-tab${tab === t.id ? " is-active" : ""}${
+              t.id === "system" && tab === t.id ? " is-system" : ""
+            }${t.id === "project" && tab === t.id ? " is-project" : ""}`}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
-      <div className="wire-agent-tree" role="tree">
-        {sections.map((section) => {
-          const open = !collapsedSections.has(section.id);
-          const count = sectionCount(section);
-          return (
-            <div
-              key={section.id}
-              className={`wire-agent-section${open ? " is-open" : " is-collapsed"}`}
-            >
-              <button
-                type="button"
-                className="wire-agent-section-head"
-                aria-expanded={open}
-                onClick={() => toggleSection(section.id)}
-              >
-                <span
-                  className={`wire-agent-chevron${open ? " open" : ""}`}
-                  aria-hidden
-                >
-                  ▸
-                </span>
-                <ChromeMark kind="folder_group" size={12} decorative />
-                <span className="wire-agent-section-label">{section.label}</span>
-                <span className="wire-agent-section-count">{count}</span>
-              </button>
 
-              {open &&
-                section.branches.map(({ root, children }) => {
-                  const parentOpen = !collapsedParents.has(root.id);
-                  const hasKids = children.length > 0;
-                  return (
-                    <div
-                      key={root.id}
-                      className={`wire-agent-branch${parentOpen ? " is-open" : ""}`}
-                    >
-                      <AgentItem
-                        agent={root}
-                        depth={0}
-                        isChild={false}
-                        activeId={activeId}
-                        onSelect={onSelect}
-                        hasChildren={hasKids}
-                        expanded={parentOpen}
-                        onToggleExpand={
-                          hasKids ? () => toggleParent(root.id) : undefined
-                        }
-                        childCount={children.length}
-                      />
-                      {hasKids && parentOpen && (
-                        <div className="wire-agent-children" role="group">
-                          {children.map((child) => (
-                            <AgentItem
-                              key={child.id}
-                              agent={child}
-                              depth={1}
-                              isChild
-                              activeId={activeId}
-                              onSelect={onSelect}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-            </div>
-          );
-        })}
+      <div className="wire-agent-tree" role="tree">
+        {tab === "im" ? (
+          <div className="wire-agent-empty">
+            <UiEmoji name="chat" /> IM 对接即将推出
+          </div>
+        ) : groups.length === 0 ? (
+          <div className="wire-agent-empty">
+            {tab === "system" ? "暂无系统 Agent" : "暂无项目 Agent"}
+          </div>
+        ) : (
+          groups.map((group) => {
+            const open = !collapsedGroups.has(group.id);
+            return (
+              <div
+                key={group.id}
+                className={`wire-agent-host-group${open ? " is-open" : ""}`}
+              >
+                <button
+                  type="button"
+                  className="wire-agent-host-head"
+                  aria-expanded={open}
+                  onClick={() => toggleGroup(group.id)}
+                >
+                  <span className="wire-agent-host-label">{group.label}</span>
+                </button>
+
+                {open &&
+                  group.branches.map(({ root, children }) => {
+                    const parentOpen = !collapsedParents.has(root.id);
+                    const hasKids = children.length > 0;
+                    const hasTerm =
+                      termNames.has(root.name) ||
+                      children.some((c) => termNames.has(c.name));
+                    return (
+                      <div
+                        key={root.id}
+                        className={`wire-agent-branch${parentOpen ? " is-open" : ""}`}
+                      >
+                        <AgentRow
+                          agent={root}
+                          isChild={false}
+                          activeId={activeId}
+                          onSelect={onSelect}
+                          hasChildren={hasKids}
+                          expanded={parentOpen}
+                          onToggleExpand={
+                            hasKids ? () => toggleParent(root.id) : undefined
+                          }
+                          hasTerminal={hasTerm || termNames.has(root.name)}
+                        />
+                        {hasKids && parentOpen && (
+                          <div className="wire-agent-children" role="group">
+                            {children.map((child) => (
+                              <AgentRow
+                                key={child.id}
+                                agent={child}
+                                isChild
+                                activeId={activeId}
+                                onSelect={onSelect}
+                                hasTerminal={termNames.has(child.name)}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            );
+          })
+        )}
       </div>
     </section>
   );
 }
 
-function AgentItem({
+function AgentRow({
   agent,
-  depth,
   isChild,
   activeId,
   onSelect,
   hasChildren,
   expanded,
   onToggleExpand,
-  childCount,
+  hasTerminal,
 }: {
   agent: DraftAgent;
-  depth: number;
   isChild: boolean;
   activeId: string;
   onSelect: (id: string) => void;
   hasChildren?: boolean;
   expanded?: boolean;
   onToggleExpand?: () => void;
-  childCount?: number;
+  hasTerminal?: boolean;
 }) {
   const active = agent.id === activeId;
-  const label = titleOf(agent);
-  const overview = subtitleOf(agent, !isChild).slice(0, 48);
-  const hKind = hierarchyMarkKind({
-    group: agent.group,
-    isChild,
-  });
+  const label = titleOf(agent, !isChild);
   const statusTitle = STATUS_LABEL_ZH[agent.status];
 
   return (
     <div
-      className={`wire-agent-row-wrap depth-${depth}${isChild ? " is-child" : " is-root"}`}
+      className={`wire-agent-row-wrap${isChild ? " is-child" : " is-root"}`}
     >
       {hasChildren ? (
         <button
@@ -278,6 +314,8 @@ function AgentItem({
         >
           ▸
         </button>
+      ) : isChild ? (
+        <span className="wire-agent-tree-rail" aria-hidden />
       ) : (
         <span className="wire-agent-expand-spacer" aria-hidden />
       )}
@@ -289,21 +327,23 @@ function AgentItem({
           agent.stale ? " is-stale" : ""
         }${active ? " active" : ""}${isChild ? " is-sub" : ""}`}
         onClick={() => onSelect(agent.id)}
-        title={[label, overview, statusTitle].filter(Boolean).join(" · ")}
+        title={[label, statusTitle, hasTerminal ? "终端运行中" : ""]
+          .filter(Boolean)
+          .join(" · ")}
       >
-        <HierarchyMark kind={hKind} size={12} title={hKind} />
-        <StatusMark kind={agent.status} size={11} title={statusTitle} />
-        <span className="wire-agent-main">
-          <span className="wire-agent-name">
-            {label}
-            {hasChildren && !expanded && childCount ? (
-              <span className="wire-agent-kid-count">{childCount}</span>
-            ) : null}
-          </span>
-          {overview ? (
-            <span className="wire-agent-overview">{overview}</span>
-          ) : null}
+        <span className="wire-agent-status-sq" aria-hidden>
+          <StatusMark kind={agent.status} size={10} title={statusTitle} />
         </span>
+        <span className="wire-agent-name">{label}</span>
+        {hasTerminal ? (
+          <span
+            className="wire-agent-term-badge"
+            title="持久终端运行中"
+            aria-label="持久终端运行中"
+          >
+            <UiEmoji name="terminal" />
+          </span>
+        ) : null}
       </button>
     </div>
   );

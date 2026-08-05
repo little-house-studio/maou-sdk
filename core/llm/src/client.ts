@@ -28,6 +28,11 @@ import { buildBedrockUrl, buildAzureUrl, buildVertexUrl } from "./url-builder.js
 import { readBedrockEventStream } from "./bedrock-stream.js";
 import { waitForNetwork, NETWORK_PROBE_TIMEOUT_VALUE } from "./network-probe.js";
 import { parseSSEStream } from "./sse-reader.js";
+import { ConcurrencyLimiter } from "./rate-limit.js";
+import {
+  getPresetMaxConcurrent,
+  normalizeApiPreset,
+} from "./preset-normalize.js";
 // 注意：@smithy/core/event-streams 已随 bedrock-stream.ts 拆出（动态 import 在那里），
 // 不把它带进浏览器静态依赖图。
 export { ProtocolGateway };
@@ -189,6 +194,8 @@ export class LLMClient {
   private _onError: LLMClientOptions["onError"] | null;
   private _streamStallMs: number;
   private _connectTimeoutMs: number;
+  /** 按 preset 维度的并发闸（maxConcurrent > 0 时生效） */
+  private _presetLimiters = new Map<string, { limit: number; limiter: ConcurrencyLimiter }>();
 
   constructor(options?: LLMClientOptions) {
     this._logger = options?.logger ?? null;
@@ -207,6 +214,34 @@ export class LLMClient {
     this._onError = options?.onError ?? null;
     this._streamStallMs = options?.streamStallMs ?? 30_000;
     this._connectTimeoutMs = options?.connectTimeoutMs ?? 60_000;
+  }
+
+  private _presetConcurrencyKey(preset: APIPreset): string {
+    const p = preset as Record<string, unknown>;
+    return [
+      String(p.name ?? ""),
+      String(preset.url ?? ""),
+      String(preset.model ?? ""),
+    ].join("|");
+  }
+
+  /**
+   * 若 preset.maxConcurrent > 0，获取并发槽；返回 release 回调。
+   * 未配置或 <=0 时立即返回空 release（不限流）。
+   */
+  private async _acquirePresetSlot(preset: APIPreset): Promise<() => void> {
+    const limit = getPresetMaxConcurrent(preset);
+    if (limit <= 0) return () => {};
+    const key = this._presetConcurrencyKey(preset);
+    let entry = this._presetLimiters.get(key);
+    if (!entry || entry.limit !== limit) {
+      // limit 变更时换新闸（进行中的旧请求仍按旧 limiter release）
+      entry = { limit, limiter: new ConcurrencyLimiter(limit) };
+      this._presetLimiters.set(key, entry);
+    }
+    const limiter = entry.limiter;
+    await limiter.acquire();
+    return () => limiter.release();
   }
 
   // _readChunk 已随 sse-reader.ts 拆出（parseSSEStream 内部的 readChunk，带 stall 超时）。
@@ -246,7 +281,9 @@ export class LLMClient {
     toolSchemas?: Record<string, unknown>[] | null;
     nativeToolCalling?: boolean;
   }): Promise<{ url: string; headers: Record<string, string>; body: string; rawPayload: Record<string, unknown> }> {
-    const { preset, messages, stream, jsonSettings, toolSchemas, nativeToolCalling } = params;
+    // 规范化：采样 → extraBody、pricing 嵌套、reasoning 双写
+    const preset = normalizeApiPreset(params.preset);
+    const { messages, stream, jsonSettings, toolSchemas, nativeToolCalling } = params;
     const protocol = this._protocol(preset);
     const adapter = this._adapterFor(preset);
 
@@ -398,6 +435,9 @@ export class LLMClient {
    *
    * 每次调用自动触发 logger（如果已配置），包括错误情况。
    */
+  /**
+   * 流式调用（带 preset.maxConcurrent 闸）
+   */
   async *chatStream(params: {
     preset: APIPreset;
     messages: Record<string, unknown>[];
@@ -407,6 +447,23 @@ export class LLMClient {
     /** 日志上下文（sessionId, round 等），透传到 logger */
     _logContext?: Record<string, unknown>;
     /** 中断信号 —— 收到时中止底层 fetch 和流读取 */
+    abortSignal?: AbortSignal;
+  }): AsyncGenerator<ModelDelta, ModelResponse> {
+    const release = await this._acquirePresetSlot(params.preset);
+    try {
+      return yield* this._chatStreamBody(params);
+    } finally {
+      release();
+    }
+  }
+
+  private async *_chatStreamBody(params: {
+    preset: APIPreset;
+    messages: Record<string, unknown>[];
+    jsonSettings?: Record<string, unknown> | null;
+    toolSchemas?: Record<string, unknown>[] | null;
+    nativeToolCalling?: boolean;
+    _logContext?: Record<string, unknown>;
     abortSignal?: AbortSignal;
   }): AsyncGenerator<ModelDelta, ModelResponse> {
     const { preset, messages, jsonSettings, toolSchemas, nativeToolCalling, _logContext, abortSignal } = params;
@@ -721,6 +778,7 @@ export class LLMClient {
    * 对应 Python: chat
    *
    * 每次调用自动触发 logger（如果已配置），包括错误情况。
+   * 受 preset.maxConcurrent 约束。
    */
   async chat(params: {
     preset: APIPreset;
@@ -731,6 +789,23 @@ export class LLMClient {
     /** 日志上下文（sessionId, round 等），透传到 logger */
     _logContext?: Record<string, unknown>;
     /** 中断信号 —— 收到时中止底层 fetch */
+    abortSignal?: AbortSignal;
+  }): Promise<ModelResponse> {
+    const release = await this._acquirePresetSlot(params.preset);
+    try {
+      return await this._chatBody(params);
+    } finally {
+      release();
+    }
+  }
+
+  private async _chatBody(params: {
+    preset: APIPreset;
+    messages: Record<string, unknown>[];
+    jsonSettings?: Record<string, unknown> | null;
+    toolSchemas?: Record<string, unknown>[] | null;
+    nativeToolCalling?: boolean;
+    _logContext?: Record<string, unknown>;
     abortSignal?: AbortSignal;
   }): Promise<ModelResponse> {
     const { preset, messages, jsonSettings, toolSchemas, nativeToolCalling, _logContext, abortSignal } = params;

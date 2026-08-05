@@ -295,7 +295,8 @@ export function DungeonLab() {
         ctx.fillStyle = "#1a1410";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = "#d4a574";
-        ctx.font = "14px monospace";
+        ctx.font =
+          '14px "Fusion Pixel 12 Mono", "Fusion Pixel 12", "HarmonyOS Sans SC"';
         ctx.fillText("DUNGEON DRAW ERROR — see console", 16, 32);
       } catch {
         /* ignore */

@@ -654,21 +654,91 @@ export type LLMProtocol = 'openai' | 'anthropic' | 'openai-responses'
 /** @deprecated */
 export type StructuredOutputMode = 'json_object' | 'json_schema'
 /** @deprecated 用 @little-house-studio/llm 的 APIPreset */
+/**
+ * 厂商 preset 内的模型条目（磁盘嵌套 models[]）。
+ * 运行时 loadPresets 会展开为「一条 preset 一个 model」。
+ */
+export interface LLMModelSpec {
+  /** 发给厂商的 model id */
+  id: string
+  /** 角色引用短名；多模型时 runtime name = `${preset.name}/${name||id}` */
+  name?: string
+  maxTokens?: number
+  maxContext?: number
+  supportsVision?: boolean
+  supportsReasoning?: boolean
+  supportsAudio?: boolean
+  supportsVideo?: boolean
+  nativeToolCalling?: boolean
+  nativeStructuredOutput?: boolean
+  inputPrice?: number
+  outputPrice?: number
+  cacheHitPrice?: number
+  temperature?: number
+  topP?: number
+  presencePenalty?: number
+  frequencyPenalty?: number
+  extraBody?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+/** @deprecated 用 @little-house-studio/llm 的 APIPreset；此处供 AppConfig / roles */
 export interface LLMPreset {
   name: string
   url: string
   key: string
+  /**
+   * 运行时必有（expand 后）。
+   * 磁盘格式用 models[] / defaultModel，不再支持仅顶层 model。
+   */
   model: string
+  /**
+   * 厂商内多模型列表（磁盘必填，至少一项）。
+   * 连接字段（url/key/protocol）共享，每项可覆盖上下文/能力/价格。
+   */
+  models?: LLMModelSpec[]
+  /** 默认 model id */
+  defaultModel?: string
   maxTokens: number
   maxContext?: number
   protocol: LLMProtocol
   stream: boolean
   supportsVision: boolean
   supportsReasoning: boolean
+  supportsAudio?: boolean
+  supportsVideo?: boolean
   nativeToolCalling: boolean
   nativeStructuredOutput: boolean
   structuredOutputMode?: StructuredOutputMode
   reasoningParams?: Record<string, unknown>
+  /** adapter 侧常用 snake_case（与 reasoningParams 双写） */
+  reasoning_params?: Record<string, unknown>
+  extraBody?: Record<string, unknown>
+  temperature?: number
+  topP?: number
+  top_p?: number
+  presencePenalty?: number
+  presence_penalty?: number
+  frequencyPenalty?: number
+  frequency_penalty?: number
+  maxConcurrent?: number
+  max_concurrent?: number
+  inputPrice?: number
+  outputPrice?: number
+  cacheHitPrice?: number
+  pricing?: {
+    inputPrice?: number
+    outputPrice?: number
+    cacheHitPrice?: number
+    input?: number
+    output?: number
+    cacheRead?: number
+    currency?: string
+  }
+  vendor?: string
+  urlParams?: string
+  customRequestJson?: string
+  [key: string]: unknown
 }
 /** @deprecated 用 @little-house-studio/llm 的 LLMUsage */
 export interface LLMUsage {
@@ -744,7 +814,11 @@ export interface ApiModelRoles {
   fast?: string | number
   /** 多模态看图 */
   vision?: string | number
-  /** 辅助（loop 检测、llm_judge 等）；未设则用 helperPreset → fast → main */
+  /**
+   * 辅助（loop 检测、llm_judge 等）。
+   * 全局链：roles.helper → helperPreset(legacy) → roles.fast → main；
+   * agent.json helperModel 覆盖见 resolveHelperPreset。
+   */
   helper?: string | number
   /** 允许扩展自定义角色 */
   [role: string]: string | number | undefined
@@ -752,16 +826,21 @@ export interface ApiModelRoles {
 
 export interface ApiConfig {
   presets: LLMPreset[]
+  /**
+   * main 未设 roles.main 时的回退下标（legacy；推荐用 roles.main 绑 name）。
+   * 解析：roles.main → defaultPreset → presets[0]
+   */
   defaultPreset: number
   /**
-   * 全局辅助模型 preset 索引（可选，兼容旧配置）。
-   * 优先使用 roles.helper；再 helperPreset；再 main。
-   * 优先级：agent.json helperModel > roles.helper > helperPreset > main
+   * 全局辅助模型 preset 下标（legacy 读回退）。
+   * 新配置请写 roles.helper（name）；写路径不应再新增此字段。
+   * 完整 helper 链：agent.helperModel > roles.helper > helperPreset > roles.fast > main
    */
   helperPreset?: number
   /**
-   * 模型角色映射（推荐）。
-   * 例：{ "main": 0, "fast": "cheap-qwen", "vision": "gpt-4o" }
+   * 模型角色映射（推荐 SoT）。
+   * 值优先 runtime name；下标 / model id 为 legacy，见 findPresetByRef。
+   * 例：{ "main": "ds-flash", "fast": "cheap", "vision": "see", "helper": "cheap" }
    */
   roles?: ApiModelRoles
   agentRoundLimit: number
@@ -804,7 +883,7 @@ export type EventType =
 export type EventHandler = (event: StreamEvent) => void
 
 // ─── 运行时：配置管理 / 项目管理 / 工具函数 / 表情检测（原 core 包）──────────
-export { ConfigStore } from './config-store.js'
+export { ConfigStore, normalizeLoadedPreset, normalizeRuntimePreset } from './config-store.js'
 export {
   MAOU_DIR_NAME,
   MAOU_CONFIG_FILE,
@@ -822,10 +901,21 @@ export {
 } from './maou-paths.js'
 export {
   findPresetByRef,
+  resolveGlobalHelperPreset,
   resolveApiRolePreset,
   listConfiguredApiRoles,
 } from './api-roles.js'
 export type { ApiModelRole, PresetRef } from './api-roles.js'
+export {
+  expandPresetModels,
+  expandAllPresets,
+  coerceToRuntimePresets,
+  collapsePresetsToNested,
+  isMultiModelPreset,
+  migratePresetToNested,
+  migratePresetsToNested,
+} from './preset-models.js'
+export type { LLMPresetDisk } from './preset-models.js'
 export {
   resolveProjectsRegistryPath,
   registerProject,

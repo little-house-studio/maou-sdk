@@ -468,7 +468,14 @@ applyOrderedDither(ctx, w, h);`;
               <code>CanvasUi</code> 像素面板 / 按钮 / 条。点击底部 ATK · ITEM ·
               REST。
             </p>
-            <p style={{ margin: 0, fontFamily: "monospace", fontSize: 11 }}>
+            <p
+              style={{
+                margin: 0,
+                fontFamily:
+                  '"Fusion Pixel 12 Mono", "Fusion Pixel 12", "HarmonyOS Sans SC"',
+                fontSize: 11,
+              }}
+            >
               log: {hudLog}
             </p>
           </div>

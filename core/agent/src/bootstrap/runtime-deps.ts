@@ -111,7 +111,14 @@ export function createStandardAgentDeps(
   };
 }
 
-/** CLI listAgents：合并全局 + 项目级 agent 目录 */
+/**
+ * CLI listAgents：合并全局 + 项目级 agent 目录（原始 registry 扫描）。
+ *
+ * ⚠️ 管理器/可切换主体列表请用 `listOpsAgents()`（core 权威）：
+ * 过滤 coding≠system、附属驻扎、list_in_manager=false。
+ * 切勿 `listAgentsForCli(root, opsRoot)` 再整表 stamp 为 system——
+ * 会把 ops 工作区 coding 混成系统自由人。
+ */
 export function listAgentsForCli(
   maouRoot?: string,
   projectRoot?: string,

@@ -190,8 +190,9 @@ export type {
   GraphEdge,
   ProjectGraphState,
 } from "./project-graph";
-export { ProjectWorkbench } from "./panels/ProjectWorkbench";
-export { ProjectCanvas } from "./panels/ProjectCanvas";
+// ProjectWorkbench / ProjectCanvas: import from panels/* (not this barrel).
+// Barrel re-export previously pulled CodeMirror into the live chat first-paint
+// graph via static SourceEditor when App imported BottomInfoBar from "./drafts".
 export { TeamBoard } from "./panels/TeamBoard";
 export { SettingsPanel } from "./panels/SettingsPanel";
 export {
@@ -205,6 +206,7 @@ export {
   setDefaultApiPreset,
   getDefaultPreset,
   emptyApiPreset,
+  normalizeDraftApiPreset,
   normalizeApiPreset,
   defaultCapabilityFields,
   capabilitySummary,

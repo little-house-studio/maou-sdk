@@ -17,6 +17,11 @@
  *   const json = await aux.callJson({ preset, systemPrompt, userPrompt, schema });
  */
 
+import {
+  findPresetByRef,
+  resolveGlobalHelperPreset,
+  type LLMPreset,
+} from "@little-house-studio/types";
 import type { LLMClient } from "./client.js";
 import type { APIPreset, LLMUsage } from "./adapters/types.js";
 
@@ -256,21 +261,22 @@ export class AuxModelCaller {
 // ─── 辅助：从 APIPreset 数组中选择辅助模型 preset ──────────────────────────
 
 /**
- * 辅助模型 preset 解析
+ * 辅助模型 preset 解析（agent 覆盖 + 全局链）。
  *
- * 优先级链：
- *   1. agent.json 的 helperModel（字符串，匹配 preset name）
- *   2. 全局 api.roles.helper（name 或下标，经 helperRoleRef 传入）
- *   3. 全局 helperPreset（config.api.helperPreset 索引）
- *   4. 全局 api.roles.fast（helperFastRef）
- *   5. 回退主模型 preset
+ * 全局链只实现在 types.resolveGlobalHelperPreset / resolveApiRolePreset；
+ * 本函数只叠加 **agent 作用域** 与 **mainPreset 硬回退**（tool 路径需要确定 preset）。
  *
- * @param agentHelperModel - agent.json 中的 helperModel 字段（可选）
- * @param presets - 全局 presets 数组
- * @param helperPresetIdx - 全局 helperPreset 索引（可选）
- * @param mainPreset - 主模型 preset（必填，作为 fallback）
- * @param helperRoleRef - api.roles.helper（可选）
- * @param fastRoleRef - api.roles.fast（可选，helper 未设时）
+ * 统一优先级：
+ *   1. agent.json helperModel（findPresetByRef：name / model / 前缀…）
+ *   2. roles.helper → helperPreset(legacy) → roles.fast
+ *   3. mainPreset（调用方传入的主模型，可能不同于 defaultPreset）
+ *
+ * @param agentHelperModel - agent.json 中的 helperModel（可选）
+ * @param presets - 已展开的全局 presets
+ * @param helperPresetIdx - config.api.helperPreset（legacy 读回退）
+ * @param mainPreset - 主模型 preset（必填 fallback）
+ * @param helperRoleRef - api.roles.helper
+ * @param fastRoleRef - api.roles.fast
  */
 export function resolveHelperPreset(
   agentHelperModel: string | undefined,
@@ -280,39 +286,26 @@ export function resolveHelperPreset(
   helperRoleRef?: string | number,
   fastRoleRef?: string | number,
 ): APIPreset {
-  const byRef = (ref: string | number | undefined): APIPreset | undefined => {
-    if (ref === undefined) return undefined;
-    if (typeof ref === "number") {
-      return ref >= 0 && ref < presets.length ? presets[ref] : undefined;
-    }
-    const name = String(ref).trim();
-    if (!name) return undefined;
-    return (
-      presets.find((p) => p.name === name || p.model === name)
-    );
-  };
+  const list = presets as unknown as LLMPreset[];
 
-  // 1. agent.json helperModel 优先
-  if (agentHelperModel) {
-    const found = presets.find(
-      (p) => p.name === agentHelperModel || p.model === agentHelperModel,
-    );
-    if (found) return found;
+  // 1. agent 覆盖（作用域 ≠ 全局 roles，勿合并进 roles.helper）
+  const agentRef = agentHelperModel?.trim();
+  if (agentRef) {
+    const fromAgent = findPresetByRef(list, agentRef);
+    if (fromAgent) return fromAgent as unknown as APIPreset;
   }
 
-  // 2. api.roles.helper
-  const fromHelperRole = byRef(helperRoleRef);
-  if (fromHelperRole) return fromHelperRole;
+  // 2. 全局 helper 链（唯一实现）
+  const fromGlobal = resolveGlobalHelperPreset({
+    presets: list,
+    helperPreset: helperPresetIdx,
+    roles: {
+      helper: helperRoleRef,
+      fast: fastRoleRef,
+    },
+  });
+  if (fromGlobal) return fromGlobal as unknown as APIPreset;
 
-  // 3. 全局 helperPreset 索引
-  if (typeof helperPresetIdx === "number" && helperPresetIdx >= 0 && helperPresetIdx < presets.length) {
-    return presets[helperPresetIdx]!;
-  }
-
-  // 4. api.roles.fast 作为便宜辅助
-  const fromFast = byRef(fastRoleRef);
-  if (fromFast) return fromFast;
-
-  // 5. 回退主模型
+  // 3. 调用方主模型（tool / aux 必须有确定 preset）
   return mainPreset;
 }

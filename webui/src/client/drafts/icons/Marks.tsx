@@ -402,6 +402,16 @@ export function ChromeMark({
           <path d="M9 13c.4-1.4 1.2-2.2 2.5-2.2S13.6 11.6 14 13" {...strokeProps(1.3)} />
         </Svg>
       );
+    case "mode_proactive":
+      return (
+        <Svg size={size} className={cls} title={t}>
+          <path d="M8 2.5v3" {...strokeProps(1.4)} />
+          <path d="M8 10.5v3" {...strokeProps(1.4)} />
+          <path d="M2.5 8h3" {...strokeProps(1.4)} />
+          <path d="M10.5 8h3" {...strokeProps(1.4)} />
+          <circle cx="8" cy="8" r="2.4" {...strokeProps(1.4)} />
+        </Svg>
+      );
     case "new":
       return (
         <Svg size={size} className={cls} title={t}>

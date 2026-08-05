@@ -17,7 +17,7 @@
   min-height: 0;
   background: var(--ink);
   color: var(--paper);
-  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-family: var(--font-ui);
   overflow: hidden;
 }
 
@@ -59,7 +59,7 @@
 }
 
 .portfolio-mark {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 10px;
   letter-spacing: 0.22em;
   text-transform: uppercase;
@@ -76,7 +76,7 @@
 
 .portfolio-role {
   margin: 0;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 11px;
   color: var(--muted);
   letter-spacing: 0.04em;
@@ -125,7 +125,7 @@
 }
 
 .portfolio-nav .idx {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 10px;
   color: var(--accent);
   margin-right: 0.5rem;
@@ -136,7 +136,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.65rem;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 11px;
   color: var(--muted);
 }
@@ -172,7 +172,7 @@
 }
 
 .portfolio-year {
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 11px;
   letter-spacing: 0.14em;
   color: var(--accent);
@@ -188,7 +188,7 @@
 
 .portfolio-medium {
   margin: 0;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 11px;
   color: var(--muted);
 }
@@ -204,7 +204,7 @@
   margin-top: auto;
   padding-top: 1rem;
   border-top: 1px solid var(--panel-border);
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 10px;
   line-height: 1.6;
   color: var(--muted);
@@ -216,7 +216,7 @@
   bottom: 1rem;
   transform: translateX(-50%);
   z-index: 2;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 10px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -230,7 +230,7 @@
   top: 0.75rem;
   right: 0.75rem;
   z-index: 2;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 10px;
   color: rgba(232, 226, 214, 0.4);
   pointer-events: none;
@@ -253,7 +253,7 @@
   border: 1px solid var(--panel-border);
   background: transparent;
   color: var(--muted);
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 10px;
   padding: 0.4rem 0.55rem;
   cursor: pointer;
@@ -279,7 +279,7 @@
   height: 100%;
   overflow: auto;
   box-sizing: border-box;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 11px;
   line-height: 1.55;
   color: #c8b898;

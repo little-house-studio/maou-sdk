@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 380" width="520" height="380">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0f0c29"/>
+      <stop offset="50%" stop-color="#302b63"/>
+      <stop offset="100%" stop-color="#24243e"/>
+    </linearGradient>
+    <linearGradient id="wood" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#deb887"/>
+      <stop offset="100%" stop-color="#a0522d"/>
+    </linearGradient>
+    <radialGradient id="light" cx="50%" cy="25%" r="50%">
+      <stop offset="0%" stop-color="#ffeaa7" stop-opacity="0.65"/>
+      <stop offset="70%" stop-color="#fdcb6e" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#fdcb6e" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="1.2"/>
+    </filter>
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="520" height="380" fill="url(#sky)"/>
+  <!-- 星星 -->
+  <circle cx="60" cy="40" r="1.5" fill="#fff" opacity="0.7"/>
+  <circle cx="120" cy="70" r="1" fill="#fff" opacity="0.5"/>
+  <circle cx="400" cy="50" r="1.5" fill="#fff" opacity="0.6"/>
+  <circle cx="460" cy="90" r="1" fill="#fff" opacity="0.4"/>
+  <circle cx="300" cy="30" r="1.2" fill="#fff" opacity="0.55"/>
+
+  <!-- 聚光灯锥 -->
+  <polygon points="260,0 140,260 380,260" fill="url(#light)"/>
+
+  <!-- 幕布 -->
+  <path d="M0,0 C30,50 30,100 0,180 L0,0 Z" fill="#6b0f1a"/>
+  <path d="M520,0 C490,50 490,100 520,180 L520,0 Z" fill="#6b0f1a"/>
+  <path d="M0,0 Q80,55 160,25 Q260,60 360,25 Q440,55 520,0" fill="#9b1b30"/>
+  <path d="M0,0 Q80,45 160,18 Q260,50 360,18 Q440,45 520,0" fill="#c0392b" opacity="0.9"/>
+  <!-- 幕布褶皱 -->
+  <path d="M40,0 Q50,40 40,90" fill="none" stroke="#4a0a12" stroke-width="3" opacity="0.4"/>
+  <path d="M480,0 Q470,40 480,90" fill="none" stroke="#4a0a12" stroke-width="3" opacity="0.4"/>
+
+  <!-- 舞台 -->
+  <ellipse cx="260" cy="290" rx="190" ry="42" fill="#8b4513"/>
+  <ellipse cx="260" cy="282" rx="180" ry="36" fill="url(#wood)"/>
+  <ellipse cx="260" cy="278" rx="170" ry="30" fill="#f0d9a0" opacity="0.35"/>
+  <!-- 台沿 -->
+  <path d="M70,290 Q260,330 450,290 L450,318 Q260,358 70,318 Z" fill="#5d3a1a"/>
+  <text x="260" y="312" text-anchor="middle" font-family="Georgia, serif" font-size="13" fill="#f5deb3" letter-spacing="4">★ SHOW TIME ★</text>
+
+  <!-- 麦克风架 -->
+  <line x1="340" y1="278" x2="340" y2="200" stroke="#555" stroke-width="3"/>
+  <circle cx="340" cy="195" r="10" fill="#333"/>
+  <circle cx="340" cy="195" r="6" fill="#222"/>
+  <ellipse cx="340" cy="188" rx="8" ry="5" fill="#444"/>
+
+  <!-- 小狗：面向右侧，抬后腿 -->
+  <g transform="translate(200,210)">
+    <!-- 影子 -->
+    <ellipse cx="30" cy="68" rx="50" ry="8" fill="#000" opacity="0.2"/>
+
+    <!-- 身体 -->
+    <ellipse cx="28" cy="32" rx="42" ry="24" fill="#f4a460"/>
+    <ellipse cx="18" cy="36" rx="16" ry="14" fill="#ffe4c4"/>
+
+    <!-- 前腿 -->
+    <rect x="0" y="46" width="11" height="24" rx="5" fill="#e09550"/>
+    <rect x="22" y="46" width="11" height="24" rx="5" fill="#e09550"/>
+    <ellipse cx="5" cy="70" rx="8" ry="4.5" fill="#5d4037"/>
+    <ellipse cx="27" cy="70" rx="8" ry="4.5" fill="#5d4037"/>
+
+    <!-- 支撑后腿 -->
+    <rect x="48" y="44" width="12" height="26" rx="5" fill="#e09550"/>
+    <ellipse cx="54" cy="70" rx="8" ry="4.5" fill="#5d4037"/>
+
+    <!-- 抬起的腿 -->
+    <g transform="translate(52,30) rotate(-70)">
+      <rect x="0" y="0" width="11" height="28" rx="5" fill="#e09550"/>
+      <ellipse cx="5" cy="28" rx="7" ry="4" fill="#5d4037"/>
+    </g>
+
+    <!-- 尾巴摇 -->
+    <path d="M68,20 C88,5 92,28 78,32" fill="none" stroke="#f4a460" stroke-width="9" stroke-linecap="round"/>
+    <path d="M68,20 C88,5 92,28 78,32" fill="none" stroke="#ffe4c4" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+
+    <!-- 头 -->
+    <ellipse cx="-12" cy="14" rx="24" ry="22" fill="#f4a460"/>
+    <!-- 耳朵下垂 -->
+    <ellipse cx="-30" cy="8" rx="11" ry="18" fill="#cd853f" transform="rotate(-25 -30 8)"/>
+    <ellipse cx="4" cy="6" rx="10" ry="17" fill="#cd853f" transform="rotate(20 4 6)"/>
+    <!-- 脸 -->
+    <ellipse cx="-12" cy="18" rx="13" ry="11" fill="#ffe4c4"/>
+    <!-- 眼睛 -->
+    <circle cx="-20" cy="10" r="4" fill="#fff"/>
+    <circle cx="-4" cy="10" r="4" fill="#fff"/>
+    <circle cx="-19" cy="11" r="2.2" fill="#2c1810"/>
+    <circle cx="-3" cy="11" r="2.2" fill="#2c1810"/>
+    <circle cx="-18.5" cy="10" r="0.8" fill="#fff"/>
+    <circle cx="-2.5" cy="10" r="0.8" fill="#fff"/>
+    <!-- 鼻子嘴巴 -->
+    <ellipse cx="-12" cy="20" rx="5.5" ry="4" fill="#3e2723"/>
+    <path d="M-12,24 L-12,28" stroke="#3e2723" stroke-width="1.5"/>
+    <path d="M-12,28 Q-18,32 -22,28" fill="none" stroke="#3e2723" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M-12,28 Q-6,32 -2,28" fill="none" stroke="#3e2723" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- 腮红 -->
+    <circle cx="-28" cy="18" r="4" fill="#ffb6c1" opacity="0.45"/>
+    <circle cx="4" cy="18" r="4" fill="#ffb6c1" opacity="0.45"/>
+
+    <!-- 卡通小水柱 + 水花 -->
+    <g filter="url(#soft)">
+      <path d="M62,38 C70,48 68,58 72,68" fill="none" stroke="#74b9ff" stroke-width="3.5" stroke-linecap="round" opacity="0.85"/>
+      <path d="M62,38 C66,50 74,55 70,66" fill="none" stroke="#a29bfe" stroke-width="1.5" stroke-linecap="round" opacity="0.5"/>
+    </g>
+    <circle cx="72" cy="72" r="3" fill="#74b9ff" opacity="0.8"/>
+    <circle cx="68" cy="76" r="2" fill="#81ecec" opacity="0.7"/>
+    <circle cx="76" cy="75" r="2.2" fill="#81ecec" opacity="0.7"/>
+    <circle cx="74" cy="80" r="1.5" fill="#dfe6e9" opacity="0.6"/>
+  </g>
+
+  <!-- 脚灯 -->
+  <g>
+    <circle cx="110" cy="275" r="7" fill="#ff7675"/>
+    <circle cx="160" cy="280" r="6" fill="#fdcb6e"/>
+    <circle cx="360" cy="280" r="6" fill="#55efc4"/>
+    <circle cx="410" cy="275" r="7" fill="#74b9ff"/>
+  </g>
+
+  <!-- 字幕牌 -->
+  <rect x="170" y="340" width="180" height="26" rx="6" fill="#2d3436" opacity="0.85"/>
+  <text x="260" y="357" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#dfe6e9">test #2 · puppy on stage</text>
+</svg>

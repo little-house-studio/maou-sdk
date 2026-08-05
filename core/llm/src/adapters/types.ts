@@ -132,7 +132,24 @@ export interface StreamParseOptions {
 /** API 预设配置 */
 export interface APIPreset {
   name?: string;
+  /**
+   * 运行时使用的 model id（loadPresetsFromMaouConfig expand 后保证有值）。
+   * 磁盘格式用 models[]，不再支持仅顶层 model。
+   */
   model: string;
+  /**
+   * 磁盘格式：厂商内多模型（至少一项）。运行时经 expand 后不再保留。
+   * @see @little-house-studio/types expandAllPresets
+   */
+  models?: Array<{
+    id: string;
+    name?: string;
+    maxTokens?: number;
+    maxContext?: number;
+    [key: string]: unknown;
+  }>;
+  /** 默认 model id */
+  defaultModel?: string;
   url: string;
   key?: string;
   protocol?: string;

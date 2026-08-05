@@ -82,72 +82,43 @@
   padding: 4px 4px 6px;
 }
 
-.live-shell .thread-list {
+/* Session rail (portal): pure wire-session-* rows — do not reintroduce
+   thread-item column rules here (max-height 32px + column = clipped glyphs). */
+.live-shell .wire-session-list .wire-session-scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  padding: 0 8px 12px;
 }
 
-.live-shell .thread-item-row {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
+.live-shell .wire-session-list .wire-session-btn {
+  /* Guard against styles.css .thread-item column if class leaks */
+  flex-direction: row !important;
+  align-items: center !important;
+  max-height: 32px;
+  overflow: hidden;
 }
 
-.live-shell .thread-item {
+.live-shell .wire-session-list .wire-session-title {
   flex: 1;
   min-width: 0;
-  text-align: left;
-  border: none;
-  background: transparent;
-  color: var(--n-secondary, #c9c2b6);
-  padding: 8px 8px;
-  border-radius: 0;
-}
-
-.live-shell .thread-item-row.active .thread-item,
-.live-shell .thread-item-row.active {
-  background: var(--n-accent-dim, rgba(199, 255, 32, 0.14));
-}
-
-.live-shell .thread-title {
-  display: block;
-  font-size: 12px;
-  color: var(--n-label, #f5f0e8);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--n-label, #f5f0e8);
+  line-height: 1.25;
 }
 
-.live-shell .thread-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
+.live-shell .wire-session-list .wire-session-time {
+  flex-shrink: 0;
+  max-width: 7em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 10px;
-  color: var(--n-tertiary, #8a8278);
-  margin-top: 2px;
-}
-
-.live-shell .thread-del {
-  border: none;
-  background: transparent;
-  color: var(--n-tertiary, #8a8278);
-  padding: 0 8px;
-  opacity: 0.7;
-}
-
-.live-shell .thread-del:hover {
-  color: var(--n-err, #ff741d);
-  opacity: 1;
-}
-
-.live-shell .thread-empty {
-  font-size: 12px;
-  color: var(--n-tertiary, #8a8278);
-  padding: 12px 8px;
+  color: var(--n-quaternary, #8a8278);
 }
 
 /* Center: ChatPanel fills wire-center as wire-context */
@@ -235,7 +206,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--n-mono, monospace);
+  font-family: var(--n-mono);
 }
 
 .live-shell .live-files-err {
@@ -253,17 +224,39 @@
   height: 100%;
 }
 
-.live-shell .live-project-host {
-  flex: 1;
+/* 项目模式：与草稿一致，占满 mid，不出现全黑塌缩 */
+.live-shell .wire-mid.is-project {
+  flex: 1 1 auto;
   min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: var(--n-bg, #0e0e11);
+  color: var(--n-label, #f5f0e8);
+}
+
+.live-shell .live-project-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--n-bg, #0e0e11);
+  color: var(--n-label, #f5f0e8);
 }
 
 .live-shell .live-project-host > .wire-project,
-.live-shell .live-project-host .wire-project-workbench,
-.live-shell .live-project-host > div:last-child {
+.live-shell .live-project-host .wire-project {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+}
+
+.live-shell .live-project-host .md-workbench {
   flex: 1;
   min-height: 0;
 }
@@ -284,12 +277,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.live-shell .wire-mid.is-project {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
 }
 
 /* Live settings (backend-driven connection/model) */
@@ -333,7 +320,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--n-mono, monospace);
+  font-family: var(--n-mono);
   font-size: 12px;
 }
 
@@ -347,66 +334,601 @@
   font-size: 12px;
 }
 
+.live-shell .wire-settings-approval-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.live-shell .wire-settings-approval .wire-settings-preset-item {
+  width: 100%;
+  text-align: left;
+}
+
+.live-shell .wire-settings-list-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.live-shell .wire-settings-key-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.live-shell .wire-settings-key-row .wire-settings-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.live-shell .wire-settings-caps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 8px 0 12px;
+}
+
+.live-shell .wire-settings-sep {
+  border: none;
+  border-top: 1px solid var(--n-line-solid, #3d3834);
+  margin: 16px 0 12px;
+}
+
+.live-shell .wire-settings-textarea {
+  font-family: var(--n-mono);
+  font-size: 12px;
+  resize: vertical;
+  min-height: 72px;
+}
+
+.live-shell .wire-settings-advanced {
+  margin: 10px 0 14px;
+  padding: 10px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: color-mix(in srgb, var(--n-elevated, #282522) 80%, transparent);
+}
+
+.live-shell .wire-settings-template-summary {
+  margin: 8px 0 12px;
+}
+
 .live-shell .wire-settings-empty {
   padding: 12px 8px;
   font-size: 12px;
   color: var(--n-tertiary, #8a8278);
 }
 
-/* Terminal float — keeps prior TerminalPanel entry without old right-rail-only chrome */
-.live-shell .wire-terminal-float {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  width: min(520px, 42vw);
-  height: min(360px, 46vh);
-  z-index: 40;
+/* Terminal lives inside bottom dock 终端 folder card (not a side float) */
+.live-shell .wire-dock-terminal-host {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--n-elevated, #282522);
-  border: 1px solid var(--n-line-solid, #3d3834);
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  background: #0a0a0a;
 }
 
-.live-shell .wire-terminal-float-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 10px;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--n-secondary, #c9c2b6);
-  border-bottom: 1px solid var(--n-line-solid, #3d3834);
-  flex: 0 0 auto;
-}
-
-.live-shell .wire-terminal-float .term-panel {
+.live-shell .wire-dock-terminal-host .term-panel {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   border: none;
   background: transparent;
+  height: 100%;
 }
 
-.live-shell .wire-terminal-float .term-body {
+.live-shell .wire-dock-terminal-host .term-body {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-.live-shell .wire-terminal-float .term-wrap {
+.live-shell .wire-dock-terminal-host .term-list {
+  max-height: 88px;
+  overflow: auto;
+  flex: 0 0 auto;
+}
+
+.live-shell .wire-dock-terminal-host .term-wrap {
   flex: 1;
-  min-height: 0;
+  min-height: 120px;
 }
 
-/* When files rail + terminal both open, terminal sits above dock */
-.live-shell.has-terminal-float .wire-mid.is-chat {
-  /* room for absolute float */
+.live-shell .wire-dock-card[data-dock-card="terminal"] .wire-dock-folder-content {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.live-shell .wire-dock-card[data-dock-card="terminal"] .wire-dock-card-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+/* Terminal board resize grips */
+.live-shell .wire-dock-card.is-live .wire-dock-resize {
+  position: absolute;
+  z-index: 6;
+  touch-action: none;
+  user-select: none;
+}
+
+.live-shell .wire-dock-resize-e {
+  top: 12px;
+  right: 0;
+  bottom: 12px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.live-shell .wire-dock-resize-s {
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.live-shell .wire-dock-resize-se {
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+}
+
+.live-shell .wire-dock-resize-se::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--n-tertiary, #8a8278);
+  border-bottom: 2px solid var(--n-tertiary, #8a8278);
+  opacity: 0.7;
+}
+
+.live-shell .wire-dock-card.is-live:hover .wire-dock-resize-e,
+.live-shell .wire-dock-card.is-live:hover .wire-dock-resize-s {
+  background: rgba(199, 255, 32, 0.08);
 }
 
 /* Hide obsolete codex-only body if styles bleed */
 .live-shell .codex-sidebar {
   display: none !important;
+}
+
+/* ── 主动智能（底栏 dock 卡片） ── */
+.wire-dock-proactive-host {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.proactive-host.is-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+.proactive-host.is-card .proactive-bar {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.proactive-host.is-card .proactive-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: minmax(140px, 0.9fr) minmax(160px, 1fr) minmax(180px, 1.2fr);
+  gap: 8px;
+  padding: 6px 8px 8px;
+}
+
+.proactive-host.is-card .proactive-settings,
+.proactive-host.is-card .proactive-chat,
+.proactive-host.is-card .proactive-board {
+  min-height: 0;
+  overflow: auto;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.proactive-host.is-card .proactive-section-title {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.proactive-host.is-card .proactive-chat-log {
+  max-height: 140px;
+}
+
+@media (max-width: 900px) {
+  .proactive-host.is-card .proactive-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 旧全页布局（若仍挂载 page） */
+.live-shell .wire-mid.is-proactive {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  background: var(--n-bg, #1c1a18);
+}
+
+.proactive-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.proactive-host.is-loading {
+  padding: 16px;
+  color: var(--n-tertiary, #8a8278);
+}
+
+.proactive-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--n-line-solid, #3d3834);
+  flex: 0 0 auto;
+}
+
+.proactive-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.proactive-bar-left strong {
+  font-size: 13px;
+  color: var(--n-label, #f5f0e8);
+}
+
+.proactive-job {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  color: var(--n-secondary, #c4bbb0);
+}
+
+.proactive-job[data-status="scanning"],
+.proactive-job[data-status="dispatching"] {
+  color: var(--n-accent-fg, #ffb86b);
+  border-color: color-mix(in srgb, var(--n-accent-fg, #ffb86b) 40%, transparent);
+}
+
+.proactive-job[data-status="error"] {
+  color: var(--n-err, #ff741d);
+}
+
+.proactive-meta {
+  font-size: 11px;
+  color: var(--n-tertiary, #8a8278);
+}
+
+.proactive-bar-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.proactive-error {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--n-err, #ff741d);
+  background: color-mix(in srgb, var(--n-err, #ff741d) 12%, transparent);
+  border-bottom: 1px solid var(--n-line-solid, #3d3834);
+}
+
+.proactive-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr) minmax(280px, 360px);
+  gap: 0;
+  overflow: hidden;
+}
+
+.proactive-settings,
+.proactive-chat,
+.proactive-board {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  border-right: 1px solid var(--n-line-solid, #3d3834);
+}
+
+.proactive-board {
+  border-right: none;
+}
+
+.proactive-section-title {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--n-tertiary, #8a8278);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.proactive-board-hint {
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--n-quaternary, #6a635c);
+}
+
+.proactive-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--n-secondary, #c4bbb0);
+}
+
+.proactive-field input[type="number"],
+.proactive-field select,
+.proactive-composer input {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-elevated, #282522);
+  color: var(--n-label, #f5f0e8);
+}
+
+.proactive-field input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
+
+.proactive-field-label {
+  font-size: 11px;
+  color: var(--n-tertiary, #8a8278);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.proactive-auto-zones {
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.proactive-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--n-secondary, #c4bbb0);
+  line-height: 1.35;
+}
+
+.proactive-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--n-quaternary, #6a635c);
+}
+
+.proactive-path {
+  margin-top: 12px;
+  font-size: 10px;
+  font-family: var(--n-mono);
+  color: var(--n-quaternary, #6a635c);
+  word-break: break-all;
+}
+
+.proactive-chat {
+  display: flex;
+  flex-direction: column;
+}
+
+.proactive-chat-log {
+  flex: 1;
+  min-height: 120px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+
+.proactive-line {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.proactive-line-role {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--n-tertiary, #8a8278);
+}
+
+.proactive-line.role-user .proactive-line-role {
+  color: var(--n-accent-fg, #ffb86b);
+}
+
+.proactive-line.role-assistant .proactive-line-role {
+  color: var(--n-ok, #3bffa7);
+}
+
+.proactive-line-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--n-label, #f5f0e8);
+}
+
+.proactive-composer {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--n-line-solid, #3d3834);
+  flex: 0 0 auto;
+}
+
+.proactive-composer input {
+  flex: 1;
+  min-width: 0;
+}
+
+.proactive-zone {
+  margin-bottom: 14px;
+}
+
+.proactive-zone-title {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--n-label, #f5f0e8);
+}
+
+.proactive-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--n-quaternary, #6a635c);
+}
+
+.proactive-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.proactive-item {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-elevated, #282522);
+}
+
+.proactive-item.is-done {
+  opacity: 0.7;
+}
+
+.proactive-item-check {
+  flex: 0 0 auto;
+  padding-top: 2px;
+}
+
+.proactive-item-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.proactive-item-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.proactive-item-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--n-label, #f5f0e8);
+}
+
+.proactive-risk {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 6px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  color: var(--n-secondary, #c4bbb0);
+}
+
+.proactive-risk.is-high {
+  color: var(--n-err, #ff741d);
+  border-color: color-mix(in srgb, var(--n-err, #ff741d) 45%, transparent);
+}
+
+.proactive-risk.is-low {
+  color: var(--n-ok, #3bffa7);
+  border-color: color-mix(in srgb, var(--n-ok, #3bffa7) 45%, transparent);
+}
+
+.proactive-risk.is-mid {
+  color: var(--n-accent-fg, #ffb86b);
+}
+
+.proactive-item-comment {
+  margin: 4px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--n-tertiary, #8a8278);
+}
+
+.proactive-done-btn {
+  margin-top: 6px;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: transparent;
+  color: var(--n-secondary, #c4bbb0);
+  cursor: pointer;
+}
+
+.proactive-done-btn:hover {
+  color: var(--n-label, #f5f0e8);
+  border-color: var(--n-secondary, #c4bbb0);
+}
+
+@media (max-width: 1100px) {
+  .proactive-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(180px, 1fr) minmax(200px, 1fr);
+    overflow: auto;
+  }
+
+  .proactive-settings,
+  .proactive-chat,
+  .proactive-board {
+    border-right: none;
+    border-bottom: 1px solid var(--n-line-solid, #3d3834);
+  }
 }

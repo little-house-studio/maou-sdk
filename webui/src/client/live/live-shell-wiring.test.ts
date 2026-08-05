@@ -35,12 +35,16 @@ describe("live shell production wiring", () => {
     assert.match(app, /WireTopbar/);
     assert.match(app, /BottomInfoBar/);
     assert.match(app, /UiMode/);
-    // Mode surfaces
+    // Mode surfaces（主动已迁到底栏卡片，不在顶栏 mode）
     for (const m of ["chat", "project", "team", "settings"] as const) {
       assert.match(app, new RegExp(`["']${m}["']|mode === ["']${m}["']`));
     }
-    assert.match(app, /LiveSettingsPanel|LiveProjectHost|TeamBoard/);
+    assert.doesNotMatch(app, /mode === ["']proactive["']/);
+    assert.match(app, /LiveSettingsPanel|LiveProjectHost|TeamBoard|ProactiveHost/);
     assert.match(app, /TeamBoard/);
+    assert.match(app, /ProactiveHost/);
+    assert.match(app, /proactiveFace/);
+    assert.match(app, /presentation=["']card["']/);
   });
 
   it("production settings use live meta/models not draft showcase seeds", () => {
@@ -55,7 +59,19 @@ describe("live shell production wiring", () => {
     assert.match(liveSettings, /fetchMeta/);
     assert.match(liveSettings, /fetchModels/);
     assert.match(liveSettings, /setModel/);
+    assert.match(liveSettings, /setApprovalMode/);
+    assert.match(liveSettings, /fetchLlmConfig/);
+    assert.match(liveSettings, /saveLlmConfig/);
     assert.match(liveSettings, /data-live-settings/);
+    assert.match(liveSettings, /LIVE_SETTINGS_SECTIONS|data-live-settings-nav/);
+    assert.match(
+      liveSettings,
+      /data-live-settings-section=["']runtime_defaults["']|runtime_defaults/,
+    );
+    assert.match(
+      liveSettings,
+      /data-live-settings-section=["']llm["']|section === ["']llm["']/,
+    );
     assert.doesNotMatch(liveSettings, /sk-draft-openai/);
     assert.doesNotMatch(liveSettings, /defaultApiConfig/);
     // Stable parent callback + mount-only load (no /api/meta loop)
@@ -65,6 +81,11 @@ describe("live shell production wiring", () => {
     const adapters = read("live/settings-adapters.ts");
     assert.match(adapters, /buildLiveSettingsSnapshot/);
     assert.match(adapters, /isDraftShowcaseApiKey/);
+    assert.match(adapters, /LIVE_SETTINGS_SECTIONS/);
+    assert.match(adapters, /withApprovalMode|isApprovalMode/);
+    const api = read("api.ts");
+    assert.match(api, /\/api\/config\/llm/);
+    assert.match(api, /fetchLlmConfig|saveLlmConfig/);
   });
 
   it("App wires live ChatPanel + session portal + terminal + files", () => {
@@ -80,6 +101,47 @@ describe("live shell production wiring", () => {
     assert.match(app, /fetchTerminals/);
     assert.match(app, /onTabChange|onDockTabChange/);
     assert.match(app, /is-hidden-mode|hidden=\{!chatVisible\}/);
+    // Real terminal mounts in bottom dock 终端 card — not side float
+    assert.match(app, /terminalFace/);
+    assert.match(app, /openTabRequest|dockOpenReq/);
+    assert.doesNotMatch(app, /wire-terminal-float|showTerminal/);
+  });
+
+  it("chat first-paint lazy-loads TerminalPanel and LiveProjectHost (not static default import)", () => {
+    // Dynamic import boundaries — must not be static `import { TerminalPanel } from`
+    assert.match(app, /lazy\s*\(/);
+    assert.match(app, /import\s*\(\s*["']\.\/TerminalPanel["']\s*\)/);
+    assert.match(app, /import\s*\(\s*["']\.\/live\/LiveProjectHost["']\s*\)/);
+    assert.match(app, /import\s*\(\s*["']\.\/live\/ProactiveHost["']\s*\)/);
+    assert.doesNotMatch(
+      app,
+      /import\s*\{\s*TerminalPanel[^}]*\}\s*from\s*["']\.\/TerminalPanel["']/,
+    );
+    assert.doesNotMatch(
+      app,
+      /import\s*\{\s*LiveProjectHost[^}]*\}\s*from\s*["']\.\/live\/LiveProjectHost["']/,
+    );
+    assert.doesNotMatch(
+      app,
+      /import\s*\{\s*ProactiveHost[^}]*\}\s*from\s*["']\.\/live\/ProactiveHost["']/,
+    );
+    // Type-only import of OpenTerminalRequest is OK (erased at runtime)
+    assert.match(app, /import\s+type\s+\{[^}]*OpenTerminalRequest/);
+    // App must not import ProjectWorkbench via drafts barrel (CodeMirror path)
+    assert.doesNotMatch(app, /from\s+["']\.\/drafts["']/);
+    assert.match(app, /from\s+["']\.\/drafts\/panels\/BottomInfoBar["']/);
+    // Source editors are async-only
+    const lazyEd = read("markdown/editor/LazySourceEditor.tsx");
+    assert.match(lazyEd, /import\s*\(\s*["']\.\/SourceEditor["']\s*\)/);
+    const workbench = read("drafts/panels/ProjectWorkbench.tsx");
+    assert.match(workbench, /LazySourceEditor/);
+    assert.doesNotMatch(
+      workbench,
+      /import\s*\{\s*SourceEditor\s*\}\s*from/,
+    );
+    const md = read("markdown/MarkdownWorkbench.tsx");
+    assert.match(md, /LazySourceEditor/);
+    assert.doesNotMatch(md, /import\s*\{\s*SourceEditor\s*\}\s*from/);
   });
 
   it("App agent rail uses liveAgentsToDraftAgents + fetchAgents not meta-only SoT", () => {
@@ -87,6 +149,8 @@ describe("live shell production wiring", () => {
     assert.match(app, /liveAgentsToDraftAgents/);
     assert.match(app, /setActiveAgent/);
     assert.match(app, /onSelectAgent|liveAgentRows|activeSwitchId/);
+    // Agent click remounts ChatPanel so sessions/history rebind
+    assert.match(app, /key=\{activeSwitchId/);
     // Still may fall back to metaToAgents when list empty
     assert.match(app, /metaToAgents/);
     // No bare name-only highlight when switch_id misses (multi-project safe)
@@ -141,10 +205,43 @@ describe("live shell production wiring", () => {
     assert.match(chat, /wire-composer-card/);
   });
 
+  it("ThreadRail wire mode uses SessionList single-line rows (no thread-item mix)", () => {
+    // Wire branch must not paint dual-class thread-item + wire-session-btn
+    // (32px row + column flex clipped Chinese titles into garbage glyphs).
+    assert.match(chat, /wire = SessionList single-line|SessionList single-line/);
+    assert.match(chat, /className=\{`wire-session-row/);
+    assert.match(chat, /className=["']wire-session-btn["']/);
+    assert.match(chat, /className=["']wire-session-title["']/);
+    assert.match(chat, /className=["']wire-session-time["']/);
+    // Wire path must not apply thread-item to the same button
+    const wireBranch = chat.slice(
+      chat.indexOf("if (wire)"),
+      chat.indexOf("return (", chat.indexOf("if (wire)") + 1),
+    );
+    assert.doesNotMatch(wireBranch, /thread-item/);
+    assert.doesNotMatch(wireBranch, /thread-title/);
+    assert.doesNotMatch(wireBranch, /thread-meta/);
+  });
+
   it("App merges chat dock logs into BottomInfoBar", () => {
     assert.match(app, /onDockLogLines/);
     assert.match(app, /chatLogLines/);
     assert.match(app, /termLinesRaw|termLines/);
+  });
+
+  it("App stabilizes ChatPanel onMetaChange (no bootstrap thrash from polls)", () => {
+    assert.match(app, /onChatMetaChange/);
+    assert.match(app, /onMetaChange=\{onChatMetaChange\}/);
+    // Must not pass inline arrow that changes every App render
+    assert.doesNotMatch(
+      app,
+      /onMetaChange=\{\(m\)\s*=>\s*\{[\s\S]*setMeta\(m\)/,
+    );
+    const chat = read("ChatPanel.tsx");
+    // Mount-only bootstrap + ref for parent callbacks
+    assert.match(chat, /onMetaChangeRef/);
+    assert.match(chat, /intentional mount-only|mount-only bootstrap/i);
+    assert.match(chat, /cancelled = true/);
   });
 
   it("App chat files rail uses LiveFilesRail (draft FilesRail + live FS)", () => {
@@ -152,7 +249,19 @@ describe("live shell production wiring", () => {
     const liveFiles = read("live/LiveFilesRail.tsx");
     assert.match(liveFiles, /FilesRail/);
     assert.match(liveFiles, /fetchMdTree/);
-    assert.match(liveFiles, /MarkdownWorkbench/);
+    // Preview is opt-in after selection
+    assert.match(liveFiles, /openPath/);
+    assert.match(liveFiles, /关闭预览|setOpenPath\(null\)/);
+    // CodeMirror workbench must be dynamic import, not static package load on rail mount
+    assert.match(liveFiles, /lazy\s*\(/);
+    assert.match(
+      liveFiles,
+      /import\s*\(\s*["']\.\.\/markdown\/MarkdownWorkbench["']\s*\)/,
+    );
+    assert.doesNotMatch(
+      liveFiles,
+      /import\s*\{\s*MarkdownWorkbench[^}]*\}\s*from/,
+    );
   });
 
   it("App project mode uses LiveProjectHost (ProjectWorkbench + live FS)", () => {
@@ -161,6 +270,18 @@ describe("live shell production wiring", () => {
     assert.match(liveProj, /ProjectWorkbench/);
     assert.match(liveProj, /fetchMdTree|readFsFile/);
     assert.match(liveProj, /writeFsFile|onPersistMarkdown/);
+    // On-demand content path (not bulk full-body for list)
+    assert.match(liveProj, /stubsFromPaths|project-host-docs/);
+    assert.match(liveProj, /ensureContent|onActivePathChange/);
+    assert.match(liveProj, /按需加载|on-demand|stubs/);
+    // MarkdownWorkbench fallback is lazy
+    assert.match(liveProj, /lazy\s*\(/);
+    assert.match(
+      liveProj,
+      /import\s*\(\s*["']\.\.\/markdown\/MarkdownWorkbench["']\s*\)/,
+    );
+    const workbench = read("drafts/panels/ProjectWorkbench.tsx");
+    assert.match(workbench, /onActivePathChange/);
   });
 
   it("ChatPanel usage uses fetchSessionStats", () => {
@@ -192,11 +313,25 @@ describe("live shell production wiring", () => {
     assert.match(chat, /className/);
   });
 
+  it("ChatPanel send mode toggle queue/insert + outbox + backend enqueue", () => {
+    assert.match(chat, /ChatSendMode|sendMode/);
+    assert.match(chat, /enqueueChat/);
+    assert.match(chat, /cycleSendMode|send-mode-toggle/);
+    assert.match(chat, /composer-outbox/);
+    assert.match(chat, /interrupt_immediately|after_round_complete|insert/);
+    assert.match(chat, /queued_user|queue_delivered/);
+    // shortcuts: Enter / Ctrl+Enter insert / Alt+Enter cycle
+    assert.match(chat, /send\(["']insert["']\)/);
+    assert.match(chat, /altKey/);
+  });
+
   it("TerminalPanel + api keep WS and list/stop", () => {
     assert.match(term, /agentTerminalWsUrl/);
     assert.match(term, /fetchTerminals/);
     assert.match(api, /\/api\/chat/);
     assert.match(api, /\/api\/chat\/abort/);
+    assert.match(api, /\/api\/chat\/enqueue/);
+    assert.match(api, /\/api\/chat\/queue/);
     assert.match(api, /\/api\/terminals/);
     assert.match(api, /\/ws\/agent-terminal/);
     assert.match(mdApi, /\/api\/fs\/md-tree/);

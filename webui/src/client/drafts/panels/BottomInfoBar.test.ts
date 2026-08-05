@@ -192,6 +192,15 @@ describe("BottomInfoBar dock tray", () => {
     assert.ok(springSettled(s, DOCK_EXPAND_H_UI, 4, 40));
   });
 
+  it("accepts terminalFace for live TerminalPanel inside 终端 card", () => {
+    const src = readFileSync(join(here, "BottomInfoBar.tsx"), "utf8");
+    assert.match(src, /terminalFace/);
+    assert.match(src, /openTabRequest/);
+    assert.match(src, /wire-dock-terminal-host|data-dock-terminal/);
+    assert.match(src, /readTermSize|writeTermSize|TERM_SIZE_KEY/);
+    assert.match(src, /beginTermResize|wire-dock-resize/);
+  });
+
   it("ships board lift + hover morph + free-float wiring", () => {
     const src = readFileSync(join(here, "BottomInfoBar.tsx"), "utf8");
     assert.match(src, /wire-dock-card/);

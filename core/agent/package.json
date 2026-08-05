@@ -11,6 +11,21 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./proactive": {
+      "types": "./dist/agent/proactive/index.d.ts",
+      "import": "./dist/agent/proactive/index.js",
+      "default": "./dist/agent/proactive/index.js"
+    },
+    "./proactive/types": {
+      "types": "./dist/agent/proactive/types.d.ts",
+      "import": "./dist/agent/proactive/types.js",
+      "default": "./dist/agent/proactive/types.js"
+    },
+    "./proactive/board-format": {
+      "types": "./dist/agent/proactive/board-format.d.ts",
+      "import": "./dist/agent/proactive/board-format.js",
+      "default": "./dist/agent/proactive/board-format.js"
     }
   },
   "files": [

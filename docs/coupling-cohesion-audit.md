@@ -1,7 +1,7 @@
 # maou-sdk 低耦合 / 高内聚差距清单
 
 > **性质**：静态代码审计（import / 包边界 / 模块职责），不改实现。  
-> **范围**：`core/*`、`cli`、`webui`、`agent/*`、`*-engine`、共享 types/config；不含 `dist/`、`node_modules/`、vendor 二进制。  
+> **范围**：`core/*`、`cli`、`webui`、`agent-products/*`、`*-engine`、共享 types/config；不含 `dist/`、`node_modules/`、vendor 二进制。  
 > **原则**：只列「按分层意图本应更低耦合或更高内聚、但现状未做到」的可核对点；纯风格与未请求的大重写不在列。  
 > **审计日期**：2026-07-20。
 
@@ -287,7 +287,7 @@
 
 | 项 | 内容 |
 |---|---|
-| **位置** | `agent/coding-agent/src/index.ts`（创建 handle + 再导出 agent API）；实质逻辑在 `core/agent` bootstrap/runtime |
+| **位置** | `agent-products/coding-agent/src/index.ts`（创建 handle + 再导出 agent API）；实质逻辑在 `core/agent` bootstrap/runtime |
 | **问题** | 产品包很薄，coding 特有策略（如 fileDiffWatch、doc-extract hook）有的在 coding-agent，有的在 agent 默认选项。 |
 | **为何** | 产品边界不清晰时，通用 agent 库持续吸收产品特例（库膨胀、产品包空心）。 |
 
@@ -344,7 +344,7 @@
 | `core/llm` | F-17, F-18, F-24, F-27 |
 | `core/hub` | F-08, F-22 |
 | `core/prompt` | （无明显结构性差距） |
-| `agent/coding-agent` | F-31 |
+| `agent-products/coding-agent` | F-31 |
 | `cli` | F-14, F-15, F-20, F-21, F-34 |
 | `webui` | F-21, F-32, F-33 |
 | `*-engine` | 第 6 节对照 |

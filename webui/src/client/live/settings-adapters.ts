@@ -3,10 +3,61 @@
  * Maps Meta + /api/models lists into production settings UI state.
  * Does NOT use draft showcase defaultApiConfig seeds.
  */
-import type { Meta } from "../api";
+import type { ApprovalMode, Meta } from "../api";
 
 export type LiveProviderOpt = { id: string; name?: string };
 export type LiveModelOpt = { id: string; name?: string };
+
+/**
+ * Settings page sections (nav).
+ * 「方案与审批」置顶：Agent 方案 + 模板默认 + 终端审批合一。
+ */
+export type LiveSettingsSectionId = "runtime_defaults" | "llm";
+
+export const LIVE_SETTINGS_SECTIONS: ReadonlyArray<{
+  id: LiveSettingsSectionId;
+  label: string;
+}> = [
+  { id: "runtime_defaults", label: "方案与审批" },
+  { id: "llm", label: "LLM 模型" },
+];
+
+/** Backend-backed terminal approval modes (POST /api/approval). */
+export const APPROVAL_MODES: readonly ApprovalMode[] = [
+  "normal",
+  "auto",
+  "yolo",
+] as const;
+
+export function isApprovalMode(v: string): v is ApprovalMode {
+  return (APPROVAL_MODES as readonly string[]).includes(v);
+}
+
+export function approvalModeLabel(mode: string): string {
+  switch (mode) {
+    case "normal":
+      return "普通（非白名单询问）";
+    case "auto":
+      return "自动（小模型审核）";
+    case "yolo":
+      return "YOLO（不询问）";
+    default:
+      return mode || "—";
+  }
+}
+
+export function approvalModeHint(mode: string): string {
+  switch (mode) {
+    case "normal":
+      return "非白名单终端命令需人工审批；黑名单直接拒绝。";
+    case "auto":
+      return "非白名单先由辅助模型审核；误报可再次执行同一命令通过。";
+    case "yolo":
+      return "忽略黑白名单与风险，全部自动放行（本机开发常用）。";
+    default:
+      return "选择终端工具审批策略。";
+  }
+}
 
 /** Snapshot shown by production LiveSettingsPanel (backend-driven). */
 export type LiveSettingsSnapshot = {
@@ -72,6 +123,8 @@ export function buildLiveSettingsSnapshot(
   const provider = meta.provider || providers[0]?.id || "";
   const model = meta.model || models[0]?.id || "";
   const offline = !meta.provider && !meta.model && providers.length === 0;
+  const approvalRaw = meta.approvalMode || meta.sandboxMode || "";
+  const approvalMode = isApprovalMode(approvalRaw) ? approvalRaw : approvalRaw || "—";
 
   return {
     provider,
@@ -80,12 +133,29 @@ export function buildLiveSettingsSnapshot(
     models,
     projectRoot: meta.projectRoot || "",
     sandboxMode: meta.sandboxMode || "—",
-    approvalMode: meta.approvalMode || meta.sandboxMode || "—",
+    approvalMode,
     agentName: meta.agentName || "coding",
     offline,
     statusLabel: offline
       ? "后端离线"
-      : `${provider || "—"} · ${model || "—"} · live`,
+      : `${provider || "—"} · ${model || "—"} · ${approvalMode} · live`,
+  };
+}
+
+/**
+ * Patch approval mode on an existing snapshot (after successful setApproval).
+ */
+export function withApprovalMode(
+  snap: LiveSettingsSnapshot,
+  mode: ApprovalMode,
+): LiveSettingsSnapshot {
+  return {
+    ...snap,
+    approvalMode: mode,
+    sandboxMode: mode,
+    statusLabel: snap.offline
+      ? snap.statusLabel
+      : `${snap.provider || "—"} · ${snap.model || "—"} · ${mode} · live`,
   };
 }
 

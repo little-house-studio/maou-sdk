@@ -24,7 +24,7 @@ export function buildGlyphAtlas(ramp: string = ASCII_RAMP): {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "#fff";
-  ctx.font = `bold ${charH - 1}px monospace`;
+  ctx.font = `bold ${charH - 1}px "Fusion Pixel 12 Mono"`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   for (let i = 0; i < ramp.length; i++) {

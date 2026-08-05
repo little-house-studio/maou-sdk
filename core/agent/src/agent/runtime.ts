@@ -1635,6 +1635,13 @@ export class AgentRuntime {
             const r = this.messageQueue.deliver(sessionId!, msg, this.sessions);
             if (r.delivered) {
               yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}) 到 session（interrupt_immediately）`);
+              yield this.event("queued_user", {
+                id: msg.id,
+                content: msg.message,
+                mode: msg.mode,
+                source: msg.source,
+                phase: "interrupt_immediately",
+              });
             } else {
               yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败（interrupt_immediately）: ${r.reason}`);
             }
@@ -2480,6 +2487,13 @@ export class AgentRuntime {
             const r = this.messageQueue.deliver(sessionId!, msg, this.sessions);
             if (r.delivered) {
               yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}) 到 session（task_complete）`);
+              yield this.event("queued_user", {
+                id: msg.id,
+                content: msg.message,
+                mode: msg.mode,
+                source: msg.source,
+                phase: "task_complete",
+              });
             } else {
               yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败（task_complete）: ${r.reason}`);
             }
@@ -2539,6 +2553,13 @@ export class AgentRuntime {
           const r = this.messageQueue.deliver(sessionId!, msg, this.sessions);
           if (r.delivered) {
             yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}): 已追加到 session`);
+            yield this.event("queued_user", {
+              id: msg.id,
+              content: msg.message,
+              mode: msg.mode,
+              source: msg.source,
+              phase: "round_end",
+            });
           } else {
             yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败: ${r.reason}`);
           }
@@ -2607,6 +2628,13 @@ export class AgentRuntime {
         const r = this.messageQueue.deliver(sessionId!, msg, this.sessions);
         if (r.delivered) {
           yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}) 到 session（loop_end）`);
+          yield this.event("queued_user", {
+            id: msg.id,
+            content: msg.message,
+            mode: msg.mode,
+            source: msg.source,
+            phase: "loop_end",
+          });
         } else {
           yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败: ${r.reason}`);
         }
@@ -2616,6 +2644,11 @@ export class AgentRuntime {
           count: loopEndMessages.length,
           sessionId: sessionId!,
           phase: "loop_end",
+          messages: loopEndMessages.map((m) => ({
+            id: m.id,
+            content: m.message,
+            mode: m.mode,
+          })),
         });
       }
     }

@@ -176,9 +176,9 @@ export function formatMessageHead(
 }
 
 /**
- * CLI thinking header:
- * streaming: `* think ⠋ .   // N 字`
- * done:      `* think (dur) // N 字 ▶|▼`
+ * Thinking 行头（纯文本回退 / 测试）：
+ * streaming: `Thought... · 1.2s · 41 tok`
+ * done:      `Thought · 1.2s · 41 tok ▶|▼`
  */
 export function formatThinkingHead(
   body: string,
@@ -187,17 +187,21 @@ export function formatThinkingHead(
     streaming?: boolean;
     collapsed?: boolean;
     spinnerFrame?: number;
+    outputTokens?: number;
   } = {},
 ): string {
-  const chars = [...body].length;
-  if (opts.streaming) {
-    const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    const spin = frames[(opts.spinnerFrame ?? 0) % frames.length]!;
-    const dots = [".  ", ".. ", "..."][(opts.spinnerFrame ?? 0) % 3]!;
-    return `* think ${spin}${dots} // ${chars} 字`;
-  }
+  const label = opts.streaming ? "Thought..." : "Thought";
+  const parts: string[] = [label];
   const dur = durationStr(opts.durationMs);
-  const mark = opts.collapsed ? "▶" : "▼";
-  if (!dur) return `* think // ${chars} 字 ${mark}`;
-  return `* think (${dur}) // ${chars} 字 ${mark}`;
+  if (dur) parts.push(dur);
+  if (opts.outputTokens != null && opts.outputTokens > 0) {
+    parts.push(`${compactCount(opts.outputTokens)} tok`);
+  } else if (!opts.streaming && body) {
+    // 无 token 时回退字数，避免空信息
+    parts.push(`${[...body].length} 字`);
+  }
+  if (!opts.streaming) {
+    parts.push(opts.collapsed === false ? "▼" : "▶");
+  }
+  return parts.join(" · ");
 }

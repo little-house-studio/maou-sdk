@@ -11,27 +11,96 @@ import type {
 } from './index.js'
 import { resolveUserConfigPath } from './maou-paths.js'
 import { resolveApiRolePreset, type ApiModelRole } from './api-roles.js'
+import { expandAllPresets } from './preset-models.js'
+import { normalizeRuntimePreset } from './preset-normalize.js'
+
+export { normalizeRuntimePreset, normalizeLoadedPreset } from './preset-normalize.js'
 
 // ─── Zod Schemas ────────────────────────────────────────────────────────────
 
 const LLMProtocolSchema = z.enum(['openai', 'anthropic', 'openai-responses'])
 
-const LLMPresetSchema = z.object({
-  name: z.string(),
-  url: z.string(),
-  key: z.string().default(''),
-  model: z.string(),
-  maxTokens: z.number().int().positive().default(65536),
-  maxContext: z.number().int().positive().optional(),
-  protocol: LLMProtocolSchema.default('openai'),
-  stream: z.boolean().default(true),
-  supportsVision: z.boolean().default(false),
-  supportsReasoning: z.boolean().default(false),
-  nativeToolCalling: z.boolean().default(true),
-  nativeStructuredOutput: z.boolean().default(true),
-  structuredOutputMode: z.enum(['json_object', 'json_schema']).optional(),
-  reasoningParams: z.record(z.unknown()).optional(),
-})
+/**
+ * LLM preset schema。
+ * 核心字段有默认值；扩展字段（extraBody / pricing / 采样 / 并发 / 多模态）
+ * 经 .passthrough() 保留，避免 WebUI 写入后被 Zod strip 成「假配置」。
+ */
+/** 厂商内单模型条目（api.presets[].models[]） */
+const LLMModelSpecSchema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string().optional(),
+    maxTokens: z.number().int().positive().optional(),
+    maxContext: z.number().int().positive().optional(),
+    supportsVision: z.boolean().optional(),
+    supportsReasoning: z.boolean().optional(),
+    supportsAudio: z.boolean().optional(),
+    supportsVideo: z.boolean().optional(),
+    nativeToolCalling: z.boolean().optional(),
+    nativeStructuredOutput: z.boolean().optional(),
+    inputPrice: z.number().optional(),
+    outputPrice: z.number().optional(),
+    cacheHitPrice: z.number().optional(),
+    temperature: z.number().optional(),
+    topP: z.number().optional(),
+    presencePenalty: z.number().optional(),
+    frequencyPenalty: z.number().optional(),
+    extraBody: z.record(z.unknown()).optional(),
+  })
+  .passthrough()
+
+const LLMPresetSchema = z
+  .object({
+    name: z.string(),
+    url: z.string(),
+    key: z.string().default(''),
+    /**
+     * 可选展示用默认 model id；权威来源是 models[]。
+     * 加载后会 expand 成运行时每条必有 model。
+     */
+    model: z.string().optional().default(''),
+    /** 厂商内多模型列表（磁盘必填，至少一项） */
+    models: z.array(LLMModelSpecSchema).min(1),
+    defaultModel: z.string().optional(),
+    maxTokens: z.number().int().positive().default(65536),
+    maxContext: z.number().int().positive().optional(),
+    protocol: LLMProtocolSchema.default('openai'),
+    stream: z.boolean().default(true),
+    supportsVision: z.boolean().default(false),
+    supportsReasoning: z.boolean().default(false),
+    supportsAudio: z.boolean().optional(),
+    supportsVideo: z.boolean().optional(),
+    nativeToolCalling: z.boolean().default(true),
+    nativeStructuredOutput: z.boolean().default(true),
+    structuredOutputMode: z.enum(['json_object', 'json_schema']).optional(),
+    /** camelCase（normalizeKeys 后）；运行时另写 reasoning_params 给 adapter */
+    reasoningParams: z.record(z.unknown()).optional(),
+    extraBody: z.record(z.unknown()).optional(),
+    temperature: z.number().optional(),
+    topP: z.number().optional(),
+    presencePenalty: z.number().optional(),
+    frequencyPenalty: z.number().optional(),
+    maxConcurrent: z.number().optional(),
+    inputPrice: z.number().optional(),
+    outputPrice: z.number().optional(),
+    cacheHitPrice: z.number().optional(),
+    pricing: z
+      .object({
+        inputPrice: z.number().optional(),
+        outputPrice: z.number().optional(),
+        cacheHitPrice: z.number().optional(),
+        input: z.number().optional(),
+        output: z.number().optional(),
+        cacheRead: z.number().optional(),
+        currency: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+    vendor: z.string().optional(),
+    urlParams: z.string().optional(),
+    customRequestJson: z.string().optional(),
+  })
+  .passthrough()
 
 const ContextSettingsSchema = z.object({
   thresholdPercent: z.number().min(0).max(100).default(70),
@@ -63,11 +132,11 @@ const ApiConfigSchema = z.object({
   presets: z.array(LLMPresetSchema).default([]),
   defaultPreset: z.number().int().min(0).default(0),
   /**
-   * 全局辅助模型 preset 索引（可选，兼容旧配置）。
-   * 优先 roles.helper；再 helperPreset；再 main。
+   * 全局辅助模型下标（legacy 读回退）。
+   * 新配置写 roles.helper；解析链见 resolveApiRolePreset / resolveGlobalHelperPreset。
    */
   helperPreset: z.number().int().min(0).optional(),
-  /** 按用途绑定模型：main / fast / vision / helper … */
+  /** 按用途绑定模型：main / fast / vision / helper …（推荐 SoT） */
   roles: ApiModelRolesSchema,
   agentRoundLimit: z.number().int().positive().default(50),
   contextSettings: ContextSettingsSchema.default({}),
@@ -140,6 +209,23 @@ function deepMerge(
   return result
 }
 
+function normalizePresetsInConfig(config: AppConfig): AppConfig {
+  const presets = config.api?.presets
+  if (!Array.isArray(presets) || presets.length === 0) return config
+  // 先展开 models[] → 扁平，再 normalize 字段（唯一实现：normalizeRuntimePreset）
+  const expanded = expandAllPresets(presets as unknown[])
+  const next = expanded.map((item) =>
+    normalizeRuntimePreset(item) as (typeof presets)[number],
+  )
+  return {
+    ...config,
+    api: {
+      ...config.api,
+      presets: next,
+    },
+  }
+}
+
 // ─── ConfigStore ────────────────────────────────────────────────────────────
 
 /**
@@ -188,11 +274,11 @@ export class ConfigStore {
     const normalized = normalizeKeys(merged)
     const result = AppConfigSchema.safeParse(normalized)
     if (result.success) {
-      return result.data
+      return normalizePresetsInConfig(result.data)
     }
     // 校验失败时用默认值，打印警告
     console.warn('[ConfigStore] 配置校验失败，使用默认值:', result.error.flatten())
-    return AppConfigSchema.parse({})
+    return normalizePresetsInConfig(AppConfigSchema.parse({}))
   }
 
   /** 重新加载配置 */

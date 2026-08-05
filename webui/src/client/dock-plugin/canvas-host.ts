@@ -98,6 +98,10 @@ export function linesForDockCard(
       return bags.taskLines?.length ? bags.taskLines : ["no tasks"];
     case "agent":
       return bags.agentLines?.length ? bags.agentLines : ["idle"];
+    case "proactive":
+      return bags.taskLines?.length
+        ? bags.taskLines
+        : ["主动智能 · 扫描 / 看板 / 派发"];
     default:
       return ["—"];
   }

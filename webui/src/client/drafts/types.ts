@@ -4,6 +4,7 @@
  */
 
 /** Top-left: 界面模式 */
+/** 顶栏模式：主动已迁到底栏 dock 卡片，不在此列 */
 export type UiMode = "chat" | "project" | "team" | "settings";
 
 export type MessageRole =
@@ -86,8 +87,12 @@ export type DraftMessageMeta = {
 export type DraftThinkingMeta = {
   durationMs?: number;
   streaming?: boolean;
-  /** default collapsed like CLI after stream ends */
+  /** default collapsed — body hidden until user expands */
   collapsed?: boolean;
+  /** 思考输出 token（reasoning / completion 侧，有则展示） */
+  outputTokens?: number;
+  /** 思考开始时间（epoch ms，用于流式耗时） */
+  startedAt?: number;
 };
 
 export type DraftMessage = {

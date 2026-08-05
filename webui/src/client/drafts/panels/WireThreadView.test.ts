@@ -47,6 +47,51 @@ describe("chatLinesToDraftMessages + groupThreadBlocks", () => {
     assert.equal(msgs[0]!.meta?.streaming, true);
     assert.equal(msgs[0]!.body, "…");
   });
+
+  it("thinking defaults collapsed; keeps duration/tokens meta", () => {
+    const live = chatLinesToDraftMessages(
+      [
+        {
+          id: "th",
+          role: "thinking",
+          text: "step one",
+          thinkStartedAt: 1,
+          thinkDurationMs: 800,
+          thinkOutputTokens: 42,
+        },
+      ],
+      { agentBusy: true },
+    );
+    assert.equal(live[0]!.thinking?.streaming, true);
+    assert.equal(live[0]!.thinking?.collapsed, true);
+    assert.equal(live[0]!.thinking?.outputTokens, 42);
+    assert.equal(live[0]!.thinking?.durationMs, 800);
+
+    const done = chatLinesToDraftMessages(
+      [{ id: "th", role: "thinking", text: "step one" }],
+      { agentBusy: false },
+    );
+    assert.equal(done[0]!.thinking?.streaming, false);
+    assert.equal(done[0]!.thinking?.collapsed, true);
+  });
+
+  it("groupThreadBlocks keeps thinking as internals under assistant", () => {
+    const msgs = chatLinesToDraftMessages(
+      [
+        { id: "u", role: "user", text: "hi" },
+        { id: "a", role: "assistant", text: "ans" },
+        { id: "th", role: "thinking", text: "reason" },
+      ],
+      { agentBusy: false },
+    );
+    // order assistant then thinking → nested
+    const blocks = groupThreadBlocks(msgs);
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[1]!.kind, "reply");
+    if (blocks[1]!.kind === "reply") {
+      assert.equal(blocks[1]!.internals.some((i) => i.role === "thinking"), true);
+    }
+  });
 });
 
 describe("WireThreadView source structure", () => {

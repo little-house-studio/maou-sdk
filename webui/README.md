@@ -29,6 +29,7 @@ pnpm --filter @little-house-studio/webui build
 # 生产模式启动（需先 build）
 pnpm --filter @little-house-studio/webui start
 # 打开 http://127.0.0.1:8787
+
 ```
 
 开发（双进程）：

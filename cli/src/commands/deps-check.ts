@@ -203,7 +203,8 @@ function monorepoPackagePresent(mono: string, pkgName: string): boolean {
   const map: Record<string, string> = {
     "@little-house-studio/types": "core/types",
     "@little-house-studio/agent": "core/agent",
-    "@little-house-studio/coding-agent": "agent/coding-agent",
+    "@little-house-studio/coding-agent": "agent-products/coding-agent",
+    "@little-house-studio/ops-agent": "agent-products/ops-agent",
     "@little-house-studio/llm": "core/llm",
     "@little-house-studio/tools": "core/tools",
     "@little-house-studio/context": "core/context",

@@ -35,6 +35,7 @@ export type ChromeMarkKind =
   | "mode_chat"
   | "mode_project"
   | "mode_team"
+  | "mode_proactive"
   | "new"
   | "stop"
   | "refresh"
@@ -228,10 +229,12 @@ export function hierarchyIndentPx(depth: number, step = 12, base = 6): number {
 }
 
 export function chromeMarkForMode(
-  mode: "chat" | "project" | "team" | "settings",
+  mode: "chat" | "project" | "team" | "settings" | "proactive",
 ): ChromeMarkKind {
   if (mode === "settings") return "settings";
   if (mode === "project") return "mode_project";
   if (mode === "team") return "mode_team";
+  // 主动已是底栏卡片；保留映射供测试/历史调用
+  if (mode === "proactive") return "mode_proactive";
   return "mode_chat";
 }

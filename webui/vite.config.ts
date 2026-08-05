@@ -22,10 +22,49 @@ export default defineConfig({
   build: {
     outDir: resolve(__dirname, "dist/client"),
     emptyOutDir: true,
+    modulePreload: {
+      // Only preload deps of the entry module graph — never force heavy
+      // editor/terminal chunks into first paint via multi-page shared chunks.
+      resolveDependencies: (filename, deps) => {
+        return deps.filter((d) => {
+          const base = d.split("/").pop() || d;
+          if (/codemirror|SourceEditor|TerminalPanel|xterm|MarkdownWorkbench/i.test(base)) {
+            return false;
+          }
+          return true;
+        });
+      },
+    },
     rollupOptions: {
       input: {
         main: resolve(__dirname, "src/client/index.html"),
         draft: resolve(__dirname, "src/client/draft.html"),
+      },
+      output: {
+        /**
+         * Only pure node_modules — never app source. Putting SourceEditor /
+         * TerminalPanel here previously sucked react into those chunks, so
+         * main statically imported ./codemirror-*.js just to get react.
+         */
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          if (
+            id.includes("/react/") ||
+            id.includes("/react-dom/") ||
+            id.includes("/scheduler/")
+          ) {
+            return "react-vendor";
+          }
+          if (
+            id.includes("@codemirror") ||
+            id.includes("@uiw/react-codemirror")
+          ) {
+            return "codemirror";
+          }
+          if (id.includes("@xterm")) {
+            return "xterm";
+          }
+        },
       },
     },
   },

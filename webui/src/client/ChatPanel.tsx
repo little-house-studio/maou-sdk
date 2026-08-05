@@ -14,15 +14,19 @@ import { createPortal } from "react-dom";
 import {
   abortChat,
   answerApproval,
+  clearChatQueue,
   clearSession,
   createSession,
   deleteSession,
+  enqueueChat,
   exportTranscript,
   fetchApproval,
   fetchMeta,
   fetchModels,
+  fetchLlmConfig,
   fetchSessionStats,
   fetchSessions,
+  removeChatQueueItem,
   renameSession,
   runCommand,
   setApprovalMode,
@@ -31,6 +35,7 @@ import {
   switchSession,
   type ApprovalMode,
   type ChatHistoryLine,
+  type ChatSendMode,
   type Meta,
   type PendingApproval,
   type SessionSummary,
@@ -45,6 +50,11 @@ import {
   chatLinesToDraftMessages,
 } from "./drafts/panels/WireThreadView";
 import { ApprovalBanner } from "./drafts/panels/ApprovalBanner";
+import { ApprovalPhysicsSwitch } from "./drafts/panels/ApprovalPhysicsSwitch";
+import {
+  ModelCascadeMenu,
+  type ModelCascadeMenuHandle,
+} from "./drafts/panels/ModelCascadeMenu";
 import { ChromeMark } from "./drafts/icons/Marks";
 import type { DraftApproval } from "./drafts/types";
 
@@ -57,6 +67,10 @@ export type ChatLine = {
   agentName?: string;
   /** 可一点重试的用户原文（error 行） */
   retryText?: string;
+  /** thinking 行元数据（耗时 / token） */
+  thinkStartedAt?: number;
+  thinkDurationMs?: number;
+  thinkOutputTokens?: number;
 };
 
 function uid() {
@@ -162,6 +176,29 @@ const SLASH_SUGGESTIONS = [
 /** Cap pending user messages while a turn is running */
 const MAX_QUEUE = 20;
 
+const SEND_MODE_KEY = "maou.webui.sendMode";
+
+function loadSendMode(): ChatSendMode {
+  try {
+    const v = localStorage.getItem(SEND_MODE_KEY);
+    if (v === "insert" || v === "queue") return v;
+  } catch {
+    /* ignore */
+  }
+  return "queue";
+}
+
+/** Outbox above composer: backend-queued + failed unsent */
+type OutboxItem = {
+  localId: string;
+  text: string;
+  status: "queued" | "failed";
+  mode: ChatSendMode;
+  /** backend MessageQueue id when status=queued */
+  queueId?: number;
+  error?: string;
+};
+
 /** 交给 Runtime.commandRegistry 的 slash（走 chat 流，不本地吞掉） */
 const RUNTIME_SLASH = new Set([
   "compact",
@@ -212,13 +249,6 @@ export function ChatPanel({
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusyState] = useState(false);
-  const setBusy = useCallback(
-    (v: boolean) => {
-      setBusyState(v);
-      onBusyChange?.(v);
-    },
-    [onBusyChange],
-  );
   const [meta, setMeta] = useState<Meta | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [providers, setProviders] = useState<{ id: string; name?: string }[]>(
@@ -232,22 +262,57 @@ export function ChatPanel({
     in: number;
     out: number;
   } | null>(null);
+  /** 上下文占用：used tokens / maxContext → 百分比 */
+  const [contextUsage, setContextUsage] = useState<{
+    used: number;
+    max: number;
+  } | null>(null);
+  const maxContextRef = useRef(128_000);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
-  const [queueLen, setQueueLen] = useState(0);
+  /** 发送模式：队列（等本轮）/ 插入（打断当前流）—— 对接到 MessageQueue */
+  const [sendMode, setSendModeState] = useState<ChatSendMode>(() => loadSendMode());
+  /** 发送框上方：未成功发送 / 已排队待投递 */
+  const [outbox, setOutbox] = useState<OutboxItem[]>([]);
   const [railEl, setRailEl] = useState<HTMLElement | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const modelSelectRef = useRef<HTMLSelectElement>(null);
+  const modelMenuRef = useRef<ModelCascadeMenuHandle | null>(null);
   const stickBottomRef = useRef(true);
+  /** 当前焦点会话的客户端 AbortController（Stop 用） */
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
   /** Guards double-Enter before busyRef flips inside runUserMessage */
   const inFlightSendRef = useRef(false);
-  const queueRef = useRef<string[]>([]);
   const lastUserRef = useRef("");
-  /** Incremented on stop / session switch to drop stale stream finally + queue drain */
-  const runGenRef = useRef(0);
+  /**
+   * 每会话独立 run 代数。切会话不 bump 其它会话。
+   * Map: sessionId → { gen, ac }
+   */
+  const sessionRunsRef = useRef(
+    new Map<string, { gen: number; ac: AbortController }>(),
+  );
+  /** 正在后台/前台生成的会话 id（驱动会话图标着色） */
+  const [runningSessionIds, setRunningSessionIds] = useState<string[]>([]);
+  const runningSessionIdsRef = useRef<string[]>([]);
+  runningSessionIdsRef.current = runningSessionIds;
+  /** 焦点会话（stream 事件只刷当前焦点的 UI） */
+  const activeSessionRef = useRef<string | null>(null);
+
+  const setSendMode = useCallback((mode: ChatSendMode) => {
+    setSendModeState(mode);
+    try {
+      localStorage.setItem(SEND_MODE_KEY, mode);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const cycleSendMode = useCallback(() => {
+    setSendMode(sendMode === "queue" ? "insert" : "queue");
+  }, [sendMode, setSendMode]);
+
+  const queueLen = outbox.filter((o) => o.status === "queued").length;
 
   const focusComposer = useCallback(() => {
     // Defer so layout/portal settle after session switch
@@ -255,6 +320,16 @@ export function ChatPanel({
       inputRef.current?.focus();
     });
   }, []);
+
+  // Parent callbacks via refs — never re-bootstrap because App re-rendered
+  const onMetaChangeRef = useRef(onMetaChange);
+  onMetaChangeRef.current = onMetaChange;
+  const onSessionTitleChangeRef = useRef(onSessionTitleChange);
+  onSessionTitleChangeRef.current = onSessionTitleChange;
+  const onBusyChangeRef = useRef(onBusyChange);
+  onBusyChangeRef.current = onBusyChange;
+  const onDockLogLinesRef = useRef(onDockLogLines);
+  onDockLogLinesRef.current = onDockLogLines;
 
   // Portal target for thread list (sidebar mounts independently)
   useEffect(() => {
@@ -264,73 +339,197 @@ export function ChatPanel({
     }
     const pick = () => document.getElementById(threadRailId);
     setRailEl(pick());
-    const t = window.setInterval(() => {
-      const el = pick();
-      setRailEl((prev) => (prev === el ? prev : el));
-    }, 200);
-    return () => clearInterval(t);
+    // Host is static in App — one short retry is enough (avoid 200ms poll churn)
+    if (!pick()) {
+      const t = window.setTimeout(() => {
+        setRailEl((prev) => {
+          const el = pick();
+          return prev === el ? prev : el;
+        });
+      }, 50);
+      return () => clearTimeout(t);
+    }
   }, [threadRailId]);
 
-  const pushMeta = useCallback(
-    (m: Meta) => {
-      setMeta(m);
-      onMetaChange?.(m);
-    },
-    [onMetaChange],
-  );
+  const pushMeta = useCallback((m: Meta) => {
+    setMeta(m);
+    onMetaChangeRef.current?.(m);
+  }, []);
+
+  const setBusy = useCallback((v: boolean) => {
+    setBusyState(v);
+    onBusyChangeRef.current?.(v);
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     const s = await fetchSessions();
-    setSessions(s.sessions);
+    setSessions((prev) => {
+      const next = s.sessions;
+      if (
+        prev.length === next.length &&
+        prev.every(
+          (x, i) =>
+            x.id === next[i]?.id &&
+            x.title === next[i]?.title &&
+            x.messageCount === next[i]?.messageCount &&
+            x.updatedAt === next[i]?.updatedAt,
+        )
+      ) {
+        return prev;
+      }
+      return next;
+    });
+    // 合并服务端 running（多标签/刷新后恢复灯）与本地仍在飞的流
+    if (s.runningSessionIds?.length) {
+      setRunningSessionIds((prev) => {
+        const set = new Set([...prev, ...s.runningSessionIds]);
+        return Array.from(set);
+      });
+    }
     return s;
   }, []);
 
+  // 焦点会话 ref + busy 仅反映「当前会话」是否在跑
+  useEffect(() => {
+    activeSessionRef.current = meta?.sessionId ?? null;
+    const id = meta?.sessionId;
+    const isRunning = Boolean(id && runningSessionIds.includes(id));
+    busyRef.current = isRunning;
+    setBusy(isRunning);
+    // 绑定当前会话的 AbortController（若有）
+    if (id) {
+      abortRef.current = sessionRunsRef.current.get(id)?.ac ?? null;
+    } else {
+      abortRef.current = null;
+    }
+  }, [meta?.sessionId, runningSessionIds, setBusy]);
+
   // Push active session title to shell topbar
   useEffect(() => {
-    if (!onSessionTitleChange) return;
+    const cb = onSessionTitleChangeRef.current;
+    if (!cb) return;
     const id = meta?.sessionId;
     if (!id) {
-      onSessionTitleChange(null);
+      cb(null);
       return;
     }
     const hit = sessions.find((x) => x.id === id);
-    onSessionTitleChange(hit?.title || null);
-  }, [meta?.sessionId, sessions, onSessionTitleChange]);
+    cb(hit?.title || null);
+  }, [meta?.sessionId, sessions]);
+
+  const patchContextUsage = useCallback(
+    (partial: { used?: number; max?: number }) => {
+      setContextUsage((prev) => {
+        const used =
+          partial.used != null && Number.isFinite(partial.used)
+            ? Math.max(0, partial.used)
+            : (prev?.used ?? 0);
+        const max =
+          partial.max != null && Number.isFinite(partial.max) && partial.max > 0
+            ? partial.max
+            : (prev?.max ?? maxContextRef.current);
+        if (max > 0) maxContextRef.current = max;
+        if (used <= 0 && !prev && partial.used == null) return prev;
+        return { used, max };
+      });
+    },
+    [],
+  );
+
+  const refreshContextUsage = useCallback(async () => {
+    try {
+      const r = await fetchSessionStats();
+      if (r.stats) {
+        // 会话累计 input 作为上下文占用近似；上限来自 preset maxContext
+        patchContextUsage({
+          used: r.stats.inputTokens,
+          max: maxContextRef.current,
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [patchContextUsage]);
+
+  // 按当前模型解析 maxContext，并刷新会话 token 占用
+  useEffect(() => {
+    void fetchLlmConfig()
+      .then((cfg) => {
+        const name = meta?.model || meta?.provider;
+        const hit =
+          (name &&
+            cfg.presets.find(
+              (p) => p.model === name || p.name === name,
+            )) ||
+          cfg.presets[cfg.defaultPreset] ||
+          cfg.presets[0];
+        if (hit?.maxContext && hit.maxContext > 0) {
+          maxContextRef.current = hit.maxContext;
+          patchContextUsage({ max: hit.maxContext });
+        }
+      })
+      .catch(() => {});
+    void refreshContextUsage();
+  }, [meta?.model, meta?.provider, meta?.sessionId, patchContextUsage, refreshContextUsage]);
 
   const refreshApproval = useCallback(async () => {
     const a = await fetchApproval();
-    setApproval(a.mode);
-    setPending(a.pending);
+    setApproval((prev) => (prev === a.mode ? prev : a.mode));
+    setPending((prev) => {
+      const next = a.pending;
+      if (
+        prev.length === next.length &&
+        prev.every(
+          (p, i) =>
+            p.id === next[i]?.id &&
+            p.command === next[i]?.command &&
+            p.risk === next[i]?.risk,
+        )
+      ) {
+        return prev;
+      }
+      return next;
+    });
     return a;
   }, []);
 
-  const bootstrap = useCallback(async () => {
-    try {
-      const m = await fetchMeta();
-      pushMeta(m);
-      setApproval(
-        (m.approvalMode as ApprovalMode) ||
-          (m.sandboxMode as ApprovalMode) ||
-          "yolo",
-      );
-      // 恢复 last-session 历史（与 CLI 启动一致）
-      if (m.sessionId && Array.isArray(m.messages) && m.messages.length > 0) {
-        setLines(historyToLines(m.messages));
-        setStatus(`已恢复会话 ${m.sessionId.slice(0, 8)}…`);
-      }
-      const md = await fetchModels(m.provider || undefined);
-      setProviders(md.providers.length ? md.providers : m.providers ?? []);
-      setModels(md.models);
-      await refreshSessions();
-      await refreshApproval();
-    } catch (e) {
-      setStatus(e instanceof Error ? e.message : String(e));
-    }
-  }, [pushMeta, refreshApproval, refreshSessions]);
-
+  // Mount-only bootstrap — must not re-run when parent callbacks change identity
   useEffect(() => {
-    void bootstrap();
-  }, [bootstrap]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const m = await fetchMeta();
+        if (cancelled) return;
+        pushMeta(m);
+        setApproval(
+          (m.approvalMode as ApprovalMode) ||
+            (m.sandboxMode as ApprovalMode) ||
+            "yolo",
+        );
+        // 恢复 last-session 历史（与 CLI 启动一致）
+        if (m.sessionId && Array.isArray(m.messages) && m.messages.length > 0) {
+          setLines(historyToLines(m.messages));
+          setStatus(`已恢复会话 ${m.sessionId.slice(0, 8)}…`);
+        }
+        const md = await fetchModels(m.provider || undefined);
+        if (cancelled) return;
+        setProviders(md.providers.length ? md.providers : m.providers ?? []);
+        setModels(md.models);
+        await refreshSessions();
+        if (cancelled) return;
+        await refreshApproval();
+      } catch (e) {
+        if (!cancelled) {
+          setStatus(e instanceof Error ? e.message : String(e));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // intentional mount-only (pushMeta/refresh* are stable)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 轮询 pending 审批（normal 模式工具阻塞时）
   useEffect(() => {
@@ -383,7 +582,8 @@ export function ChatPanel({
 
   // Dock log board: recent system / tool / err lines
   useEffect(() => {
-    if (!onDockLogLines) return;
+    const cb = onDockLogLinesRef.current;
+    if (!cb) return;
     const bag = lines
       .filter(
         (l) =>
@@ -398,14 +598,14 @@ export function ChatPanel({
         const body = (l.text || "").replace(/\s+/g, " ").trim().slice(0, 80);
         return body ? `[${tag}] ${body}` : `[${tag}]`;
       });
-    onDockLogLines(
+    cb(
       bag.length
         ? bag
         : busy
           ? ["[status] agent running…"]
           : ["[status] idle · no system lines"],
     );
-  }, [lines, busy, onDockLogLines]);
+  }, [lines, busy]);
 
   const scrollThreadToBottom = useCallback(() => {
     const el = logRef.current;
@@ -440,30 +640,79 @@ export function ChatPanel({
     setLines((prev) => [...prev, line]);
   }, []);
 
-  const enqueueMessage = useCallback(
-    (text: string, note?: string) => {
-      if (queueRef.current.length >= MAX_QUEUE) {
+  /** 运行中入队到后端 MessageQueue，并显示在发送框上方 outbox */
+  const enqueueToBackend = useCallback(
+    async (text: string, mode: ChatSendMode, note?: string) => {
+      if (outbox.filter((o) => o.status === "queued").length >= MAX_QUEUE) {
         setStatus(`队列已满（${MAX_QUEUE}）`);
-        append({
-          id: uid(),
-          role: "system",
-          text: `队列已满（最多 ${MAX_QUEUE} 条），请等待当前回合或 Stop`,
-          err: true,
-        });
+        setOutbox((prev) => [
+          ...prev,
+          {
+            localId: uid(),
+            text,
+            status: "failed",
+            mode,
+            error: `队列已满（最多 ${MAX_QUEUE} 条）`,
+          },
+        ]);
         return false;
       }
-      queueRef.current.push(text);
-      setQueueLen(queueRef.current.length);
-      setStatus(note || `已排队 #${queueRef.current.length}`);
-      append({
-        id: uid(),
-        role: "system",
-        text: `… 已排队（第 ${queueRef.current.length} 条）: ${text.slice(0, 80)}${text.length > 80 ? "…" : ""}`,
-      });
-      return true;
+      const localId = uid();
+      // 乐观展示在 composer 上方
+      setOutbox((prev) => [
+        ...prev,
+        { localId, text, status: "queued", mode },
+      ]);
+      try {
+        const r = await enqueueChat(text, mode);
+        setOutbox((prev) =>
+          prev.map((o) =>
+            o.localId === localId ? { ...o, queueId: r.id } : o,
+          ),
+        );
+        setStatus(
+          note ||
+            (mode === "insert"
+              ? `已插入打断 #${r.id}`
+              : `已排队 #${r.id}（本轮结束后投递）`),
+        );
+        return true;
+      } catch (e) {
+        const err = e instanceof Error ? e.message : String(e);
+        setOutbox((prev) =>
+          prev.map((o) =>
+            o.localId === localId
+              ? { ...o, status: "failed", error: err }
+              : o,
+          ),
+        );
+        setStatus(err);
+        return false;
+      }
     },
-    [append],
+    [outbox],
   );
+
+  const removeOutboxItem = useCallback(async (item: OutboxItem) => {
+    if (item.queueId != null) {
+      try {
+        await removeChatQueueItem(item.queueId);
+      } catch {
+        /* ignore */
+      }
+    }
+    setOutbox((prev) => prev.filter((o) => o.localId !== item.localId));
+  }, []);
+
+  const clearOutboxQueued = useCallback(async () => {
+    try {
+      await clearChatQueue();
+    } catch {
+      /* ignore */
+    }
+    setOutbox((prev) => prev.filter((o) => o.status !== "queued"));
+    setStatus("已清空排队");
+  }, []);
 
   const patchLastAssistant = useCallback((delta: string) => {
     setLines((prev) => {
@@ -480,15 +729,29 @@ export function ChatPanel({
   }, []);
 
   const patchLastThinking = useCallback((delta: string) => {
+    const now = Date.now();
     setLines((prev) => {
       const next = [...prev];
       for (let i = next.length - 1; i >= 0; i--) {
         if (next[i]!.role === "thinking") {
-          next[i] = { ...next[i]!, text: next[i]!.text + delta };
+          const cur = next[i]!;
+          next[i] = {
+            ...cur,
+            text: cur.text + delta,
+            thinkStartedAt: cur.thinkStartedAt ?? now,
+            // 流式中持续刷新耗时
+            thinkDurationMs: now - (cur.thinkStartedAt ?? now),
+          };
           return next;
         }
       }
-      next.push({ id: uid(), role: "thinking", text: delta });
+      next.push({
+        id: uid(),
+        role: "thinking",
+        text: delta,
+        thinkStartedAt: now,
+        thinkDurationMs: 0,
+      });
       return next;
     });
   }, []);
@@ -521,13 +784,19 @@ export function ChatPanel({
           if (!content) break;
           setLines((prev) => {
             const next = [...prev];
-            const last = next[next.length - 1];
-            if (last?.role === "assistant" && !last.text) {
-              next[next.length - 1] = { ...last, text: content };
-              return next;
+            // 注意：thinking / tool 可能插在 assistant 后面，不能只看 next[last]
+            // 否则 final `assistant` 会再 push 一条，正文显示两次
+            let idx = -1;
+            for (let i = next.length - 1; i >= 0; i--) {
+              if (next[i]!.role === "assistant") {
+                idx = i;
+                break;
+              }
             }
-            if (last?.role === "assistant" && content.startsWith(last.text)) {
-              next[next.length - 1] = { ...last, text: content };
+            if (idx >= 0) {
+              const cur = next[idx]!;
+              // 终态 content 为权威；已有流式前缀则合并覆盖，避免重复气泡
+              next[idx] = { ...cur, text: content };
               return next;
             }
             next.push({ id: uid(), role: "assistant", text: content });
@@ -596,11 +865,60 @@ export function ChatPanel({
           const out = Number(
             u.completion_tokens ?? u.output_tokens ?? u.output ?? 0,
           );
+          const maxCtx = Number(u.max_context ?? u.maxContext ?? 0);
+          const details = (u.completion_tokens_details ??
+            u.completionTokensDetails) as
+            | { reasoning_tokens?: number; reasoningTokens?: number }
+            | undefined;
+          const reasonTok = Number(
+            details?.reasoning_tokens ??
+              details?.reasoningTokens ??
+              u.reasoning_tokens ??
+              u.reasoningTokens ??
+              0,
+          );
           if (inn || out) {
             setTurnUsage((prev) => ({
               in: (prev?.in ?? 0) + (Number.isFinite(inn) ? inn : 0),
               out: (prev?.out ?? 0) + (Number.isFinite(out) ? out : 0),
             }));
+          }
+          // 本轮 prompt tokens ≈ 当前上下文占用
+          if (Number.isFinite(inn) && inn > 0) {
+            patchContextUsage({
+              used: inn,
+              max: Number.isFinite(maxCtx) && maxCtx > 0 ? maxCtx : undefined,
+            });
+          } else if (Number.isFinite(maxCtx) && maxCtx > 0) {
+            patchContextUsage({ max: maxCtx });
+          }
+          // 把 reasoning token / 收尾耗时写回最近 thinking 行
+          if (
+            (Number.isFinite(reasonTok) && reasonTok > 0) ||
+            (Number.isFinite(out) && out > 0)
+          ) {
+            const now = Date.now();
+            setLines((prev) => {
+              const next = [...prev];
+              for (let i = next.length - 1; i >= 0; i--) {
+                if (next[i]!.role !== "thinking") continue;
+                const cur = next[i]!;
+                const started = cur.thinkStartedAt ?? now;
+                next[i] = {
+                  ...cur,
+                  thinkDurationMs: Math.max(
+                    cur.thinkDurationMs ?? 0,
+                    now - started,
+                  ),
+                  thinkOutputTokens:
+                    reasonTok > 0
+                      ? reasonTok
+                      : cur.thinkOutputTokens ?? (out > 0 ? out : undefined),
+                };
+                break;
+              }
+              return next;
+            });
           }
           break;
         }
@@ -609,7 +927,67 @@ export function ChatPanel({
           if (u) {
             const inn = Number(u.prompt_tokens ?? u.input ?? 0);
             const out = Number(u.completion_tokens ?? u.output ?? 0);
+            const maxCtx = Number(u.max_context ?? u.maxContext ?? 0);
             if (inn || out) setTurnUsage({ in: inn, out });
+            if (Number.isFinite(inn) && inn > 0) {
+              patchContextUsage({
+                used: inn,
+                max: Number.isFinite(maxCtx) && maxCtx > 0 ? maxCtx : undefined,
+              });
+            }
+          }
+          void refreshContextUsage();
+          // 结束时冻结 thinking 耗时
+          {
+            const now = Date.now();
+            setLines((prev) =>
+              prev.map((l) => {
+                if (l.role !== "thinking" || l.thinkStartedAt == null) return l;
+                return {
+                  ...l,
+                  thinkDurationMs: Math.max(
+                    l.thinkDurationMs ?? 0,
+                    now - l.thinkStartedAt,
+                  ),
+                };
+              }),
+            );
+          }
+          break;
+        }
+        case "queued_user": {
+          // 后端 MessageQueue 投递成功 → 从 outbox 移入 transcript
+          const content = String(ev.content ?? "").trim();
+          const qid = Number(ev.id);
+          if (content) {
+            lastUserRef.current = content;
+            append({ id: uid(), role: "user", text: content });
+            // 新一轮 assistant 气泡，承接插入/排队后的回复
+            append({ id: uid(), role: "assistant", text: "" });
+          }
+          setOutbox((prev) =>
+            prev.filter((o) => {
+              if (Number.isFinite(qid) && o.queueId === qid) return false;
+              if (content && o.text === content && o.status === "queued")
+                return false;
+              return true;
+            }),
+          );
+          break;
+        }
+        case "queue_delivered": {
+          // loop_end 批量投递：同步清 outbox
+          const msgs = (ev.messages as Array<{ id?: number; content?: string }> | undefined) ?? [];
+          if (msgs.length > 0) {
+            setOutbox((prev) =>
+              prev.filter((o) => {
+                if (o.status !== "queued") return true;
+                if (o.queueId != null && msgs.some((m) => m.id === o.queueId))
+                  return false;
+                if (msgs.some((m) => m.content === o.text)) return false;
+                return true;
+              }),
+            );
           }
           break;
         }
@@ -622,6 +1000,20 @@ export function ChatPanel({
             retryText: lastUserRef.current || undefined,
           });
           break;
+        case "info": {
+          const msg = String(ev.message ?? ev.text ?? "").trim();
+          // 中断等关键运行时信息：以前静默吞掉，用户只看到「无回复」
+          if (msg === "已中断" || /中断|abort/i.test(msg)) {
+            append({
+              id: uid(),
+              role: "system",
+              text: msg,
+              err: true,
+              retryText: lastUserRef.current || undefined,
+            });
+          }
+          break;
+        }
         case "model_switched": {
           // Runtime switchPreset mid-run (CLI TUI status bar parity)
           const model = String(ev.model ?? "");
@@ -682,6 +1074,8 @@ export function ChatPanel({
       defaultAgent,
       onOpenTerminal,
       onMetaChange,
+      patchContextUsage,
+      refreshContextUsage,
     ],
   );
 
@@ -739,21 +1133,12 @@ export function ChatPanel({
       return "local";
     }
     if (c === "stop" || c === "abort") {
-      abortRef.current?.abort();
-      try {
-        await abortChat();
-      } catch {
-        /* ignore */
-      }
+      await stopRun(false);
       try {
         await runCommand("stop");
       } catch {
         /* ignore */
       }
-      queueRef.current = [];
-      setQueueLen(0);
-      busyRef.current = false;
-      setBusy(false);
       append({ id: uid(), role: "system", text: "■ 已停止（队列已清空）" });
       return "local";
     }
@@ -912,79 +1297,177 @@ export function ChatPanel({
     return "runtime";
   };
 
-  const runUserMessage = useCallback(
-    async (text: string) => {
-      const gen = ++runGenRef.current;
-      lastUserRef.current = text;
-      // New turn: re-stick so stream stays in view after history review
-      stickBottomRef.current = true;
-      append({ id: uid(), role: "user", text });
-      append({ id: uid(), role: "assistant", text: "" });
-      busyRef.current = true;
-      setBusy(true);
-      setTurnUsage(null);
-      setSlashOpen(false);
-      const ac = new AbortController();
-      abortRef.current = ac;
-      try {
-        for await (const ev of streamChat(text, ac.signal)) {
-          if (gen !== runGenRef.current) break;
-          onEvent(ev);
-        }
-        if (gen === runGenRef.current) {
-          void refreshApproval();
-          void refreshSessions();
-        }
-      } catch (e) {
-        if (gen === runGenRef.current && (e as Error)?.name !== "AbortError") {
-          append({
-            id: uid(),
-            role: "system",
-            text: e instanceof Error ? e.message : String(e),
-            err: true,
-            retryText: text,
-          });
-        }
-      } finally {
-        // Stale run after stop/session switch: do not touch busy or drain queue
-        if (gen !== runGenRef.current) {
-          return;
-        }
-        busyRef.current = false;
-        setBusy(false);
-        abortRef.current = null;
-        setLines((prev) =>
-          prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
-        );
-        // drain queue
-        const next = queueRef.current.shift();
-        setQueueLen(queueRef.current.length);
-        if (next) void runUserMessage(next);
-      }
-    },
-    [append, onEvent, refreshApproval, refreshSessions],
-  );
-
-  const clearQueue = useCallback(() => {
-    const n = queueRef.current.length;
-    if (!n) return;
-    queueRef.current = [];
-    setQueueLen(0);
-    setStatus(`已清空 ${n} 条排队（生成继续）`);
+  const markSessionRunning = useCallback((sessionId: string, on: boolean) => {
+    setRunningSessionIds((prev) => {
+      const has = prev.includes(sessionId);
+      if (on && !has) return [...prev, sessionId];
+      if (!on && has) return prev.filter((x) => x !== sessionId);
+      return prev;
+    });
   }, []);
 
+  const runUserMessage = useCallback(
+    async (text: string) => {
+      // 绑定到发送时的会话；切走后该流仍继续，只在焦点会话时刷 UI
+      let sessionId: string =
+        activeSessionRef.current || meta?.sessionId || "__pending__";
+
+      const prevRun = sessionRunsRef.current.get(sessionId);
+      // 同会话再次发送：打断本会话旧流
+      if (prevRun) {
+        try {
+          prevRun.ac.abort();
+        } catch {
+          /* ignore */
+        }
+      }
+      const gen = (prevRun?.gen ?? 0) + 1;
+      const ac = new AbortController();
+      sessionRunsRef.current.set(sessionId, { gen, ac });
+      abortRef.current = ac;
+      markSessionRunning(sessionId, true);
+
+      lastUserRef.current = text;
+      stickBottomRef.current = true;
+
+      // 仅当前焦点会话立刻画气泡
+      if (
+        activeSessionRef.current === sessionId ||
+        sessionId === "__pending__"
+      ) {
+        append({ id: uid(), role: "user", text });
+        append({ id: uid(), role: "assistant", text: "" });
+        busyRef.current = true;
+        setBusy(true);
+        setTurnUsage(null);
+      }
+      setSlashOpen(false);
+
+      try {
+        for await (const ev of streamChat(text, ac.signal)) {
+          const cur = sessionRunsRef.current.get(sessionId);
+          if (!cur || cur.gen !== gen) break;
+
+          // 首包 session：把 pending 键迁到真实 sessionId
+          if (sessionId === "__pending__" && ev.type === "session") {
+            const real = String(
+              (ev as { sessionId?: unknown }).sessionId ?? "",
+            ).trim();
+            if (real) {
+              sessionRunsRef.current.delete("__pending__");
+              sessionRunsRef.current.set(real, { gen, ac });
+              markSessionRunning("__pending__", false);
+              markSessionRunning(real, true);
+              sessionId = real;
+              if (!activeSessionRef.current) {
+                activeSessionRef.current = real;
+              }
+            }
+          }
+
+          // 只把事件应用到「当前正在看的会话」
+          if (activeSessionRef.current === sessionId) {
+            onEvent(ev);
+          }
+        }
+        if (sessionRunsRef.current.get(sessionId)?.gen === gen) {
+          void refreshApproval();
+          void refreshSessions();
+          // 若用户仍在本会话，结束时清空气泡；若已切走，回看时会 reload history
+          if (activeSessionRef.current === sessionId) {
+            setLines((prev) =>
+              prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
+            );
+            void refreshContextUsage();
+          } else {
+            // 后台结束：用户切回时 history 会带上完整回复
+          }
+        }
+      } catch (e) {
+        if (
+          sessionRunsRef.current.get(sessionId)?.gen === gen &&
+          (e as Error)?.name !== "AbortError"
+        ) {
+          const err = e instanceof Error ? e.message : String(e);
+          if (activeSessionRef.current === sessionId) {
+            append({
+              id: uid(),
+              role: "system",
+              text: err,
+              err: true,
+              retryText: text,
+            });
+            setOutbox((prev) => {
+              if (prev.some((o) => o.status === "failed" && o.text === text)) {
+                return prev;
+              }
+              return [
+                ...prev,
+                {
+                  localId: uid(),
+                  text,
+                  status: "failed",
+                  mode: sendMode,
+                  error: err,
+                },
+              ];
+            });
+          }
+        }
+      } finally {
+        const cur = sessionRunsRef.current.get(sessionId);
+        if (cur && cur.gen === gen) {
+          sessionRunsRef.current.delete(sessionId);
+          markSessionRunning(sessionId, false);
+          if (abortRef.current === ac) abortRef.current = null;
+          if (activeSessionRef.current === sessionId) {
+            busyRef.current = false;
+            setBusy(false);
+            setLines((prev) =>
+              prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
+            );
+          }
+        }
+      }
+    },
+    [
+      append,
+      onEvent,
+      refreshApproval,
+      refreshSessions,
+      refreshContextUsage,
+      sendMode,
+      meta?.sessionId,
+      markSessionRunning,
+      setBusy,
+    ],
+  );
+
+  /** 只停止「当前焦点」会话；其它会话继续跑 */
   const stopRun = useCallback(async (announce = true) => {
-    // Bump generation so in-flight runUserMessage finally skips queue drain
-    runGenRef.current += 1;
+    const sid = activeSessionRef.current || meta?.sessionId || null;
     inFlightSendRef.current = false;
+    if (sid) {
+      const run = sessionRunsRef.current.get(sid);
+      if (run) {
+        run.gen += 1; // invalidate stream loop
+        try {
+          run.ac.abort();
+        } catch {
+          /* ignore */
+        }
+        sessionRunsRef.current.delete(sid);
+      }
+      markSessionRunning(sid, false);
+    }
     abortRef.current?.abort();
+    abortRef.current = null;
     try {
-      await abortChat();
+      await abortChat(sid);
     } catch {
       /* ignore */
     }
-    queueRef.current = [];
-    setQueueLen(0);
+    setOutbox((prev) => prev.filter((o) => o.status === "failed"));
     busyRef.current = false;
     setBusy(false);
     setPending([]);
@@ -995,9 +1478,10 @@ export function ChatPanel({
     if (announce) {
       setStatus("已停止");
     }
-  }, [refreshApproval]);
+  }, [refreshApproval, meta?.sessionId, markSessionRunning, setBusy]);
 
-  const send = async () => {
+  /** modeOverride: Ctrl+Enter 强制 insert（Grok send-now 对齐） */
+  const send = async (modeOverride?: ChatSendMode) => {
     const text = input.trim();
     if (!text) return;
     setInput("");
@@ -1024,15 +1508,30 @@ export function ChatPanel({
       }
     }
 
-    // Busy or send already in-flight: queue (prevents double-Enter dual streams)
+    const mode = modeOverride ?? sendMode;
+
+    // Busy or send already in-flight: 对接后端 MessageQueue
     if (busyRef.current || inFlightSendRef.current) {
-      enqueueMessage(text);
+      await enqueueToBackend(text, mode);
       return;
     }
 
     inFlightSendRef.current = true;
     try {
       await runUserMessage(text);
+    } catch (e) {
+      // 未成功发送 → 放在 composer 上方 outbox
+      const err = e instanceof Error ? e.message : String(e);
+      setOutbox((prev) => [
+        ...prev,
+        {
+          localId: uid(),
+          text,
+          status: "failed",
+          mode,
+          error: err,
+        },
+      ]);
     } finally {
       inFlightSendRef.current = false;
     }
@@ -1040,29 +1539,43 @@ export function ChatPanel({
 
   const onSessionChange = async (id: string) => {
     if (!id) return;
-    // Abort turn + drop queue so queued msgs don't land on the wrong session
-    await stopRun(false);
+    // 不 abort：同 Agent 其它会话继续跑；只切换焦点 + 加载历史
+    setOutbox([]);
+    setPending([]);
     try {
       const r = await switchSession(id);
       pushMeta(r.meta);
+      activeSessionRef.current = r.sessionId;
       setLines(historyToLines(r.messages));
       setTurnUsage(null);
       stickBottomRef.current = true;
+      const stillRunning = runningSessionIdsRef.current.includes(r.sessionId);
+      busyRef.current = stillRunning;
+      setBusy(stillRunning);
+      abortRef.current =
+        sessionRunsRef.current.get(r.sessionId)?.ac ?? null;
       await refreshSessions();
-      setStatus(`切换会话 ${id.slice(0, 8)}…`);
+      setStatus("");
       focusComposer();
+      void refreshContextUsage();
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     }
   };
 
   const onNewSession = async () => {
-    await stopRun(false);
+    // 不停止其它会话
+    setOutbox([]);
+    setPending([]);
     const r = await createSession();
     pushMeta(r.meta);
+    activeSessionRef.current = r.sessionId;
     setLines([]);
     setTurnUsage(null);
     stickBottomRef.current = true;
+    busyRef.current = false;
+    setBusy(false);
+    abortRef.current = null;
     await refreshSessions();
     setStatus("新会话");
     focusComposer();
@@ -1071,7 +1584,22 @@ export function ChatPanel({
   const onDeleteSession = async (id: string) => {
     if (!id) return;
     if (!window.confirm(`删除会话 ${id.slice(0, 12)}…？`)) return;
-    await stopRun(false);
+    // 只停被删的会话
+    const run = sessionRunsRef.current.get(id);
+    if (run) {
+      try {
+        run.ac.abort();
+      } catch {
+        /* ignore */
+      }
+      sessionRunsRef.current.delete(id);
+      markSessionRunning(id, false);
+    }
+    try {
+      await abortChat(id);
+    } catch {
+      /* ignore */
+    }
     try {
       const r = await deleteSession(id);
       pushMeta(r.meta);
@@ -1107,12 +1635,53 @@ export function ChatPanel({
       lastUserRef.current;
     if (!msg) return;
     if (busyRef.current || inFlightSendRef.current) {
-      enqueueMessage(msg, "重试已排队");
+      void enqueueToBackend(msg, sendMode, "重试已排队");
       return;
     }
     inFlightSendRef.current = true;
-    void runUserMessage(msg).finally(() => {
-      inFlightSendRef.current = false;
+    void runUserMessage(msg)
+      .catch((e) => {
+        const err = e instanceof Error ? e.message : String(e);
+        setOutbox((prev) => [
+          ...prev,
+          {
+            localId: uid(),
+            text: msg,
+            status: "failed",
+            mode: sendMode,
+            error: err,
+          },
+        ]);
+      })
+      .finally(() => {
+        inFlightSendRef.current = false;
+      });
+  };
+
+  const retryOutboxItem = (item: OutboxItem) => {
+    void removeOutboxItem(item).then(() => {
+      if (busyRef.current || inFlightSendRef.current) {
+        void enqueueToBackend(item.text, item.mode || sendMode, "重试已排队");
+        return;
+      }
+      inFlightSendRef.current = true;
+      void runUserMessage(item.text)
+        .catch((e) => {
+          const err = e instanceof Error ? e.message : String(e);
+          setOutbox((prev) => [
+            ...prev,
+            {
+              localId: uid(),
+              text: item.text,
+              status: "failed",
+              mode: item.mode || sendMode,
+              error: err,
+            },
+          ]);
+        })
+        .finally(() => {
+          inFlightSendRef.current = false;
+        });
     });
   };
 
@@ -1129,10 +1698,11 @@ export function ChatPanel({
         e.preventDefault();
         void onNewSession();
       }
-      // Ctrl+M — focus model select (CLI /model hotkey parity)
+      // Ctrl+M — open model cascade (CLI /model hotkey parity)
       if (mod && e.key.toLowerCase() === "m" && !e.shiftKey) {
         e.preventDefault();
-        modelSelectRef.current?.focus();
+        modelMenuRef.current?.open();
+        modelMenuRef.current?.focus();
       }
       if (mod && e.key === ".") {
         e.preventDefault();
@@ -1184,21 +1754,34 @@ export function ChatPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [lines, busy, stopRun, approval, slashOpen, pushMeta]);
 
-  const onProviderChange = async (provider: string) => {
-    const md = await fetchModels(provider);
-    setModels(md.models);
-    const first = md.models[0]?.id;
-    if (first) {
-      const m = await setModel(provider, first);
+  const onCascadeModelSelect = async (provider: string, modelId: string) => {
+    if (!provider || !modelId) return;
+    try {
+      const m = await setModel(provider, modelId);
       pushMeta(m);
+      // refresh model list for active provider
+      const md = await fetchModels(provider);
+      setModels(md.models);
+      if (md.providers?.length) setProviders(md.providers);
+      // 模型只在左侧 cascade 显示，不再写 status（避免工具栏重复）
+      // 切换模型后刷新 maxContext
+      void fetchLlmConfig()
+        .then((cfg) => {
+          const hit =
+            cfg.presets.find(
+              (p) => p.model === modelId || p.name === provider,
+            ) ||
+            cfg.presets[cfg.defaultPreset] ||
+            cfg.presets[0];
+          if (hit?.maxContext && hit.maxContext > 0) {
+            maxContextRef.current = hit.maxContext;
+            patchContextUsage({ max: hit.maxContext });
+          }
+        })
+        .catch(() => {});
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
     }
-  };
-
-  const onModelChange = async (model: string) => {
-    const provider = meta?.provider || providers[0]?.id || "";
-    if (!provider || !model) return;
-    const m = await setModel(provider, model);
-    pushMeta(m);
   };
 
   const onApprovalChange = async (mode: ApprovalMode) => {
@@ -1215,6 +1798,7 @@ export function ChatPanel({
         sessions={sessions}
         activeId={meta?.sessionId ?? null}
         busy={busy}
+        runningSessionIds={runningSessionIds}
         wire={isWire}
         agentLabel={meta?.agentName || defaultAgent}
         onNew={() => void onNewSession()}
@@ -1452,8 +2036,25 @@ export function ChatPanel({
   const canSend = Boolean(input.trim());
   /** Draft ComposerBar: stop only when busy and empty draft */
   const showStopWire = busy && !canSend && pending.length === 0;
+  /** 上下文占用百分比（仅保留一处模型选择：左侧 cascade） */
+  const contextPct =
+    contextUsage && contextUsage.max > 0
+      ? Math.min(
+          100,
+          Math.max(0, Math.round((contextUsage.used / contextUsage.max) * 100)),
+        )
+      : null;
+  // 右侧 status 不再回显模型名（cascade 已显示）；仅保留运行/错误等状态
+  const statusDisplay = (() => {
+    if (pending.length > 0) return "等待审批";
+    if (busy) return "运行中";
+    const s = (status || "").trim();
+    if (!s) return "";
+    if (/^模型\s/i.test(s)) return "";
+    return s;
+  })();
   const statusError = /error|失败|不可用|HTML|JSON|后端|API\s*\d|拒绝/i.test(
-    status,
+    statusDisplay,
   );
 
   const slashMenu = slashOpen && slashHits.length > 0 && (
@@ -1500,7 +2101,20 @@ export function ChatPanel({
     } else if (e.key === "Escape") {
       setSlashOpen(false);
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    // Ctrl/Cmd+Enter：强制插入模式（Grok send-now / interrupt 对齐）
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+      e.preventDefault();
+      void send("insert");
+      return;
+    }
+    // Alt+Enter：切换发送模式
+    if (e.key === "Enter" && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      cycleSendMode();
+      return;
+    }
+    // Enter：按当前发送模式发送
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       void send();
     }
@@ -1543,15 +2157,146 @@ export function ChatPanel({
       );
   };
 
+  const sendModeLabel = sendMode === "insert" ? "插入" : "队列";
+  const sendModeShortcut = sendMode === "insert" ? "⌃↵" : "↵";
+  const sendModeTitle =
+    sendMode === "insert"
+      ? "插入模式：运行中 Enter 打断当前流并优先处理（MessageQueue interrupt_immediately）· 点击切换为队列 · Alt+Enter 切换 · Ctrl+Enter 强制插入"
+      : "队列模式：运行中 Enter 等本轮结束后投递（MessageQueue after_round_complete）· 点击切换为插入 · Alt+Enter 切换 · Ctrl+Enter 强制插入";
+
+  const outboxPanel =
+    outbox.length > 0 ? (
+      <div className="composer-outbox" role="list" aria-label="待发送与排队">
+        <div className="composer-outbox-head">
+          <span className="composer-outbox-title">
+            {queueLen > 0 ? `${queueLen} 条排队` : ""}
+            {queueLen > 0 && outbox.some((o) => o.status === "failed")
+              ? " · "
+              : ""}
+            {outbox.some((o) => o.status === "failed")
+              ? `${outbox.filter((o) => o.status === "failed").length} 条未发送`
+              : ""}
+          </span>
+          {queueLen > 0 ? (
+            <button
+              type="button"
+              className="ghost composer-outbox-clear"
+              onClick={() => void clearOutboxQueued()}
+              title="清空排队（不停止当前生成）"
+            >
+              清空排队
+            </button>
+          ) : null}
+        </div>
+        <ul className="composer-outbox-list">
+          {outbox.map((item) => (
+            <li
+              key={item.localId}
+              className={`composer-outbox-item is-${item.status}`}
+              role="listitem"
+            >
+              <span
+                className="composer-outbox-mode"
+                title={
+                  item.mode === "insert"
+                    ? "插入 · interrupt_immediately"
+                    : "队列 · after_round_complete"
+                }
+              >
+                {item.status === "failed"
+                  ? "失败"
+                  : item.mode === "insert"
+                    ? "插入"
+                    : "队列"}
+              </span>
+              <span className="composer-outbox-text" title={item.error || item.text}>
+                {item.text}
+              </span>
+              <span className="composer-outbox-actions">
+                {item.status === "failed" ? (
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => retryOutboxItem(item)}
+                    title="重试发送"
+                  >
+                    重试
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => void removeOutboxItem(item)}
+                  title="移除"
+                >
+                  ×
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+
+  const sendModeControl = (
+    <div className={`send-mode-control mode-${sendMode}`}>
+      <button
+        type="button"
+        className="send-mode-toggle"
+        onClick={cycleSendMode}
+        title={sendModeTitle}
+        aria-label={`发送模式 ${sendModeLabel}，点击切换`}
+      >
+        <span className="send-mode-name">{sendModeLabel}</span>
+        <kbd className="send-mode-kbd">{sendModeShortcut}</kbd>
+      </button>
+      {showStopWire ? (
+        <button
+          type="button"
+          className="ghost wire-icon-btn wire-composer-stop"
+          onClick={() => void stopRun()}
+          title="停止并清空排队 · 输入文字可改为发送"
+          aria-label="停止"
+        >
+          <ChromeMark kind="stop" size={14} decorative />
+        </button>
+      ) : (
+        <button
+          type="button"
+          className={`send-btn wire-icon-btn wire-composer-send mode-${sendMode}`}
+          disabled={!canSend}
+          onClick={() => void send()}
+          aria-label={
+            busy
+              ? sendMode === "insert"
+                ? "插入发送"
+                : "排队发送"
+              : "发送"
+          }
+          title={
+            busy
+              ? sendMode === "insert"
+                ? "插入发送 (Enter) · 打断当前流"
+                : "排队发送 (Enter) · 本轮结束后投递"
+              : `发送 (Enter) · 模式 ${sendModeLabel}`
+          }
+        >
+          <ChromeMark kind="send" size={15} decorative />
+        </button>
+      )}
+    </div>
+  );
+
   /** Wire: draft ComposerBar card layout (textarea + toolbar icons) */
   const wireComposer = (
     <div className="composer codex-composer wire-composer">
+      {outboxPanel}
       <div className="composer-row-wrap">
         {slashMenu}
         <div
           className={`composer-row wire-composer-card${
             pending.length > 0 ? " has-pending-approval" : ""
-          }${busy ? " is-busy" : ""}`}
+          }${busy ? " is-busy" : ""}${sendMode === "insert" ? " mode-insert" : " mode-queue"}`}
         >
           <textarea
             ref={inputRef}
@@ -1562,8 +2307,10 @@ export function ChatPanel({
               pending.length > 0
                 ? "可先输入下一条… 处理审批后发送"
                 : busy
-                  ? "运行中也可输入… Enter 发送（将排队）"
-                  : "输入消息… Enter 发送，Shift+Enter 换行 · / 命令"
+                  ? sendMode === "insert"
+                    ? "运行中… Enter 插入打断 · Ctrl+Enter 同 · Alt+Enter 切队列"
+                    : "运行中… Enter 排队 · Ctrl+Enter 插入打断 · Alt+Enter 切模式"
+                  : "输入消息… Enter 发送，Shift+Enter 换行 · / 命令 · Alt+Enter 切模式"
             }
             onChange={onComposerChange}
             onKeyDown={onComposerKeyDown}
@@ -1573,92 +2320,35 @@ export function ChatPanel({
           />
           <div className="composer-toolbar wire-composer-toolbar">
             <div className="composer-toolbar-left wire-composer-tools">
-              <label className="chip-select wire-composer-chip">
-                <span className="visually-hidden">Provider</span>
-                <select
-                  value={meta?.provider ?? ""}
-                  onChange={(e) => void onProviderChange(e.target.value)}
-                  title="Provider · 下一轮生效"
-                  aria-label="Provider"
-                >
-                  {providerOptions.length === 0 ? (
-                    <option value="" disabled>
-                      未连接后端
-                    </option>
-                  ) : (
-                    providerOptions.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name || p.id}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-              <label className="chip-select wire-composer-chip">
-                <span className="visually-hidden">模型</span>
-                <select
-                  ref={modelSelectRef}
-                  value={meta?.model ?? ""}
-                  onChange={(e) => void onModelChange(e.target.value)}
-                  title="模型 · Ctrl+M"
-                  aria-label="模型"
-                >
-                  {modelOptions.length === 0 ? (
-                    <option value="" disabled>
-                      —
-                    </option>
-                  ) : (
-                    modelOptions.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name || m.id}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-              <label className="chip-select wire-composer-chip">
-                <span className="visually-hidden">Approval</span>
-                <select
-                  value={approval}
-                  onChange={(e) =>
-                    void onApprovalChange(e.target.value as ApprovalMode)
-                  }
-                  title="审批模式"
-                  aria-label="Approval"
-                >
-                  <option value="normal">normal</option>
-                  <option value="auto">auto</option>
-                  <option value="yolo">yolo</option>
-                </select>
-              </label>
-              {turnUsage ? (
-                <button
-                  type="button"
-                  className="usage-chip wire-composer-usage"
-                  title="点击查看会话 /usage"
-                  onClick={usageClick}
-                >
-                  ↑{turnUsage.in.toLocaleString()} ↓
-                  {turnUsage.out.toLocaleString()}
-                </button>
-              ) : (
-                <span
-                  className="usage-chip wire-composer-usage"
-                  title="上下文用量"
-                >
-                  {busy ? "运行中" : meta?.model || "ready"}
-                </span>
-              )}
-              {queueLen > 0 ? (
-                <button
-                  type="button"
-                  className="queue-badge"
-                  title="点击清空排队（不停止当前生成）"
-                  onClick={() => clearQueue()}
-                >
-                  {queueLen} 排队
-                </button>
-              ) : null}
+              <ModelCascadeMenu
+                ref={modelMenuRef}
+                className="wire-composer-model-cascade"
+                provider={meta?.provider ?? ""}
+                model={meta?.model ?? ""}
+                providers={providerOptions}
+                models={modelOptions}
+                onSelect={onCascadeModelSelect}
+                onModelsLoaded={(pid, list) => {
+                  if (pid === (meta?.provider || pid)) setModels(list);
+                }}
+              />
+              <ApprovalPhysicsSwitch
+                className="wire-composer-approval-switch"
+                value={approval}
+                onChange={(mode) => void onApprovalChange(mode)}
+              />
+              <button
+                type="button"
+                className="usage-chip wire-composer-usage"
+                title={
+                  contextUsage
+                    ? `上下文 ${contextUsage.used.toLocaleString()} / ${contextUsage.max.toLocaleString()} tokens · 点击查看 /usage`
+                    : "上下文占用 · 点击查看 /usage"
+                }
+                onClick={usageClick}
+              >
+                {contextPct != null ? `上下文 ${contextPct}%` : "上下文 —"}
+              </button>
               <span className="wire-composer-tool-sep" aria-hidden />
               <button
                 type="button"
@@ -1690,44 +2380,17 @@ export function ChatPanel({
               </button>
             </div>
             <div className="composer-toolbar-right wire-composer-actions">
-              <span
-                className={`composer-status${statusError ? " is-error" : ""}${
-                  pending.length > 0 ? " is-approval" : ""
-                }`}
-                title={status || undefined}
-              >
-                {pending.length > 0
-                  ? "等待审批"
-                  : busy
-                    ? "运行中"
-                    : status || ""}
-              </span>
-              {showStopWire ? (
-                <button
-                  type="button"
-                  className="ghost wire-icon-btn wire-composer-stop"
-                  onClick={() => void stopRun()}
-                  title="停止并清空排队 · 输入文字可改为发送"
-                  aria-label="停止"
+              {statusDisplay ? (
+                <span
+                  className={`composer-status${statusError ? " is-error" : ""}${
+                    pending.length > 0 ? " is-approval" : ""
+                  }`}
+                  title={statusDisplay}
                 >
-                  <ChromeMark kind="stop" size={14} decorative />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="send-btn wire-icon-btn wire-composer-send"
-                  disabled={!canSend}
-                  onClick={() => void send()}
-                  aria-label={busy ? "排队发送" : "发送"}
-                  title={
-                    busy
-                      ? "排队发送 (Enter)"
-                      : "发送 (Enter)"
-                  }
-                >
-                  <ChromeMark kind="send" size={15} decorative />
-                </button>
-              )}
+                  {statusDisplay}
+                </span>
+              ) : null}
+              {sendModeControl}
             </div>
           </div>
         </div>
@@ -1739,90 +2402,42 @@ export function ChatPanel({
     wireComposer
   ) : (
     <div className={`composer${isCodex ? " codex-composer" : ""}`}>
+      {outboxPanel}
       {isCodex && (
         <div className="composer-chips">
-          <label className="chip-select">
-            <span>Model</span>
-            <select
-              value={meta?.provider ?? ""}
-              onChange={(e) => void onProviderChange(e.target.value)}
-              title="下一轮生效"
-            >
-              {providerOptions.length === 0 ? (
-                <option value="" disabled>
-                  未连接后端
-                </option>
-              ) : (
-                providerOptions.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name || p.id}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
-          <label className="chip-select">
-            <span> </span>
-            <select
-              ref={modelSelectRef}
-              value={meta?.model ?? ""}
-              onChange={(e) => void onModelChange(e.target.value)}
-              title="下一轮生效 · Ctrl+M"
-            >
-              {modelOptions.length === 0 ? (
-                <option value="" disabled>
-                  —
-                </option>
-              ) : (
-                modelOptions.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name || m.id}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
-          <label className="chip-select">
-            <span>Approval</span>
-            <select
-              value={approval}
-              onChange={(e) =>
-                void onApprovalChange(e.target.value as ApprovalMode)
-              }
-              title="审批模式（可随时切换）"
-            >
-              <option value="normal">normal</option>
-              <option value="auto">auto</option>
-              <option value="yolo">yolo</option>
-            </select>
-          </label>
-          {turnUsage ? (
-            <button
-              type="button"
-              className="usage-chip"
-              title="点击查看会话 /usage"
-              onClick={usageClick}
-            >
-              ↑{turnUsage.in.toLocaleString()} ↓
-              {turnUsage.out.toLocaleString()}
-            </button>
-          ) : null}
-          {queueLen > 0 ? (
-            <button
-              type="button"
-              className="queue-badge"
-              title="点击清空排队（不停止当前生成）"
-              onClick={() => clearQueue()}
-            >
-              {queueLen} queued · clear
-            </button>
-          ) : null}
-          {status ? (
+          <ModelCascadeMenu
+            ref={modelMenuRef}
+            provider={meta?.provider ?? ""}
+            model={meta?.model ?? ""}
+            providers={providerOptions}
+            models={modelOptions}
+            onSelect={onCascadeModelSelect}
+            onModelsLoaded={(pid, list) => {
+              if (pid === (meta?.provider || pid)) setModels(list);
+            }}
+          />
+          <ApprovalPhysicsSwitch
+            value={approval}
+            onChange={(mode) => void onApprovalChange(mode)}
+          />
+          <button
+            type="button"
+            className="usage-chip"
+            title={
+              contextUsage
+                ? `上下文 ${contextUsage.used.toLocaleString()} / ${contextUsage.max.toLocaleString()} tokens · 点击查看 /usage`
+                : "上下文占用 · 点击查看 /usage"
+            }
+            onClick={usageClick}
+          >
+            {contextPct != null ? `上下文 ${contextPct}%` : "上下文 —"}
+          </button>
+          {statusDisplay && !/^模型\s/i.test(statusDisplay) ? (
             <span
               className={`composer-status${statusError ? " is-error" : ""}`}
-              title={status}
+              title={statusDisplay}
             >
-              {status}
+              {statusDisplay}
             </span>
           ) : null}
         </div>
@@ -1835,9 +2450,9 @@ export function ChatPanel({
             value={input}
             placeholder={
               busy
-                ? isCodex
-                  ? "Agent running… type to queue next message (Enter)"
-                  : "生成中…输入将排队，Enter 入队"
+                ? sendMode === "insert"
+                  ? "Running… Enter inserts (interrupt) · Ctrl+Enter same · Alt+Enter toggle mode"
+                  : "Running… Enter queues · Ctrl+Enter inserts · Alt+Enter toggle mode"
                 : isCodex
                   ? "Message agent…  (Enter to send · Shift+Enter newline · / commands)"
                   : "消息或 /命令…（Enter 发送 · Shift+Enter 换行）"
@@ -1849,7 +2464,7 @@ export function ChatPanel({
             }}
             rows={isCodex ? 3 : 2}
           />
-          {busy ? (
+          {busy && !canSend ? (
             <button
               type="button"
               className="ghost"
@@ -1861,12 +2476,31 @@ export function ChatPanel({
           ) : null}
           <button
             type="button"
-            className="send-btn"
+            className="send-mode-toggle"
+            onClick={cycleSendMode}
+            title={sendModeTitle}
+          >
+            {sendModeLabel}
+            <kbd className="send-mode-kbd">{sendModeShortcut}</kbd>
+          </button>
+          <button
+            type="button"
+            className={`send-btn mode-${sendMode}`}
             onClick={() => void send()}
             disabled={!canSend}
-            title={busy ? "排队发送" : "发送"}
+            title={
+              busy
+                ? sendMode === "insert"
+                  ? "Insert (Enter)"
+                  : "Queue (Enter)"
+                : "Send (Enter)"
+            }
           >
-            {busy ? "Queue" : "Send"}
+            {busy
+              ? sendMode === "insert"
+                ? "Insert"
+                : "Queue"
+              : "Send"}
           </button>
         </div>
       </div>
@@ -2020,6 +2654,8 @@ function ThreadRail(props: {
   sessions: SessionSummary[];
   activeId: string | null;
   busy: boolean;
+  /** 正在生成的会话（图标着色） */
+  runningSessionIds?: string[];
   wire?: boolean;
   agentLabel?: string;
   onNew: () => void;
@@ -2028,17 +2664,18 @@ function ThreadRail(props: {
   onRename: (id: string, title: string) => void;
 }) {
   const wire = Boolean(props.wire);
+  const running = new Set(props.runningSessionIds ?? []);
   const busyHint = props.busy
     ? wire
-      ? " · 将停止当前生成"
-      : " · stops current run"
+      ? " · 当前会话运行中（其它会话可并行）"
+      : " · current session running (others keep going)"
     : "";
   const untitled = wire ? "未命名" : "Untitled";
   return (
     <div
       className={`thread-rail${props.busy ? " is-busy" : ""}${
         wire ? " wire-session-list" : ""
-      }`}
+      }${running.size > 0 ? " has-running" : ""}`}
       aria-label={
         wire
           ? props.agentLabel
@@ -2077,9 +2714,9 @@ function ThreadRail(props: {
           "Sessions"
         )}
       </div>
-      <div className={wire ? "wire-session-scroll thread-list" : "thread-list"}>
+      <div className={wire ? "wire-session-scroll" : "thread-list"}>
         {props.sessions.length === 0 && (
-          <div className={wire ? "wire-empty sm thread-empty" : "thread-empty"}>
+          <div className={wire ? "wire-empty sm" : "thread-empty"}>
             {wire
               ? props.agentLabel
                 ? `暂无 ${props.agentLabel} 的会话`
@@ -2089,7 +2726,10 @@ function ThreadRail(props: {
         )}
         {props.sessions.map((s) => {
           const active = s.id === props.activeId;
-          const sub =
+          const isRunning = running.has(s.id);
+          const title = (s.title || untitled).trim() || untitled;
+          const when = relativeTime(s.lastMsgAt || s.updatedAt, wire);
+          const countHint =
             s.messageCount > 0
               ? wire
                 ? `${s.messageCount} 条消息`
@@ -2097,51 +2737,82 @@ function ThreadRail(props: {
               : wire
                 ? "空会话"
                 : "Empty session";
+          // Wire = SessionList single-line row (title · time). Never mix
+          // thread-item column CSS with wire-session-btn 32px row — that
+          // clipped Chinese glyphs into garbage (see live shell session rail).
+          if (wire) {
+            return (
+              <div
+                key={s.id}
+                className={`wire-session-row${active ? " active" : ""}${
+                  isRunning ? " is-running" : ""
+                }`}
+              >
+                <button
+                  type="button"
+                  className="wire-session-btn"
+                  onClick={() => props.onSelect(s.id)}
+                  onDoubleClick={() => props.onRename(s.id, title)}
+                  title={`${title} · ${countHint}${when ? ` · ${when}` : ""}${
+                    isRunning ? " · 生成中" : ""
+                  }`}
+                >
+                  <span
+                    className={`wire-session-icon${isRunning ? " is-running" : ""}`}
+                    aria-hidden
+                    title={isRunning ? "生成中" : undefined}
+                  >
+                    <ChromeMark kind="session" size={13} decorative />
+                  </span>
+                  <span className="wire-session-title">{title}</span>
+                  <span className="wire-session-time">
+                    {isRunning ? "运行中" : when || countHint}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="wire-session-del"
+                  title="删除会话"
+                  aria-label="删除会话"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    props.onDelete(s.id);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          }
           return (
             <div
               key={s.id}
-              className={`thread-item-row${wire ? " wire-session-row" : ""}${
-                active ? " active" : ""
+              className={`thread-item-row${active ? " active" : ""}${
+                isRunning ? " is-running" : ""
               }`}
             >
               <button
                 type="button"
-                className={wire ? "wire-session-btn thread-item" : "thread-item"}
+                className="thread-item"
                 onClick={() => props.onSelect(s.id)}
-                onDoubleClick={() =>
-                  props.onRename(s.id, s.title || untitled)
-                }
-                title={
-                  wire
-                    ? `双击重命名${busyHint}`
-                    : `Double-click to rename${busyHint}`
-                }
+                onDoubleClick={() => props.onRename(s.id, title)}
+                title={`Double-click to rename${isRunning ? " · running" : ""}`}
               >
                 <span
-                  className={
-                    wire ? "wire-session-title thread-title" : "thread-title"
-                  }
-                >
-                  {(s.title || untitled).slice(0, 40)}
-                </span>
-                <span
-                  className={
-                    wire ? "wire-session-time thread-meta" : "thread-meta"
-                  }
-                >
-                  <span className="thread-meta-sub">{sub}</span>
-                  <span className="thread-meta-time">
-                    {relativeTime(s.lastMsgAt || s.updatedAt, wire)}
-                  </span>
+                  className={`thread-run-dot${isRunning ? " is-on" : ""}`}
+                  aria-hidden
+                />
+                <span className="thread-title">{title.slice(0, 40)}</span>
+                <span className="thread-meta">
+                  <span className="thread-meta-sub">{countHint}</span>
+                  <span className="thread-meta-time">{when}</span>
                 </span>
               </button>
               <button
                 type="button"
-                className={wire ? "wire-session-del thread-del" : "thread-del"}
-                title={
-                  wire ? `删除会话${busyHint}` : `Delete session${busyHint}`
-                }
-                aria-label={wire ? "删除会话" : "Delete session"}
+                className="thread-del"
+                title={`Delete session${busyHint}`}
+                aria-label="Delete session"
                 onClick={(e) => {
                   e.stopPropagation();
                   props.onDelete(s.id);

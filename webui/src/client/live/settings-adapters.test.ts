@@ -5,11 +5,17 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Meta } from "../api";
 import {
+  APPROVAL_MODES,
+  LIVE_SETTINGS_SECTIONS,
+  approvalModeHint,
+  approvalModeLabel,
   buildLiveSettingsSnapshot,
   emptyLiveSettingsSnapshot,
+  isApprovalMode,
   isDraftShowcaseApiKey,
   looksLikeDraftShowcasePreset,
   resolveModelAfterProviderChange,
+  withApprovalMode,
 } from "./settings-adapters";
 import { defaultApiConfig } from "../drafts/api-settings";
 
@@ -38,6 +44,7 @@ describe("live settings adapters", () => {
     assert.ok(snap.models.some((m) => m.id === "xopglm51"));
     assert.match(snap.statusLabel, /live|xfyun/);
     assert.equal(snap.projectRoot, "/Users/me/proj");
+    assert.equal(snap.approvalMode, "yolo");
   });
 
   it("empty / null meta is offline without fake openai gpt-5", () => {
@@ -72,5 +79,41 @@ describe("live settings adapters", () => {
       }),
       false,
     );
+  });
+
+  it("nav puts combined runtime_defaults first, then llm", () => {
+    assert.ok(LIVE_SETTINGS_SECTIONS.length >= 2);
+    const ids = LIVE_SETTINGS_SECTIONS.map((s) => s.id);
+    assert.equal(ids[0], "runtime_defaults");
+    assert.ok(ids.includes("llm"));
+    assert.equal(LIVE_SETTINGS_SECTIONS[0]!.label, "方案与审批");
+  });
+
+  it("approval mode helpers cover normal/auto/yolo", () => {
+    assert.deepEqual([...APPROVAL_MODES], ["normal", "auto", "yolo"]);
+    assert.equal(isApprovalMode("normal"), true);
+    assert.equal(isApprovalMode("auto"), true);
+    assert.equal(isApprovalMode("yolo"), true);
+    assert.equal(isApprovalMode("ask"), false);
+    assert.match(approvalModeLabel("normal"), /普通|白名单|询问/);
+    assert.match(approvalModeHint("yolo"), /放行|YOLO|yolo/i);
+  });
+
+  it("withApprovalMode updates snapshot display fields", () => {
+    const base = buildLiveSettingsSnapshot(liveMeta);
+    const next = withApprovalMode(base, "normal");
+    assert.equal(next.approvalMode, "normal");
+    assert.equal(next.sandboxMode, "normal");
+    assert.match(next.statusLabel, /normal/);
+    assert.equal(next.provider, base.provider);
+  });
+
+  it("snapshot prefers approvalMode over sandboxMode when both set", () => {
+    const snap = buildLiveSettingsSnapshot({
+      ...liveMeta,
+      approvalMode: "auto",
+      sandboxMode: "yolo",
+    });
+    assert.equal(snap.approvalMode, "auto");
   });
 });

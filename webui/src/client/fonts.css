@@ -1,0 +1,282 @@
+/**
+ * WebUI 字体分工
+ * ─────────────────────────────────────────────
+ *  默认 / 设置 / 表单 / 说明 / 消息正文  → HarmonyOS Sans SC（鸿蒙）
+ *  仅「像素壳」组件（顶栏品牌、dock 标签、审批拨杆、portfolio/dungeon HUD）→ Fusion Pixel
+ *  代码块 / 终端                          → 系统等宽（非像素）
+ *  表情 / 图标字形                        → 系统 Color Emoji + Noto（开源可商用栈）
+ *
+ * 像素字禁止用在：设置面板正文、表单 label、画廊、错误提示、长说明等。
+ */
+
+/* ── HarmonyOS Sans SC（默认可读字体） ──────────────────────────────── */
+@font-face {
+  font-family: "HarmonyOS Sans SC";
+  src: url("/fonts/HarmonyOS_Sans_SC_Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "HarmonyOS Sans SC";
+  src: url("/fonts/HarmonyOS_Sans_SC_Medium.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "HarmonyOS Sans SC";
+  src: url("/fonts/HarmonyOS_Sans_SC_Bold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "HarmonyOS Sans SC";
+  src: url("/fonts/HarmonyOS_Sans_SC_Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Fusion Pixel：仅 UI 壳装饰（故意像素风的区域） ─────────────────── */
+@font-face {
+  font-family: "Fusion Pixel 12 Mono";
+  src: url("/fonts/fusion-pixel-12px-monospaced-latin.ttf.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Fusion Pixel 12 Mono";
+  src: url("/fonts/fusion-pixel-12px-monospaced-zh_hans.ttf.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
+    U+FF00-FFEF;
+}
+
+@font-face {
+  font-family: "Fusion Pixel 12";
+  src: url("/fonts/fusion-pixel-12px-proportional-latin.ttf.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Fusion Pixel 12";
+  src: url("/fonts/fusion-pixel-12px-proportional-zh_hans.ttf.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+3000-303F, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
+    U+FF00-FFEF;
+}
+
+:root {
+  /* 默认正文 / 设置 / 表单 */
+  --font-text: "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei",
+    system-ui, sans-serif;
+  /* 故意像素的壳层 */
+  --font-ui-pixel: "Fusion Pixel 12", "Fusion Pixel 12 Mono",
+    "HarmonyOS Sans SC", sans-serif;
+  --font-pixel-mono: "Fusion Pixel 12 Mono", "Fusion Pixel 12",
+    "HarmonyOS Sans SC", monospace;
+  --font-pixel: var(--font-ui-pixel);
+  /* 兼容旧名：--font-ui 现指向鸿蒙（非像素） */
+  --font-ui: var(--font-text);
+  /* 代码：系统等宽，不用像素 */
+  --font-code: ui-monospace, "SF Mono", "Menlo", "Consolas", "Liberation Mono",
+    "HarmonyOS Sans SC", monospace;
+  /* 表情：系统彩色 emoji（Unicode，可商用；跨平台一致依赖系统字体） */
+  --font-emoji: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji",
+    "Twemoji Mozilla", "Android Emoji", emoji, sans-serif;
+
+  --font: var(--font-text);
+  --mono: var(--font-code);
+  --n-font: var(--font-text);
+  --n-mono: var(--font-code);
+  --font-ui-legacy-harmony: var(--font-text);
+}
+
+/* ── 默认：整站鸿蒙 ──────────────────────────────────────────────── */
+html,
+body,
+#root,
+.wire-shell,
+.live-shell,
+.draft-shell {
+  font-family: var(--font-text) !important;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 设置 / 表单 / 导航文案：明确鸿蒙（覆盖历史上误用的像素） */
+button,
+input,
+select,
+optgroup,
+option,
+label,
+textarea,
+.wire-settings-nav,
+.wire-settings-label,
+.wire-settings-field,
+.wire-settings-input,
+.wire-settings-desc,
+.wire-settings-test-btn,
+.wire-settings-test-result,
+.wire-settings-test-hint,
+.wire-settings-svg-probe,
+.wire-settings-card,
+.wire-settings-section,
+.composer-toolbar,
+.chip-select,
+.usage-chip,
+.wire-meta,
+.wire-text-btn,
+.slash-menu,
+.approval-banner,
+.approval-head,
+.wire-project-bar,
+.wire-project-tree,
+.wire-project-outline,
+.model-cascade-trigger,
+.model-cascade-panel,
+.tag,
+.msg-role {
+  font-family: var(--font-text) !important;
+  -webkit-font-smoothing: antialiased;
+  image-rendering: auto;
+}
+
+/* ── 仅这些壳层保留像素 ──────────────────────────────────────────── */
+.font-pixel,
+.ui-pixel,
+.wire-wordmark,
+.wire-mode-tabs,
+.wire-dock-tab-label,
+.wire-dock-tab-badge,
+.wire-dock-open-title,
+.wire-bottom-dock .wire-dock-tab,
+.approval-phys-switch,
+.approval-phys-switch .approval-phys-seg,
+.approval-phys-switch .approval-phys-lever-face,
+.approval-phys-switch .approval-phys-caption,
+.portfolio-root,
+.portfolio-root *,
+.dungeon-root,
+.dungeon-root * {
+  font-family: var(--font-ui-pixel) !important;
+}
+
+.approval-phys-switch,
+.approval-phys-switch .approval-phys-seg,
+.approval-phys-switch .approval-phys-lever-face,
+.approval-phys-switch .approval-phys-caption {
+  font-family: var(--font-pixel-mono) !important;
+}
+
+/* 顶栏品牌区可像素，但顶栏其余控件鸿蒙 */
+.wire-topbar .wire-wordmark {
+  font-family: var(--font-ui-pixel) !important;
+}
+
+/* ── 正文 / 消息 / Markdown ─────────────────────────────────────── */
+.wire-center,
+.wire-context,
+.chat-log,
+.bubble-text,
+.draft-md,
+.wire-internal-body,
+.wire-msg .msg-body .bubble-text,
+.wire-reply-body .bubble-text,
+.empty-title,
+.empty-sub,
+.wire-project-preview,
+.proactive-line-text,
+.proactive-item-title,
+.proactive-item-comment,
+.proactive-chat-log,
+.proactive-board,
+.wire-team-sub,
+.live-project-hint,
+[data-live-region="thread"] .bubble-text,
+[data-live-region="thread"] .draft-md {
+  font-family: var(--font-text) !important;
+  -webkit-font-smoothing: antialiased;
+  image-rendering: auto;
+  text-rendering: optimizeLegibility;
+}
+
+.composer textarea,
+.wire-composer-input,
+.composer .wire-composer-input {
+  font-family: var(--font-text) !important;
+  -webkit-font-smoothing: antialiased;
+  image-rendering: auto;
+}
+
+/* ── 代码 / 终端：系统等宽（终端可用像素等宽类覆盖） ──────────────── */
+code,
+pre,
+kbd,
+samp,
+.dm-code,
+.dm-pre,
+.dm-code-block {
+  font-family: var(--font-code) !important;
+  image-rendering: auto;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* xterm：保留像素等宽观感（终端属于 UI 壳） */
+.xterm,
+.xterm-rows,
+.xterm-viewport {
+  font-family: var(--font-pixel-mono) !important;
+  font-smooth: never;
+  -webkit-font-smoothing: none;
+  image-rendering: pixelated;
+}
+
+/* ── 表情图标：强制走 emoji 字体栈 ──────────────────────────────── */
+.ui-emoji,
+.emoji {
+  font-family: var(--font-emoji) !important;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1;
+  speak: never;
+  -webkit-font-smoothing: antialiased;
+  font-variant-emoji: emoji;
+}
+
+.ui-emoji-inline {
+  font-family: var(--font-emoji) !important;
+  margin-right: 0.35em;
+  vertical-align: -0.05em;
+}
+
+.ui-emoji-gap {
+  margin-left: 0.15em;
+}
+
+/* 按钮内嵌 emoji 与文字对齐 */
+button .ui-emoji,
+.wire-settings-label .ui-emoji,
+.wire-settings-test-hint .ui-emoji {
+  margin-right: 0.2em;
+}

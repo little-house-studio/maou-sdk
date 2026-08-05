@@ -336,27 +336,22 @@ export class Runtime {
       // 与 ModelCaller 分离：非流式、无工具、独立 token 统计、简单重试
       const auxCaller = new AuxModelCaller({ client: this.llmClient, maxRetries: 1 });
 
-      // 辅助模型 preset 解析函数
-      // 优先级：agent.json helperModel > roles.helper > helperPreset > roles.fast > 主模型
-      // 每次 run 时由 runtime 调用，传入 agentName 和主 preset，返回辅助 preset
+      // 辅助模型：agent.helperModel > 全局 helper 链 > mainPreset
+      // 全局链唯一实现：types.resolveGlobalHelperPreset（经 llm.resolveHelperPreset）
       const resolveHelperPresetFn = (agentName: string, mainPreset: APIPreset): APIPreset => {
         try {
-          // 动态读取最新配置（避免 config reload 后用旧值）
           const cfg = this.configStore.get();
           const presets = cfg.api.presets ?? [];
-          const globalHelperIdx = cfg.api.helperPreset;
           const roles = cfg.api.roles;
-          // 读 agent.json 的 helperModel（轻量：AgentRegistry 构造只设路径）
           const registry = new AgentRegistry(
             this.maouRoot,
             this.agentScope === "project" ? this.projectRoot : undefined,
           );
           const entry = registry.get(agentName);
-          // LLMPreset（无 index signature）→ APIPreset（有 index signature）
           return resolveHelperPreset(
             entry?.helperModel,
             presets as unknown as APIPreset[],
-            globalHelperIdx,
+            cfg.api.helperPreset,
             mainPreset,
             roles?.helper,
             roles?.fast,

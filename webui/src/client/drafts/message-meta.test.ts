@@ -75,17 +75,22 @@ describe("message-meta CLI helpers", () => {
     assert.equal(ah.live, true);
   });
 
-  it("formatThinkingHead shows duration and fold mark", () => {
+  it("formatThinkingHead shows Thought · duration · tokens · fold", () => {
     const done = formatThinkingHead("abc", {
       durationMs: 350,
       collapsed: true,
+      outputTokens: 41,
     });
-    assert.match(done, /\* think \(350ms\)/);
-    assert.match(done, /3 字/);
+    assert.match(done, /Thought/);
+    assert.match(done, /350ms/);
+    assert.match(done, /41 tok/);
     assert.match(done, /▶/);
-    const live = formatThinkingHead("hi", { streaming: true, spinnerFrame: 0 });
-    assert.match(live, /\* think/);
-    assert.match(live, /字/);
+    const live = formatThinkingHead("hi", {
+      streaming: true,
+      durationMs: 1200,
+    });
+    assert.match(live, /Thought\.\.\./);
+    assert.match(live, /1\.2s|1200ms/);
   });
 
   it("showcase hydrate renders msg-head with duration or LIVE", () => {

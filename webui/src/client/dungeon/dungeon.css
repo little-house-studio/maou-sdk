@@ -7,7 +7,7 @@
   height: 100%;
   background: #12100c;
   color: #e8dcc8;
-  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-pixel-mono);
 }
 
 .dungeon-side {
@@ -163,7 +163,7 @@
   border: 3px solid #5a4a32;
   box-shadow: 3px 3px 0 #0c0a08, inset 0 0 0 1px #d4a57444;
   color: #e8dcc8;
-  font-family: "SF Mono", Menlo, monospace;
+  font-family: var(--font-pixel-mono);
   font-size: 11px;
 }
 

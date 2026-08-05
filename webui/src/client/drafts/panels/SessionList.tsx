@@ -8,6 +8,8 @@ export type SessionListProps = {
   /** Active agent display name for empty/header hint */
   agentLabel?: string;
   busy?: boolean;
+  /** Session ids currently generating (icon color) */
+  runningSessionIds?: string[];
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete?: (id: string) => void;
@@ -19,13 +21,17 @@ export function SessionList({
   activeId,
   agentLabel,
   busy,
+  runningSessionIds = [],
   onSelect,
   onNew,
   onDelete,
 }: SessionListProps) {
+  const running = new Set(runningSessionIds);
   return (
     <section
-      className={`wire-session-list${busy ? " is-busy" : ""}`}
+      className={`wire-session-list${busy ? " is-busy" : ""}${
+        running.size > 0 ? " has-running" : ""
+      }`}
       aria-label={agentLabel ? `${agentLabel} 的会话` : "会话列表"}
     >
       <div className="wire-new-task-wrap">
@@ -52,19 +58,30 @@ export function SessionList({
           sessions.map((s) => (
             <div
               key={s.id}
-              className={`wire-session-row${s.id === activeId ? " active" : ""}`}
+              className={`wire-session-row${s.id === activeId ? " active" : ""}${
+                running.has(s.id) ? " is-running" : ""
+              }`}
             >
               <button
                 type="button"
                 className="wire-session-btn"
                 onClick={() => onSelect(s.id)}
-                title={s.title}
+                title={
+                  running.has(s.id) ? `${s.title} · 生成中` : s.title
+                }
               >
-                <span className="wire-session-icon" aria-hidden>
+                <span
+                  className={`wire-session-icon${
+                    running.has(s.id) ? " is-running" : ""
+                  }`}
+                  aria-hidden
+                >
                   <ChromeMark kind="session" size={13} decorative />
                 </span>
                 <span className="wire-session-title">{s.title}</span>
-                <span className="wire-session-time">{s.timeLabel}</span>
+                <span className="wire-session-time">
+                  {running.has(s.id) ? "运行中" : s.timeLabel}
+                </span>
               </button>
               {onDelete && (
                 <button

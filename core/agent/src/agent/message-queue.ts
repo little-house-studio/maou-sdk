@@ -388,6 +388,24 @@ export class MessageQueue {
     return queue && queue.length > 0 ? queue[0]! : null;
   }
 
+  /** 列出指定 session 的全部排队消息（不移除） */
+  list(sessionId: string): QueuedMessage[] {
+    const queue = this.queues.get(sessionId);
+    return queue ? [...queue] : [];
+  }
+
+  /** 按 id 移除一条排队消息；成功返回 true */
+  remove(sessionId: string, id: number): boolean {
+    const queue = this.queues.get(sessionId);
+    if (!queue || queue.length === 0) return false;
+    const idx = queue.findIndex((m) => m.id === id);
+    if (idx < 0) return false;
+    queue.splice(idx, 1);
+    if (queue.length === 0) this.queues.delete(sessionId);
+    else this.queues.set(sessionId, queue);
+    return true;
+  }
+
   /** 清空指定 session 的队列 */
   clear(sessionId: string): void {
     this.queues.delete(sessionId);

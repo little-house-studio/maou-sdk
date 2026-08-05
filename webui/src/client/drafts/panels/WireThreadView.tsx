@@ -2,15 +2,12 @@
  * Draft-aligned thread rendering: groupThreadBlocks + MessageRow / AssistantTurn.
  * Used by ContextPanel (fixtures) and live ChatPanel (wire chrome) for UI parity.
  */
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import type { DraftMessage } from "../types";
 import { groupThreadBlocks } from "../thread-blocks";
 import { DraftMarkdown } from "../DraftMarkdown";
 import { ToolCard } from "./ToolCard";
-import {
-  formatMessageHead,
-  formatThinkingHead,
-} from "../message-meta";
+import { durationStr, formatMessageHead } from "../message-meta";
 import { roleLabelZh, roleMarkKind, roleTone } from "../visual-marks";
 import { RoleAvatar, StatusMark } from "../icons/Marks";
 
@@ -120,6 +117,88 @@ function MessageRow({
   );
 }
 
+/** 思考行：默认折叠；头栏 = 图标动画 · Thought · 耗时 · token · 折叠 */
+function ThinkingPart({ message }: { message: DraftMessage }) {
+  const [thinkOpen, setThinkOpen] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const streaming = Boolean(message.thinking?.streaming);
+
+  useEffect(() => {
+    if (!streaming) return;
+    const id = window.setInterval(() => setNow(Date.now()), 200);
+    return () => window.clearInterval(id);
+  }, [streaming]);
+
+  const collapsed = !thinkOpen;
+  const startedAt = message.thinking?.startedAt;
+  const durationMs =
+    message.thinking?.durationMs ??
+    message.meta?.durationMs ??
+    (streaming && startedAt != null ? Math.max(0, now - startedAt) : undefined);
+  const outputTokens = message.thinking?.outputTokens;
+  const durLabel =
+    durationMs != null && Number.isFinite(durationMs)
+      ? durationStr(durationMs) || "0ms"
+      : streaming
+        ? "…"
+        : "";
+  const tokLabel =
+    outputTokens != null && outputTokens > 0
+      ? `${outputTokens.toLocaleString()} tok`
+      : "";
+
+  return (
+    <div
+      className={[
+        "wire-internal-part",
+        "role-thinking",
+        "tone-warn",
+        streaming ? "is-streaming" : "",
+        collapsed ? "is-collapsed" : "is-open",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-thinking="true"
+      data-thinking-streaming={streaming ? "true" : "false"}
+      data-thinking-collapsed={collapsed ? "true" : "false"}
+    >
+      <button
+        type="button"
+        className="wire-think-head"
+        onClick={() => setThinkOpen((v) => !v)}
+        aria-expanded={!collapsed}
+        title={collapsed ? "展开思考" : "折叠思考"}
+      >
+        <span
+          className={`wire-think-icon${streaming ? " is-spin" : ""}`}
+          aria-hidden
+        >
+          <RoleAvatar kind="thinking" size={14} title="Thought" />
+        </span>
+        <span className="wire-think-label">
+          {streaming ? "Thought..." : "Thought"}
+        </span>
+        {durLabel ? (
+          <span className="wire-think-meta wire-think-dur">{durLabel}</span>
+        ) : null}
+        {tokLabel ? (
+          <span className="wire-think-meta wire-think-tok">{tokLabel}</span>
+        ) : null}
+        <span className="wire-think-fold" aria-hidden>
+          {collapsed ? "▶" : "▼"}
+        </span>
+      </button>
+      {!collapsed ? (
+        <div className="wire-internal-body is-thinking">
+          <DraftMarkdown
+            source={message.body || (streaming ? "…" : "（无思考内容）")}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function InternalPart({ message }: { message: DraftMessage }) {
   const rKind = roleMarkKind(message.role);
   const label = roleLabelZh(rKind, message.tag);
@@ -127,11 +206,6 @@ function InternalPart({ message }: { message: DraftMessage }) {
   const isThinking = message.role === "thinking";
   const isErr = message.role === "err";
   const tone = roleTone(rKind);
-  const [thinkOpen, setThinkOpen] = useState(
-    () =>
-      Boolean(message.thinking?.streaming) ||
-      message.thinking?.collapsed === false,
-  );
 
   if (isTool) {
     return (
@@ -142,43 +216,7 @@ function InternalPart({ message }: { message: DraftMessage }) {
   }
 
   if (isThinking) {
-    const streaming = Boolean(message.thinking?.streaming);
-    const collapsed = !thinkOpen && !streaming;
-    const head = formatThinkingHead(message.body, {
-      durationMs: message.thinking?.durationMs ?? message.meta?.durationMs,
-      streaming,
-      collapsed,
-    });
-    return (
-      <div
-        className={[
-          "wire-internal-part",
-          "role-thinking",
-          "tone-warn",
-          streaming ? "is-streaming" : "",
-          collapsed ? "is-collapsed" : "is-open",
-        ]
-          .filter(Boolean)
-          .join(" ")}
-      >
-        <button
-          type="button"
-          className="wire-think-head"
-          onClick={() => {
-            if (!streaming) setThinkOpen((v) => !v);
-          }}
-          aria-expanded={!collapsed}
-          disabled={streaming}
-        >
-          {head}
-        </button>
-        {!collapsed ? (
-          <div className="wire-internal-body is-thinking">
-            <DraftMarkdown source={message.body} />
-          </div>
-        ) : null}
-      </div>
-    );
+    return <ThinkingPart message={message} />;
   }
 
   return (
@@ -211,6 +249,8 @@ function AssistantTurn({
   internals: DraftMessage[];
 }) {
   const orphan = !assistant;
+  const thinkParts = internals.filter((m) => m.role === "thinking");
+  const otherInternals = internals.filter((m) => m.role !== "thinking");
   const head = assistant
     ? formatMessageHead(assistant)
     : {
@@ -247,21 +287,37 @@ function AssistantTurn({
         </div>
         <div className="msg-body wire-reply-body">
           {assistant ? (
-            <>
-              <MessageHeadLine head={head} fallbackLabel="助手" />
-              <div className="bubble-text">
-                <DraftMarkdown source={assistant.body} />
-              </div>
-            </>
+            <MessageHeadLine head={head} fallbackLabel="助手" />
           ) : (
             <div className="msg-role wire-orphan-label">内部步骤</div>
           )}
-          {internals.length > 0 ? (
+
+          {/* ① 思考在正文上方，默认折叠 */}
+          {thinkParts.length > 0 ? (
+            <div
+              className="wire-reply-internals wire-reply-thinking"
+              data-count={thinkParts.length}
+            >
+              {thinkParts.map((part) => (
+                <InternalPart key={part.id} message={part} />
+              ))}
+            </div>
+          ) : null}
+
+          {/* ② 助手正文 */}
+          {assistant ? (
+            <div className="bubble-text">
+              <DraftMarkdown source={assistant.body} />
+            </div>
+          ) : null}
+
+          {/* ③ 工具等其它内部步骤 */}
+          {otherInternals.length > 0 ? (
             <div
               className="wire-reply-internals"
-              data-count={internals.length}
+              data-count={otherInternals.length}
             >
-              {internals.map((part) => (
+              {otherInternals.map((part) => (
                 <InternalPart key={part.id} message={part} />
               ))}
             </div>
@@ -334,6 +390,9 @@ export function chatLinesToDraftMessages(
     err?: boolean;
     terminalId?: string;
     agentName?: string;
+    thinkStartedAt?: number;
+    thinkDurationMs?: number;
+    thinkOutputTokens?: number;
   }>,
   opts?: { agentBusy?: boolean; agentName?: string },
 ): DraftMessage[] {
@@ -367,13 +426,18 @@ export function chatLinesToDraftMessages(
       };
     }
     if (l.role === "thinking") {
+      // 默认折叠；流式中仅头栏动画，正文仍隐藏直到用户点开
+      const streaming = Boolean(busy);
       return {
         id: l.id,
         role: "thinking" as const,
         body: l.text || "",
         thinking: {
-          streaming: busy && !l.text,
-          collapsed: !(busy && !l.text),
+          streaming,
+          collapsed: true,
+          durationMs: l.thinkDurationMs,
+          outputTokens: l.thinkOutputTokens,
+          startedAt: l.thinkStartedAt,
         },
       };
     }

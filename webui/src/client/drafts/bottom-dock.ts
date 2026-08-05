@@ -16,9 +16,9 @@
 
 /**
  * Bottom dock slots — TASK/busy chrome moved here from context top bar.
- * 日志 | 任务(原 TASKS) | 终端 | agent
+ * 日志 | 任务 | 终端 | agent | 主动（附属驻扎，卡片非独立顶栏页）
  */
-export type DockCardId = "logs" | "tasks" | "terminal" | "agent";
+export type DockCardId = "logs" | "tasks" | "terminal" | "agent" | "proactive";
 
 /** Content-local design units (origin = design 3.5,3.5). */
 export const FOLDER = {
@@ -182,7 +182,12 @@ export function folderClipPathPolygon(): string {
 
 // ── Physics ──────────────────────────────────────────────────────────
 
-export type DockCardTone = "logs" | "tasks" | "terminal" | "agent";
+export type DockCardTone =
+  | "logs"
+  | "tasks"
+  | "terminal"
+  | "agent"
+  | "proactive";
 
 export type DockCardDef = {
   id: DockCardId;
@@ -196,6 +201,7 @@ export const DOCK_CARDS: readonly DockCardDef[] = [
   { id: "tasks", label: "任务", tone: "tasks" },
   { id: "terminal", label: "终端", tone: "terminal" },
   { id: "agent", label: "agent", tone: "agent" },
+  { id: "proactive", label: "主动", tone: "proactive" },
 ] as const;
 
 /** Default left→right dock order. */

@@ -21,6 +21,9 @@ import {
   attachAgentTerminalSocket,
 } from "./agent-terminals.js";
 import { mountMarkdownRoutes } from "./markdown/index.js";
+import { ProactiveService } from "@little-house-studio/agent";
+import { mountProactiveRoutes } from "./proactive/routes.js";
+import { mountLlmConfigRoutes } from "./llm-config-routes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +39,8 @@ export interface WebUiServer {
   http: HttpServer;
   hub: AgentHub;
   copilot: CopilotHub;
+  /** 业务 Agent ProactiveService（看板/扫描/派发）；Web 只做路由壳 */
+  proactive: ProactiveService;
   start: () => Promise<{ host: string; port: number; url: string }>;
   close: () => Promise<void>;
 }
@@ -61,18 +66,29 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
   const agentName = opts.agentName ?? "coding";
   const hub = new AgentHub(opts);
   const copilot = new CopilotHub(opts);
+  const proactive = new ProactiveService({
+    getProjectRoot: () => hub.projectRoot,
+    maouRoot: hub.maouRoot,
+    sandboxMode: opts.sandboxMode,
+    // 派发落地：注入主 coding AgentHub（业务 Agent 不依赖 Web）
+    getDispatchPort: () => ({
+      runChat: (message: string) => hub.runChat(message),
+      abortRun: () => hub.abortRun(),
+    }),
+  });
 
   initAgentTerminalEngine(opts.maouRoot);
 
   const app = express();
   app.use(express.json({ limit: "4mb" }));
 
+  // Lightweight liveness only — do not ensureAgent / load sessions here.
   app.get("/api/health", (_req, res) => {
     res.json({
       ok: true,
       service: "maou-webui",
-      ...hub.getMeta(),
       agentName: hub.agentName || agentName,
+      projectRoot: hub.projectRoot,
     });
   });
 
@@ -140,15 +156,25 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
       res.status(400).json({ ok: false, error: "switchId or name required" });
       return;
     }
-    hub.setActiveAgent(id);
-    res.json({
-      ok: true,
-      activeAgentName: hub.agentName,
-      activeSwitchId: hub.activeSwitchId,
-      activeProjectPath: hub.activeProjectPath,
-      ...hub.getMeta(),
-      agents: hub.listAgents(),
-    });
+    try {
+      hub.setActiveAgent(id);
+      const meta = hub.getMeta();
+      res.json({
+        ok: true,
+        activeAgentName: hub.agentName,
+        activeSwitchId: hub.activeSwitchId,
+        activeProjectPath: hub.activeProjectPath,
+        ...meta,
+        // Hydrate chat for the switched agent (frontend remounts ChatPanel)
+        messages: hub.loadSessionMessages(meta.sessionId),
+        agents: hub.listAgents(),
+      });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
   });
 
   // ── Sessions（项目 .maou/sessions，与 CLI coding 同源 SessionStore）──
@@ -158,6 +184,32 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
         ok: true,
         sessions: hub.listSessions(),
         activeSessionId: hub.getMeta().sessionId,
+        /** 当前焦点 Agent 下正在跑的会话 */
+        runningSessionIds: hub.listRunningSessions(),
+        /** 全部 Agent 的并行 run（跨 Agent 灯） */
+        allRunning: hub.listAllRunningSessions(),
+        /** 有持久终端在跑的 agentName */
+        agentsWithRunningTerminals: Array.from(
+          hub.listAgentsWithRunningTerminals(),
+        ),
+      });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/runtime/running", (_req, res) => {
+    try {
+      res.json({
+        ok: true,
+        allRunning: hub.listAllRunningSessions(),
+        busySwitchIds: Array.from(hub.listBusySwitchIds()),
+        agentsWithRunningTerminals: Array.from(
+          hub.listAgentsWithRunningTerminals(),
+        ),
       });
     } catch (e) {
       res.status(500).json({
@@ -496,9 +548,71 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     }
   });
 
-  app.post("/api/chat/abort", (_req, res) => {
-    hub.abortRun();
-    res.json({ ok: true });
+  app.post("/api/chat/abort", (req, res) => {
+    const sid =
+      req.body?.sessionId != null
+        ? String(req.body.sessionId).trim()
+        : req.body?.id != null
+          ? String(req.body.id).trim()
+          : "";
+    if (sid) hub.abortRun(sid);
+    else hub.abortRun(); // 当前焦点会话
+    res.json({
+      ok: true,
+      runningSessionIds: hub.listRunningSessions(),
+    });
+  });
+
+  /**
+   * 运行中入队（对接 Agent MessageQueue）
+   * body: { message, mode?: "queue" | "insert" }
+   * - queue  → after_round_complete
+   * - insert → interrupt_immediately
+   */
+  app.post("/api/chat/enqueue", (req, res) => {
+    try {
+      const message = String(req.body?.message ?? "").trim();
+      if (!message) {
+        res.status(400).json({ ok: false, error: "message required" });
+        return;
+      }
+      const rawMode = String(req.body?.mode ?? "queue").toLowerCase();
+      const mode = rawMode === "insert" ? "insert" : "queue";
+      const r = hub.enqueueUserMessage(message, mode);
+      res.json(r);
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/chat/queue", (_req, res) => {
+    res.json({
+      ok: true,
+      busy: hub.isBusy(),
+      queue: hub.listMessageQueue(),
+    });
+  });
+
+  app.delete("/api/chat/queue", (_req, res) => {
+    const n = hub.clearMessageQueue();
+    res.json({ ok: true, cleared: n, queue: [] });
+  });
+
+  app.delete("/api/chat/queue/:id", (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      res.status(400).json({ ok: false, error: "invalid id" });
+      return;
+    }
+    const removed = hub.removeQueuedMessage(id);
+    res.json({
+      ok: removed,
+      removed,
+      queue: hub.listMessageQueue(),
+    });
   });
 
   app.post("/api/chat", async (req, res) => {
@@ -511,24 +625,42 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     res.setHeader("Cache-Control", "no-cache, no-transform");
     res.setHeader("X-Accel-Buffering", "no");
     res.flushHeaders?.();
-    // Client disconnect / fetch abort must stop Runtime (CLI cancel stack parity)
-    const onClientGone = () => {
-      if (!res.writableEnded) {
-        hub.abortRun();
-      }
+    /**
+     * 客户端断开才 abort「本条流」对应的会话。
+     * 多会话并行：切会话不 abort 其它 run；只掐本 HTTP 连接绑定的 session。
+     */
+    let boundSessionId: string | null = hub.getMeta().sessionId;
+    const abortThis = () => {
+      if (boundSessionId) hub.abortRun(boundSessionId);
     };
-    req.on("close", onClientGone);
-    res.on("close", onClientGone);
+    const onClientAbort = () => {
+      abortThis();
+    };
+    const onResponseClose = () => {
+      if (!res.writableFinished) abortThis();
+    };
+    req.on("aborted", onClientAbort);
+    res.on("close", onResponseClose);
     const write = (obj: unknown) => {
       if (res.writableEnded) return;
       try {
         res.write(`${JSON.stringify(obj)}\n`);
       } catch {
-        hub.abortRun();
+        abortThis();
       }
     };
     try {
       for await (const ev of hub.runChat(message)) {
+        if (
+          ev &&
+          typeof ev === "object" &&
+          (ev as { type?: string }).type === "session"
+        ) {
+          const sid = String(
+            (ev as { sessionId?: string }).sessionId ?? "",
+          ).trim();
+          if (sid) boundSessionId = sid;
+        }
         if (res.writableEnded || req.aborted) break;
         write(ev);
       }
@@ -538,8 +670,8 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
         message: e instanceof Error ? e.message : String(e),
       });
     } finally {
-      req.off("close", onClientGone);
-      res.off("close", onClientGone);
+      req.off("aborted", onClientAbort);
+      res.off("close", onResponseClose);
       if (!res.writableEnded) res.end();
     }
   });
@@ -547,7 +679,14 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
   // ── Markdown 大模块（server/markdown）──
   mountMarkdownRoutes(app, {
     getProjectRoot: () => hub.projectRoot,
+    onWrite: () => proactive.notifyProjectEdit(),
   });
+
+  // ── 全局 LLM api.presets（真配置持久化）──
+  mountLlmConfigRoutes(app);
+
+  // ── 主动智能 ──
+  mountProactiveRoutes(app, () => proactive);
 
   // ── 文档 Copilot（独立 agent 会话）──
   app.get("/api/copilot/meta", (_req, res) => {
@@ -710,17 +849,30 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     http,
     hub,
     copilot,
+    proactive,
     start() {
-      return new Promise((resolve, reject) => {
+      return new Promise<{ host: string; port: number; url: string }>((resolve, reject) => {
         http.once("error", reject);
         http.listen(port, host, () => {
-          resolve({ host, port, url: `http://${host}:${port}` });
+          proactive.start();
+          const addr = http.address();
+          const actualPort =
+            typeof addr === "object" && addr && typeof addr.port === "number"
+              ? addr.port
+              : port;
+          // bind 用 loopback；对外展示域名由 cli/local-entry 拼 maou.localhost
+          resolve({
+            host,
+            port: actualPort,
+            url: `http://${host}:${actualPort}`,
+          });
         });
       });
     },
     close() {
       return new Promise((resolve) => {
-        hub.abortRun();
+        proactive.stop();
+        hub.abortAllRuns();
         hub.cancelAllApprovals("server close");
         copilot.abortRun();
         wssAgent.close();

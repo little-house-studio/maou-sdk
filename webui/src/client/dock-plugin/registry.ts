@@ -14,6 +14,8 @@ export const DEFAULT_DOCK_CONTENT_KIND: Record<DockCardId, DockContentKind> = {
   tasks: "html-canvas",
   terminal: "canvas-ui",
   agent: "canvas-ui",
+  /** Live shell mounts ProactiveHost as react face（与 terminal 同类） */
+  proactive: "html-canvas",
 };
 
 export function createEmptyDockRegistry(): DockPluginRegistry {

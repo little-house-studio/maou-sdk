@@ -8,7 +8,8 @@
 import { StreamJsonAccumulator } from './stream-parser.js'
 import { LLMClient, ProtocolGateway } from './client.js'
 import { ModelCaller } from './caller.js'
-import { computeCost, type Pricing, type CostBreakdown } from './compute-cost.js'
+import { computeCost, type CostBreakdown } from './compute-cost.js'
+import { resolvePricingFromPreset } from './preset-normalize.js'
 import { validateRequest } from './guardrails.js'
 import { reasoningParamsFor, type ReasoningLevel } from './reasoning.js'
 import type { ModelCallResult, CallerStreamEvent } from './caller.js'
@@ -110,11 +111,16 @@ export interface ChatDelta {
   error?: string
 }
 
-/** 连接测试结果 */
+/** 连接测试结果（实现见 connection-test.ts testConnection） */
 export interface ConnectionTestResult {
   ok: boolean
   model: string
+  /** 端到端延迟 ms */
   latencyMs: number
+  firstByteMs?: number
+  httpStatus?: number | null
+  protocol?: string
+  replyPreview?: string
   error?: string
 }
 
@@ -176,6 +182,22 @@ export class ChatSession {
       emitLog: (level, data) => ({ type: level, data: { message: data } }),
       maxRetries: options.maxRetries ?? 3,
       loopThreshold: options.loopThreshold ?? 10,
+    })
+  }
+
+  /**
+   * 探测当前 preset 是否可调用（真实 chat 请求 + 延迟）。
+   * 不写入会话历史。
+   */
+  async testConnection(options?: {
+    probeMessage?: string
+    timeoutMs?: number
+    signal?: AbortSignal
+  }): Promise<ConnectionTestResult> {
+    const { testConnection } = await import('./connection-test.js')
+    return testConnection(this.preset, {
+      ...options,
+      client: this.client,
     })
   }
 
@@ -680,8 +702,8 @@ export class ChatSession {
       }
     }
 
-    // 计算成本（基于 preset 的 pricing 配置）
-    const pricing = (this.preset as Record<string, unknown>).pricing as Pricing | undefined
+    // 计算成本（兼容扁平 inputPrice 与嵌套 pricing）
+    const pricing = resolvePricingFromPreset(this.preset)
     const aggregatedUsage = {
       prompt_tokens: input,
       completion_tokens: output,

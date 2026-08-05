@@ -39,8 +39,12 @@ export function defaultCapabilityFields(): Pick<
   };
 }
 
-/** Normalize partial/legacy presets so capability fields always exist. */
-export function normalizeApiPreset(
+/**
+ * Draft UI 专用：补齐能力/窗口默认值。
+ * 与 runtime 的 normalizeApiPreset / normalizeRuntimePreset **不是同一层**
+ * （无 pricing/reasoning/extraBody；仅 showcase 草稿表单）。
+ */
+export function normalizeDraftApiPreset(
   p: Partial<DraftApiPreset> &
     Pick<DraftApiPreset, "name" | "url" | "key" | "model" | "protocol">,
 ): DraftApiPreset {
@@ -74,6 +78,9 @@ export function normalizeApiPreset(
   };
 }
 
+/** @deprecated 用 normalizeDraftApiPreset；勿与 llm.normalizeApiPreset 混淆 */
+export const normalizeApiPreset = normalizeDraftApiPreset;
+
 /** Human-readable capability chips for list/summary UI. */
 export function capabilitySummary(p: DraftApiPreset): string {
   const bits: string[] = [];
@@ -98,7 +105,7 @@ export function defaultApiConfig(): DraftApiConfig {
   return {
     defaultPreset: 0,
     presets: [
-      normalizeApiPreset({
+      normalizeDraftApiPreset({
         name: "openai",
         url: "https://api.openai.com/v1",
         key: "sk-draft-openai-example-key-0001",
@@ -106,7 +113,7 @@ export function defaultApiConfig(): DraftApiConfig {
         protocol: "openai",
         ...caps,
       }),
-      normalizeApiPreset({
+      normalizeDraftApiPreset({
         name: "anthropic",
         url: "https://api.anthropic.com",
         key: "sk-ant-draft-example-key-0002",
@@ -123,12 +130,12 @@ export function defaultApiConfig(): DraftApiConfig {
 export function cloneApiConfig(cfg: DraftApiConfig): DraftApiConfig {
   return {
     defaultPreset: cfg.defaultPreset,
-    presets: cfg.presets.map((p) => normalizeApiPreset({ ...p })),
+    presets: cfg.presets.map((p) => normalizeDraftApiPreset({ ...p })),
   };
 }
 
 export function emptyApiPreset(n = 1): DraftApiPreset {
-  return normalizeApiPreset({
+  return normalizeDraftApiPreset({
     name: `preset-${n}`,
     url: "https://api.openai.com/v1",
     key: "",

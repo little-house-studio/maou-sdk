@@ -1,11 +1,16 @@
 /**
  * Live right-rail files: draft FilesRail chrome + real /api/fs/md-tree paths.
- * Selecting a file opens MarkdownWorkbench (live FS).
+ * Selecting a file opens MarkdownWorkbench (lazy — CodeMirror not on chat paint).
  */
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { FilesRail } from "../drafts/panels/FilesRail";
-import { MarkdownWorkbench } from "../markdown";
 import { fetchMdTree, type FsTreeNode } from "../markdown/api";
+
+const MarkdownWorkbenchLazy = lazy(() =>
+  import("../markdown/MarkdownWorkbench").then((m) => ({
+    default: m.MarkdownWorkbench,
+  })),
+);
 
 function flattenFsPaths(nodes: FsTreeNode[], acc: string[] = []): string[] {
   for (const n of nodes) {
@@ -23,11 +28,20 @@ export function LiveFilesRail() {
   const refresh = useCallback(async () => {
     try {
       const { tree } = await fetchMdTree();
-      setPaths(flattenFsPaths(tree));
+      const next = flattenFsPaths(tree);
+      setPaths((prev) => {
+        if (
+          prev.length === next.length &&
+          prev.every((p, i) => p === next[i])
+        ) {
+          return prev;
+        }
+        return next;
+      });
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
-      setPaths([]);
+      setPaths((prev) => (prev.length === 0 ? prev : []));
     }
   }, []);
 
@@ -48,7 +62,10 @@ export function LiveFilesRail() {
               ? { add: 0, del: 0, file: "offline" }
               : { add: 0, del: 0, file: paths[0] || "—" }
           }
-          onFileOpen={(p) => setOpenPath(p)}
+          onFileOpen={(p) => {
+            // Opt-in preview: only markdown files (folders stay expand-only)
+            if (/\.(md|mdx|markdown)$/i.test(p)) setOpenPath(p);
+          }}
         />
       </div>
       {openPath ? (
@@ -65,12 +82,20 @@ export function LiveFilesRail() {
               关闭预览
             </button>
           </div>
-          <MarkdownWorkbench
-            openPath={openPath}
-            onOpenConsumed={() => {
-              /* keep path selected for re-open */
-            }}
-          />
+          <Suspense
+            fallback={
+              <div className="live-files-err" data-live-files-loading="true">
+                加载编辑器…
+              </div>
+            }
+          >
+            <MarkdownWorkbenchLazy
+              openPath={openPath}
+              onOpenConsumed={() => {
+                /* keep path selected for re-open */
+              }}
+            />
+          </Suspense>
         </div>
       ) : null}
       {err ? (
