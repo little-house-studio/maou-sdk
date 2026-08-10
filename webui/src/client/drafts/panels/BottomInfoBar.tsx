@@ -10,7 +10,16 @@ import { statusMarkKind } from "../visual-marks";
 import {
   createDefaultDockRegistry,
   getDockPlugin,
+  resolveDockBoardLayout,
+  readDockBoardSize,
+  writeDockBoardSize,
+  clampDockBoardSize,
+  dockViewportSizeLimits,
   DockCanvasFace,
+  DockBoardShell,
+  type DockFaceMap,
+  type DockBoardLayout,
+  type DockBoardSize,
 } from "../../dock-plugin";
 import {
   DOCK_CLICK_SLOP_PX,
@@ -57,6 +66,9 @@ import {
 /** @deprecated alias */
 export type BottomTabId = DockCardId;
 
+/** Shared plugin registry — layout + contentKind source of truth. */
+const DOCK_PLUGIN_REG = createDefaultDockRegistry();
+
 export type BottomInfoBarProps = {
   termLines: string[];
   bgTasks?: DraftBgTask[];
@@ -72,12 +84,16 @@ export type BottomInfoBarProps = {
   onCollapse?: () => void;
   onReservedHeightChange?: (px: number) => void;
   /**
-   * Live shell: real TerminalPanel (or other react face) for the terminal card.
-   * When set, expanded terminal board hosts this instead of canvas-ui lines.
+   * React faces by card id (e.g. terminal, proactive).
+   * Prefer this over one-off `*Face` props — any new board only needs a map entry.
+   */
+  faces?: DockFaceMap;
+  /**
+   * @deprecated use `faces.terminal` — kept for DraftShell / gradual migration
    */
   terminalFace?: React.ReactNode;
   /**
-   * Live shell: 主动智能卡片内容（ProactiveHost），非顶栏独立页。
+   * @deprecated use `faces.proactive`
    */
   proactiveFace?: React.ReactNode;
   /**
@@ -87,70 +103,12 @@ export type BottomInfoBarProps = {
   openTabRequest?: { tab: DockCardId; nonce: number } | null;
 };
 
-/** Terminal board defaults / clamp (viewport-relative max ≈ center+right of live shell). */
-const TERM_SIZE_KEY = "maou-webui-dock-terminal-size";
-const TERM_W_DEFAULT = 520;
-const TERM_H_DEFAULT = 360; // panel content height (excludes ear tab)
-const TERM_W_MIN = 360;
-const TERM_H_MIN = 180;
-
-function termSizeLimits(): { wMax: number; hMax: number } {
-  if (typeof window === "undefined") {
-    return { wMax: 960, hMax: 640 };
-  }
-  return {
-    wMax: Math.max(TERM_W_MIN, Math.floor(window.innerWidth * 0.72)),
-    // leave room for topbar + bottom dock track
-    hMax: Math.max(TERM_H_MIN, Math.floor(window.innerHeight * 0.62) - DOCK_TAB_H),
-  };
-}
-
-function readTermSize(): { w: number; h: number } {
-  const { wMax, hMax } = termSizeLimits();
-  try {
-    const raw =
-      typeof localStorage !== "undefined"
-        ? localStorage.getItem(TERM_SIZE_KEY)
-        : null;
-    if (!raw) {
-      return {
-        w: Math.min(wMax, TERM_W_DEFAULT),
-        h: Math.min(hMax, TERM_H_DEFAULT),
-      };
-    }
-    const j = JSON.parse(raw) as { w?: unknown; h?: unknown };
-    const w = Number(j.w);
-    const h = Number(j.h);
-    return {
-      w: Math.min(wMax, Math.max(TERM_W_MIN, Number.isFinite(w) ? w : TERM_W_DEFAULT)),
-      h: Math.min(hMax, Math.max(TERM_H_MIN, Number.isFinite(h) ? h : TERM_H_DEFAULT)),
-    };
-  } catch {
-    return {
-      w: Math.min(wMax, TERM_W_DEFAULT),
-      h: Math.min(hMax, TERM_H_DEFAULT),
-    };
-  }
-}
-
-function writeTermSize(w: number, h: number): void {
-  try {
-    if (typeof localStorage === "undefined") return;
-    const { wMax, hMax } = termSizeLimits();
-    localStorage.setItem(
-      TERM_SIZE_KEY,
-      JSON.stringify({
-        w: Math.min(wMax, Math.max(TERM_W_MIN, Math.round(w))),
-        h: Math.min(hMax, Math.max(TERM_H_MIN, Math.round(h))),
-      }),
-    );
-  } catch {
-    /* ignore quota */
-  }
-}
-
 type FloatPos = BoardPos;
-type TermResizeEdge = "e" | "s" | "se";
+type BoardResizeEdge = "e" | "s" | "se";
+
+function layoutFor(id: DockCardId): DockBoardLayout {
+  return resolveDockBoardLayout(DOCK_PLUGIN_REG, id);
+}
 
 function resolveStatus(
   agentBusy: boolean,
@@ -191,11 +149,16 @@ function logLinesFrom(
   return [...head, ...fromTerm];
 }
 
+/**
+ * Expanded / strip title on the folder head.
+ * Must stay short chrome labels — never dump raw term/log lines into the
+ * manila ear (that produced "$ ready · no agent terminals" on lime fill).
+ */
 function cardTitle(
   id: DockCardId,
   ctx: {
     logCount: number;
-    termHint: string;
+    termCount: number;
     agentName: string;
     agentStatus: string;
     taskRunning: number;
@@ -204,23 +167,24 @@ function cardTitle(
 ): string {
   switch (id) {
     case "logs":
-      return `${ctx.logCount} 条日志 · 应用/终端`;
+      return ctx.logCount > 0 ? `日志 · ${ctx.logCount}` : "日志";
     case "terminal":
-      return ctx.termHint || "终端 · 模拟无 PTY";
+      // Fixed chrome only; live status lives in TerminalPanel toolbar
+      return ctx.termCount > 0 ? `终端 · ${ctx.termCount}` : "终端";
     case "agent":
       return `${ctx.agentName} · ${ctx.agentStatus}`;
     case "tasks":
       return ctx.taskRunning > 0
-        ? `${ctx.taskRunning}/${ctx.taskTotal} 任务运行中`
+        ? `任务 · ${ctx.taskRunning}/${ctx.taskTotal}`
         : ctx.taskTotal > 0
-          ? `${ctx.taskTotal} 项后台任务`
-          : "暂无后台任务";
+          ? `任务 · ${ctx.taskTotal}`
+          : "任务";
     case "proactive":
-      return "主动智能 · 扫描 / 看板 / 派发";
+      return "主动智能";
   }
 }
 
-/** Short preview line shown on hover (title + 预览). */
+/** Short preview line shown on hover (extra strip only, not expand head). */
 function cardPreviewLine(
   id: DockCardId,
   ctx: {
@@ -235,7 +199,7 @@ function cardPreviewLine(
     case "logs":
       return ctx.logs[ctx.logs.length - 1] || "暂无新日志";
     case "terminal":
-      return ctx.termLines[ctx.termLines.length - 1] || "（终端空）";
+      return ctx.termLines[ctx.termLines.length - 1] || "无活动会话";
     case "agent":
       return `${ctx.agentName} · ${ctx.agentStatus}`;
     case "tasks": {
@@ -243,7 +207,7 @@ function cardPreviewLine(
       return run?.title || (ctx.bgTasks?.[0]?.title ?? "暂无后台任务");
     }
     case "proactive":
-      return "挂靠 coding · 打开卡片管理待办";
+      return "挂靠 coding · 扫描 / 看板 / 派发";
   }
 }
 
@@ -358,6 +322,7 @@ export function BottomInfoBar({
   onExpand,
   onCollapse,
   onReservedHeightChange,
+  faces,
   terminalFace,
   proactiveFace,
   openTabRequest,
@@ -372,9 +337,17 @@ export function BottomInfoBar({
     .length;
   const taskTotal = (bgTasks ?? []).length;
 
+  /** Merge map + legacy one-off props (map wins). */
+  const faceMap = useMemo<DockFaceMap>(() => {
+    const m: DockFaceMap = { ...(faces ?? {}) };
+    if (terminalFace != null && m.terminal == null) m.terminal = terminalFace;
+    if (proactiveFace != null && m.proactive == null) m.proactive = proactiveFace;
+    return m;
+  }, [faces, terminalFace, proactiveFace]);
+
   const titleCtx = {
     logCount: logs.length,
-    termHint: termLines[termLines.length - 1] || "终端就绪",
+    termCount: termLines.length,
     agentName: name,
     agentStatus: st.label,
     taskRunning,
@@ -396,10 +369,35 @@ export function BottomInfoBar({
   };
 
   const [order, setOrder] = useState<DockCardId[]>(() => defaultDockOrder());
-  /** Remembered terminal board width (height uses panelH when terminal open). */
-  const [termW, setTermW] = useState(() => readTermSize().w);
-  const termWRef = useRef(termW);
-  termWRef.current = termW;
+  /**
+   * Remembered open sizes (w always; h used when resizable or custom default).
+   * Keyed by DockCardId — driven by DockBoardLayout, not per-card if/else.
+   */
+  const [boardSizeById, setBoardSizeById] = useState<
+    Partial<Record<DockCardId, DockBoardSize>>
+  >(() => {
+    const init: Partial<Record<DockCardId, DockBoardSize>> = {};
+    for (const c of defaultDockOrder()) {
+      init[c] = readDockBoardSize(layoutFor(c));
+    }
+    return init;
+  });
+  const boardSizeRef = useRef(boardSizeById);
+  boardSizeRef.current = boardSizeById;
+
+  const sizeFor = useCallback((id: DockCardId): DockBoardSize => {
+    const layout = layoutFor(id);
+    const remembered = boardSizeRef.current[id];
+    if (remembered) return clampDockBoardSize(remembered, layout);
+    return readDockBoardSize(layout);
+  }, []);
+
+  const setSizeFor = useCallback((id: DockCardId, size: DockBoardSize) => {
+    const next = clampDockBoardSize(size, layoutFor(id));
+    boardSizeRef.current = { ...boardSizeRef.current, [id]: next };
+    setBoardSizeById((prev) => ({ ...prev, [id]: next }));
+    return next;
+  }, []);
   const [hoverId, setHoverId] = useState<DockCardId | null>(null);
   /**
    * Continuous strip morph: which card is expanding + progress 0..1.
@@ -564,23 +562,16 @@ export function BottomInfoBar({
    * Place / re-place board with bottom edge on the slot strip
    * (folder board lifting out of the rack).
    */
-  const boardWFor = useCallback((id: DockCardId, panel: number) => {
-    if (id === "terminal") return termWRef.current;
-    // 主动卡片：默认更宽，便于看板
-    if (id === "proactive") return Math.max(DOCK_EXPAND_W_UI, 560);
-    return boardWidthForPanel(panel);
-  }, []);
+  const boardWFor = useCallback(
+    (id: DockCardId, _panel: number) => sizeFor(id).w,
+    [sizeFor],
+  );
 
-  const terminalOpenH = useCallback(() => {
-    const { h } = readTermSize();
-    const { hMax } = termSizeLimits();
-    return Math.min(hMax, Math.max(TERM_H_MIN, h));
-  }, []);
-
-  const proactiveOpenH = useCallback(() => {
-    const { hMax } = termSizeLimits();
-    return Math.min(hMax, Math.max(280, 400));
-  }, []);
+  /** Open height from layout (remembered or default), clamped. */
+  const openHFor = useCallback(
+    (id: DockCardId) => sizeFor(id).h,
+    [sizeFor],
+  );
 
   const placeBoardOnSlot = useCallback(
     (id: DockCardId, panel: number) => {
@@ -600,10 +591,12 @@ export function BottomInfoBar({
     [boardWFor, captureSlotAnchor, setFloat],
   );
 
-  /** Edge resize for expanded terminal board; persists w/h to localStorage. */
-  const beginTermResize = useCallback(
-    (edge: TermResizeEdge, e: React.PointerEvent) => {
+  /** Generic edge resize for any layout.resizable board. */
+  const beginBoardResize = useCallback(
+    (id: DockCardId, edge: BoardResizeEdge, e: React.PointerEvent) => {
       if (e.button !== 0) return;
+      const layout = layoutFor(id);
+      if (!layout.resizable) return;
       e.preventDefault();
       e.stopPropagation();
       stopSpring();
@@ -615,36 +608,41 @@ export function BottomInfoBar({
       }
       const startX = e.clientX;
       const startY = e.clientY;
-      const startW = termWRef.current;
+      const cur = sizeFor(id);
+      const startW = cur.w;
       const startH = panelHRef.current;
       const startLeft = floatPosRef.current?.left ?? 0;
       const startTop = floatPosRef.current?.top ?? 0;
-      // After optional un-anchor above, treat as free so top-left stays put
       const free = !slotAnchoredRef.current;
+      const minW = layout.minWidth ?? 200;
+      const minH = layout.minHeight ?? 96;
 
       const onMove = (ev: PointerEvent) => {
-        const { wMax, hMax } = termSizeLimits();
+        const { wMax, hMax } = dockViewportSizeLimits(layout);
         let w = startW;
         let h = startH;
         if (edge === "e" || edge === "se") {
-          w = Math.min(wMax, Math.max(TERM_W_MIN, startW + (ev.clientX - startX)));
+          w = Math.min(wMax, Math.max(minW, startW + (ev.clientX - startX)));
         }
         if (edge === "s" || edge === "se") {
-          h = Math.min(hMax, Math.max(TERM_H_MIN, startH + (ev.clientY - startY)));
+          h = Math.min(hMax, Math.max(minH, startH + (ev.clientY - startY)));
         }
-        termWRef.current = w;
-        setTermW(w);
+        setSizeFor(id, { w, h });
         panelHRef.current = h;
         setPanel(h);
         springRef.current = { x: h, v: 0 };
         if (free) {
           setFloat({ left: startLeft, top: startTop });
-        } else if (openIdRef.current === "terminal") {
-          placeBoardOnSlot("terminal", h);
+        } else if (openIdRef.current === id) {
+          placeBoardOnSlot(id, h);
         }
       };
       const onUp = () => {
-        writeTermSize(termWRef.current, panelHRef.current);
+        const latest = sizeFor(id);
+        writeDockBoardSize(layout, {
+          w: latest.w,
+          h: panelHRef.current,
+        });
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
         window.removeEventListener("pointercancel", onUp);
@@ -653,7 +651,7 @@ export function BottomInfoBar({
       window.addEventListener("pointerup", onUp);
       window.addEventListener("pointercancel", onUp);
     },
-    [placeBoardOnSlot, setFloat, setPanel, stopSpring],
+    [placeBoardOnSlot, setFloat, setPanel, setSizeFor, sizeFor, stopSpring],
   );
 
   const runSpringTo = useCallback(
@@ -765,17 +763,9 @@ export function BottomInfoBar({
   useEffect(() => {
     if (!openTabRequest?.tab) return;
     const id = openTabRequest.tab;
-    if (id === "terminal") {
-      const saved = readTermSize();
-      termWRef.current = saved.w;
-      setTermW(saved.w);
-    }
-    const targetH =
-      id === "terminal"
-        ? terminalOpenH()
-        : id === "proactive"
-          ? proactiveOpenH()
-          : DOCK_EXPAND_H_UI;
+    // Reload persisted size for this board
+    setSizeFor(id, readDockBoardSize(layoutFor(id)));
+    const targetH = openHFor(id);
     setHoverId(null);
     setPullingId(null);
     setSlotAnchored(true);
@@ -841,11 +831,7 @@ export function BottomInfoBar({
       ) {
         setHoverId(null);
         setPullingId(null);
-        if (result.id === "terminal") {
-          const saved = readTermSize();
-          termWRef.current = saved.w;
-          setTermW(saved.w);
-        }
+        setSizeFor(result.id, readDockBoardSize(layoutFor(result.id)));
         setOpen(result.id);
         setSlotAnchored(true);
         slotAnchoredRef.current = true;
@@ -857,13 +843,7 @@ export function BottomInfoBar({
           x: panelHRef.current,
           v: result.velocityKick,
         };
-        const targetH =
-          result.id === "terminal"
-            ? terminalOpenH()
-            : result.id === "proactive"
-              ? proactiveOpenH()
-              : result.targetH;
-        runSpringTo(targetH, result.id);
+        runSpringTo(openHFor(result.id), result.id);
         return;
       }
 
@@ -873,11 +853,7 @@ export function BottomInfoBar({
       };
       if (result.open) {
         setPullingId(null);
-        if (result.id === "terminal") {
-          const saved = readTermSize();
-          termWRef.current = saved.w;
-          setTermW(saved.w);
-        }
+        setSizeFor(result.id, readDockBoardSize(layoutFor(result.id)));
         setOpen(result.id);
         setSlotAnchored(true);
         slotAnchoredRef.current = true;
@@ -885,13 +861,7 @@ export function BottomInfoBar({
         placeBoardOnSlot(result.id, panelHRef.current);
         onTabChange?.(result.id);
         onExpand?.();
-        const targetH =
-          result.id === "terminal"
-            ? terminalOpenH()
-            : result.id === "proactive"
-              ? proactiveOpenH()
-              : result.targetH;
-        runSpringTo(targetH, result.id);
+        runSpringTo(openHFor(result.id), result.id);
       } else {
         if (openIdRef.current == null) setPullingId(session.id);
         else setPullingId(null);
@@ -902,11 +872,11 @@ export function BottomInfoBar({
       captureSlotAnchor,
       onExpand,
       onTabChange,
+      openHFor,
       placeBoardOnSlot,
-      proactiveOpenH,
       runSpringTo,
       setOpen,
-      terminalOpenH,
+      setSizeFor,
     ],
   );
 
@@ -1178,16 +1148,10 @@ export function BottomInfoBar({
           const lifting = isLive && slotAnchored;
           const textOp = isLive ? 1 : geo.textOpacity;
 
-          // Live board is always fixed once we have a placement (from slot lift)
-          // Terminal board: remembered width + panel height (resizable)
-          const liveW =
-            isLive && card.id === "terminal"
-              ? termW
-              : isLive && card.id === "proactive"
-                ? Math.max(geo.cssW, 560)
-                : geo.cssW;
+          // Live board: layout-driven width (path + CSS must match)
+          const liveW = isLive ? boardWFor(card.id, panelH) : geo.cssW;
           const liveGeo =
-            isLive && card.id === "terminal"
+            isLive && liveW !== geo.cssW
               ? (() => {
                   const rightX = rightXFromCssWidth(liveW);
                   const bottomY = bottomYFromCssHeight(geo.cssH);
@@ -1200,7 +1164,21 @@ export function BottomInfoBar({
                     viewBox: folderViewBox(rightX, bottomY),
                   };
                 })()
-              : geo;
+              : isLive
+                ? {
+                    ...geo,
+                    cssW: liveW,
+                    rightX: rightXFromCssWidth(liveW),
+                    pathD: buildFolderPath(
+                      rightXFromCssWidth(liveW),
+                      bottomYFromCssHeight(geo.cssH),
+                    ),
+                    viewBox: folderViewBox(
+                      rightXFromCssWidth(liveW),
+                      bottomYFromCssHeight(geo.cssH),
+                    ),
+                  }
+                : geo;
 
           const floatStyle: React.CSSProperties =
             isLive && floatPos
@@ -1284,7 +1262,11 @@ export function BottomInfoBar({
                         data-folder-part="body"
                       >
                         <header
-                          className="wire-dock-folder-head"
+                          className={
+                            card.id === "terminal"
+                              ? "wire-dock-folder-head is-face-chrome"
+                              : "wire-dock-folder-head"
+                          }
                           data-folder-part="drag"
                           title="拖动窗口 · 拖到底部收纳"
                           onPointerDown={(e) => {
@@ -1299,7 +1281,10 @@ export function BottomInfoBar({
                             beginEarPress(card.id, e);
                           }}
                         >
-                          <span className="wire-dock-open-title">{title}</span>
+                          {/* terminal: status lives in TerminalPanel toolbar — no $ready on lime */}
+                          <span className="wire-dock-open-title">
+                            {card.id === "terminal" ? "" : title}
+                          </span>
                           <button
                             type="button"
                             className="wire-dock-card-close"
@@ -1327,34 +1312,39 @@ export function BottomInfoBar({
                               bgTasks={bgTasks}
                               title={title}
                               count={count}
-                              terminalFace={terminalFace}
-                              proactiveFace={proactiveFace}
+                              faces={faceMap}
                             />
                           ) : null}
                         </div>
                       </div>
                     ) : null}
                   </div>
-                  {/* Terminal: drag edges / corner to resize (size remembered) */}
-                  {card.id === "terminal" && panelH > 24 ? (
+                  {/* Layout-driven resize grips (any resizable board) */}
+                  {layoutFor(card.id).resizable && panelH > 24 ? (
                     <>
                       <div
                         className="wire-dock-resize wire-dock-resize-e"
                         data-resize="e"
                         title="拖动调整宽度"
-                        onPointerDown={(ev) => beginTermResize("e", ev)}
+                        onPointerDown={(ev) =>
+                          beginBoardResize(card.id, "e", ev)
+                        }
                       />
                       <div
                         className="wire-dock-resize wire-dock-resize-s"
                         data-resize="s"
                         title="拖动调整高度"
-                        onPointerDown={(ev) => beginTermResize("s", ev)}
+                        onPointerDown={(ev) =>
+                          beginBoardResize(card.id, "s", ev)
+                        }
                       />
                       <div
                         className="wire-dock-resize wire-dock-resize-se"
                         data-resize="se"
                         title="拖动调整大小"
-                        onPointerDown={(ev) => beginTermResize("se", ev)}
+                        onPointerDown={(ev) =>
+                          beginBoardResize(card.id, "se", ev)
+                        }
                       />
                     </>
                   ) : null}
@@ -1434,8 +1424,16 @@ export function BottomInfoBar({
                     className="wire-dock-card-body"
                     data-folder-part="body"
                   >
-                    <header className="wire-dock-folder-head">
-                      <span className="wire-dock-open-title">{title}</span>
+                    <header
+                      className={
+                        card.id === "terminal"
+                          ? "wire-dock-folder-head is-face-chrome"
+                          : "wire-dock-folder-head"
+                      }
+                    >
+                      <span className="wire-dock-open-title">
+                        {card.id === "terminal" ? "" : title}
+                      </span>
                       <button
                         type="button"
                         className="wire-dock-card-close"
@@ -1463,8 +1461,7 @@ export function BottomInfoBar({
                           bgTasks={bgTasks}
                           title={title}
                           count={count}
-                          terminalFace={terminalFace}
-                          proactiveFace={proactiveFace}
+                          faces={faceMap}
                         />
                       ) : null}
                     </div>
@@ -1520,12 +1517,9 @@ const TONE_ACCENT: Record<string, string> = {
   proactive: "#5ad4ff",
 };
 
-/** Shared plugin registry for draft dock boards (canvas-ui / html-canvas). */
-const DOCK_PLUGIN_REG = createDefaultDockRegistry();
-
 /**
- * Expanded board face — free canvas host (dock-plugin).
- * Each card paints its own canvas (or HTML-in-canvas) independent of siblings.
+ * Expanded board face — react face from map, else canvas/html preview.
+ * Designers: pass `faces[id]` + layout.surface; no chrome edits needed.
  */
 function DockCardBody({
   id,
@@ -1539,8 +1533,7 @@ function DockCardBody({
   bgTasks,
   title,
   count,
-  terminalFace,
-  proactiveFace,
+  faces,
 }: {
   id: DockCardId;
   termLines: string[];
@@ -1553,8 +1546,7 @@ function DockCardBody({
   bgTasks?: DraftBgTask[];
   title: string;
   count: number;
-  terminalFace?: React.ReactNode;
-  proactiveFace?: React.ReactNode;
+  faces?: DockFaceMap;
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [faceSize, setFaceSize] = useState({ w: 240, h: 160 });
@@ -1574,35 +1566,30 @@ function DockCardBody({
     return () => ro.disconnect();
   }, []);
 
-  // Live: real TerminalPanel inside the folder card (not canvas preview / float)
-  if (id === "terminal" && terminalFace) {
-    return (
-      <div
-        className="wire-dock-plugin-body wire-dock-terminal-host"
-        data-dock-body={id}
-        data-dock-plugin="react"
-        data-dock-terminal="live"
-      >
-        {terminalFace}
-      </div>
-    );
-  }
-
-  // Live: 主动智能卡片（附属驻扎，非顶栏独立页）
-  if (id === "proactive" && proactiveFace) {
-    return (
-      <div
-        className="wire-dock-plugin-body wire-dock-proactive-host"
-        data-dock-body={id}
-        data-dock-plugin="react"
-        data-dock-proactive="live"
-      >
-        {proactiveFace}
-      </div>
-    );
-  }
-
   const plugin = getDockPlugin(DOCK_PLUGIN_REG, id);
+  const layout = layoutFor(id);
+  const surface = layout.surface ?? "transparent";
+  const reactFace = faces?.[id];
+
+  // Generic react face mount (terminal, proactive, future boards)
+  if (reactFace != null) {
+    return (
+      <DockBoardShell
+        cardId={id}
+        surface={surface}
+        className={
+          id === "terminal"
+            ? "wire-dock-terminal-host"
+            : id === "proactive"
+              ? "wire-dock-proactive-host"
+              : undefined
+        }
+      >
+        {reactFace}
+      </DockBoardShell>
+    );
+  }
+
   const contentKind = plugin?.contentKind ?? "canvas-ui";
 
   const taskLines = (bgTasks ?? []).map(

@@ -98,9 +98,12 @@ export interface IAgentLoop {
  * - maxRounds>0 时达到上限停止
  * - 中断信号检查
  * - 循环检测（重复工具调用模式）
+ *
+ * 注意：生产路径 AgentRuntime 使用 runtime-recovery.detectRepeatedToolLoop
+ * 做细粒度签名检测并注入 <continue>；本类供可插拔 IAgentLoop 消费方使用。
  */
 export class DefaultAgentLoop implements IAgentLoop {
-  /** 最近 N 轮的工具调用名称管道（用于循环检测） */
+  /** 最近工具签名管道（用于循环检测） */
   private recentToolNames: string[] = [];
 
   shouldContinue(state: LoopState, config: LoopConfig): boolean {
@@ -119,12 +122,21 @@ export class DefaultAgentLoop implements IAgentLoop {
   }
 
   afterIteration(state: LoopState, result: LoopIterationResult, config: LoopConfig): void {
-    // 循环检测：记录最近工具调用
+    // 循环检测：记录工具名计数签名（粗粒度；细粒度 path 签名见 runtime-recovery + AgentRuntime）
     if (result.hasToolCalls) {
       this.recentToolNames.push(`tools_${result.toolCallCount}`);
       if (this.recentToolNames.length > config.loopThreshold) {
         this.recentToolNames.shift();
       }
+    }
+  }
+
+  /** 推入本轮工具签名（AgentRuntime 在真路径上调用；细粒度 name|path|…） */
+  pushToolSignatures(signatures: string[], window: number): void {
+    for (const s of signatures) this.recentToolNames.push(s);
+    const max = Math.max(window * 2, 6);
+    if (this.recentToolNames.length > max) {
+      this.recentToolNames.splice(0, this.recentToolNames.length - max);
     }
   }
 
@@ -135,11 +147,16 @@ export class DefaultAgentLoop implements IAgentLoop {
     return "completed";
   }
 
-  /** 检测是否陷入循环（相同工具调用模式重复） */
-  detectLoop(): boolean {
+  /**
+   * 检测是否陷入循环（相同签名重复）。
+   * 与 runtime-recovery.detectRepeatedToolLoop 同阈值语义；主路径以 Runtime 内联检测为准。
+   */
+  detectLoop(window?: number): boolean {
+    const w = window ?? Math.max(this.recentToolNames.length, 3);
     if (this.recentToolNames.length < 3) return false;
-    const last = this.recentToolNames[this.recentToolNames.length - 1];
-    const count = this.recentToolNames.filter((n) => n === last).length;
-    return count >= this.recentToolNames.length * 0.7;
+    const slice = this.recentToolNames.slice(-w);
+    const last = slice[slice.length - 1];
+    const count = slice.filter((n) => n === last).length;
+    return count >= Math.ceil(slice.length * 0.7);
   }
 }

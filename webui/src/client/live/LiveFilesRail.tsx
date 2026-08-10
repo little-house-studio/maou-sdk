@@ -1,16 +1,11 @@
 /**
- * Live right-rail files: draft FilesRail chrome + real /api/fs/md-tree paths.
- * Selecting a file opens MarkdownWorkbench (lazy — CodeMirror not on chat paint).
+ * Live right-rail files: FilesRail 树 + 只读 Markdown 预览。
+ * 完整编辑请走项目模式 ProjectWorkbench。
  */
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { FilesRail } from "../drafts/panels/FilesRail";
-import { fetchMdTree, type FsTreeNode } from "../markdown/api";
-
-const MarkdownWorkbenchLazy = lazy(() =>
-  import("../markdown/MarkdownWorkbench").then((m) => ({
-    default: m.MarkdownWorkbench,
-  })),
-);
+import { DraftMarkdown } from "../drafts/DraftMarkdown";
+import { fetchMdTree, readFsFile, type FsTreeNode } from "../markdown/api";
 
 function flattenFsPaths(nodes: FsTreeNode[], acc: string[] = []): string[] {
   for (const n of nodes) {
@@ -23,6 +18,9 @@ function flattenFsPaths(nodes: FsTreeNode[], acc: string[] = []): string[] {
 export function LiveFilesRail() {
   const [paths, setPaths] = useState<string[]>([]);
   const [openPath, setOpenPath] = useState<string | null>(null);
+  const [content, setContent] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -51,6 +49,38 @@ export function LiveFilesRail() {
     return () => window.clearInterval(t);
   }, [refresh]);
 
+  // 打开路径变化 → 拉正文做只读预览
+  useEffect(() => {
+    if (!openPath) {
+      setContent("");
+      setPreviewErr(null);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setPreviewErr(null);
+    void (async () => {
+      try {
+        const f = await readFsFile(openPath);
+        if (!cancelled) {
+          setContent(f.content ?? "");
+          setPreviewErr(null);
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setContent("");
+          setPreviewErr(e instanceof Error ? e.message : String(e));
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [openPath]);
+
   return (
     <div className="live-files-rail-stack" data-live-files-rail="true">
       <div className="live-files-tree">
@@ -63,13 +93,16 @@ export function LiveFilesRail() {
               : { add: 0, del: 0, file: paths[0] || "—" }
           }
           onFileOpen={(p) => {
-            // Opt-in preview: only markdown files (folders stay expand-only)
+            // 仅 md 开只读预览；文件夹只展开
             if (/\.(md|mdx|markdown)$/i.test(p)) setOpenPath(p);
           }}
         />
       </div>
       {openPath ? (
-        <div className="live-files-editor" data-live-files-editor={openPath}>
+        <div
+          className="live-files-preview"
+          data-live-files-preview={openPath}
+        >
           <div className="live-files-editor-head">
             <span className="live-files-editor-path" title={openPath}>
               {openPath}
@@ -82,20 +115,19 @@ export function LiveFilesRail() {
               关闭预览
             </button>
           </div>
-          <Suspense
-            fallback={
-              <div className="live-files-err" data-live-files-loading="true">
-                加载编辑器…
-              </div>
-            }
-          >
-            <MarkdownWorkbenchLazy
-              openPath={openPath}
-              onOpenConsumed={() => {
-                /* keep path selected for re-open */
-              }}
-            />
-          </Suspense>
+          {loading ? (
+            <div className="live-files-err" data-live-files-loading="true">
+              加载预览…
+            </div>
+          ) : previewErr ? (
+            <div className="live-files-err" title={previewErr}>
+              读取失败 · {previewErr.slice(0, 80)}
+            </div>
+          ) : (
+            <div className="live-files-preview-body wire-project-preview">
+              <DraftMarkdown source={content || "_(空文件)_"} />
+            </div>
+          )}
         </div>
       ) : null}
       {err ? (

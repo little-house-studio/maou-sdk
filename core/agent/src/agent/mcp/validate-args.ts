@@ -9,7 +9,7 @@
  */
 
 import type { JsonSchema } from "@little-house-studio/types";
-import { createToolResponse } from "@little-house-studio/tools";
+import { toolFail } from "@little-house-studio/tools";
 import type { ToolResponse } from "@little-house-studio/tools";
 
 export interface McpArgIssue {
@@ -224,7 +224,13 @@ export function formatMcpArgValidationError(opts: {
     );
   }
 
-  return createToolResponse(false, lines.join("\n"), {
+  return toolFail("invalid_args", lines.join("\n"), {
+    code: "mcp_validation_error",
+    details: {
+      mcpConnection: opts.connectionName,
+      mcpTool: opts.originalName,
+      issueCount: opts.issues.length,
+    },
     payload: {
       mcp: true,
       mcpValidationError: true,

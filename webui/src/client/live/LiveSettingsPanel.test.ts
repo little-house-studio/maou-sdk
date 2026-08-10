@@ -63,8 +63,15 @@ describe("LiveSettingsPanel structure", () => {
     assert.match(src, /runLlmSvgProbe|运行画图探针/);
     assert.match(src, /设为标准参考/);
     assert.match(src, /模型画图探针/);
+    assert.match(src, /请求已通|未抽出/);
     assert.match(api, /svg-probe/);
     assert.match(api, /setSvgProbeReference|runLlmSvgProbe/);
+    // 业务 ok=false 不能 jsonOrThrow 成无意义的 "http 200"
+    assert.match(api, /readJsonBody/);
+    assert.doesNotMatch(
+      api,
+      /export async function runLlmSvgProbe[\s\S]{0,500}jsonOrThrow/,
+    );
   });
 
   it("agent + template share roles SoT and bind main/fast/vision", () => {

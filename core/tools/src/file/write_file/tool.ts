@@ -6,7 +6,8 @@ import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
-import { createToolResponse } from "../../base.js";
+import { createToolResponse, toolFail } from "../../base.js";
+import { toolFailFromThrown } from "../../errors.js";
 import { errToString } from "../../util/common.js";
 import { resolveToolPath } from "../../path-guard.js";
 import { verifyAfterWrite } from "../../code/lsp_verify.js";
@@ -95,9 +96,10 @@ export class WriteFileTool extends Tool {
       String(params.overwrite ?? "").toLowerCase() === "true";
 
     if (!userPath) {
-      return createToolResponse(
-        false,
+      return toolFail(
+        "invalid_args",
         '❌ write_file 缺少必填参数 path。示例：{"tool":"write_file","params":{"path":"src/index.ts","content":"..."}}',
+        { code: "missing_params", details: { missing: ["path"] } },
       );
     }
 
@@ -105,7 +107,7 @@ export class WriteFileTool extends Tool {
     try {
       fullPath = resolveToolPath(ctx, userPath).path;
     } catch (err: unknown) {
-      return createToolResponse(false, errToString(err));
+      return toolFailFromThrown(err, { fallbackCategory: "sandbox_denied" });
     }
 
     try {
@@ -132,11 +134,12 @@ export class WriteFileTool extends Tool {
             gate.reason === "unread"
               ? `若**确认整文件替换**（更新配置/脚手架），请带 \`"force": true\` 再调用（不必先 read）。\n`
               : `请根据下列内容确认后再 write。\n`;
-          return createToolResponse(
-            false,
+          return toolFail(
+            "precondition",
             `${why}。${tip}` +
               `以下是**当前**完整内容（已记为已读）：\n\n${numbered}`,
             {
+              code: gate.reason === "stale" ? "stale_before_write" : "unread_before_write",
               payload: {
                 path: fullPath,
                 reason: gate.reason,
@@ -184,7 +187,7 @@ export class WriteFileTool extends Tool {
         },
       );
     } catch (err: unknown) {
-      return createToolResponse(false, `写入文件失败: ${errToString(err)}`);
+      return toolFailFromThrown(err, { prefix: "写入文件失败", fallbackCategory: "execution" });
     }
   }
 }

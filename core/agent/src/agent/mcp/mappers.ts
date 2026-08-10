@@ -10,7 +10,7 @@
 
 import type { JsonSchema, McpToolDescriptor } from "@little-house-studio/types";
 import type { ToolResponse } from "@little-house-studio/tools";
-import { createToolResponse } from "@little-house-studio/tools";
+import { createToolResponse, toolFail } from "@little-house-studio/tools";
 import { namespacedMcpToolName } from "./names.js";
 
 /** MCP listTools 返回的单条工具（宽松形状，兼容 SDK 版本差异） */
@@ -197,30 +197,45 @@ export function mapCallToolResultToToolResponse(
   const isError = result.isError === true;
   const images = extractMcpImages(result);
 
-  return createToolResponse(
-    !isError,
-    text || (isError ? "(MCP tool error with empty content)" : "(MCP tool returned empty content)"),
+  const message =
+    text ||
+    (isError
+      ? "(MCP tool error with empty content)"
+      : "(MCP tool returned empty content)");
+  const payload = {
+    mcp: true,
+    mcpConnection: meta?.connectionName,
+    mcpTool: meta?.toolName,
+    isError,
+    structuredContent: result.structuredContent,
+    _meta: result._meta,
+  };
+  const displayEvents = [
     {
+      type: "terminal",
+      stream: isError ? "error" : "info",
+      text: meta?.toolName
+        ? `[MCP] ${meta.connectionName ?? "?"}.${meta.toolName}${isError ? " failed" : " ok"}`
+        : `[MCP] tools/call ${isError ? "isError" : "ok"}`,
+    },
+  ];
+  if (isError) {
+    return toolFail("external", message, {
+      code: "mcp_tool_is_error",
       images,
-      payload: {
-        mcp: true,
+      payload,
+      displayEvents,
+      details: {
         mcpConnection: meta?.connectionName,
         mcpTool: meta?.toolName,
-        isError,
-        structuredContent: result.structuredContent,
-        _meta: result._meta,
       },
-      displayEvents: [
-        {
-          type: "terminal",
-          stream: isError ? "error" : "info",
-          text: meta?.toolName
-            ? `[MCP] ${meta.connectionName ?? "?"}.${meta.toolName}${isError ? " failed" : " ok"}`
-            : `[MCP] tools/call ${isError ? "isError" : "ok"}`,
-        },
-      ],
-    },
-  );
+    });
+  }
+  return createToolResponse(true, message, {
+    images,
+    payload,
+    displayEvents,
+  });
 }
 
 /**
@@ -232,18 +247,23 @@ export function mapProtocolErrorToToolResponse(
 ): ToolResponse {
   const message =
     err instanceof Error ? err.message : typeof err === "string" ? err : String(err);
-  return createToolResponse(
-    false,
+  return toolFail(
+    "external",
     `MCP protocol/transport error` +
       (meta?.connectionName ? ` [${meta.connectionName}]` : "") +
       (meta?.toolName ? `.${meta.toolName}` : "") +
       `: ${message}`,
     {
+      code: "mcp_protocol_error",
       payload: {
         mcp: true,
         mcpConnection: meta?.connectionName,
         mcpTool: meta?.toolName,
         protocolError: true,
+      },
+      details: {
+        mcpConnection: meta?.connectionName,
+        mcpTool: meta?.toolName,
       },
     },
   );

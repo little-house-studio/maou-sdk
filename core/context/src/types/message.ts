@@ -46,6 +46,11 @@ export interface MaouMessage {
   toolCalls?: LLMToolCall[];
   /** 来源标识 */
   source?: string;
+  /**
+   * 模型思考原文（与 content 分离）。
+   * thinking 模式 API（如 DeepSeek V4）回传历史时需要作为 reasoning_content 字段。
+   */
+  reasoningContent?: string;
   /** 消息级元数据 */
   meta?: MessageMeta;
   /** 压缩消息（category='compact' 时使用） */
@@ -118,6 +123,11 @@ export interface LLMMessage {
   content: string;
   tool_calls?: LLMToolCall[];
   tool_call_id?: string;
+  /**
+   * DeepSeek / 部分 thinking 模型要求：历史 assistant（尤其含 tool_calls）
+   * 必须把上一轮 reasoning_content 原样回传，不能只塞进 content 文本。
+   */
+  reasoning_content?: string;
 }
 
 /**
@@ -270,6 +280,18 @@ export function maouToLLMMessage(mmsg: MaouMessage): LLMMessage {
     llmMsg.tool_calls = mmsg.toolCalls;
   }
 
+  // thinking 模型回传：独立字段（content 里可另有 <thinking> 标签，字段仍要带）
+  // 有 tool_calls 时即便无真思考也带 ""，避免历史会话缺字段整轮 400
+  if (role === "assistant" || mmsg.category === "assistant" || mmsg.category === "tool_call") {
+    const rc =
+      typeof mmsg.reasoningContent === "string" ? mmsg.reasoningContent.trim() : "";
+    if (rc) {
+      llmMsg.reasoning_content = rc;
+    } else if (mmsg.toolCalls && mmsg.toolCalls.length > 0) {
+      llmMsg.reasoning_content = "";
+    }
+  }
+
   return llmMsg;
 }
 
@@ -372,12 +394,15 @@ export function sessionToMaouMessage(smsg: SessionMessage, seqId: number): MaouM
 
   // content + microCompact（从 meta 恢复或构造默认）
   // 思考回灌：session 上的 reasoningContent（由 thinking_context_mode 在写入时决定是否保留）
-  // 在进入 ContextEngine / LLM 历史前并入文本，保证压缩与 token 估算一致。
+  // - 文本：并入 content 供压缩/token 估算与非 deepseek 模型
+  // - 字段：保留在 MaouMessage.reasoningContent → LLMMessage.reasoning_content（DeepSeek V4 硬要求）
+  const reasoningRaw =
+    typeof smsg.reasoningContent === "string" ? smsg.reasoningContent.trim() : "";
   const contents: MaouContent[] = [];
   const content: MaouContent = {
     text: contentWithThinkingForLlm(
       smsg.content ?? "",
-      typeof smsg.reasoningContent === "string" ? smsg.reasoningContent : undefined,
+      reasoningRaw || undefined,
     ),
   };
   // 从 meta 恢复第一个内容块的微压缩配置
@@ -403,6 +428,7 @@ export function sessionToMaouMessage(smsg: SessionMessage, seqId: number): MaouM
     pinned: smsg.pinned ?? false,
     originalRole: smsg.role as MaouMessage['originalRole'],
     source: smsg.source,
+    ...(reasoningRaw ? { reasoningContent: reasoningRaw } : {}),
   };
 
   // 恢复 meta 和 compact

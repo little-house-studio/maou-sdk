@@ -13,7 +13,7 @@
 import * as opencli from "@little-house-studio/opencli-engine";
 import { Tool, toolDir } from "../../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../../base.js";
-import { createToolResponse } from "../../../base.js";
+import { createToolResponse, toolFail } from "../../../base.js";
 import { errToString } from "./_util.js";
 
 export class BrowserTool extends Tool {
@@ -132,11 +132,17 @@ export class BrowserTool extends Tool {
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
     const action = String(params.action ?? "").trim().toLowerCase();
-    if (!action) return createToolResponse(false, '❌ use_browser 缺少必填参数 action（操作类型）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "open", "url": "https://example.com"}}\n可选 action: open, state, find, screenshot, click, type, fill, extract 等。action=\'help\' 查看所有可用操作。请用正确的 action 参数重试。');
+    if (!action) {
+      return toolFail(
+        "invalid_args",
+        '❌ use_browser 缺少必填参数 action（操作类型）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "open", "url": "https://example.com"}}\n可选 action: open, state, find, screenshot, click, type, fill, extract 等。action=\'help\' 查看所有可用操作。请用正确的 action 参数重试。',
+        { code: "missing_params", details: { missing: ["action"] } },
+      );
+    }
 
     if (!opencli.isAvailable()) {
-      return createToolResponse(
-        false,
+      return toolFail(
+        "dependency_unavailable",
         "opencli 未安装或未在 PATH 中。\n\n" +
           "【安装与诊断】\n" +
           "  npm i -g @jackwener/opencli   # Node ≥ 21 推荐\n" +
@@ -146,6 +152,7 @@ export class BrowserTool extends Tool {
           "  Chrome 扩展：https://chromewebstore.google.com/detail/opencli/ildkmabpimmkaediidaifkhjpohdnifk\n" +
           "  保持 Chrome 已打开且扩展已连接；冲突时可暂时关闭 1Password 等占用 CDP 的扩展。\n" +
           "静态页面只读可用 reader，不必启动浏览器。",
+        { code: "opencli_missing" },
       );
     }
 
@@ -264,12 +271,24 @@ export class BrowserTool extends Tool {
       // ── 编排类 ──
       if (action === "batch") {
         const steps = params.steps as Array<Record<string, string>> | undefined;
-        if (!steps || !Array.isArray(steps) || steps.length === 0) return createToolResponse(false, '❌ use_browser batch 缺少必填参数 steps（操作步骤数组）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "batch", "steps": [{"action": "open", "url": "https://example.com"}]}}\n请用正确的 steps 参数重试。');
+        if (!steps || !Array.isArray(steps) || steps.length === 0) {
+          return toolFail(
+            "invalid_args",
+            '❌ use_browser batch 缺少必填参数 steps（操作步骤数组）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "batch", "steps": [{"action": "open", "url": "https://example.com"}]}}\n请用正确的 steps 参数重试。',
+            { code: "missing_params", details: { missing: ["steps"], action: "batch" } },
+          );
+        }
         return this.wrap(await opencli.batch(session, steps, { cwd }));
       }
       if (action === "multi") {
         const steps = params.steps as opencli.MultiStep[] | undefined;
-        if (!steps || !Array.isArray(steps) || steps.length === 0) return createToolResponse(false, '❌ use_browser multi 缺少必填参数 steps（跨 session 操作步骤数组）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "multi", "steps": [{"session": "default", "action": "open", "url": "https://example.com"}]}}\n请用正确的 steps 参数重试。');
+        if (!steps || !Array.isArray(steps) || steps.length === 0) {
+          return toolFail(
+            "invalid_args",
+            '❌ use_browser multi 缺少必填参数 steps（跨 session 操作步骤数组）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "multi", "steps": [{"session": "default", "action": "open", "url": "https://example.com"}]}}\n请用正确的 steps 参数重试。',
+            { code: "missing_params", details: { missing: ["steps"], action: "multi" } },
+          );
+        }
         return this.wrap(await opencli.multi(steps, { cwd }));
       }
       if (action === "watch") {
@@ -285,7 +304,13 @@ export class BrowserTool extends Tool {
       }
       if (action === "run") {
         const command = String(params.command ?? "").trim();
-        if (!command) return createToolResponse(false, '❌ use_browser run 缺少必填参数 command（原始命令）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "run", "command": "open https://example.com"}}\n请用正确的 command 参数重试。');
+        if (!command) {
+          return toolFail(
+            "invalid_args",
+            '❌ use_browser run 缺少必填参数 command（原始命令）。正确用法示例：\n{"tool": "use_browser", "params": {"action": "run", "command": "open https://example.com"}}\n请用正确的 command 参数重试。',
+            { code: "missing_params", details: { missing: ["command"], action: "run" } },
+          );
+        }
         return this.wrap(await opencli.runRaw(session, command.split(/\s+/), { cwd }));
       }
 

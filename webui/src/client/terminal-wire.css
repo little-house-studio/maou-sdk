@@ -1,0 +1,293 @@
+/**
+ * 终端面板 —— wire shell（tau-ceti）
+ * 暖灰 void + acid green；随 TerminalPanel 懒加载注入。
+ * 嵌在 lime dock 文件夹里时用 surface-dark 内嵌，不吃 manila 填色。
+ */
+
+.term-panel.term-panel--wire,
+.wire-dock-terminal-host .term-panel,
+.wire-dock-board-shell .term-panel {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: none !important;
+  background: var(--n-code-bg, #1a1817) !important;
+  color: var(--n-label, #f5f0e8);
+  font-family: var(--font-text, var(--n-font, inherit));
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ── Toolbar（替代旧 panel-header / AGENT TERMINALS） ── */
+.term-panel--wire .term-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-elevated, #282522);
+}
+
+.term-panel--wire .term-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.term-panel--wire .term-status-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--n-tertiary, #8a8278);
+  box-shadow: none;
+}
+
+.term-panel--wire .term-status-dot.is-live {
+  background: var(--n-accent, #c7ff20);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--n-accent, #c7ff20) 28%, transparent);
+}
+
+.term-panel--wire .term-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--n-secondary, #c9c2b6);
+  overflow: hidden;
+}
+
+.term-panel--wire .term-status-id {
+  font-family: var(--n-mono, var(--font-code, monospace));
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--n-accent, #c7ff20);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 42vw;
+}
+
+.term-panel--wire .term-status-sep {
+  color: var(--n-quaternary, #6a635c);
+  flex-shrink: 0;
+}
+
+.term-panel--wire .term-status-state {
+  color: var(--n-tertiary, #8a8278);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-panel--wire .term-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Wire hard chips — 非 linkish 青绿 */
+.term-panel--wire .term-btn {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  min-height: 26px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  border-radius: 0;
+  background: var(--n-surface, #3d3834);
+  color: var(--n-label, #f5f0e8);
+  cursor: pointer;
+  line-height: 1.2;
+}
+
+.term-panel--wire .term-btn:hover:not(:disabled) {
+  background: var(--n-hover, #524c45);
+  border-color: color-mix(in srgb, var(--n-label, #f5f0e8) 22%, transparent);
+}
+
+.term-panel--wire .term-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.term-panel--wire .term-btn.is-danger {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--n-err, #ff741d) 55%, transparent);
+  color: var(--n-err, #ff741d);
+}
+
+.term-panel--wire .term-btn.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--n-err, #ff741d) 18%, transparent);
+  color: #ffb08a;
+}
+
+/* ── Session chips ── */
+.term-panel--wire .term-sessions {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-rail-alt, #2f2b28);
+  max-height: 72px;
+  overflow: auto;
+}
+
+.term-panel--wire .term-sessions-empty {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--n-tertiary, #8a8278);
+}
+
+.term-panel--wire .term-sessions-empty code {
+  font-family: var(--n-mono, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--n-accent, #c7ff20);
+  background: color-mix(in srgb, var(--n-accent, #c7ff20) 12%, transparent);
+  padding: 1px 5px;
+  border-radius: 0;
+}
+
+.term-panel--wire .term-session-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.term-panel--wire .term-session-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  max-width: 180px;
+  padding: 5px 10px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  border-radius: 0;
+  background: var(--n-elevated, #282522);
+  color: var(--n-secondary, #c9c2b6);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.term-panel--wire .term-session-chip:hover {
+  background: var(--n-hover, #524c45);
+  border-color: color-mix(in srgb, var(--n-label, #f5f0e8) 20%, transparent);
+}
+
+.term-panel--wire .term-session-chip.is-active {
+  background: color-mix(in srgb, var(--n-accent, #c7ff20) 14%, #282522);
+  border-color: var(--n-accent, #c7ff20);
+  color: var(--n-label, #f5f0e8);
+  box-shadow: inset 2px 0 0 var(--n-accent, #c7ff20);
+}
+
+.term-panel--wire .term-session-chip.is-done {
+  opacity: 0.62;
+}
+
+.term-panel--wire .term-session-chip-label {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+  color: inherit;
+}
+
+.term-panel--wire .term-session-chip.is-active .term-session-chip-label {
+  color: var(--n-accent, #c7ff20);
+}
+
+.term-panel--wire .term-session-chip-meta {
+  font-family: var(--n-mono, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--n-tertiary, #8a8278);
+  text-transform: lowercase;
+}
+
+/* ── xterm host ── */
+.term-panel--wire .term-wrap,
+.wire-dock-terminal-host .term-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+  overflow: hidden;
+  /* 禁止纯黑 #000 —— 暖灰 void */
+  background: var(--n-code-bg, #1a1817) !important;
+}
+
+.term-panel--wire .term-wrap .xterm,
+.wire-dock-terminal-host .term-wrap .xterm {
+  height: 100%;
+  padding: 6px 8px;
+  box-sizing: border-box;
+}
+
+.term-panel--wire .term-wrap .xterm-viewport,
+.wire-dock-terminal-host .xterm-viewport {
+  background-color: var(--n-code-bg, #1a1817) !important;
+}
+
+.term-panel--wire .term-wrap .xterm-screen,
+.wire-dock-terminal-host .xterm-screen {
+  background-color: var(--n-code-bg, #1a1817) !important;
+}
+
+/* Idle 空态：wire 说明文案，非 Codex 黑屏 */
+.term-panel--wire .term-wrap.is-idle::after,
+.wire-dock-terminal-host .term-wrap.is-idle::after {
+  content: "选择上方会话附着，或从聊天「打开终端」";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 20px;
+  text-align: center;
+  font-family: var(--font-text, inherit);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--n-tertiary, #8a8278) !important;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--n-code-bg, #1a1817) 94%, transparent) !important;
+}
+
+/* 兼容旧 class（若外部仍引用） */
+.term-panel--wire .term-action {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-surface, #3d3834);
+  color: var(--n-label, #f5f0e8);
+  cursor: pointer;
+}
+
+.term-panel--wire .panel-header,
+.term-panel--wire .term-panel-header {
+  display: none !important; /* 已迁到 term-toolbar */
+}

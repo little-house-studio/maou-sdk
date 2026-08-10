@@ -157,7 +157,7 @@
   display: none !important;
 }
 
-/* Files rail: draft FilesRail + optional live editor */
+/* Files rail: 文件树 + 只读 Markdown 预览（不用 MarkdownWorkbench） */
 .live-shell .live-files-rail {
   min-width: 0;
   min-height: 0;
@@ -177,18 +177,20 @@
 }
 
 .live-shell .live-files-tree {
-  flex: 0 1 45%;
-  min-height: 120px;
+  flex: 0 1 42%;
+  min-height: 100px;
   overflow: auto;
 }
 
+.live-shell .live-files-preview,
 .live-shell .live-files-editor {
-  flex: 1 1 55%;
+  flex: 1 1 58%;
   min-height: 0;
   display: flex;
   flex-direction: column;
   border-top: 1px solid var(--n-line-solid, #3d3834);
   overflow: hidden;
+  background: var(--n-bg, #1a1817);
 }
 
 .live-shell .live-files-editor-head {
@@ -196,10 +198,12 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 4px 8px;
+  padding: 6px 10px;
   font-size: 11px;
   color: var(--n-secondary, #c9c2b6);
   flex: 0 0 auto;
+  background: var(--n-elevated, #282522);
+  border-bottom: 1px solid var(--n-line-solid, #3d3834);
 }
 
 .live-shell .live-files-editor-path {
@@ -207,17 +211,31 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--n-mono);
+  color: var(--n-tertiary, #8a8278);
+}
+
+.live-shell .live-files-preview-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  background: var(--n-bg, #1a1817);
+  color: var(--n-label, #f5f0e8);
+}
+
+.live-shell .live-files-preview-body.wire-project-preview {
+  /* 复用项目预览 MD 排版 */
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .live-shell .live-files-err {
   flex: 0 0 auto;
-  padding: 6px 8px;
+  padding: 8px 10px;
   font-size: 11px;
   color: var(--n-warn, #ffd900);
 }
 
-.live-shell .live-files-rail .md-workbench,
-.live-shell .live-files-editor .md-workbench,
 .live-shell .live-project-host .md-workbench {
   flex: 1;
   min-height: 0;
@@ -399,18 +417,22 @@
   color: var(--n-tertiary, #8a8278);
 }
 
-/* Terminal lives inside bottom dock 终端 folder card (not a side float) */
-.live-shell .wire-dock-terminal-host {
+/* Terminal: live face inside lime dock card — styles live in terminal-wire.css
+ * (lazy chunk). Shell only ensures host flex fill + dark surface. */
+.live-shell .wire-dock-terminal-host,
+.live-shell .wire-dock-board-shell.surface-dark.wire-dock-terminal-host {
   flex: 1;
   min-height: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #0a0a0a;
+  background: var(--n-code-bg, #1a1817);
+  color: var(--n-label, #f5f0e8);
 }
 
-.live-shell .wire-dock-terminal-host .term-panel {
+.live-shell .wire-dock-terminal-host .term-panel,
+.live-shell .term-panel--wire {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -420,22 +442,93 @@
   height: 100%;
 }
 
-.live-shell .wire-dock-terminal-host .term-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
+/* ── Project text preview / source under live shell ── */
+.live-shell .wire-project-preview {
+  background: var(--n-bg, #1a1817) !important;
+  color: var(--n-label, #f5f0e8) !important;
 }
 
-.live-shell .wire-dock-terminal-host .term-list {
-  max-height: 88px;
-  overflow: auto;
-  flex: 0 0 auto;
+.live-shell .wire-project-source-wrap,
+.live-shell .wire-project-source-wrap .md-editor,
+.live-shell .wire-project-source-wrap .md-editor--wire,
+.live-shell .md-editor--wire {
+  background: var(--n-code-bg, #1a1817) !important;
+  color: var(--n-secondary, #c9c2b6);
 }
 
-.live-shell .wire-dock-terminal-host .term-wrap {
-  flex: 1;
-  min-height: 120px;
+.live-shell .wire-project-source-wrap .cm-editor,
+.live-shell .md-editor--wire .cm-editor {
+  background: var(--n-code-bg, #1a1817) !important;
+}
+
+.live-shell .wire-project-preview .dm-code,
+.live-shell .wire-project-preview .dm-pre,
+.live-shell .wire-project-preview pre,
+.live-shell .wire-project-preview code {
+  background: var(--n-elevated, #282522);
+  color: var(--n-secondary, #c9c2b6);
+  border-radius: 0;
+}
+
+.live-shell .wire-project-preview .dm-pre,
+.live-shell .wire-project-preview pre {
+  border: 1px solid var(--n-line-solid, #3d3834);
+  padding: 10px 12px;
+}
+
+.live-shell .wire-project-preview a {
+  color: var(--n-info, #5a5aff);
+}
+
+.live-shell .wire-project-preview blockquote {
+  margin: 0.6em 0;
+  padding: 0.2em 0 0.2em 12px;
+  border-left: 3px solid var(--n-accent, #c7ff20);
+  color: var(--n-secondary, #c9c2b6);
+  background: color-mix(in srgb, var(--n-elevated, #282522) 70%, transparent);
+}
+
+/* MarkdownWorkbench（若仍挂载）也跟 wire 壳 */
+.live-shell .md-workbench,
+.live-shell .md-files,
+.live-shell .md-outline,
+.live-shell .md-main,
+.live-shell .md-editor {
+  background: var(--n-bg, #1a1817) !important;
+  color: var(--n-label, #f5f0e8);
+  border-color: var(--n-line-solid, #3d3834) !important;
+}
+
+.live-shell .md-files,
+.live-shell .md-outline {
+  background: var(--n-rail, #282522) !important;
+}
+
+.live-shell .md-side-head,
+.live-shell .md-root-hint {
+  color: var(--n-tertiary, #8a8278);
+  border-bottom-color: var(--n-line-solid, #3d3834);
+}
+
+.live-shell .md-tree-row:hover {
+  background: var(--n-hover, #524c45);
+}
+
+.live-shell .md-tree-row.file.active {
+  background: var(--n-accent-dim, color-mix(in srgb, #c7ff20 18%, transparent));
+  border-left-color: var(--n-accent, #c7ff20);
+}
+
+.live-shell .md-mode-tabs button {
+  border-color: var(--n-line-solid, #3d3834);
+  color: var(--n-tertiary, #8a8278);
+  border-radius: 0;
+}
+
+.live-shell .md-mode-tabs button.active {
+  background: var(--n-accent, #c7ff20);
+  border-color: var(--n-accent, #c7ff20);
+  color: #000;
 }
 
 .live-shell .wire-dock-card[data-dock-card="terminal"] .wire-dock-folder-content {
@@ -506,63 +599,22 @@
   display: none !important;
 }
 
-/* ── 主动智能（底栏 dock 卡片） ── */
+/* ── 主动智能（底栏 dock 卡片 · cyan paper on fill） ── */
 .wire-dock-proactive-host {
   display: flex;
   flex-direction: column;
   min-height: 0;
   height: 100%;
   overflow: hidden;
+  color: var(--dock-ink, #0a2a36);
 }
 
-.proactive-host.is-card {
+.live-shell .wire-dock-card[data-dock-card="proactive"] .wire-dock-folder-content,
+.live-shell .wire-dock-card[data-dock-card="proactive"] .wire-dock-card-body {
+  min-height: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  height: 100%;
-  overflow: hidden;
-  background: transparent;
-}
-
-.proactive-host.is-card .proactive-bar {
-  flex: 0 0 auto;
-  padding: 6px 8px;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.proactive-host.is-card .proactive-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  display: grid;
-  grid-template-columns: minmax(140px, 0.9fr) minmax(160px, 1fr) minmax(180px, 1.2fr);
-  gap: 8px;
-  padding: 6px 8px 8px;
-}
-
-.proactive-host.is-card .proactive-settings,
-.proactive-host.is-card .proactive-chat,
-.proactive-host.is-card .proactive-board {
-  min-height: 0;
-  overflow: auto;
-  border-radius: 6px;
-  padding: 8px;
-}
-
-.proactive-host.is-card .proactive-section-title {
-  font-size: 11px;
-  margin-bottom: 6px;
-}
-
-.proactive-host.is-card .proactive-chat-log {
-  max-height: 140px;
-}
-
-@media (max-width: 900px) {
-  .proactive-host.is-card .proactive-body {
-    grid-template-columns: 1fr;
-  }
 }
 
 /* 旧全页布局（若仍挂载 page） */
@@ -581,6 +633,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  color: var(--n-label, #f5f0e8);
 }
 
 .proactive-host.is-loading {
@@ -588,6 +641,394 @@
   color: var(--n-tertiary, #8a8278);
 }
 
+/* ── Card presentation: ink on cyan manila ── */
+.proactive-host.is-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  color: var(--dock-ink, #0a2a36);
+  font-family: var(--font-text, inherit);
+  -webkit-font-smoothing: antialiased;
+}
+
+.proactive-host.is-card .proactive-bar {
+  flex: 0 0 auto;
+  padding: 4px 8px 8px;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 14%, transparent);
+  background: transparent;
+}
+
+.proactive-host.is-card .proactive-bar-left {
+  gap: 6px 8px;
+}
+
+.proactive-host.is-card .proactive-bar-left strong {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--dock-ink, #0a2a36);
+}
+
+.proactive-host.is-card .proactive-meta {
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 62%, transparent);
+}
+
+.proactive-host.is-card .proactive-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--dock-ink, #0a2a36) 10%, transparent);
+  color: var(--dock-ink, #0a2a36);
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 16%, transparent);
+}
+
+.proactive-host.is-card .proactive-job {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 22%, transparent);
+  background: color-mix(in srgb, #fff 42%, transparent);
+  color: var(--dock-ink, #0a2a36);
+}
+
+.proactive-host.is-card .proactive-job[data-status="scanning"],
+.proactive-host.is-card .proactive-job[data-status="dispatching"] {
+  background: color-mix(in srgb, #0a2a36 88%, #5ad4ff);
+  color: #e8fbff;
+  border-color: transparent;
+}
+
+.proactive-host.is-card .proactive-job[data-status="error"] {
+  background: #ff6b3d;
+  color: #1a0800;
+  border-color: transparent;
+}
+
+.proactive-host.is-card .proactive-bar-actions {
+  gap: 6px;
+}
+
+/* Buttons on cyan paper */
+.proactive-host.is-card .proactive-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 5px 11px;
+  min-height: 28px;
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 28%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, #fff 55%, transparent);
+  color: var(--dock-ink, #0a2a36);
+  cursor: pointer;
+  line-height: 1.2;
+  transition: background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+}
+
+.proactive-host.is-card .proactive-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, #fff 78%, transparent);
+  border-color: color-mix(in srgb, var(--dock-ink, #0a2a36) 45%, transparent);
+}
+
+.proactive-host.is-card .proactive-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.proactive-host.is-card .proactive-btn.is-primary {
+  background: var(--dock-ink, #0a2a36);
+  border-color: var(--dock-ink, #0a2a36);
+  color: #e8fbff;
+}
+
+.proactive-host.is-card .proactive-btn.is-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dock-ink, #0a2a36) 88%, #fff);
+}
+
+.proactive-host.is-card .proactive-btn.is-ghost {
+  background: transparent;
+}
+
+.proactive-host.is-card .proactive-error {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5a1600;
+  background: color-mix(in srgb, #ff6b3d 55%, #fff);
+  border-bottom: 1px solid color-mix(in srgb, #ff6b3d 40%, transparent);
+}
+
+.proactive-host.is-card .proactive-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(148px, 0.85fr) minmax(180px, 1.05fr) minmax(200px, 1.25fr);
+  gap: 8px;
+  padding: 8px;
+}
+
+.proactive-host.is-card .proactive-settings,
+.proactive-host.is-card .proactive-chat,
+.proactive-host.is-card .proactive-board {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 12%, transparent);
+  border-radius: 6px;
+  padding: 10px;
+  background: color-mix(in srgb, #fff 52%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 35%, transparent) inset;
+}
+
+.proactive-host.is-card .proactive-section-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 72%, transparent);
+}
+
+.proactive-host.is-card .proactive-board-hint {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 52%, transparent);
+}
+
+.proactive-host.is-card .proactive-field {
+  margin-bottom: 8px;
+  color: var(--dock-ink, #0a2a36);
+}
+
+.proactive-host.is-card .proactive-field-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.proactive-host.is-card .proactive-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 58%, transparent);
+}
+
+.proactive-host.is-card .proactive-field input[type="number"],
+.proactive-host.is-card .proactive-field select,
+.proactive-host.is-card .proactive-composer input {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 20%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, #fff 78%, transparent);
+  color: var(--dock-ink, #0a2a36);
+  outline: none;
+}
+
+.proactive-host.is-card .proactive-field input[type="number"]:focus,
+.proactive-host.is-card .proactive-field select:focus,
+.proactive-host.is-card .proactive-composer input:focus {
+  border-color: color-mix(in srgb, var(--dock-ink, #0a2a36) 48%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dock-ink, #0a2a36) 12%, transparent);
+}
+
+.proactive-host.is-card .proactive-field input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--dock-ink, #0a2a36);
+}
+
+.proactive-host.is-card .proactive-hint {
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 55%, transparent);
+}
+
+.proactive-host.is-card .proactive-path {
+  margin-top: 10px;
+  font-size: 10px;
+  font-family: var(--n-mono, ui-monospace, monospace);
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 48%, transparent);
+}
+
+.proactive-host.is-card .proactive-zone-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px;
+}
+
+.proactive-host.is-card .proactive-zone-chip {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 18%, transparent);
+  background: color-mix(in srgb, #fff 40%, transparent);
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 72%, transparent);
+  cursor: pointer;
+}
+
+.proactive-host.is-card .proactive-zone-chip.is-on {
+  background: var(--dock-ink, #0a2a36);
+  border-color: var(--dock-ink, #0a2a36);
+  color: #e8fbff;
+}
+
+.proactive-host.is-card .proactive-chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.proactive-host.is-card .proactive-chat-log {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: auto;
+  gap: 8px;
+  padding-bottom: 6px;
+}
+
+.proactive-host.is-card .proactive-line-role {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 55%, transparent);
+}
+
+.proactive-host.is-card .proactive-line.role-user .proactive-line-role {
+  color: #0b5f7a;
+}
+
+.proactive-host.is-card .proactive-line.role-assistant .proactive-line-role {
+  color: #0a5c3a;
+}
+
+.proactive-host.is-card .proactive-line-text {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--dock-ink, #0a2a36);
+}
+
+.proactive-host.is-card .proactive-composer {
+  border-top: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 12%, transparent);
+  padding-top: 8px;
+  gap: 6px;
+}
+
+.proactive-host.is-card .proactive-empty {
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 48%, transparent);
+}
+
+.proactive-host.is-card .proactive-zone-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--dock-ink, #0a2a36);
+}
+
+.proactive-host.is-card .proactive-zone-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 800;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--dock-ink, #0a2a36) 12%, transparent);
+  color: var(--dock-ink, #0a2a36);
+}
+
+.proactive-host.is-card .proactive-item {
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 12%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, #fff 70%, transparent);
+}
+
+.proactive-host.is-card .proactive-item.is-queued {
+  border-color: color-mix(in srgb, var(--dock-ink, #0a2a36) 38%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--dock-ink, #0a2a36) 8%, transparent);
+}
+
+.proactive-host.is-card .proactive-item-title {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--dock-ink, #0a2a36);
+}
+
+.proactive-host.is-card .proactive-item-comment {
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 62%, transparent);
+}
+
+.proactive-host.is-card .proactive-risk {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 18%, transparent);
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 72%, transparent);
+  background: color-mix(in srgb, #fff 40%, transparent);
+}
+
+.proactive-host.is-card .proactive-risk.is-high {
+  color: #7a1a00;
+  border-color: color-mix(in srgb, #ff6b3d 55%, transparent);
+  background: color-mix(in srgb, #ff6b3d 28%, #fff);
+}
+
+.proactive-host.is-card .proactive-risk.is-low {
+  color: #0a4a2e;
+  border-color: color-mix(in srgb, #1dbf7a 45%, transparent);
+  background: color-mix(in srgb, #1dbf7a 22%, #fff);
+}
+
+.proactive-host.is-card .proactive-risk.is-mid {
+  color: #6a3a00;
+  border-color: color-mix(in srgb, #e8a020 50%, transparent);
+  background: color-mix(in srgb, #e8a020 24%, #fff);
+}
+
+.proactive-host.is-card .proactive-done-btn {
+  margin-top: 6px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 18%, transparent);
+  background: transparent;
+  color: color-mix(in srgb, var(--dock-ink, #0a2a36) 68%, transparent);
+  cursor: pointer;
+}
+
+.proactive-host.is-card .proactive-done-btn:hover {
+  color: var(--dock-ink, #0a2a36);
+  background: color-mix(in srgb, #fff 50%, transparent);
+  border-color: color-mix(in srgb, var(--dock-ink, #0a2a36) 35%, transparent);
+}
+
+/* ── Shared / page fallbacks (dark wire shell) ── */
 .proactive-bar {
   display: flex;
   align-items: center;
@@ -609,6 +1050,17 @@
 .proactive-bar-left strong {
   font-size: 13px;
   color: var(--n-label, #f5f0e8);
+}
+
+.proactive-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  color: var(--n-secondary, #c4bbb0);
 }
 
 .proactive-job {
@@ -637,6 +1089,39 @@
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.proactive-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  min-height: 28px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  border-radius: 0;
+  background: var(--n-surface, #3d3834);
+  color: var(--n-label, #f5f0e8);
+  cursor: pointer;
+}
+
+.proactive-btn:hover:not(:disabled) {
+  background: var(--n-hover, #524c45);
+}
+
+.proactive-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.proactive-btn.is-primary {
+  background: var(--n-accent, #c7ff20);
+  border-color: var(--n-accent, #c7ff20);
+  color: #000;
+}
+
+.proactive-btn.is-ghost {
+  background: transparent;
+  color: var(--n-secondary, #c4bbb0);
 }
 
 .proactive-error {
@@ -699,6 +1184,12 @@
   color: var(--n-secondary, #c4bbb0);
 }
 
+.proactive-field-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
 .proactive-field input[type="number"],
 .proactive-field select,
 .proactive-composer input {
@@ -727,6 +1218,28 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.proactive-zone-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.proactive-zone-chip {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: transparent;
+  color: var(--n-secondary, #c4bbb0);
+  cursor: pointer;
+}
+
+.proactive-zone-chip.is-on {
+  background: var(--n-accent, #c7ff20);
+  border-color: var(--n-accent, #c7ff20);
+  color: #000;
 }
 
 .proactive-check {
@@ -821,6 +1334,11 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--n-label, #f5f0e8);
+}
+
+.proactive-zone-count {
+  font-size: 10px;
+  opacity: 0.7;
 }
 
 .proactive-empty {
@@ -919,15 +1437,15 @@
 }
 
 @media (max-width: 1100px) {
-  .proactive-body {
+  .proactive-host:not(.is-card) .proactive-body {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(180px, 1fr) minmax(200px, 1fr);
     overflow: auto;
   }
 
-  .proactive-settings,
-  .proactive-chat,
-  .proactive-board {
+  .proactive-host:not(.is-card) .proactive-settings,
+  .proactive-host:not(.is-card) .proactive-chat,
+  .proactive-host:not(.is-card) .proactive-board {
     border-right: none;
     border-bottom: 1px solid var(--n-line-solid, #3d3834);
   }

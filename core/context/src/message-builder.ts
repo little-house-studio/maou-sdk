@@ -116,6 +116,16 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
       if (msg.tool_call_id) {
         entry.tool_call_id = msg.tool_call_id;
       }
+      // DeepSeek / OpenCode thinking：assistant + tool_calls 必须带 reasoning_content 字段
+      // （缺字段 → 400；空字符串可过；旧会话无真思考时用 "" 兜底）
+      if (msg.role === "assistant") {
+        const rcRaw = (msg as { reasoning_content?: unknown }).reasoning_content;
+        const rc = typeof rcRaw === "string" ? rcRaw.trim() : "";
+        const hasTc =
+          Array.isArray(msg.tool_calls) && (msg.tool_calls as unknown[]).length > 0;
+        if (rc) entry.reasoning_content = rc;
+        else if (hasTc) entry.reasoning_content = "";
+      }
       messages.push(entry);
     }
   } else {
@@ -136,6 +146,8 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
         messages.push({
           role: "assistant",
           content: "",
+          // thinking 模式：合成 tool_call 也必须带 reasoning_content 字段
+          reasoning_content: "",
           tool_calls: [
             {
               id: callId,
@@ -155,12 +167,18 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
         continue;
       }
 
-      // assistant 历史：若写入时按 thinking_context_mode 存了 reasoningContent，回灌到 LLM 文本
+      // assistant 历史：
+      // - content：可带 <thinking> 标签（压缩/通用兼容）
+      // - reasoning_content：DeepSeek V4 thinking 模式硬要求回传独立字段
+      const reasoningRaw =
+        msg.role === "assistant" && typeof msg.reasoningContent === "string"
+          ? msg.reasoningContent.trim()
+          : "";
       const historyContent =
         msg.role === "assistant"
           ? contentWithThinkingForLlm(
               String(msg.content ?? ""),
-              typeof msg.reasoningContent === "string" ? msg.reasoningContent : undefined,
+              reasoningRaw || undefined,
             )
           : msg.content;
       const entry: Record<string, unknown> = {
@@ -177,6 +195,13 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
             arguments: JSON.stringify(tc.arguments ?? tc.parameters ?? {}),
           },
         }));
+      }
+      // thinking 模式：有 tool_calls 时字段必带（空串可过；有真值优先）
+      if (msg.role === "assistant") {
+        if (reasoningRaw) entry.reasoning_content = reasoningRaw;
+        else if (nativeToolCalls && nativeToolCalls.length > 0) {
+          entry.reasoning_content = "";
+        }
       }
       if (msg.toolCallId) {
         entry.tool_call_id = msg.toolCallId;
@@ -204,6 +229,17 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
 
   // ── Orphaned tool call 保护 ──
   repairOrphanedToolCalls(messages);
+
+  // ── thinking 模式安全网：任何 assistant+tool_calls 必须带 reasoning_content ──
+  // （终端通知合成、旧会话、repair 补丁都可能漏字段）
+  for (const entry of messages) {
+    if (entry.role !== "assistant") continue;
+    const tcs = entry.tool_calls;
+    if (!Array.isArray(tcs) || tcs.length === 0) continue;
+    if (typeof entry.reasoning_content !== "string") {
+      entry.reasoning_content = "";
+    }
+  }
 
   // ── 动态上下文注入 ──
   injectUserContext(messages, roundCount, userOpts);

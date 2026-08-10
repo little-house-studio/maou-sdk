@@ -2068,6 +2068,38 @@
   min-width: 0;
 }
 
+.wire-tool-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.wire-tool-title-row .wire-tool-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.wire-tool-open-term {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 0;
+  background: var(--n-surface, #3d3834);
+  color: var(--n-accent, #c7ff20);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wire-tool-open-term:hover {
+  background: var(--n-hover, #524c45);
+  color: var(--n-label, #f5f0e8);
+}
+
 .wire-tool-title {
   display: flex;
   align-items: center;
@@ -2449,7 +2481,17 @@
 }
 
 .wire-context .composer-row textarea::placeholder {
-  color: var(--n-quaternary);
+  color: var(--n-tertiary, #8a8278);
+  opacity: 0.9;
+}
+
+.wire-context .composer-row.wire-composer-card.is-busy {
+  border-color: color-mix(in srgb, var(--n-accent, #c7ff20) 28%, var(--n-line-solid, #3d3834));
+  box-shadow: inset 2px 0 0 var(--n-accent, #c7ff20);
+}
+
+.wire-context .composer-row.wire-composer-card.is-busy textarea::placeholder {
+  color: color-mix(in srgb, var(--n-accent, #c7ff20) 55%, var(--n-tertiary, #8a8278));
 }
 
 .wire-context .composer-toolbar.wire-composer-toolbar,
@@ -2457,11 +2499,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--s-3);
+  gap: 10px;
   min-height: 36px;
   margin: 0;
   padding: 10px 0 0;
-  border-top: 1px solid var(--n-line);
+  border-top: 1px solid var(--n-line-solid, #3d3834);
 }
 
 .wire-context .composer-toolbar-left.wire-composer-tools,
@@ -2496,167 +2538,134 @@
   position: relative;
 }
 
-/* ── 审批模式：三档拨杆（高饱和 · 平面极简 · 无边框 · 加大） ──────── */
-.approval-phys-switch {
-  --aps-n: #3d7cff; /* normal · 高饱和蓝 */
-  --aps-a: #ffd900; /* auto · 警戒黄 */
-  --aps-y: #c7ff20; /* yolo · 酸绿 */
-  --aps-track: #1a1817;
-  --aps-ink: #0e0c0b;
-  --aps-mute: #524c45;
-  --aps-fg: #0e0c0b;
+/* ── 审批模式：三盏圆形信号灯（无边框 · 无底板） ──────── */
+.approval-lights,
+.approval-phys-switch.approval-lights {
+  --light-red: #ff4d3a;
+  --light-yellow: #ffd900;
+  --light-green: #3bffa7;
+  --light-off: #4a453f;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   flex-shrink: 0;
   user-select: none;
-  touch-action: none;
-  font-family: var(--n-mono, var(--font-pixel-mono, monospace));
+  padding: 0;
+  margin: 0;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  font-family: var(--font-text, inherit);
 }
 
-/* flat track — no border */
-.approval-phys-track {
-  position: relative;
-  width: 108px;
-  height: 28px;
-  border: none;
-  outline: none;
-  box-shadow: none;
-  background: var(--aps-track);
-  border-radius: 0;
-  cursor: grab;
-  overflow: hidden;
-}
-
-.approval-phys-switch.is-dragging .approval-phys-track,
-.approval-phys-switch:active .approval-phys-track,
-.approval-phys-track:active {
-  cursor: grabbing;
-}
-
-/* mode color via fill only (no border) */
-.approval-phys-switch.is-normal .approval-phys-track {
-  background: color-mix(in srgb, var(--aps-n) 18%, var(--aps-track));
-}
-.approval-phys-switch.is-auto .approval-phys-track {
-  background: color-mix(in srgb, var(--aps-a) 18%, var(--aps-track));
-}
-.approval-phys-switch.is-yolo .approval-phys-track {
-  background: color-mix(in srgb, var(--aps-y) 20%, var(--aps-track));
-}
-
-.approval-phys-rail {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  align-items: center;
+.approval-lights.is-disabled {
+  opacity: 0.4;
   pointer-events: none;
-  z-index: 0;
 }
 
-.approval-phys-seg {
-  display: flex;
+.approval-light {
+  display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
-  font-weight: 800;
+  gap: 5px;
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: none !important;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--n-tertiary, #8a8278);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  transition: color 0.12s ease, opacity 0.12s ease;
+}
+
+.approval-light:hover:not(:disabled) {
+  color: var(--n-secondary, #c9c2b6);
+  background: transparent !important;
+}
+
+.approval-light-label {
+  font-size: 10px;
+  font-weight: 700;
   letter-spacing: 0.02em;
-  color: var(--aps-mute);
   line-height: 1;
-  opacity: 0.85;
-}
-
-.approval-phys-seg.is-on {
-  opacity: 0; /* lever covers active glyph */
-}
-
-/* flat lever block — larger */
-.approval-phys-lever {
-  position: absolute;
-  top: 2px;
-  width: 28px;
-  height: 24px;
-  z-index: 2;
-  border-radius: 0;
-  border: none;
-  outline: none;
-  box-shadow: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  will-change: left;
-  background: var(--aps-y);
-  color: var(--aps-fg);
-}
-
-.approval-phys-lever-face {
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: 0;
   color: inherit;
+  white-space: nowrap;
 }
 
-.approval-phys-switch.is-normal .approval-phys-lever {
-  background: var(--aps-n);
-  color: #ffffff;
-}
-.approval-phys-switch.is-auto .approval-phys-lever {
-  background: var(--aps-a);
-  color: var(--aps-fg);
-}
-.approval-phys-switch.is-yolo .approval-phys-lever {
-  background: var(--aps-y);
-  color: var(--aps-fg);
-}
-
-.approval-phys-caption {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  line-height: 1;
-  min-width: 3.2em;
-  color: var(--aps-mute);
+/* 正圆 · 无描边 */
+.approval-light-lamp {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: none !important;
+  box-shadow: none;
+  background: var(--light-off);
+  transition: background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
 }
 
-.approval-phys-switch.is-normal .approval-phys-caption {
-  color: var(--aps-n);
-}
-.approval-phys-switch.is-auto .approval-phys-caption {
-  color: var(--aps-a);
-}
-.approval-phys-switch.is-yolo .approval-phys-caption {
-  color: var(--aps-y);
+.approval-light-glow {
+  display: none;
 }
 
-.approval-phys-switch.is-disabled {
-  opacity: 0.35;
-  pointer-events: none;
+/* 熄灭：很暗的色相，仍是圆 */
+.approval-light.is-red .approval-light-lamp {
+  background: color-mix(in srgb, var(--light-red) 28%, #2a2622);
+  opacity: 0.45;
+}
+.approval-light.is-yellow .approval-light-lamp {
+  background: color-mix(in srgb, var(--light-yellow) 26%, #2a2622);
+  opacity: 0.45;
+}
+.approval-light.is-green .approval-light-lamp {
+  background: color-mix(in srgb, var(--light-green) 26%, #2a2622);
+  opacity: 0.45;
 }
 
-.wire-context .approval-phys-switch.wire-composer-approval-switch {
+/* 点亮：实色圆 + 柔光，无边框 */
+.approval-light.is-on {
+  opacity: 1;
+}
+.approval-light.is-on.is-red {
+  color: var(--light-red);
+}
+.approval-light.is-on.is-red .approval-light-lamp {
+  background: var(--light-red);
+  opacity: 1;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--light-red) 70%, transparent);
+}
+
+.approval-light.is-on.is-yellow {
+  color: var(--light-yellow);
+}
+.approval-light.is-on.is-yellow .approval-light-lamp {
+  background: var(--light-yellow);
+  opacity: 1;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--light-yellow) 65%, transparent);
+}
+
+.approval-light.is-on.is-green {
+  color: var(--light-green);
+}
+.approval-light.is-on.is-green .approval-light-lamp {
+  background: var(--light-green);
+  opacity: 1;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--light-green) 65%, transparent);
+}
+
+.wire-context .approval-lights.wire-composer-approval-switch,
+.wire-context .approval-phys-switch.wire-composer-approval-switch,
+.wire-shell.draft-shell .approval-lights.wire-composer-approval-switch {
   align-self: center;
-  gap: 6px;
-}
-
-.wire-context .wire-composer-approval-switch .approval-phys-track {
-  width: 108px;
-  height: 28px;
-  border: none;
-}
-
-.wire-context .wire-composer-approval-switch .approval-phys-lever {
-  top: 2px;
-  width: 28px;
-  height: 24px;
-}
-
-.wire-context .wire-composer-approval-switch .approval-phys-caption {
-  font-size: 11px;
-  min-width: 3.2em;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 0 !important;
 }
 
 /* ── 模型多级菜单 · Windows XP Luna ────────────────────────────────
@@ -3044,21 +3053,42 @@
 .wire-context .model-cascade.wire-composer-model-cascade {
   align-self: center;
   z-index: 40;
+  /* wire shell: drop XP cream trigger — match elevated chips */
+  --xp-face: var(--n-surface, #3d3834);
+  --xp-face-hi: var(--n-hover, #524c45);
+  --xp-face-lo: var(--n-line-solid, #3d3834);
+  --xp-face-dk: var(--n-tertiary, #8a8278);
+  --xp-text: var(--n-label, #f5f0e8);
+  --xp-blue: var(--n-accent, #c7ff20);
+  --xp-blue-dk: color-mix(in srgb, var(--n-accent, #c7ff20) 70%, #000);
+  --xp-btn: var(--n-elevated, #282522);
+  --xp-menu: var(--n-elevated, #282522);
+  --xp-menu-alt: var(--n-surface, #3d3834);
+  --xp-font: var(--font-text, inherit);
 }
 
 .wire-context .model-cascade.wire-composer-model-cascade .model-cascade-trigger {
-  min-height: 24px;
-  max-width: min(240px, 34vw);
-  /* keep XP chrome even in wire shell */
-  background: var(--xp-face, #ece9d8);
-  color: var(--xp-text, #000);
-  border: none;
+  min-height: 28px;
+  max-width: min(220px, 32vw);
+  background: var(--n-surface, #3d3834) !important;
+  color: var(--n-label, #f5f0e8) !important;
+  border: 1px solid var(--n-line-solid, #3d3834) !important;
+  box-shadow: none !important;
+  font-family: var(--font-text, inherit) !important;
+  font-size: 12px !important;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.wire-context .model-cascade.wire-composer-model-cascade .model-cascade-trigger:hover {
+  background: var(--n-hover, #524c45) !important;
+  border-color: color-mix(in srgb, var(--n-label, #f5f0e8) 22%, transparent) !important;
 }
 
 .wire-context .model-cascade.wire-composer-model-cascade.is-open .model-cascade-trigger {
-  /* pressed state already via box-shadow; no acid green */
-  background: var(--xp-face, #ece9d8);
-  color: var(--xp-text, #000);
+  background: var(--n-hover, #524c45) !important;
+  color: var(--n-label, #f5f0e8) !important;
+  border-color: color-mix(in srgb, var(--n-accent, #c7ff20) 45%, var(--n-line-solid)) !important;
 }
 
 /* 覆盖全局像素字强制，让 XP 菜单用 Tahoma 感 */
@@ -3102,16 +3132,25 @@
 .wire-context .usage-chip {
   display: inline-flex;
   align-items: center;
-  font-family: var(--n-mono);
+  font-family: var(--n-mono, ui-monospace, monospace);
   font-size: 11px;
-  color: var(--n-tertiary);
-  background: var(--n-bg);
-  border: 1px solid var(--n-line);
+  font-weight: 700;
+  /* warm paper chip on dark float — high contrast (not transparent) */
+  color: var(--n-bg, #1a1817);
+  background: var(--n-input-chip, #b8b0a4);
+  border: none;
   border-radius: 0;
   padding: 5px 10px;
-  min-height: 30px;
+  min-height: 28px;
   align-self: center;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.wire-context .usage-chip.wire-composer-usage:hover,
+.wire-context .usage-chip:hover {
+  color: #000;
+  background: color-mix(in srgb, var(--n-input-chip, #b8b0a4) 88%, #fff);
 }
 
 .wire-context .wire-composer-tool-sep {
@@ -3149,16 +3188,68 @@
 }
 
 .wire-context .composer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11px;
-  color: var(--n-quaternary);
-  max-width: min(140px, 18vw);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--n-secondary, #c9c2b6);
+  max-width: min(160px, 22vw);
+  padding: 4px 8px;
+  min-height: 28px;
+  border: 1px solid transparent;
+  background: transparent;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.wire-context .composer-status.is-busy {
+  color: var(--n-accent, #c7ff20);
+  border-color: color-mix(in srgb, var(--n-accent, #c7ff20) 28%, transparent);
+  background: color-mix(in srgb, var(--n-accent, #c7ff20) 10%, transparent);
+}
+
 .wire-context .composer-status.is-error {
-  color: var(--n-err);
+  color: var(--n-err, #ff741d);
+  border-color: color-mix(in srgb, var(--n-err, #ff741d) 35%, transparent);
+  background: color-mix(in srgb, var(--n-err, #ff741d) 12%, transparent);
+}
+
+.wire-context .composer-status.is-approval {
+  color: var(--n-warn, #ffd900);
+  border-color: color-mix(in srgb, var(--n-warn, #ffd900) 30%, transparent);
+  background: color-mix(in srgb, var(--n-warn, #ffd900) 10%, transparent);
+}
+
+.wire-context .composer-status-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--n-accent, #c7ff20);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--n-accent, #c7ff20) 45%, transparent);
+  animation: composer-status-pulse 1.2s ease-in-out infinite;
+}
+
+.wire-context .composer-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+@keyframes composer-status-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--n-accent, #c7ff20) 40%, transparent);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--n-accent, #c7ff20) 0%, transparent);
+    opacity: 0.85;
+  }
 }
 
 /* ── Send mode control (queue / insert) + outbox above composer ── */
@@ -3257,50 +3348,71 @@
 .send-mode-control {
   display: inline-flex;
   align-items: stretch;
-  border: 1px solid var(--n-line, #2a2a2a);
-  background: var(--n-surface, transparent);
-  height: 32px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-surface, #3d3834);
+  height: 28px;
+  overflow: hidden;
 }
 
 .wire-context .send-mode-toggle,
 .send-mode-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 8px !important;
+  gap: 5px;
+  padding: 0 9px !important;
   height: 100%;
   min-width: 0;
   border: none;
   background: transparent;
-  color: var(--n-secondary, #bbb);
+  color: var(--n-secondary, #c9c2b6);
   font-size: 11px;
-  font-weight: 600;
-  font-family: var(--font-ui, inherit);
+  font-weight: 700;
+  font-family: var(--font-text, inherit);
   cursor: pointer;
   white-space: nowrap;
 }
 
 .wire-context .send-mode-toggle:hover,
 .send-mode-toggle:hover {
-  color: var(--n-primary, #eee);
-  background: rgba(255, 255, 255, 0.04);
+  color: var(--n-label, #f5f0e8);
+  background: var(--n-hover, #524c45);
+}
+
+.wire-context .send-mode-control.mode-queue .send-mode-toggle {
+  color: var(--n-label, #f5f0e8);
 }
 
 .wire-context .send-mode-control.mode-insert .send-mode-toggle,
 .send-mode-control.mode-insert .send-mode-toggle {
-  color: var(--n-warn, #f0a000);
+  color: var(--n-warn, #ffd900);
 }
 
 .wire-context .send-mode-kbd,
 .send-mode-kbd {
-  font-family: var(--font-ui, inherit);
+  font-family: var(--n-mono, ui-monospace, monospace);
   font-size: 10px;
-  font-weight: 600;
-  padding: 1px 4px;
-  border: 1px solid var(--n-line, #333);
-  background: rgba(0, 0, 0, 0.25);
-  color: var(--n-tertiary, #999);
+  font-weight: 700;
+  padding: 1px 5px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-bg, #1a1817);
+  color: var(--n-tertiary, #8a8278);
   line-height: 1.2;
+}
+
+.wire-context .send-mode-control .wire-composer-stop {
+  border: none !important;
+  border-left: 1px solid var(--n-line-solid, #3d3834) !important;
+  border-radius: 0 !important;
+  width: 30px;
+  height: 26px;
+  min-width: 30px;
+  background: color-mix(in srgb, var(--n-err, #ff741d) 18%, var(--n-surface, #3d3834)) !important;
+  color: var(--n-err, #ff741d) !important;
+}
+
+.wire-context .send-mode-control .wire-composer-stop:hover {
+  background: color-mix(in srgb, var(--n-err, #ff741d) 32%, var(--n-surface, #3d3834)) !important;
+  color: #ffb08a !important;
 }
 
 .wire-context .send-mode-control .send-btn.wire-composer-send,
@@ -3771,6 +3883,16 @@
   --dock-badge-bg: #fff;
   --dock-badge-ink: #2a1f55;
 }
+.wire-dock-card.tone-proactive {
+  --dock-fill: #5ad4ff;
+  --dock-ink: #0a2a36;
+  --dock-ink-soft: color-mix(in srgb, #0a2a36 52%, #5ad4ff);
+  --dock-fill-hi: #8ae2ff;
+  /* dark label on cyan */
+  --dock-ear-label: #062028;
+  --dock-badge-bg: #fff;
+  --dock-badge-ink: #0a2a36;
+}
 
 /*
  * One continuous card: same DOM + one SVG for tab / preview / expand.
@@ -4009,6 +4131,87 @@
   position: relative;
   overflow: hidden;
 }
+
+/*
+ * DockBoardShell — standard content host for react / custom faces.
+ * Designers style against surface tokens; chrome (ear/path/resize) stays outside.
+ */
+.wire-dock-board-shell {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.wire-dock-board-shell.surface-transparent {
+  background: transparent;
+  color: var(--dock-ink, #1a1817);
+}
+.wire-dock-board-shell.surface-paper {
+  background: transparent;
+  color: var(--dock-ink, #0a2a36);
+}
+.wire-dock-board-shell.surface-dark {
+  background: var(--n-code-bg, #1a1817);
+  color: var(--n-label, #f5f0e8);
+}
+
+/* Optional layout helpers for face authors */
+.dock-board-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 4px 8px 8px;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+}
+.dock-board-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dock-board-grid-2 {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+  overflow: hidden;
+}
+.dock-board-grid-3 {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr) minmax(0, 1.2fr);
+  gap: 8px;
+  padding: 8px;
+  overflow: hidden;
+}
+.wire-dock-board-shell.surface-paper .dock-board-pane {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--dock-ink, #0a2a36) 12%, transparent);
+  border-radius: 6px;
+  padding: 10px;
+  background: color-mix(in srgb, #fff 52%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, #fff 35%, transparent) inset;
+}
+.wire-dock-board-shell.surface-dark .dock-board-pane {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-elevated, #282522);
+  padding: 10px;
+}
 .wire-dock-canvas-face {
   width: 100%;
   height: 100%;
@@ -4081,6 +4284,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Face has its own toolbar (e.g. terminal) — keep drag strip + close only */
+.wire-dock-folder-head.is-face-chrome {
+  min-height: 22px;
+  padding-bottom: 2px;
+  justify-content: flex-end;
+}
+.wire-dock-folder-head.is-face-chrome .wire-dock-open-title {
+  /* empty spacer still allows drag hit area left of close */
+  flex: 1;
+  min-height: 18px;
 }
 
 .wire-dock-card-close {
@@ -5161,11 +5375,24 @@
 .wire-shell.draft-shell .composer-row:focus-within {
   background: var(--n-float-hi) !important;
 }
-/* Optional-param chips — CLI inputFieldBg warm chip */
-.wire-shell.draft-shell .chip-select select,
-.wire-shell.draft-shell .usage-chip {
+/* Optional-param chips — CLI inputFieldBg warm chip (non-composer selects) */
+.wire-shell.draft-shell .chip-select select {
   background: var(--n-input-chip) !important;
   color: var(--n-bg) !important;
+}
+/* Composer usage chip: warm paper block (must beat flat-style transparent/border kill) */
+.wire-shell.draft-shell .usage-chip.wire-composer-usage,
+.wire-shell.draft-shell .wire-composer-usage.usage-chip,
+.wire-shell.draft-shell .wire-context .usage-chip.wire-composer-usage {
+  background: var(--n-input-chip, #b8b0a4) !important;
+  color: var(--n-bg, #1a1817) !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.wire-shell.draft-shell .usage-chip.wire-composer-usage:hover,
+.wire-shell.draft-shell .wire-context .usage-chip.wire-composer-usage:hover {
+  background: color-mix(in srgb, var(--n-input-chip, #b8b0a4) 88%, #fff) !important;
+  color: #000 !important;
 }
 .wire-shell.draft-shell .wire-approval-float {
   background: var(--n-float-hi) !important;
@@ -5363,6 +5590,176 @@
 .wire-shell.draft-shell .wire-new-task-btn {
   min-height: 32px;
   padding: var(--s-2) var(--s-3);
+}
+
+/* ── Session usage modal (composer 上下文 chip) ── */
+.session-usage-modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 12000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: color-mix(in srgb, #000 55%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.session-usage-modal {
+  width: min(480px, 100%);
+  max-height: min(80vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--n-elevated, #282522);
+  color: var(--n-label, #f5f0e8);
+  border: 1px solid var(--n-line-solid, #3d3834);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  font-family: var(--font-text, inherit);
+}
+
+.session-usage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--n-line-solid, #3d3834);
+  flex-shrink: 0;
+}
+
+.session-usage-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.session-usage-close {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-surface, #3d3834);
+  color: var(--n-secondary, #c9c2b6);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.session-usage-close:hover {
+  color: var(--n-label, #f5f0e8);
+  background: var(--n-hover, #524c45);
+}
+
+.session-usage-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.session-usage-section-title {
+  margin: 0 0 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--n-tertiary, #8a8278);
+}
+
+.session-usage-dl {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.session-usage-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 12.5px;
+}
+
+.session-usage-row dt {
+  margin: 0;
+  color: var(--n-tertiary, #8a8278);
+  font-weight: 600;
+}
+
+.session-usage-row dd {
+  margin: 0;
+  color: var(--n-label, #f5f0e8);
+  font-weight: 600;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.session-usage-mono {
+  font-family: var(--n-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--n-secondary, #c9c2b6);
+}
+
+.session-usage-muted {
+  font-weight: 500;
+  color: var(--n-tertiary, #8a8278);
+  font-size: 11px;
+}
+
+.session-usage-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--n-tertiary, #8a8278);
+}
+
+.session-usage-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--n-err, #ff741d);
+}
+
+.session-usage-raw {
+  margin: 0;
+  padding: 10px;
+  font-family: var(--n-mono, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--n-code-bg, #1a1817);
+  border: 1px solid var(--n-line-solid, #3d3834);
+  color: var(--n-secondary, #c9c2b6);
+  max-height: 280px;
+  overflow: auto;
+}
+
+.session-usage-foot {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--n-line-solid, #3d3834);
+}
+
+.session-usage-ok {
+  min-height: 32px;
+  padding: 0 16px;
+  border: none;
+  background: var(--n-accent, #c7ff20);
+  color: #111;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.session-usage-ok:hover {
+  filter: brightness(1.05);
 }
 
 /* ── Signal scarcity: full-sat blocks only where meaning lives ── */
@@ -6271,6 +6668,76 @@
   color: var(--n-label);
   font-size: 14px;
   line-height: 1.55;
+}
+
+/* 文本预览：与聊天 MD / 设置区同阶暖灰，避免冷蓝默认 */
+.wire-project-preview .dm-code,
+.wire-project-preview code {
+  font-family: var(--n-mono);
+  font-size: 0.92em;
+  background: var(--n-elevated);
+  color: var(--n-secondary);
+  padding: 0.1em 0.35em;
+  border-radius: 0;
+}
+
+.wire-project-preview .dm-pre,
+.wire-project-preview pre {
+  margin: 0.75em 0;
+  padding: 10px 12px;
+  background: var(--n-code-bg);
+  border: 1px solid var(--n-line-solid);
+  color: var(--n-secondary);
+  overflow: auto;
+}
+
+.wire-project-preview .dm-pre code,
+.wire-project-preview pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.wire-project-preview blockquote {
+  margin: 0.65em 0;
+  padding: 0.25em 0 0.25em 12px;
+  border-left: 3px solid var(--n-accent);
+  color: var(--n-secondary);
+  background: color-mix(in srgb, var(--n-elevated) 65%, transparent);
+}
+
+.wire-project-preview table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.wire-project-preview th,
+.wire-project-preview td {
+  border: 1px solid var(--n-line-solid);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.wire-project-preview th {
+  background: var(--n-elevated);
+  color: var(--n-label);
+  font-weight: 700;
+}
+
+.wire-project-preview tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--n-elevated) 40%, transparent);
+}
+
+.wire-project-preview a {
+  color: var(--n-info);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.wire-project-preview hr {
+  border: none;
+  border-top: 1px solid var(--n-line-solid);
+  margin: 1.1em 0;
 }
 
 /* 标题：上紧下松（常见 MD 密度） */
@@ -7280,6 +7747,10 @@
 
 .wire-settings-test-result.is-ok {
   color: var(--n-ok, #3bffa7);
+}
+
+.wire-settings-test-result.is-warn {
+  color: var(--n-warn, #ffd900);
 }
 
 .wire-settings-test-result.is-err {

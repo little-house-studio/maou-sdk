@@ -5,7 +5,7 @@
  */
 
 import type { Tool, ToolContext, ToolResponse, ToolCall } from "./base.js";
-import { createToolResponse } from "./base.js";
+import { ensureToolError, toolFail, toolFailFromThrown } from "./errors.js";
 import type { ToolRegistry } from "./registry.js";
 
 /** 事件发射器类型 */
@@ -73,7 +73,10 @@ export class ToolExecutor {
       return {
         toolCall,
         events: [],
-        result: createToolResponse(false, `不支持的工具: ${name}${hint}`),
+        result: toolFail("unknown_tool", `不支持的工具: ${name}${hint}`, {
+          code: "unknown_tool",
+          details: { toolName: name },
+        }),
       };
     }
 
@@ -85,9 +88,17 @@ export class ToolExecutor {
       return {
         toolCall,
         events: [],
-        result: createToolResponse(
-          false,
+        result: toolFail(
+          "mode_denied",
           `工具 '${toolCall.name}' 在 ${ctx.agentMode} 模式下不可用`,
+          {
+            code: "mode_denied",
+            details: {
+              toolName: toolCall.name,
+              agentMode: ctx.agentMode,
+              allowedModes: tool.definition.allowedModes,
+            },
+          },
         ),
       };
     }
@@ -95,17 +106,17 @@ export class ToolExecutor {
     // 带超时的执行
     try {
       const result = await this._executeWithTimeout(tool, toolCall, ctx);
-      return { toolCall, events: [], result };
+      // 统一保证 ok:false 带 error 字段（含未走 createToolResponse 的实现）
+      return { toolCall, events: [], result: ensureToolError(result) };
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : String(err);
       return {
         toolCall,
         events: [],
-        result: createToolResponse(
-          false,
-          `工具 ${toolCall.name} 执行异常: ${msg}`,
-        ),
+        result: toolFailFromThrown(err, {
+          prefix: `工具 ${toolCall.name} 执行异常`,
+          fallbackCategory: "execution",
+          extras: { details: { toolName: toolCall.name } },
+        }),
       };
     }
   }
@@ -150,11 +161,12 @@ export class ToolExecutor {
 
     return new Promise<ToolResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(
-          new Error(
-            `工具 ${toolCall.name} 执行超时（${timeoutMs / 1000}秒）`,
-          ),
+        const err = new Error(
+          `工具 ${toolCall.name} 执行超时（${timeoutMs / 1000}秒）`,
         );
+        err.name = "TimeoutError";
+        (err as Error & { code?: string }).code = "tool_timeout";
+        reject(err);
       }, timeoutMs);
 
       execPromise

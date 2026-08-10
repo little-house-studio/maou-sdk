@@ -9,7 +9,7 @@
  * 旧 action search/schema 兼容映射到 list。
  */
 
-import { Tool, createToolResponse } from "@little-house-studio/tools";
+import { Tool, createToolResponse, toolFail, toolFailFromThrown } from "@little-house-studio/tools";
 import type { ToolContext, ToolResponse, ToolDefinition } from "@little-house-studio/tools";
 import type { McpToolDescriptor } from "@little-house-studio/types";
 import {
@@ -180,10 +180,13 @@ export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
             if (nameParam) {
               const d = resolveDescriptor(nameParam, descriptors, allDescriptors);
               if (!d) {
-                return createToolResponse(
-                  false,
+                return toolFail(
+                  "not_found",
                   `Unknown MCP tool "${nameParam}". Try action=list without name.`,
-                  { payload: { mcp: true, gateway: true, action: "list" } },
+                  {
+                    code: "mcp_tool_not_found",
+                    payload: { mcp: true, gateway: true, action: "list" },
+                  },
                 );
               }
               return createToolResponse(
@@ -282,23 +285,30 @@ export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
           case "call": {
             const name = nameParam;
             if (!name) {
-              return createToolResponse(false, "call requires name (mcp__server__tool)", {
+              return toolFail("invalid_args", "call requires name (mcp__server__tool)", {
+                code: "mcp_call_missing_name",
                 payload: { mcp: true, gateway: true, action: "call" },
               });
             }
             if (!isNamespacedMcpToolName(name)) {
-              return createToolResponse(
-                false,
+              return toolFail(
+                "invalid_args",
                 `name must be namespaced mcp__<server>__<tool>, got "${name}"`,
-                { payload: { mcp: true, gateway: true, action: "call" } },
+                {
+                  code: "mcp_bad_name",
+                  payload: { mcp: true, gateway: true, action: "call" },
+                },
               );
             }
             const d = resolveDescriptor(name, descriptors, allDescriptors);
             if (!d) {
-              return createToolResponse(
-                false,
+              return toolFail(
+                "not_found",
                 `Unknown MCP tool "${name}". Use action=list first.`,
-                { payload: { mcp: true, gateway: true, action: "call" } },
+                {
+                  code: "mcp_tool_not_found",
+                  payload: { mcp: true, gateway: true, action: "call" },
+                },
               );
             }
             const connectionName = d.connectionName;
@@ -349,17 +359,17 @@ export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
           }
 
           default:
-            return createToolResponse(
-              false,
+            return toolFail(
+              "invalid_args",
               `Unknown action "${action}". Use list | call.`,
-              { payload: { mcp: true, gateway: true } },
+              { code: "mcp_unknown_action", payload: { mcp: true, gateway: true } },
             );
         }
       } catch (err) {
-        return createToolResponse(
-          false,
-          err instanceof Error ? err.message : String(err),
-          {
+        return toolFailFromThrown(err, {
+          fallbackCategory: "external",
+          extras: {
+            code: "mcp_gateway_error",
             payload: {
               mcp: true,
               gateway: true,
@@ -367,7 +377,7 @@ export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
               error: true,
             },
           },
-        );
+        });
       }
     }
   }

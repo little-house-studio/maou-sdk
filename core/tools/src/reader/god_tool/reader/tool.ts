@@ -7,7 +7,8 @@ import { readFileSync, existsSync, statSync } from "node:fs";
 import { extname } from "node:path";
 import { Tool, toolDir } from "../../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../../base.js";
-import { createToolResponse } from "../../../base.js";
+import { createToolResponse, toolFail } from "../../../base.js";
+import { toolFailFromThrown } from "../../../errors.js";
 import { errToString } from "../../../util/common.js";
 import { resolveToolPath } from "../../../path-guard.js";
 import { markRead } from "../../../file/read-registry.js";
@@ -89,7 +90,11 @@ export class ReadTool extends Tool {
   ): Promise<ToolResponse> {
     const filePath = String(params.path ?? params.file_path ?? "").trim();
     if (!filePath) {
-      return createToolResponse(false, '❌ reader 缺少必填参数 path（文件路径或 URL）。正确用法示例：\n{"tool": "reader", "params": {"path": "src/index.ts"}}\n请用正确的 path 参数重试。');
+      return toolFail(
+        "invalid_args",
+        '❌ reader 缺少必填参数 path（文件路径或 URL）。正确用法示例：\n{"tool": "reader", "params": {"path": "src/index.ts"}}\n请用正确的 path 参数重试。',
+        { code: "missing_params", details: { missing: ["path"] } },
+      );
     }
 
     // URL 模式
@@ -119,17 +124,17 @@ export class ReadTool extends Tool {
     try {
       fullPath = resolveToolPath(ctx, userPath).path;
     } catch (err: unknown) {
-      return createToolResponse(false, errToString(err));
+      return toolFailFromThrown(err, { fallbackCategory: "sandbox_denied" });
     }
 
     if (!existsSync(fullPath)) {
-      return createToolResponse(false, `文件不存在: ${userPath}（建议先用 glob 工具搜索正确路径，例如 glob pattern="**/${userPath.split("/").pop()}"）`);
+      return toolFail("not_found", `文件不存在: ${userPath}（建议先用 glob 工具搜索正确路径，例如 glob pattern="**/${userPath.split("/").pop()}"）`, { code: "ENOENT" });
     }
 
     try {
       const stat = statSync(fullPath);
       if (stat.isDirectory()) {
-        return createToolResponse(false, `路径是目录而非文件: ${userPath}（如需列出目录内容，请用 glob pattern="${userPath}/*"）`);
+        return toolFail("precondition", `路径是目录而非文件: ${userPath}（如需列出目录内容，请用 glob pattern="${userPath}/*"）`, { code: "is_directory" });
       }
 
       // 登记"已读"——支撑 edit/write 的先读后改安全语义
@@ -199,7 +204,7 @@ export class ReadTool extends Tool {
         },
       });
     } catch (err: unknown) {
-      return createToolResponse(false, `读取文件失败: ${errToString(err)}`);
+      return toolFailFromThrown(err, { prefix: "读取文件失败", fallbackCategory: "execution" });
     }
   }
 
@@ -240,7 +245,7 @@ export class ReadTool extends Tool {
         payload: { url, content_type: contentType, truncated: wasTruncated },
       });
     } catch (err: unknown) {
-      return createToolResponse(false, `URL 读取失败: ${errToString(err)}（提示：URL 必须是 http/https 开头；如果是内网或需认证，请改用 bash 调 curl）`);
+      return toolFail("external", `URL 读取失败: ${errToString(err)}（提示：URL 必须是 http/https 开头；如果是内网或需认证，请改用 bash 调 curl）`, { code: "url_fetch_failed" });
     }
   }
 
@@ -252,11 +257,11 @@ export class ReadTool extends Tool {
     try {
       fullPath = resolveToolPath(ctx, userPath).path;
     } catch (err: unknown) {
-      return createToolResponse(false, errToString(err));
+      return toolFailFromThrown(err, { fallbackCategory: "sandbox_denied" });
     }
 
     if (!existsSync(fullPath)) {
-      return createToolResponse(false, `图片文件不存在: ${userPath}`);
+      return toolFail("not_found", `图片文件不存在: ${userPath}`, { code: "ENOENT" });
     }
 
     try {
@@ -270,7 +275,7 @@ export class ReadTool extends Tool {
         payload: { path: fullPath, mime_type: mime, size: buffer.length },
       });
     } catch (err: unknown) {
-      return createToolResponse(false, `图片读取失败: ${errToString(err)}`);
+      return toolFailFromThrown(err, { prefix: "图片读取失败", fallbackCategory: "execution" });
     }
   }
 

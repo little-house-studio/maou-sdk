@@ -1,5 +1,7 @@
 /**
  * 主动智能工作台：设置 · 对话 · 待办看板
+ * card = 底栏 dock 文件夹（纸面 ink on cyan fill）
+ * page = 旧顶栏全页（深色 wire tokens）
  */
 import {
   useCallback,
@@ -103,6 +105,11 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
     return map;
   }, [board]);
 
+  const openCount = useMemo(
+    () => (board?.items ?? []).filter((i) => !i.done).length,
+    [board],
+  );
+
   const queuedCount = useMemo(
     () => (board?.items ?? []).filter((i) => !i.done && isQueued(i)).length,
     [board],
@@ -197,9 +204,11 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
     void applySettings({ autoZones });
   };
 
+  const isCard = presentation === "card";
+
   return (
     <section
-      className={`proactive-host${presentation === "card" ? " is-card" : ""}`}
+      className={`proactive-host${isCard ? " is-card" : ""}`}
       data-live-proactive="true"
       data-proactive-presentation={presentation}
       aria-label="主动智能"
@@ -208,8 +217,8 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
         <div className="proactive-bar-left">
           <ChromeMark kind="tasks" size={16} decorative />
           <strong>主动智能</strong>
-          <span className="proactive-meta" title="挂靠主 coding，非可切换主体">
-            附属驻扎 · parent coding
+          <span className="proactive-chip" title="挂靠主 coding，非可切换主体">
+            附属 · coding
           </span>
           <span className="proactive-job" data-status={job?.status ?? "idle"}>
             {job ? jobLabel(job) : "加载中…"}
@@ -218,15 +227,16 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
             <span className="proactive-meta">
               今日 {settings.runsToday}/{settings.maxRunsPerDay}
               {settings.lastScanAt
-                ? ` · 上次扫描 ${settings.lastScanAt.slice(11, 16)}`
+                ? ` · 上次 ${settings.lastScanAt.slice(11, 16)}`
                 : ""}
+              {openCount > 0 ? ` · 待办 ${openCount}` : ""}
             </span>
           ) : null}
         </div>
         <div className="proactive-bar-actions">
           <button
             type="button"
-            className="wire-text-btn"
+            className="proactive-btn"
             disabled={busy}
             onClick={() => void onScan(false)}
           >
@@ -234,7 +244,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
           </button>
           <button
             type="button"
-            className="wire-text-btn"
+            className="proactive-btn is-primary"
             disabled={busy || queuedCount === 0}
             onClick={() => void onDispatchQueued()}
             title="对已勾选条目派发主 coding agent"
@@ -243,7 +253,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
           </button>
           <button
             type="button"
-            className="wire-text-btn"
+            className="proactive-btn is-ghost"
             disabled={!busy}
             onClick={() => void onAbort()}
           >
@@ -266,8 +276,8 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
             <p className="proactive-hint">加载设置…</p>
           ) : (
             <>
-              <label className="proactive-field">
-                <span>启用</span>
+              <label className="proactive-field proactive-field-row">
+                <span className="proactive-field-label">启用</span>
                 <input
                   type="checkbox"
                   checked={settings.enabled}
@@ -277,7 +287,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
                 />
               </label>
               <label className="proactive-field">
-                <span>频率</span>
+                <span className="proactive-field-label">频率</span>
                 <select
                   value={settings.frequency}
                   onChange={(e) =>
@@ -293,7 +303,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
               </label>
               {settings.frequency === "interval" ? (
                 <label className="proactive-field">
-                  <span>间隔（分钟）</span>
+                  <span className="proactive-field-label">间隔（分钟）</span>
                   <input
                     type="number"
                     min={5}
@@ -308,7 +318,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
                 </label>
               ) : null}
               <label className="proactive-field">
-                <span>每日上限</span>
+                <span className="proactive-field-label">每日上限</span>
                 <input
                   type="number"
                   min={1}
@@ -324,21 +334,27 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
               <div className="proactive-auto-zones">
                 <span className="proactive-field-label">自动执行分区</span>
                 <p className="proactive-hint">
-                  扫描后自动勾选并（在启用时）派发；默认仅安全区。
+                  扫描后自动勾选并派发；默认仅安全区。
                 </p>
-                {PROACTIVE_ZONES.map((z) => (
-                  <label key={z} className="proactive-check">
-                    <input
-                      type="checkbox"
-                      checked={settings.autoZones.includes(z)}
-                      onChange={() => toggleAutoZone(z)}
-                    />
-                    <span>{z}</span>
-                  </label>
-                ))}
+                <div className="proactive-zone-chips">
+                  {PROACTIVE_ZONES.map((z) => {
+                    const on = settings.autoZones.includes(z);
+                    return (
+                      <button
+                        key={z}
+                        type="button"
+                        className={`proactive-zone-chip${on ? " is-on" : ""}`}
+                        aria-pressed={on}
+                        onClick={() => toggleAutoZone(z)}
+                      >
+                        {z}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
               <p className="proactive-path" title={snap?.projectRoot}>
-                看板：.maou/project/PROACTIVE.md
+                .maou/project/PROACTIVE.md
               </p>
             </>
           )}
@@ -348,28 +364,34 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
         <div className="proactive-chat" aria-label="主动智能对话">
           <h3 className="proactive-section-title">对话</h3>
           <div className="proactive-chat-log">
-            {(snap?.chat ?? []).map((line) => (
-              <div
-                key={line.id}
-                className={`proactive-line role-${line.role}`}
-              >
-                <span className="proactive-line-role">
-                  {line.role === "user"
-                    ? "你"
-                    : line.role === "assistant"
-                      ? "主动"
-                      : "系统"}
-                </span>
-                <pre className="proactive-line-text">{line.text}</pre>
-              </div>
-            ))}
+            {(snap?.chat ?? []).length === 0 ? (
+              <p className="proactive-empty">
+                向主动 agent 提问，或描述想扫描的方向。
+              </p>
+            ) : (
+              (snap?.chat ?? []).map((line) => (
+                <div
+                  key={line.id}
+                  className={`proactive-line role-${line.role}`}
+                >
+                  <span className="proactive-line-role">
+                    {line.role === "user"
+                      ? "你"
+                      : line.role === "assistant"
+                        ? "主动"
+                        : "系统"}
+                  </span>
+                  <pre className="proactive-line-text">{line.text}</pre>
+                </div>
+              ))
+            )}
             <div ref={chatEndRef} />
           </div>
           <div className="proactive-composer">
             <input
               type="text"
               value={input}
-              placeholder="向主动 agent 提问，或描述想扫描的方向…"
+              placeholder="向主动 agent 发送…"
               disabled={sending}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -381,7 +403,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
             />
             <button
               type="button"
-              className="wire-text-btn on"
+              className="proactive-btn is-primary"
               disabled={sending || !input.trim()}
               onClick={() => void onSend()}
             >
@@ -395,7 +417,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
           <h3 className="proactive-section-title">
             待办看板
             <span className="proactive-board-hint">
-              勾选后点「确认执行」派发给主 agent
+              勾选 → 确认执行 → 派发 coding
             </span>
           </h3>
           <div className="proactive-zones">
@@ -403,13 +425,19 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
               const items = openByZone.get(z) ?? [];
               return (
                 <div key={z} className="proactive-zone">
-                  <h4 className="proactive-zone-title">{z}</h4>
+                  <h4 className="proactive-zone-title">
+                    {z}
+                    <span className="proactive-zone-count">{items.length}</span>
+                  </h4>
                   {items.length === 0 ? (
                     <p className="proactive-empty">暂无条目</p>
                   ) : (
                     <ul className="proactive-items">
                       {items.map((it) => (
-                        <li key={it.id} className="proactive-item">
+                        <li
+                          key={it.id}
+                          className={`proactive-item${isQueued(it) ? " is-queued" : ""}`}
+                        >
                           <label className="proactive-item-check">
                             <input
                               type="checkbox"
@@ -451,7 +479,12 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
               );
             })}
             <div className="proactive-zone is-done">
-              <h4 className="proactive-zone-title">已完成</h4>
+              <h4 className="proactive-zone-title">
+                已完成
+                <span className="proactive-zone-count">
+                  {(openByZone.get("已完成") ?? []).length}
+                </span>
+              </h4>
               {(openByZone.get("已完成") ?? []).length === 0 ? (
                 <p className="proactive-empty">暂无</p>
               ) : (

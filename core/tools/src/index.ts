@@ -3,7 +3,7 @@
  * 工具基础类型从 @little-house-studio/types 引入（见 base.ts）。
  */
 
-export { Tool, createToolResponse, toolDir, resolveToolRuntimePorts } from './base.js'
+export { Tool, createToolResponse, toolDir, resolveToolRuntimePorts, toolFail } from './base.js'
 export type {
   JsonSchema,
   ToolDefinition,
@@ -12,7 +12,25 @@ export type {
   ToolCall,
   ToolResult,
   ToolRuntimePorts,
+  ToolErrorCategory,
+  ToolErrorInfo,
 } from './base.js'
+
+// 统一工具失败类型表（与 LLM errors 对称）
+export {
+  TOOL_ERROR_CATEGORIES,
+  TOOL_ERROR_CATEGORY_EXAMPLES,
+  TOOL_ERROR_PREFIX,
+  makeToolError,
+  toolFailFromThrown,
+  classifyToolErrorMessage,
+  classifyToolThrown,
+  ensureToolError,
+  isRetryableToolCategory,
+  formatToolErrorForStream,
+  parseToolErrorFromMessage,
+} from './errors.js'
+export type { ToolErrorExtras } from './errors.js'
 
 // 路径沙箱（subagent project / task scoped）
 export {

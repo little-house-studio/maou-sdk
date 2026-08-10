@@ -560,21 +560,46 @@ export function LiveSettingsPanel({
       }
       if (r.reference !== undefined) setSvgReference(r.reference ?? null);
       if (r.result?.ok && r.result.extracted) {
+        // 真正成功：HTTP 通 + 抽出了 SVG
         setSvgProbeMsg(
-          `✅ 已生成图 · ${r.result.latencyMs}ms · 可与标准参考对比`,
+          `✅ 画图成功 · ${r.result.latencyMs}ms · 可与标准参考对比`,
         );
-        setStatus(`SVG 探针成功 · ${r.result.model} · ${r.result.latencyMs}ms`);
+        setStatus(
+          `SVG 探针成功 · ${r.result.model} · ${r.result.latencyMs}ms`,
+        );
+        setError(null);
+      } else if (r.result) {
+        // 通道通了但模型没交合格 SVG —— 不是网络错误，禁止显示 "http 200"
+        const detail =
+          r.result.error ||
+          r.error ||
+          "模型未返回可解析的 SVG（可能降智、拒答或只写了说明）";
+        const msg = `⚠️ 请求已通 · ${r.result.latencyMs}ms · 未抽出图：${detail}`;
+        setSvgProbeMsg(msg);
+        setStatus("");
+        // 不写入全局 error（避免底部再出现橙色 http 200）
+        setError(null);
       } else {
-        setSvgProbeMsg(
-          r.result?.error || r.error || "未抽出 SVG（可能降智或拒答）",
-        );
-        setError(r.result?.error || r.error || "SVG 探针失败");
+        // 传输/服务端错误
+        const raw = r.error || "画图探针失败";
+        const msg =
+          /^http\s*\d+/i.test(raw.trim())
+            ? `画图探针失败（通道状态 ${raw}，但业务未返回结果）`
+            : raw;
+        setSvgProbeMsg(`❌ ${msg}`);
+        setError(msg);
       }
       await loadSvgGallery();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setSvgProbeMsg(msg);
-      setError(msg);
+      const raw = e instanceof Error ? e.message : String(e);
+      // 兜底：把无意义的 "http 200" 转成可读文案
+      const msg = /^http\s*200\b/i.test(raw.trim())
+        ? "请求已通（HTTP 200），但未抽出 SVG 图片（模型可能降智或只返回了文字）"
+        : /^http\s*\d+/i.test(raw.trim())
+          ? `画图探针失败：${raw}`
+          : raw;
+      setSvgProbeMsg(`⚠️ ${msg}`);
+      setError(null);
     } finally {
       setSvgProbeBusy(false);
     }
@@ -1259,11 +1284,13 @@ export function LiveSettingsPanel({
                               {svgProbeMsg ? (
                                 <span
                                   className={`wire-settings-test-result${
-                                    svgProbeMsg.startsWith("✓") ||
                                     svgProbeMsg.includes("✅")
                                       ? " is-ok"
-                                      : " is-err"
+                                      : svgProbeMsg.includes("⚠️")
+                                        ? " is-warn"
+                                        : " is-err"
                                   }`}
+                                  title={svgProbeMsg}
                                 >
                                   {svgProbeMsg}
                                 </span>

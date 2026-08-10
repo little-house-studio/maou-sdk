@@ -6,7 +6,8 @@
 import { readFileSync, existsSync } from "node:fs";
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
-import { createToolResponse } from "../../base.js";
+import { createToolResponse, toolFail } from "../../base.js";
+import { toolFailFromThrown } from "../../errors.js";
 import { errToString } from "../../util/common.js";
 import { resolveToolPath } from "../../path-guard.js";
 import { verifyAfterWrite } from "../../code/lsp_verify.js";
@@ -71,24 +72,38 @@ export class EditFileTool extends Tool {
     const replaceAll = params.replace_all === true || params.replace_all === "true";
 
     if (!userPath) {
-      return createToolResponse(false, '❌ edit_file 缺少必填参数 path（文件路径）。正确用法示例：\n{"tool": "edit_file", "params": {"path": "src/index.ts", "old_text": "旧文本", "new_text": "新文本"}}\n请用正确的 path 参数重试。');
+      return toolFail(
+        "invalid_args",
+        '❌ edit_file 缺少必填参数 path（文件路径）。正确用法示例：\n{"tool": "edit_file", "params": {"path": "src/index.ts", "old_text": "旧文本", "new_text": "新文本"}}\n请用正确的 path 参数重试。',
+        { code: "missing_params", details: { missing: ["path"] } },
+      );
     }
     if (!oldText) {
-      return createToolResponse(false, "edit_file 的 old_text 不能为空（无法匹配空字符串）。如需创建/覆写文件请用 write_file。");
+      return toolFail(
+        "invalid_args",
+        "edit_file 的 old_text 不能为空（无法匹配空字符串）。如需创建/覆写文件请用 write_file。",
+        { code: "empty_old_text" },
+      );
     }
     if (oldText === newText) {
-      return createToolResponse(false, "old_text 与 new_text 相同，无需编辑。");
+      return toolFail("precondition", "old_text 与 new_text 相同，无需编辑。", {
+        code: "noop_edit",
+      });
     }
 
     let fullPath: string;
     try {
       fullPath = resolveToolPath(ctx, userPath).path;
     } catch (err: unknown) {
-      return createToolResponse(false, errToString(err));
+      return toolFailFromThrown(err, { fallbackCategory: "sandbox_denied" });
     }
 
     if (!existsSync(fullPath)) {
-      return createToolResponse(false, `文件不存在: ${userPath}（建议先用 glob 工具搜索正确路径，例如 glob pattern="**/${userPath.split("/").pop()}"）`);
+      return toolFail(
+        "not_found",
+        `文件不存在: ${userPath}（建议先用 glob 工具搜索正确路径，例如 glob pattern="**/${userPath.split("/").pop()}"）`,
+        { code: "ENOENT" },
+      );
     }
 
     try {
@@ -111,11 +126,12 @@ export class EditFileTool extends Tool {
           const why = stale
             ? "该文件在你上次读取/编辑后磁盘内容已变化（有 diff）"
             : "该文件本会话尚未阅读或编辑过";
-          return createToolResponse(
-            false,
+          return toolFail(
+            "precondition",
             `${why}。为避免覆盖未知改动，请先确认内容再 edit。\n` +
               `以下是**当前**完整内容（已记为已读，可据此构造 old_text 后重试）：\n\n${numbered}`,
             {
+              code: stale ? "stale_before_edit" : "unread_before_edit",
               payload: {
                 path: fullPath,
                 reason: stale ? "stale" : "unread",
@@ -136,7 +152,9 @@ export class EditFileTool extends Tool {
           "2. 文本不存在：用 grep 工具确认文件中是否包含该关键字。",
           "3. 文件过大：先用 read start_line/end_line 缩小范围定位目标行。",
         ].join("\n");
-        return createToolResponse(false, `未找到要替换的文本。\n${hint}`, {
+        return toolFail("precondition", `未找到要替换的文本。
+${hint}`, {
+          code: "old_text_not_found",
           payload: {
             path: fullPath,
             old_text_length: oldText.length,
@@ -148,11 +166,12 @@ export class EditFileTool extends Tool {
 
       // 多处匹配且未要求替换全部 —— 拒绝，要求唯一匹配（防止改错位置）
       if (occurrences > 1 && !replaceAll) {
-        return createToolResponse(
-          false,
+        return toolFail(
+          "precondition",
           `old_text 在文件中出现 ${occurrences} 处，不唯一。请在 old_text 中加入更多前后文使其唯一定位；` +
           `若确实要替换全部 ${occurrences} 处（如重命名），请传 replace_all=true。`,
           {
+            code: "ambiguous_match",
             payload: { path: fullPath, occurrences, old_text_preview: oldText.slice(0, 120) },
           },
         );
@@ -202,7 +221,7 @@ export class EditFileTool extends Tool {
         },
       );
     } catch (err: unknown) {
-      return createToolResponse(false, `编辑文件失败: ${errToString(err)}`);
+      return toolFailFromThrown(err, { prefix: "编辑文件失败", fallbackCategory: "execution" });
     }
   }
 }

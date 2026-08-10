@@ -614,6 +614,37 @@ export interface McpToolInvoker {
   (connectionName: string, toolName: string, args: Record<string, unknown>): Promise<string>
 }
 
+/**
+ * Unified tool-failure categories (Agent + tools + MCP bridge).
+ * Machine-readable; free-form `message` remains human-facing for the LLM.
+ */
+export type ToolErrorCategory =
+  | "invalid_args"
+  | "unknown_tool"
+  | "not_found"
+  | "mode_denied"
+  | "policy_denied"
+  | "sandbox_denied"
+  | "user_rejected"
+  | "timeout"
+  | "dependency_unavailable"
+  | "precondition"
+  | "execution"
+  | "external"
+  | "cancelled"
+  | "unknown"
+
+/** Structured failure metadata on ToolResponse when ok=false. */
+export interface ToolErrorInfo {
+  category: ToolErrorCategory
+  /** Optional machine code (policy id, errno, missing_params, …) */
+  code?: string
+  /** Whether a blind same-call retry is appropriate (default from category) */
+  retryable?: boolean
+  /** Optional structured details for UI/logs (not required for LLM text) */
+  details?: Record<string, unknown>
+}
+
 export interface ToolResponse {
   ok: boolean
   message: string
@@ -621,6 +652,11 @@ export interface ToolResponse {
   payload: Record<string, unknown>
   background: boolean
   images: { mimeType: string; data: string }[]
+  /**
+   * Present on failures (ok=false). Success path should omit this field.
+   * Consumers should prefer this over parsing free-form message strings.
+   */
+  error?: ToolErrorInfo
 }
 export interface ToolCall {
   id: string

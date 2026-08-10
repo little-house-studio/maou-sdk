@@ -19,8 +19,14 @@ import {
 import { ProtocolGateway } from "./adapters/router.js";
 import { resolveCloudflareUrl } from "./adapters/cloudflare.js";
 import { takeFauxResponse } from "./faux.js";
-import { detectContextOverflow } from "./overflow.js";
 import { normalizePostLogRecord, type NormalizePostLogOptions } from "./post-logger.js";
+import {
+  classifyLlmError,
+  decideLlmRetry,
+  buildApiErrorThrowMessage,
+  isRetryableCategory,
+  type LlmErrorCategory,
+} from "./errors.js";
 // 拆分后的职责模块（模块内部，不进 index.ts 导出）
 import { extractUsageFromEvent } from "./usage-extractor.js";
 import { applyAuthOverrides, sanitizeHeaders, isSensitiveHeader } from "./auth-overrides.js";
@@ -146,7 +152,7 @@ export interface RetryPolicy {
 export interface ErrorHookContext {
   attempt: number;
   error: Error | { status: number; body: string };
-  category: "network" | "timeout" | "rate_limit" | "auth" | "bad_request" | "server_error" | "context_overflow" | "unknown";
+  category: LlmErrorCategory;
   waitedMs: number;
   abortSignal?: AbortSignal;
 }
@@ -1048,38 +1054,46 @@ export class LLMClient {
   // _waitForNetwork 已拆到 network-probe.ts（waitForNetwork，接 fetchImpl 参数）。
 
 
-  /** 判断某状态码/错误是否可重试（先按策略，再让 onError 覆盖） */
+  /**
+   * 判断是否可重试：统一走 classifyLlmError / decideLlmRetry，
+   * 再允许 onError 钩子覆盖。
+   */
   private _decideRetry(ctx: ErrorHookContext): "retry" | "fail" | { delayMs: number } {
-    // 上下文溢出：原样重试毫无意义（payload 没变），必须 fail 给上层压缩
-    if (ctx.category === "context_overflow") return "fail";
     if (this._onError) return this._onError(ctx);
-    // 默认：retryableStatuses 命中或网络错误 → retry；其余 fail
-    const e = ctx.error;
-    if ("status" in e) {
-      // 400/422 且已分类为 overflow 上面已 return；其它 400 不重试
-      if (e.status === 400 || e.status === 422) return "fail";
-      return this._retry.retryableStatuses.includes(e.status) ? "retry" : "fail";
+    const body =
+      "body" in ctx.error && typeof (ctx.error as { body?: string }).body === "string"
+        ? (ctx.error as { body: string }).body
+        : "";
+    const message =
+      "message" in ctx.error ? String((ctx.error as Error).message ?? "") : body;
+    const status =
+      "status" in ctx.error ? (ctx.error as { status: number }).status : null;
+    if (status != null || body) {
+      return decideLlmRetry(
+        classifyLlmError({
+          status,
+          body: body || message,
+          message: message || body,
+        }),
+      );
     }
-    return ctx.category === "network" || ctx.category === "timeout" ? "retry" : "fail";
+    // Network/timeout throws: use category from _categorize
+    return isRetryableCategory(ctx.category) ? "retry" : "fail";
   }
 
-  /** 错误 → 分类（复用 post-logger 的分类逻辑） */
-  private _categorize(err: Error | { status: number; body: string }): ErrorHookContext["category"] {
+  /** 错误 → 分类（与 post-logger / classifyLlmError 同一路径） */
+  private _categorize(err: Error | { status: number; body: string }): LlmErrorCategory {
     if ("status" in err) {
-      const s = err.status;
-      if (s === 429) return "rate_limit";
-      if (s === 401 || s === 403) return "auth";
-      if (s === 413) return "context_overflow";
-      if (s === 400 || s === 422) {
-        return detectContextOverflow(err.body, s) ? "context_overflow" : "bad_request";
-      }
-      if (s >= 500) return "server_error";
-      return "unknown";
+      return classifyLlmError({
+        status: err.status,
+        body: err.body,
+        message: err.body,
+      }).category;
     }
-    const msg = err.message.toLowerCase();
-    if (msg.includes("timeout") || msg.includes("timed out")) return "timeout";
-    if (msg.includes("econnrefused") || msg.includes("enotfound") || msg.includes("fetch failed") || msg.includes("network")) return "network";
-    return "unknown";
+    return classifyLlmError({
+      message: err.message,
+      body: err.message,
+    }).category;
   }
 
   /**
@@ -1131,44 +1145,36 @@ export class LLMClient {
           if (connectTimer) clearTimeout(connectTimer);
         }
 
-        if (response.status === 429) {
-          const retryAfter = response.headers.get("retry-after");
-          const detail429 = await response.text().catch(() => "");
-          // 统一走 _decideRetry（尊重 onError 钩子 + retryableStatuses）
-          const decision = this._decideRetry({
-            attempt, error: { status: 429, body: detail429 },
-            category: "rate_limit", waitedMs, abortSignal,
-          });
-          retryHistory.push(`attempt ${attempt + 1}: 429 (decision ${decision}) ${detail429.slice(0, 200)}`);
-          const waitMs = decision === "fail"
-            ? 0
-            : retryAfter && decision === "retry"
-              ? parseInt(retryAfter, 10) * 1000
-              : typeof decision === "object" ? decision.delayMs : this._computeBackoff(attempt);
-          if (decision !== "fail" && attempt < maxRetries) {
-            waitedMs += waitMs;
-            await sleep(waitMs);
-            continue;
-          }
-          throw new Error(`API Error 429: ${detail429}`);
-        }
-
         if (!response.ok) {
           const detail = await response.text().catch(() => "");
-          const category = this._categorize({ status: response.status, body: detail });
-          // 统一走 _decideRetry
-          const decision = this._decideRetry({
-            attempt, error: { status: response.status, body: detail },
-            category, waitedMs, abortSignal,
+          const classified = classifyLlmError({
+            status: response.status,
+            body: detail,
+            message: detail,
           });
-          retryHistory.push(`attempt ${attempt + 1}: HTTP ${response.status} [${category}] (decision ${decision}) ${detail.slice(0, 120)}`);
+          const decision = this._decideRetry({
+            attempt,
+            error: { status: response.status, body: detail },
+            category: classified.category,
+            waitedMs,
+            abortSignal,
+          });
+          retryHistory.push(
+            `attempt ${attempt + 1}: HTTP ${response.status} [${classified.category}] (decision ${decision}) ${detail.slice(0, 120)}`,
+          );
           if (decision !== "fail" && attempt < maxRetries) {
-            const waitMs = typeof decision === "object" ? decision.delayMs : this._computeBackoff(attempt);
+            const retryAfter = response.headers.get("retry-after");
+            const waitMs =
+              typeof decision === "object"
+                ? decision.delayMs
+                : retryAfter && response.status === 429
+                  ? parseInt(retryAfter, 10) * 1000
+                  : this._computeBackoff(attempt);
             waitedMs += waitMs;
             await sleep(waitMs);
             continue;
           }
-          throw new Error(`API Error ${response.status}: ${detail}`);
+          throw new Error(buildApiErrorThrowMessage(response.status, detail));
         }
 
         return response;

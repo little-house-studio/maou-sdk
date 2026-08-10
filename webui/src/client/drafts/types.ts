@@ -102,6 +102,8 @@ export type DraftMessage = {
   /** Tool name shortcut (CLI tools[] / card name) */
   tag?: string;
   clickable?: boolean;
+  /** Agent that owns this line (e.g. terminal attach) */
+  agentName?: string;
   /** Structured tool card (preferred over raw body-only dumps) */
   tool?: DraftToolCard;
   /** Message head meta (duration / tokens / LIVE) */

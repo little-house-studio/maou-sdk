@@ -64,6 +64,83 @@ describe("thinking inject into LLM history", () => {
     expect(String(assistant?.content)).toContain("<thinking>");
     expect(String(assistant?.content)).toContain("I reason");
     expect(String(assistant?.content)).toContain("hello");
+    // DeepSeek V4：独立字段必须回传
+    expect(String(assistant?.reasoning_content)).toBe("I reason");
+  });
+
+  it("buildMessages tool_calls 历史带 reasoning_content 字段", () => {
+    const messages = buildMessages({
+      systemPrompt: "sys",
+      sessionMessages: [
+        {
+          role: "user",
+          content: "ls",
+          createdAt: "2020-01-01T00:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "",
+          createdAt: "2020-01-01T00:00:01.000Z",
+          reasoningContent: "应调用终端",
+          toolCalls: [
+            {
+              id: "call_1",
+              name: "use_terminal",
+              arguments: { command: "ls" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: "a.txt",
+          createdAt: "2020-01-01T00:00:02.000Z",
+          toolCallId: "call_1",
+        },
+      ] as SessionMessage[],
+      roundCount: 1,
+    });
+    const assistant = messages.find(
+      (m) => m.role === "assistant" && Array.isArray(m.tool_calls),
+    );
+    expect(assistant).toBeTruthy();
+    expect(String(assistant?.reasoning_content)).toBe("应调用终端");
+  });
+
+  it("buildMessages tool_calls 无思考时也带空 reasoning_content", () => {
+    const messages = buildMessages({
+      systemPrompt: "sys",
+      sessionMessages: [
+        {
+          role: "user",
+          content: "ls",
+          createdAt: "2020-01-01T00:00:00.000Z",
+        },
+        {
+          role: "assistant",
+          content: "ok",
+          createdAt: "2020-01-01T00:00:01.000Z",
+          toolCalls: [
+            {
+              id: "call_1",
+              name: "use_terminal",
+              arguments: { command: "ls" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: "a.txt",
+          createdAt: "2020-01-01T00:00:02.000Z",
+          toolCallId: "call_1",
+        },
+      ] as SessionMessage[],
+      roundCount: 1,
+    });
+    const assistant = messages.find(
+      (m) => m.role === "assistant" && Array.isArray(m.tool_calls),
+    );
+    expect(assistant).toBeTruthy();
+    expect(assistant?.reasoning_content).toBe("");
   });
 
   it("sessionToMaouMessage 将 reasoning 并入文本", () => {

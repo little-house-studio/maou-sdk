@@ -1345,9 +1345,9 @@ button.queue-badge:hover {
   flex: 0 0 auto;
   max-height: 32%;
   min-height: 72px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--n-line-solid, var(--border));
   overflow: auto;
-  background: var(--bg);
+  background: var(--n-rail-alt, var(--bg));
   display: flex;
   flex-direction: column;
 }
@@ -1357,18 +1357,21 @@ button.queue-badge:hover {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--n-line-solid, var(--border));
   flex-shrink: 0;
+  background: var(--n-elevated, transparent);
 }
 
-.term-list-head .linkish {
+.term-list-head .linkish,
+.term-action {
   margin-left: 0;
   text-decoration: none;
   font-size: 12px;
 }
 
-.term-list-head .linkish.danger {
-  color: var(--err);
+.term-list-head .linkish.danger,
+.term-action.is-danger {
+  color: var(--n-err, var(--err));
   margin-left: auto;
 }
 
@@ -1376,13 +1379,13 @@ button.queue-badge:hover {
   padding: 12px 14px;
   font-size: 12px;
   line-height: 1.45;
-  color: var(--muted);
+  color: var(--n-tertiary, var(--muted));
 }
 
 .term-empty code {
-  font-family: var(--mono);
+  font-family: var(--n-mono, var(--mono));
   font-size: 11px;
-  color: var(--accent);
+  color: var(--n-accent, var(--accent));
 }
 
 .term-item {
@@ -1390,21 +1393,22 @@ button.queue-badge:hover {
   width: 100%;
   text-align: left;
   border: none;
-  border-bottom: 1px solid var(--border-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--n-label, #f5f0e8) 8%, transparent);
   background: transparent;
-  color: var(--fg);
+  color: var(--n-label, var(--fg));
   padding: 8px 12px;
   cursor: pointer;
   min-width: 0;
+  border-radius: 0;
 }
 
 .term-item:hover {
-  background: var(--bg-subtle);
+  background: var(--n-hover, var(--bg-subtle));
 }
 
 .term-item.active {
-  background: var(--accent-dim);
-  border-left: 2px solid var(--accent);
+  background: var(--n-accent-dim, var(--accent-dim));
+  border-left: 2px solid var(--n-accent, var(--accent));
   padding-left: 10px;
 }
 
@@ -1413,9 +1417,9 @@ button.queue-badge:hover {
 }
 
 .term-item-id {
-  font-family: var(--mono);
+  font-family: var(--n-mono, var(--mono));
   font-size: 11px;
-  color: var(--accent);
+  color: var(--n-accent, var(--accent));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1423,7 +1427,7 @@ button.queue-badge:hover {
 
 .term-item-desc {
   font-size: 12px;
-  color: var(--fg);
+  color: var(--n-secondary, var(--fg));
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1432,9 +1436,9 @@ button.queue-badge:hover {
 
 .term-item-meta {
   font-size: 10px;
-  color: var(--fg-subtle);
+  color: var(--n-tertiary, var(--fg-subtle));
   margin-top: 2px;
-  font-family: var(--mono);
+  font-family: var(--n-mono, var(--mono));
 }
 
 .term-wrap {
@@ -1443,7 +1447,7 @@ button.queue-badge:hover {
   min-width: 0;
   overflow: hidden;
   position: relative;
-  background: #000;
+  background: var(--n-code-bg, #1a1817);
 }
 
 .term-wrap .xterm {
@@ -1465,9 +1469,10 @@ button.queue-badge:hover {
   padding: 16px;
   text-align: center;
   font-size: 12px;
-  color: var(--fg-subtle);
+  color: var(--n-tertiary, var(--fg-subtle));
   pointer-events: none;
   line-height: 1.45;
+  background: color-mix(in srgb, var(--n-code-bg, #1a1817) 88%, transparent);
 }
 
 /* ── Legacy panel fallbacks ── */

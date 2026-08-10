@@ -17,11 +17,16 @@ export type ToolCardProps = {
   message: DraftMessage;
   /** When false, still show fold chevron (CLI always clickable on title). */
   defaultExpanded?: boolean;
+  /** 终端会话 id（有则显示「打开终端」，不自动弹） */
+  terminalId?: string;
+  onOpenTerminal?: () => void;
 };
 
 export function ToolCard({
   message,
   defaultExpanded = false,
+  terminalId,
+  onOpenTerminal,
 }: ToolCardProps) {
   const card = resolveToolCard(message);
   // Running / error cards open by default so the user sees progress or failure
@@ -67,19 +72,34 @@ export function ToolCard({
       data-tool-done={card.done ? "true" : "false"}
       aria-busy={card.done ? undefined : "true"}
     >
-      <button
-        type="button"
-        className="wire-tool-title"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        title={expanded ? "收起工具卡" : "展开工具卡"}
-      >
-        <span className={nameCls}>{card.name}</span>
-        {meta ? <span className="wire-tool-meta">{meta}</span> : null}
-        <span className="wire-tool-mark" aria-hidden>
-          {mark}
-        </span>
-      </button>
+      <div className="wire-tool-title-row">
+        <button
+          type="button"
+          className="wire-tool-title"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          title={expanded ? "收起工具卡" : "展开工具卡"}
+        >
+          <span className={nameCls}>{card.name}</span>
+          {meta ? <span className="wire-tool-meta">{meta}</span> : null}
+          <span className="wire-tool-mark" aria-hidden>
+            {mark}
+          </span>
+        </button>
+        {terminalId && onOpenTerminal ? (
+          <button
+            type="button"
+            className="wire-tool-open-term"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenTerminal();
+            }}
+            title={`打开终端 ${terminalId}`}
+          >
+            打开终端
+          </button>
+        ) : null}
+      </div>
 
       {expanded ? (
         <div className="wire-tool-body">

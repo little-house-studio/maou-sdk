@@ -25,6 +25,7 @@ import {
   TASK_MANAGER,
   formatTodoNoticeMessage,
   initTerminalEngine,
+  machineOpenPathGuard,
 } from "@little-house-studio/tools";
 import { TODO_ORCHESTRATOR } from "./todo/index.js";
 import { appendSessionEvent, authorSystem } from "@little-house-studio/context";
@@ -185,6 +186,19 @@ export class Runtime {
     // 解耦设计：TaskManager（tools 包）不直接依赖 TaskSessionStore（context 包）
     if (this.taskStore) {
       this.installTaskPersistCallback(this.taskStore);
+    }
+
+    // 机器级管家：默认全机 pathGuard（open）。
+    // - createOpsAgent: agentScope=global + 显式 setDefaultPathGuard（幂等）
+    // - 宿主若仅 createCodingAgent({ name: "ops" }) 而未设 scope，也按管家身份开 open
+    // 项目 coding 保持默认 inherit（项目根沙箱），不在此强制。
+    if (
+      this.agentScope === "global" ||
+      (this.agentName || "").trim().toLowerCase() === "ops"
+    ) {
+      this.setDefaultPathGuard(
+        machineOpenPathGuard({ projectRoot: this.projectRoot }),
+      );
     }
   }
 

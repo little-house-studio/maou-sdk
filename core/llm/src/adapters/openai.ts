@@ -296,14 +296,12 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
         patched.content = "";
       }
 
-      // requiresReasoningContentForToolCalls：必须保留 reasoning_content
-      // 如果消息有 reasoning_content 但被上层清空了，这里无法恢复；
-      // 这个标志的实际含义是：在构建消息历史时，不要删除工具调用轮次的 reasoning_content
-      // （由上层 context 层在构建消息时检查此标志）
-      if (compat.requiresReasoningContentForToolCalls && patched.reasoning_content === undefined) {
-        // 如果没有 reasoning_content 但有 tool_calls，注入空字符串占位
-        // 防止 DeepSeek V4 因缺少此字段而 400
-        patched.reasoning_content = "";
+      // requiresReasoningContentForToolCalls：字段必须存在。
+      // 实测 opencode/deepseek-v4：缺字段 → 400；空字符串 "" → 200。
+      if (compat.requiresReasoningContentForToolCalls) {
+        if (typeof patched.reasoning_content !== "string") {
+          patched.reasoning_content = "";
+        }
       }
 
       return patched;

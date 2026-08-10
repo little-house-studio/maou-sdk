@@ -8,10 +8,33 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 // 工具基础类型权威源在 @little-house-studio/types（最底层），此处 import + 重导出
-import type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult, ToolRuntimePorts } from "@little-house-studio/types";
+import type {
+  JsonSchema,
+  ToolDefinition,
+  ToolContext,
+  ToolResponse,
+  ToolCall,
+  ToolResult,
+  ToolRuntimePorts,
+  ToolErrorCategory,
+  ToolErrorInfo,
+} from "@little-house-studio/types";
 import { resolveToolRuntimePorts } from "@little-house-studio/types";
-export type { JsonSchema, ToolDefinition, ToolContext, ToolResponse, ToolCall, ToolResult, ToolRuntimePorts };
+export type {
+  JsonSchema,
+  ToolDefinition,
+  ToolContext,
+  ToolResponse,
+  ToolCall,
+  ToolResult,
+  ToolRuntimePorts,
+  ToolErrorCategory,
+  ToolErrorInfo,
+};
 export { resolveToolRuntimePorts };
+
+import { ensureToolError } from "./errors.js";
+export { toolFail } from "./errors.js";
 
 /**
  * 从 import.meta.url 推算工具目录路径。
@@ -32,14 +55,17 @@ export function toolDir(metaUrl: string): string {
 }
 
 /**
- * 创建默认的工具执行结果
+ * 创建默认的工具执行结果。
+ *
+ * 当 ok=false 时保证带上结构化 `error`（显式 extras.error 优先，否则按 message 启发式归类）。
+ * 失败路径更推荐 `toolFail(category, message, extras)` 以给出精确 category。
  */
 export function createToolResponse(
   ok: boolean,
   message: string,
   extras?: Partial<ToolResponse>,
 ): ToolResponse {
-  return {
+  const base: ToolResponse = {
     ok,
     message,
     displayEvents: [],
@@ -48,6 +74,13 @@ export function createToolResponse(
     images: [],
     ...extras,
   };
+  if (!ok) return ensureToolError(base);
+  // success: drop accidental error field
+  if (base.error) {
+    const { error: _e, ...rest } = base;
+    return rest as ToolResponse;
+  }
+  return base;
 }
 
 /** 调用级 description：任务简介（CLI 折叠标题只显示此项） */

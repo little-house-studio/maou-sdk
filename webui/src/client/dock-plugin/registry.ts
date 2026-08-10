@@ -2,6 +2,11 @@
  * Pure dock plugin registration — unit-testable without React.
  */
 import { DOCK_CARDS, type DockCardId } from "../drafts/bottom-dock";
+import {
+  DEFAULT_DOCK_BOARD_LAYOUT,
+  getDefaultDockBoardLayout,
+  type DockBoardLayout,
+} from "./layout";
 import type {
   DockContentKind,
   DockPluginRegistry,
@@ -12,17 +17,18 @@ import type {
 export const DEFAULT_DOCK_CONTENT_KIND: Record<DockCardId, DockContentKind> = {
   logs: "canvas-ui",
   tasks: "html-canvas",
-  terminal: "canvas-ui",
+  /** Live shell mounts TerminalPanel as react face */
+  terminal: "react",
   agent: "canvas-ui",
-  /** Live shell mounts ProactiveHost as react face（与 terminal 同类） */
-  proactive: "html-canvas",
+  /** Live shell mounts ProactiveHost as react face */
+  proactive: "react",
 };
 
 export function createEmptyDockRegistry(): DockPluginRegistry {
   return { slots: [] };
 }
 
-/** Seed registry from DOCK_CARDS with default content kinds. */
+/** Seed registry from DOCK_CARDS with default content kinds + layouts. */
 export function createDefaultDockRegistry(): DockPluginRegistry {
   return {
     slots: DOCK_CARDS.map((c) => ({
@@ -30,7 +36,8 @@ export function createDefaultDockRegistry(): DockPluginRegistry {
       label: c.label,
       tone: c.tone,
       contentKind: DEFAULT_DOCK_CONTENT_KIND[c.id],
-      description: `draft board · ${c.id} · ${DEFAULT_DOCK_CONTENT_KIND[c.id]}`,
+      layout: { ...DEFAULT_DOCK_BOARD_LAYOUT[c.id] },
+      description: `dock board · ${c.id} · ${DEFAULT_DOCK_CONTENT_KIND[c.id]} · ${DEFAULT_DOCK_BOARD_LAYOUT[c.id].surface ?? "transparent"}`,
     })),
   };
 }
@@ -41,7 +48,11 @@ export function registerDockPlugin(
   slot: DockPluginSlot,
 ): DockPluginRegistry {
   const rest = reg.slots.filter((s) => s.id !== slot.id);
-  return { slots: [...rest, slot] };
+  const full: DockPluginSlot = {
+    ...slot,
+    layout: slot.layout ?? getDefaultDockBoardLayout(slot.id),
+  };
+  return { slots: [...rest, full] };
 }
 
 export function listDockPlugins(
@@ -59,4 +70,13 @@ export function getDockPlugin(
 
 export function dockPluginIds(reg: DockPluginRegistry): DockCardId[] {
   return reg.slots.map((s) => s.id);
+}
+
+/** Resolve layout for a card (registry override → defaults). */
+export function resolveDockBoardLayout(
+  reg: DockPluginRegistry | null | undefined,
+  id: DockCardId,
+): DockBoardLayout {
+  const slot = reg ? getDockPlugin(reg, id) : null;
+  return slot?.layout ?? getDefaultDockBoardLayout(id);
 }

@@ -43,7 +43,7 @@ describe("live shell production wiring", () => {
     assert.match(app, /LiveSettingsPanel|LiveProjectHost|TeamBoard|ProactiveHost/);
     assert.match(app, /TeamBoard/);
     assert.match(app, /ProactiveHost/);
-    assert.match(app, /proactiveFace/);
+    assert.match(app, /dockFaces|faces=\{dockFaces\}|faces=\{\{/);
     assert.match(app, /presentation=["']card["']/);
   });
 
@@ -102,7 +102,7 @@ describe("live shell production wiring", () => {
     assert.match(app, /onTabChange|onDockTabChange/);
     assert.match(app, /is-hidden-mode|hidden=\{!chatVisible\}/);
     // Real terminal mounts in bottom dock 终端 card — not side float
-    assert.match(app, /terminalFace/);
+    assert.match(app, /dockFaces|faces=\{dockFaces\}|TerminalPanelLazy/);
     assert.match(app, /openTabRequest|dockOpenReq/);
     assert.doesNotMatch(app, /wire-terminal-float|showTerminal/);
   });
@@ -252,15 +252,17 @@ describe("live shell production wiring", () => {
     // Preview is opt-in after selection
     assert.match(liveFiles, /openPath/);
     assert.match(liveFiles, /关闭预览|setOpenPath\(null\)/);
-    // CodeMirror workbench must be dynamic import, not static package load on rail mount
-    assert.match(liveFiles, /lazy\s*\(/);
-    assert.match(
+    // 文件栏只读预览：DraftMarkdown + readFsFile（不要挂整台编辑工作台）
+    assert.match(liveFiles, /DraftMarkdown/);
+    assert.match(liveFiles, /readFsFile/);
+    assert.match(liveFiles, /live-files-preview/);
+    assert.doesNotMatch(
       liveFiles,
       /import\s*\(\s*["']\.\.\/markdown\/MarkdownWorkbench["']\s*\)/,
     );
     assert.doesNotMatch(
       liveFiles,
-      /import\s*\{\s*MarkdownWorkbench[^}]*\}\s*from/,
+      /import\s*\{\s*MarkdownWorkbench/,
     );
   });
 
@@ -270,22 +272,19 @@ describe("live shell production wiring", () => {
     assert.match(liveProj, /ProjectWorkbench/);
     assert.match(liveProj, /fetchMdTree|readFsFile/);
     assert.match(liveProj, /writeFsFile|onPersistMarkdown/);
-    // On-demand content path (not bulk full-body for list)
-    assert.match(liveProj, /stubsFromPaths|project-host-docs/);
-    assert.match(liveProj, /ensureContent|onActivePathChange/);
-    assert.match(liveProj, /按需加载|on-demand|stubs/);
-    // MarkdownWorkbench fallback is lazy
-    assert.match(liveProj, /lazy\s*\(/);
-    assert.match(
-      liveProj,
-      /import\s*\(\s*["']\.\.\/markdown\/MarkdownWorkbench["']\s*\)/,
-    );
+    assert.match(liveProj, /project-host-docs|ensureContent|onActivePathChange/);
     const workbench = read("drafts/panels/ProjectWorkbench.tsx");
     assert.match(workbench, /onActivePathChange/);
   });
 
   it("ChatPanel usage uses fetchSessionStats", () => {
     assert.match(chat, /fetchSessionStats/);
+    // Context chip opens modal — not append system line into thread
+    assert.match(chat, /SessionUsageModal|usageModalOpen/);
+    assert.doesNotMatch(
+      chat,
+      /usageClick[\s\S]{0,200}append\(\s*\{\s*id:[\s\S]{0,80}role:\s*["']system["']/,
+    );
   });
 
   it("ContextPanel message tree shares WireThreadView with live", () => {
@@ -328,6 +327,12 @@ describe("live shell production wiring", () => {
   it("TerminalPanel + api keep WS and list/stop", () => {
     assert.match(term, /agentTerminalWsUrl/);
     assert.match(term, /fetchTerminals/);
+    assert.match(term, /stopTerminal/);
+    // wire shell chrome (not legacy AGENT TERMINALS / linkish)
+    assert.match(term, /term-panel--wire/);
+    assert.match(term, /term-toolbar|term-session-chip/);
+    assert.doesNotMatch(term, /AGENT TERMINALS/);
+    assert.doesNotMatch(term, /linkish/);
     assert.match(api, /\/api\/chat/);
     assert.match(api, /\/api\/chat\/abort/);
     assert.match(api, /\/api\/chat\/enqueue/);

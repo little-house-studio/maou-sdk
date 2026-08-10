@@ -75,7 +75,6 @@ function MessageRow({
         "wire-msg",
         message.role,
         `tone-${tone}`,
-        isTool && (message.clickable || termId) ? "clickable" : "",
         isSystem ? "is-telemetry" : "",
         head.live ? "is-live" : "",
         head.queued ? "is-queued" : "",
@@ -89,10 +88,6 @@ function MessageRow({
           ? message.body.replace(/\s+/g, " ").trim().slice(0, 120)
           : undefined
       }
-      onClick={() => {
-        if (termId && onOpenTerminal) onOpenTerminal(termId);
-      }}
-      title={termId ? `打开终端 ${termId}` : undefined}
     >
       <div className={`msg-avatar-wrap tone-${tone}`} aria-hidden>
         <RoleAvatar kind={rKind} size={16} title={label} />
@@ -107,7 +102,15 @@ function MessageRow({
           }`}
         >
           {isTool ? (
-            <ToolCard message={message} />
+            <ToolCard
+              message={message}
+              terminalId={termId}
+              onOpenTerminal={
+                termId && onOpenTerminal
+                  ? () => onOpenTerminal(termId, message.agentName)
+                  : undefined
+              }
+            />
           ) : (
             <DraftMarkdown source={message.body} />
           )}
@@ -381,6 +384,37 @@ export function WireThreadView({
   );
 }
 
+/**
+ * 从工具行正文解析工具名（与 ChatPanel.extractToolNameFromText 同语义，避免环依赖）。
+ * 自动获取，不硬编码具体工具名列表。
+ */
+export function extractToolNameFromToolBody(text: string): string | undefined {
+  const t = (text || "").trim();
+  if (!t) return undefined;
+  // Prefer explicit 「工具 name」 (runtime / Chinese errors use ❌ 工具 foo)
+  const m =
+    t.match(/(?:^|[\s▶✓✗×❌xX])工具\s+([a-zA-Z_][\w.-]*)/) ||
+    t.match(/^[▶✓✗×❌xX]\s*[·•]?\s*([a-zA-Z_][\w.-]*)/) ||
+    t.match(/^([a-zA-Z_][\w.-]*)\s*[·•]/);
+  const name = m?.[1]?.trim();
+  if (!name || name === "tool") return undefined;
+  return name;
+}
+
+function resolveToolDisplayName(line: {
+  toolName?: string;
+  terminalId?: string;
+  text?: string;
+}): string {
+  const field = (line.toolName || "").trim();
+  if (field && field !== "tool" && field !== "terminal") return field;
+  const fromBody = extractToolNameFromToolBody(line.text || "");
+  if (fromBody) return fromBody;
+  if (line.terminalId) return "use_terminal";
+  if (field === "terminal") return "use_terminal";
+  return field || "tool";
+}
+
 /** Map live ChatLine-like rows into DraftMessage for grouping. */
 export function chatLinesToDraftMessages(
   lines: Array<{
@@ -390,6 +424,8 @@ export function chatLinesToDraftMessages(
     err?: boolean;
     terminalId?: string;
     agentName?: string;
+    toolName?: string;
+    toolCallId?: string;
     thinkStartedAt?: number;
     thinkDurationMs?: number;
     thinkOutputTokens?: number;
@@ -399,7 +435,8 @@ export function chatLinesToDraftMessages(
   const busy = Boolean(opts?.agentBusy);
   const agent = opts?.agentName || "coding";
   return lines.map((l) => {
-    if (l.err) {
+    // Tool rows keep role=tool even when err — badge must show real tool name
+    if (l.err && l.role !== "tool") {
       return {
         id: l.id,
         role: "err" as const,
@@ -408,20 +445,39 @@ export function chatLinesToDraftMessages(
       };
     }
     if (l.role === "tool") {
+      const toolName = resolveToolDisplayName(l);
+      const isErr =
+        Boolean(l.err) ||
+        /^[✗×❌]/.test((l.text || "").trim()) ||
+        /缺少必填|失败|error|❌/i.test(l.text || "");
+      // 结果正文首行常是「✓ write_file」或中文摘要；meta 描述用去掉徽章前缀后的摘要
+      const body = l.text || "";
+      const descFromBody = body
+        .split("\n")
+        .map((s) => s.trim())
+        .find(
+          (s) =>
+            s &&
+            !/^[▶✓✗×❌]\s*[a-zA-Z_][\w.-]*/.test(s) &&
+            s !== toolName,
+        );
       return {
         id: l.id,
         role: "tool" as const,
-        body: l.text || "",
-        tag: l.terminalId || undefined,
-        clickable: Boolean(l.terminalId),
+        body,
+        tag: l.terminalId || toolName || undefined,
+        // 不再整卡 clickable 自动弹终端；有 id 时工具卡上显示「打开终端」
+        clickable: false,
+        agentName: l.agentName || agent,
         tool: {
-          name: l.terminalId ? "terminal" : "tool",
-          result: l.text || "",
-          done: !busy || Boolean(l.text),
-          isError: false,
+          // 自动用 Agent 实际调用的工具名，禁止硬编码 "tool"
+          name: toolName,
+          result: body,
+          done: !busy || Boolean(body),
+          isError: isErr,
           description: l.terminalId
             ? `terminal ${l.terminalId}`
-            : l.agentName || undefined,
+            : descFromBody || undefined,
         },
       };
     }

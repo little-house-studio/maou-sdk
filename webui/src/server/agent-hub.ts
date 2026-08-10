@@ -114,6 +114,10 @@ export type ChatHistoryLine = {
   role: string;
   content: string;
   ts?: string;
+  /** Agent appendMessage meta.tool_name — 工具徽章真实名，禁止丢弃 */
+  toolName?: string;
+  toolOk?: boolean;
+  toolCallId?: string;
 };
 
 export type PendingApproval = {
@@ -744,11 +748,26 @@ export class AgentHub {
           })
           .join("");
       } else if (raw != null) content = JSON.stringify(raw);
+      const toolName = String(
+        m.tool_name ?? m.toolName ?? "",
+      ).trim();
+      const toolCallId = String(
+        m.toolCallId ?? m.tool_call_id ?? "",
+      ).trim();
+      const toolOk =
+        typeof m.tool_ok === "boolean"
+          ? m.tool_ok
+          : typeof m.toolOk === "boolean"
+            ? m.toolOk
+            : undefined;
       return {
         id: `${id}-${i}`,
         role: String(m.role ?? "assistant"),
         content,
         ts: String(m.createdAt ?? m.created_at ?? ""),
+        ...(toolName ? { toolName } : {}),
+        ...(toolCallId ? { toolCallId } : {}),
+        ...(toolOk !== undefined ? { toolOk } : {}),
       };
     });
   }

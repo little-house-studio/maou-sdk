@@ -41,6 +41,11 @@ import {
   type SessionSummary,
   type StreamEvent,
 } from "./api";
+import { formatModelErrorForUi } from "./model-error-ui";
+import {
+  SessionUsageModal,
+  type SessionUsageStats,
+} from "./SessionUsageModal";
 import {
   buildPrevUserJumpLabel,
   shouldShowJumpBar,
@@ -65,6 +70,13 @@ export type ChatLine = {
   err?: boolean;
   terminalId?: string;
   agentName?: string;
+  /**
+   * 实际工具名（来自 stream tool_call/tool_result / history meta.tool_name）。
+   * UI 徽章必须用这个；仅当完全未知时才回退显示 "tool"。
+   */
+  toolName?: string;
+  /** 配对 tool_call ↔ tool_result */
+  toolCallId?: string;
   /** 可一点重试的用户原文（error 行） */
   retryText?: string;
   /** thinking 行元数据（耗时 / token） */
@@ -72,6 +84,36 @@ export type ChatLine = {
   thinkDurationMs?: number;
   thinkOutputTokens?: number;
 };
+
+/**
+ * 从工具行正文提取工具名（不硬编码具体工具）。
+ * 支持：`▶ name` / `✓ name` / `✗ name` / `工具 name 缺少…`
+ */
+export function extractToolNameFromText(text: string): string | undefined {
+  const t = (text || "").trim();
+  if (!t) return undefined;
+  const m =
+    t.match(/(?:^|[\s▶✓✗×❌xX])工具\s+([a-zA-Z_][\w.-]*)/) ||
+    t.match(/^[▶✓✗×❌xX]\s*[·•]?\s*([a-zA-Z_][\w.-]*)/) ||
+    t.match(/^([a-zA-Z_][\w.-]*)\s*[·•]/);
+  const name = m?.[1]?.trim();
+  if (!name || name === "tool" || name === "terminal") return undefined;
+  return name;
+}
+
+/** 解析最终展示用工具名：优先字段，其次正文，终端会话回退 terminal */
+export function resolveChatToolName(line: {
+  toolName?: string;
+  terminalId?: string;
+  text?: string;
+}): string {
+  const fromField = (line.toolName || "").trim();
+  if (fromField && fromField !== "tool") return fromField;
+  const fromText = extractToolNameFromText(line.text || "");
+  if (fromText) return fromText;
+  if (line.terminalId) return "use_terminal";
+  return fromField || "tool";
+}
 
 function uid() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -128,10 +170,27 @@ function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
         : m.role === "tool"
           ? "tool"
           : "assistant";
+    const text = m.content || "";
+    // 优先 session 落盘的 tool_name（Agent 权威），正文解析仅兜底
+    const fromMeta = (m.toolName || "").trim();
+    const fromBody = role === "tool" ? extractToolNameFromText(text) : undefined;
+    const toolName =
+      role === "tool"
+        ? fromMeta && fromMeta !== "tool"
+          ? fromMeta
+          : fromBody
+        : undefined;
     return {
       id: m.id || uid(),
       role: role as ChatLine["role"],
-      text: m.content || "",
+      text,
+      toolName,
+      toolCallId: m.toolCallId,
+      err:
+        role === "tool" &&
+        (/^✗|❌|缺少必填|失败/i.test(text.trim()) ||
+          m.toolOk === false ||
+          Boolean((m as { ok?: boolean }).ok === false)),
     };
   });
 }
@@ -268,6 +327,16 @@ export function ChatPanel({
     max: number;
   } | null>(null);
   const maxContextRef = useRef(128_000);
+  /** 上下文 chip → 弹窗（不写入聊天线程） */
+  const [usageModalOpen, setUsageModalOpen] = useState(false);
+  const [usageModalLoading, setUsageModalLoading] = useState(false);
+  const [usageModalError, setUsageModalError] = useState<string | null>(null);
+  const [usageModalSessionId, setUsageModalSessionId] = useState<string | null>(
+    null,
+  );
+  const [usageModalStats, setUsageModalStats] =
+    useState<SessionUsageStats | null>(null);
+  const [usageModalRaw, setUsageModalRaw] = useState<string | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
   /** 发送模式：队列（等本轮）/ 插入（打断当前流）—— 对接到 MessageQueue */
@@ -719,7 +788,10 @@ export function ChatPanel({
       const next = [...prev];
       for (let i = next.length - 1; i >= 0; i--) {
         if (next[i]!.role === "assistant") {
-          next[i] = { ...next[i]!, text: next[i]!.text + delta };
+          // 状态占位（… 调用模型…）收到正文 delta 时整段替换，避免拼进气泡
+          const cur = next[i]!.text;
+          const base = /^\u2026\s/.test(cur.trimStart()) ? "" : cur;
+          next[i] = { ...next[i]!, text: base + delta };
           return next;
         }
       }
@@ -806,12 +878,26 @@ export function ChatPanel({
         }
         case "tool_call": {
           const tool = ev.tool as {
+            id?: string;
             name?: string;
             parameters?: Record<string, unknown>;
           } | undefined;
-          const name =
+          // 自动取 stream 上的工具名（Agent 真实调用名），不硬编码
+          const name = String(
             tool?.name ??
-            String(ev.name ?? (ev as { tool_name?: string }).tool_name ?? "tool");
+              ev.name ??
+              (ev as { tool_name?: string }).tool_name ??
+              "",
+          ).trim();
+          const toolCallId = String(
+            tool?.id ??
+              (ev as { toolCallId?: string }).toolCallId ??
+              (ev as { tool_call_id?: string }).tool_call_id ??
+              "",
+          ).trim();
+          // 未知时不要写入字面量 "tool"（会污染后续正文解析）
+          const displayName = name || undefined;
+          const label = displayName || "tool";
           const params =
             tool?.parameters ?? (ev.parameters as Record<string, unknown>) ?? {};
           const desc =
@@ -824,35 +910,96 @@ export function ChatPanel({
               : typeof params.terminal_id === "string"
                 ? params.terminal_id
                 : undefined;
-          const isTerm = name === "use_terminal" || name === "bash";
+          const isTerm =
+            label === "use_terminal" || label === "bash";
           append({
             id: uid(),
             role: "tool",
-            text: `▶ ${name}${desc ? ` · ${desc}` : ""}`,
+            text: `▶ ${label}${desc ? ` · ${desc}` : ""}`,
+            toolName: displayName,
+            toolCallId: toolCallId || undefined,
             terminalId: isTerm ? tid : undefined,
             agentName: defaultAgent,
           });
           break;
         }
         case "tool_result": {
-          const name = String(
-            ev.name ?? (ev as { tool_name?: string }).tool_name ?? "tool",
-          );
+          // Agent 事件权威字段：name / tool_name；否则按 toolCallId 回填上一 tool_call
+          const rawName = String(
+            ev.name ?? (ev as { tool_name?: string }).tool_name ?? "",
+          ).trim();
+          const toolCallId = String(
+            (ev as { toolCallId?: string }).toolCallId ??
+              (ev as { tool_call_id?: string }).tool_call_id ??
+              "",
+          ).trim();
+          const content = String(ev.content ?? ev.result ?? "");
+          const fromContent = extractToolNameFromText(content);
           const ok = ev.ok !== false;
           const tid = extractTerminalId(ev);
-          const snippet = String(ev.content ?? ev.result ?? "").slice(0, 200);
-          append({
-            id: uid(),
-            role: "tool",
-            text: `${ok ? "✓" : "✗"} ${name}${tid ? ` · ${tid}` : ""}${snippet ? `\n${snippet}` : ""}`,
-            err: !ok,
-            terminalId: tid,
-            agentName: defaultAgent,
+          const snippet = content.slice(0, 200);
+          const seedName =
+            (rawName && rawName !== "tool" ? rawName : "") || fromContent || "";
+          setLines((prev) => {
+            // 1) 事件 name  2) 正文解析  3) 同 toolCallId 的 tool_call 行
+            let name = seedName;
+            if (!name && toolCallId) {
+              const hit = [...prev]
+                .reverse()
+                .find(
+                  (l) =>
+                    l.role === "tool" &&
+                    l.toolCallId === toolCallId &&
+                    l.toolName &&
+                    l.toolName !== "tool",
+                );
+              if (hit?.toolName) name = hit.toolName;
+            }
+            // 优先更新同一 toolCallId 的「进行中」卡，避免双行 + 结果行丢名
+            if (toolCallId) {
+              const idx = prev.findIndex(
+                (l) =>
+                  l.role === "tool" &&
+                  l.toolCallId === toolCallId &&
+                  /^▶/.test((l.text || "").trim()),
+              );
+              if (idx >= 0) {
+                const cur = prev[idx]!;
+                const finalName =
+                  name ||
+                  (cur.toolName && cur.toolName !== "tool"
+                    ? cur.toolName
+                    : "") ||
+                  undefined;
+                const label = finalName || "tool";
+                const next = [...prev];
+                next[idx] = {
+                  ...cur,
+                  text: `${ok ? "✓" : "✗"} ${label}${tid ? ` · ${tid}` : ""}${snippet ? `\n${snippet}` : ""}`,
+                  toolName: finalName,
+                  err: !ok,
+                  terminalId: tid ?? cur.terminalId,
+                  agentName: cur.agentName || defaultAgent,
+                };
+                return next;
+              }
+            }
+            const label = name || "tool";
+            return [
+              ...prev,
+              {
+                id: uid(),
+                role: "tool" as const,
+                text: `${ok ? "✓" : "✗"} ${label}${tid ? ` · ${tid}` : ""}${snippet ? `\n${snippet}` : ""}`,
+                toolName: name || undefined,
+                toolCallId: toolCallId || undefined,
+                err: !ok,
+                terminalId: tid,
+                agentName: defaultAgent,
+              },
+            ];
           });
-          // DESIGN: use_terminal 会话可在右侧附着；有 id 时自动打开终端面板
-          if (tid && onOpenTerminal) {
-            onOpenTerminal(tid, defaultAgent);
-          }
+          // 不自动弹终端：用户点工具行 / 底栏「终端」再打开
           break;
         }
         case "usage":
@@ -991,15 +1138,26 @@ export function ChatPanel({
           }
           break;
         }
-        case "error":
+        case "error": {
+          const raw = String(ev.message ?? ev.error ?? "error");
+          // Prefer LLM structured category from stream (Agent emits category/retryable)
+          const category = String(
+            (ev as { category?: string }).category ?? "",
+          ).trim();
+          const retryable = (ev as { retryable?: boolean }).retryable;
+          const text = formatModelErrorForUi(raw, category, retryable);
+          setLines((prev) =>
+            prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
+          );
           append({
             id: uid(),
             role: "system",
-            text: String(ev.message ?? ev.error ?? "error"),
+            text,
             err: true,
             retryText: lastUserRef.current || undefined,
           });
           break;
+        }
         case "info": {
           const msg = String(ev.message ?? ev.text ?? "").trim();
           // 中断等关键运行时信息：以前静默吞掉，用户只看到「无回复」
@@ -1042,11 +1200,42 @@ export function ChatPanel({
           if (msg) append({ id: uid(), role: "system", text: msg });
           break;
         }
+        case "status": {
+          // 模型等待/重试进度：写进空 assistant 气泡，避免 wire 模式无 banner 时「只有 LIVE + …」
+          const text = String(
+            (ev as { text?: string; content?: string; message?: string }).text ??
+              (ev as { content?: string }).content ??
+              (ev as { message?: string }).message ??
+              "",
+          ).trim();
+          if (!text) break;
+          setLines((prev) => {
+            const next = [...prev];
+            for (let i = next.length - 1; i >= 0; i--) {
+              const l = next[i]!;
+              if (l.role === "assistant" && !l.text.trim()) {
+                next[i] = {
+                  ...l,
+                  text: `… ${text}`,
+                };
+                return next;
+              }
+            }
+            // 已有正文则用 system 轻提示
+            next.push({
+              id: uid(),
+              role: "system",
+              text: `⏳ ${text}`,
+            });
+            return next;
+          });
+          break;
+        }
         case "log": {
           const msg = String(ev.message ?? ev.content ?? "");
           if (!msg) break;
           const level = String(ev.level ?? "info");
-          if (level === "error" || level === "warning") {
+          if (level === "error" || level === "warning" || level === "warn") {
             append({
               id: uid(),
               role: "system",
@@ -1055,7 +1244,7 @@ export function ChatPanel({
             });
           } else if (
             // Surface context compress / model switch (CLI shows these)
-            /压缩|归档|模型切换|compact|archive|summaryStage|archiveStage/i.test(
+            /压缩|归档|模型切换|compact|archive|summaryStage|archiveStage|调用模型|限流|额度|429|Retrying|重试/i.test(
               msg,
             )
           ) {
@@ -1072,7 +1261,6 @@ export function ChatPanel({
       patchLastAssistant,
       patchLastThinking,
       defaultAgent,
-      onOpenTerminal,
       onMetaChange,
       patchContextUsage,
       refreshContextUsage,
@@ -1388,8 +1576,13 @@ export function ChatPanel({
           sessionRunsRef.current.get(sessionId)?.gen === gen &&
           (e as Error)?.name !== "AbortError"
         ) {
-          const err = e instanceof Error ? e.message : String(e);
+          const raw = e instanceof Error ? e.message : String(e);
+          const err = formatModelErrorForUi(raw);
           if (activeSessionRef.current === sessionId) {
+            // 清掉空的「…」assistant，避免和错误行叠在一起
+            setLines((prev) =>
+              prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
+            );
             append({
               id: uid(),
               role: "system",
@@ -1935,7 +2128,7 @@ export function ChatPanel({
       {lines.map((l) => (
         <div
           key={l.id}
-          className={`bubble ${l.role}${l.err ? " err" : ""}${l.role === "tool" ? " tool-line" : ""}${l.terminalId ? " clickable" : ""}${isCodex ? " codex-bubble" : ""}`}
+          className={`bubble ${l.role}${l.err ? " err" : ""}${l.role === "tool" ? " tool-line" : ""}${isCodex ? " codex-bubble" : ""}`}
           data-msg-id={l.id}
           data-msg-role={l.role}
           data-msg-preview={
@@ -1943,12 +2136,6 @@ export function ChatPanel({
               ? (l.text || "").replace(/\s+/g, " ").trim().slice(0, 64)
               : undefined
           }
-          onClick={() => {
-            if (l.terminalId && onOpenTerminal) {
-              onOpenTerminal(l.terminalId, l.agentName);
-            }
-          }}
-          title={l.terminalId ? `Open terminal ${l.terminalId}` : undefined}
         >
           {isCodex ? (
             <>
@@ -1963,6 +2150,17 @@ export function ChatPanel({
                 <pre className="bubble-text">
                   {l.text || (busy && l.role === "assistant" ? "…" : "")}
                 </pre>
+                {l.terminalId && onOpenTerminal ? (
+                  <button
+                    type="button"
+                    className="wire-tool-open-term"
+                    onClick={() =>
+                      onOpenTerminal(l.terminalId!, l.agentName)
+                    }
+                  >
+                    打开终端
+                  </button>
+                ) : null}
                 {l.err && l.retryText ? (
                   <button
                     type="button"
@@ -1986,6 +2184,17 @@ export function ChatPanel({
               <pre className="bubble-text">
                 {l.text || (busy && l.role === "assistant" ? "…" : "")}
               </pre>
+              {l.terminalId && onOpenTerminal ? (
+                <button
+                  type="button"
+                  className="wire-tool-open-term"
+                  onClick={() =>
+                    onOpenTerminal(l.terminalId!, l.agentName)
+                  }
+                >
+                  打开终端
+                </button>
+              ) : null}
               {l.err && l.retryText ? (
                 <button
                   type="button"
@@ -2132,29 +2341,43 @@ export function ChatPanel({
   };
 
   const usageClick = () => {
-    // Prefer dedicated stats route; fall back to /api/command usage
+    setUsageModalOpen(true);
+    setUsageModalLoading(true);
+    setUsageModalError(null);
+    setUsageModalRaw(null);
     void fetchSessionStats()
       .then((r) => {
-        const text =
-          r.text ||
-          (r.stats
-            ? JSON.stringify(r.stats, null, 0)
-            : "（无 session stats）");
-        append({ id: uid(), role: "system", text });
+        setUsageModalSessionId(r.sessionId);
+        if (r.stats) {
+          setUsageModalStats({
+            messageCount: r.stats.messageCount,
+            userTurns: r.stats.userTurns,
+            assistantTurns: r.stats.assistantTurns,
+            toolCalls: r.stats.toolCalls,
+            inputTokens: r.stats.inputTokens,
+            outputTokens: r.stats.outputTokens,
+            cacheRead: r.stats.cacheRead,
+            file: r.stats.file,
+          });
+        } else {
+          setUsageModalStats(null);
+          setUsageModalRaw(r.text || "（无 session stats）");
+        }
+        // Keep chip % in sync
+        if (r.stats) {
+          patchContextUsage({
+            used: r.stats.inputTokens,
+            max: maxContextRef.current,
+          });
+        }
       })
-      .catch(() =>
-        runCommand("usage")
-          .then((r) => {
-            const text =
-              typeof r.text === "string"
-                ? r.text
-                : JSON.stringify(r).slice(0, 400);
-            append({ id: uid(), role: "system", text });
-          })
-          .catch((err) =>
-            setStatus(err instanceof Error ? err.message : String(err)),
-          ),
-      );
+      .catch((err) => {
+        setUsageModalStats(null);
+        setUsageModalError(
+          err instanceof Error ? err.message : String(err),
+        );
+      })
+      .finally(() => setUsageModalLoading(false));
   };
 
   const sendModeLabel = sendMode === "insert" ? "插入" : "队列";
@@ -2342,8 +2565,8 @@ export function ChatPanel({
                 className="usage-chip wire-composer-usage"
                 title={
                   contextUsage
-                    ? `上下文 ${contextUsage.used.toLocaleString()} / ${contextUsage.max.toLocaleString()} tokens · 点击查看 /usage`
-                    : "上下文占用 · 点击查看 /usage"
+                    ? `上下文 ${contextUsage.used.toLocaleString()} / ${contextUsage.max.toLocaleString()} tokens · 点击打开用量详情`
+                    : "上下文占用 · 点击打开用量详情"
                 }
                 onClick={usageClick}
               >
@@ -2384,10 +2607,13 @@ export function ChatPanel({
                 <span
                   className={`composer-status${statusError ? " is-error" : ""}${
                     pending.length > 0 ? " is-approval" : ""
-                  }`}
+                  }${busy && !statusError ? " is-busy" : ""}`}
                   title={statusDisplay}
                 >
-                  {statusDisplay}
+                  {busy && !statusError ? (
+                    <span className="composer-status-dot" aria-hidden />
+                  ) : null}
+                  <span className="composer-status-text">{statusDisplay}</span>
                 </span>
               ) : null}
               {sendModeControl}
@@ -2632,6 +2858,19 @@ export function ChatPanel({
         </div>
       ) : (
         composerDock
+      )}
+      {createPortal(
+        <SessionUsageModal
+          open={usageModalOpen}
+          onClose={() => setUsageModalOpen(false)}
+          sessionId={usageModalSessionId}
+          stats={usageModalStats}
+          maxContext={maxContextRef.current}
+          loading={usageModalLoading}
+          error={usageModalError}
+          rawText={usageModalRaw}
+        />,
+        document.body,
       )}
     </div>
   );

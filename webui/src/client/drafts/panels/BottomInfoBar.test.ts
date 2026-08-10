@@ -73,10 +73,10 @@ describe("BottomInfoBar dock tray", () => {
     assert.match(html, /wire-dock-track/);
     assert.match(html, /wire-dock-track-fill/);
     assert.match(html, /data-dock-order=/);
-    // Split: logs | tasks | terminal | agent (no separate todos)
+    // Split: logs | tasks | terminal | agent | proactive
     assert.deepEqual(
       DOCK_CARDS.map((c) => c.id),
-      ["logs", "tasks", "terminal", "agent"],
+      ["logs", "tasks", "terminal", "agent", "proactive"],
     );
     for (const c of DOCK_CARDS) {
       assert.match(html, new RegExp(`data-dock-card="${c.id}"`));
@@ -192,13 +192,15 @@ describe("BottomInfoBar dock tray", () => {
     assert.ok(springSettled(s, DOCK_EXPAND_H_UI, 4, 40));
   });
 
-  it("accepts terminalFace for live TerminalPanel inside 终端 card", () => {
+  it("accepts faces map + layout-driven size/resize for dock boards", () => {
     const src = readFileSync(join(here, "BottomInfoBar.tsx"), "utf8");
-    assert.match(src, /terminalFace/);
+    assert.match(src, /faces\?:/);
+    assert.match(src, /DockFaceMap|faceMap/);
     assert.match(src, /openTabRequest/);
-    assert.match(src, /wire-dock-terminal-host|data-dock-terminal/);
-    assert.match(src, /readTermSize|writeTermSize|TERM_SIZE_KEY/);
-    assert.match(src, /beginTermResize|wire-dock-resize/);
+    assert.match(src, /DockBoardShell|wire-dock-board-shell|wire-dock-terminal-host/);
+    assert.match(src, /readDockBoardSize|writeDockBoardSize|resolveDockBoardLayout/);
+    assert.match(src, /beginBoardResize|wire-dock-resize/);
+    assert.match(src, /layout\.resizable|layoutFor/);
   });
 
   it("ships board lift + hover morph + free-float wiring", () => {

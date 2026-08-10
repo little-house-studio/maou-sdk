@@ -147,9 +147,21 @@ export function mountLlmConfigRoutes(app: Express): void {
       });
       const reference = loadReference(result.model, shot.presetName);
 
+      // 业务失败也返回 HTTP 200，但必须带可读 error（禁止前端退化成 "http 200"）
+      const businessOk = Boolean(result.ok && result.extracted);
       res.json({
-        ok: result.ok,
-        result,
+        ok: businessOk,
+        error: businessOk
+          ? undefined
+          : result.error ||
+            "模型未返回可解析的 SVG（通道可能正常，但未画出图）",
+        result: {
+          ...result,
+          // 给 UI 的摘要，避免只显示状态码
+          summary: businessOk
+            ? `画图成功 · ${result.latencyMs}ms`
+            : `请求已通 · ${result.latencyMs}ms · 未抽出图`,
+        },
         shot,
         reference,
         defaultSubject: DEFAULT_SVG_PROBE_SUBJECT,

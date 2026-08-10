@@ -385,6 +385,9 @@ importers:
       '@little-house-studio/context':
         specifier: workspace:*
         version: link:../core/context
+      '@little-house-studio/ops-agent':
+        specifier: workspace:*
+        version: link:../agent-products/ops-agent
       '@little-house-studio/terminal-engine':
         specifier: workspace:*
         version: link:../terminal-engine

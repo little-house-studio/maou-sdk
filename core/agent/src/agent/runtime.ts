@@ -59,17 +59,46 @@ import { getTemplateRef } from "./template-ref.js";
 import { renderAgentPreview, watchAgentPreview } from "./template.js";
 import { runAgentCommand } from "./command-runner.js";
 import { CommandRegistry, registerBuiltinCommands, type CommandContext, type CommandResult } from "./command-registry.js";
-import { ModelCaller, type ModelCallResult, type CallerStreamEvent } from "@little-house-studio/llm";
+import {
+  ModelCaller,
+  type ModelCallResult,
+  type CallerStreamEvent,
+  parseLlmErrorFromMessage,
+  classifyFromThrown,
+  AuxModelCaller,
+  resolveHelperPreset,
+  deriveJsonSettings,
+  StreamJsonAccumulator,
+} from "@little-house-studio/llm";
 import type { LLMToolCall, APIPreset } from "@little-house-studio/llm";
-import { AuxModelCaller, resolveHelperPreset } from "@little-house-studio/llm";
-import { deriveJsonSettings, StreamJsonAccumulator } from "@little-house-studio/llm";
+import {
+  isOutputTruncatedByLength,
+  appendTruncationMarker,
+  buildLengthContinuationControl,
+  MAX_LENGTH_CONTINUATIONS,
+  toolCallSignature,
+  detectRepeatedToolLoop,
+  buildToolLoopControl,
+  findSameRoundResourceConflicts,
+} from "./runtime-recovery.js";
 import { SUPERVISOR_MANAGER } from "./supervisor-manager.js";
 import { SubagentRegistry } from "./subagent-registry.js";
 import { AgentLifecycleManager } from "./agent-lifecycle.js";
 import { MessageBus } from "./message-bus.js";
-import type { ToolRegistry, ToolExecutor } from "@little-house-studio/tools";
+import type { ToolRegistry, ToolExecutor, ToolErrorInfo } from "@little-house-studio/tools";
 import type { ToolContext } from "@little-house-studio/tools";
-import { collectDiff, formatDiffForReport } from "@little-house-studio/tools";
+import {
+  collectDiff,
+  formatDiffForReport,
+  ensureToolError,
+  toolFail,
+} from "@little-house-studio/tools";
+import {
+  collectMissingRequiredParams,
+  missingRequiredToolResponse,
+  hookBlockedToolResponse,
+  executeThrownToolResponse,
+} from "./tool-result-gates.js";
 import {
   cleanupAgentTerminals,
   listTerminals,
@@ -1561,6 +1590,13 @@ export class AgentRuntime {
     // 注入 <continue> 提示让模型重新生成，最多 MAX_EMPTY_RETRIES 次，仍空才真正退出。
     let emptyResponseRetries = 0;
     const MAX_EMPTY_RETRIES = 5;
+    // max_tokens（finishReason=length）截断后续写次数
+    let lengthContinuations = 0;
+    // 工具死循环检测：最近签名窗口 + 催促上限
+    const recentToolSignatures: string[] = [];
+    let toolLoopNudges = 0;
+    const MAX_TOOL_LOOP_NUDGES = 3;
+    const toolLoopWindow = Math.max(3, this.loopThreshold ?? 10);
     // 本轮工具调用摘要（loop_report 用：累计整个 run 的工具调用，不只最后一轮）
     let lastRoundToolSummary = "";
     // 累计本次 run 所有轮的工具调用次数（loop_report 用：即使最后一轮空转，也能反映之前干了啥）
@@ -2239,17 +2275,35 @@ export class AgentRuntime {
 
         // 重试判定：模型应答但不可用（空内容 + 校验失败 / 错误结果）。
         // 中断信号优先；有原生工具调用即视为可用，不重试。
-        // 注意：上下文溢出 / 多模态不支持不走「原样重试」分支（上面已处理）。
+        // 不可重试（quota/auth/…）走 LLM 结构化字段 errorRetryable / errorCategory，
+        // 不再用 FreeUsageLimit 正则。
         const unusable =
           !result.content &&
           !!result.validationError &&
           result.nativeToolCalls.length === 0;
         const unusableOverflow = detectContextOverflow(result.validationError || "");
         const unusableMedia = detectUnsupportedMediaContent(result.validationError || "");
+        // LLM structured: prefer errorRetryable; else parse [llm_error] prefix / classify
+        const modelErrNonRetryable = (() => {
+          if (result.errorRetryable === false) return true;
+          if (result.errorRetryable === true) return false;
+          const parsed = parseLlmErrorFromMessage(result.validationError || "");
+          if (parsed) return !parsed.retryable;
+          const c = classifyFromThrown(new Error(result.validationError || ""));
+          // Only block retries for known terminal categories (not unknown JSON noise)
+          return (
+            !c.retryable &&
+            (c.category === "quota_exhausted" ||
+              c.category === "auth" ||
+              c.category === "content_policy" ||
+              c.category === "context_overflow")
+          );
+        })();
         if (
           unusable &&
           !unusableOverflow &&
           !unusableMedia &&
+          !modelErrNonRetryable &&
           modelAttempt < MODEL_RETRIES &&
           !effectiveAbortSignal.aborted
         ) {
@@ -2356,13 +2410,35 @@ export class AgentRuntime {
 
       // 存储 assistant 消息（不再用空格占位，空串即可；适配器会处理 tool_calls 配对）
       // content = 展示/正文；reasoningContent 按 thinking_context_mode 决定是否进后续 LLM 上下文
-      const contentToUse = result.content || "";
+      let contentToUse = result.content || "";
+      // max_tokens / length 截断：正文末尾打标志，便于模型与用户识别断点
+      const outputTruncated =
+        !result.aborted &&
+        isOutputTruncatedByLength(result.finishReason ?? null);
+      if (outputTruncated && contentToUse) {
+        contentToUse = appendTruncationMarker(contentToUse);
+        yield this.logEvent(
+          "warning",
+          `模型输出因 length/max_tokens 截断 (finishReason=${result.finishReason ?? "?"})，将尝试续写`,
+        );
+      }
+      // 用户中断：保留 partial，并标注（非自动续写）
+      if (result.aborted && contentToUse && !contentToUse.includes("生成被中断")) {
+        contentToUse =
+          contentToUse + "\n\n【系统】生成被中断，以上为已输出部分。";
+      }
       lastAssistantContent = contentToUse;
       const reasoningRaw =
         typeof result.reasoningContent === "string" ? result.reasoningContent.trim() : "";
+      // DeepSeek V4 thinking：含 tool_calls 的 assistant 历史必须回传 reasoning_content 字段。
+      // - 有真思考：按 mode 或 tool 强制落盘
+      // - 无真思考但有 tool_calls：落盘 ""，保证后续回传字段存在
+      const hasToolCalls = result.nativeToolCalls.length > 0;
       const storeThinking =
-        reasoningRaw.length > 0 &&
-        shouldStoreThinkingInContext(thinkingContextMode, roundCount);
+        (reasoningRaw.length > 0 &&
+          (shouldStoreThinkingInContext(thinkingContextMode, roundCount) ||
+            hasToolCalls)) ||
+        (hasToolCalls && reasoningRaw.length === 0);
       // 累计本次 run 所有轮的工具调用（loop_report 用：即使最后一轮空转，也能反映之前干了啥）
       if (result.nativeToolCalls.length > 0) {
         for (const tc of result.nativeToolCalls) {
@@ -2383,15 +2459,39 @@ export class AgentRuntime {
         toolCalls: result.nativeToolCalls,
         usage: result.usage,
         raw_request: result.rawRequest,
-        // 仅 mode 允许时写入；UI 仍走 thinking_delta，不把标签塞进 content
+        finish_reason: result.finishReason ?? undefined,
+        output_truncated: outputTruncated || undefined,
+        aborted: result.aborted || undefined,
+        // 仅 mode 允许 / tool 强制时写入；UI 仍走 thinking_delta，不把标签塞进 content
         ...(storeThinking ? { reasoningContent: reasoningRaw } : {}),
       });
+      // storeThinking 且 reasoningRaw 为空时写入 ""（tool 兜底）
 
       // 模型调用失败时（content 为空且有 validationError）发送 error 事件
       if (!contentToUse && result.validationError) {
+        const parsed =
+          result.errorCategory != null
+            ? {
+                category: result.errorCategory,
+                retryable: result.errorRetryable,
+                code: result.errorCode,
+              }
+            : (() => {
+                const p =
+                  parseLlmErrorFromMessage(result.validationError) ??
+                  classifyFromThrown(new Error(result.validationError));
+                return {
+                  category: p.category,
+                  retryable: p.retryable,
+                  code: p.code,
+                };
+              })();
         yield this.event("error", {
           message: result.validationError,
           round: currentRound,
+          category: parsed.category,
+          retryable: parsed.retryable,
+          code: parsed.code,
         });
         break; // 退出 agent 循环
       }
@@ -2413,10 +2513,25 @@ export class AgentRuntime {
         emptyResponseRetries += 1;
         if (emptyResponseRetries < MAX_EMPTY_RETRIES) {
           const reason = !contentToUse ? "空响应" : "有文本但未调用工具";
-          // 角色区分提示：supervisor 该调 chat_main/verify；主 agent 该调 write_file 等
+          // 角色区分提示：工具名从当前 Agent 注册表自动取，禁止硬编码 write_file 等
+          const registeredToolNames = (() => {
+            try {
+              return this.tools
+                .list()
+                .map((d) => d.name)
+                .filter(Boolean)
+                .slice(0, 16);
+            } catch {
+              return [] as string[];
+            }
+          })();
+          const toolListHint =
+            registeredToolNames.length > 0
+              ? registeredToolNames.join("/")
+              : "（当前 Agent 已注册工具）";
           const hint = isSupervisorActive
             ? "你是监督 Agent，**禁止只输出文字**，必须立刻调用工具。若要派活给主 Agent，现在就调 supervisor_chat_main(message=\"派活内容\")；若主 Agent 已汇报，调 supervisor_task_control(action=verify, round_report=\"汇报内容\")；若验收合格，调 supervisor_task_control(action=confirm_end)。"
-            : "请继续执行任务——直接调用工具（write_file/edit_file/use_terminal 等）开始具体操作，不要只思考或只输出文字。当前是 yolo 模式，use_terminal 可自由跑 npm install/build/test 等命令，不会被拦截。若有 todo 清单且当前项已完成，调用 todo_finish；全部完成后回复用户。";
+            : `请继续执行任务——直接调用工具（${toolListHint} 等）开始具体操作，不要只思考或只输出文字。若有 todo 清单且当前项已完成，调用 todo_finish；全部完成后回复用户。`;
           // todo 线路空转：额外 nudge（靠后 system_notice）
           try {
             TODO_ORCHESTRATOR.evaluateNudge(sessionId!, sessionId!, false);
@@ -2477,6 +2592,41 @@ export class AgentRuntime {
           preset, // 当前轮 preset（供 ToolContext.mainPreset，避免实例字段被嵌套 run 污染）
         );
 
+        // 工具死循环检测（真签名：name+关键参数，非仅次数）
+        for (const tc of result.nativeToolCalls) {
+          recentToolSignatures.push(toolCallSignature(tc));
+        }
+        if (recentToolSignatures.length > toolLoopWindow * 2) {
+          recentToolSignatures.splice(0, recentToolSignatures.length - toolLoopWindow * 2);
+        }
+        const loopHit = detectRepeatedToolLoop(recentToolSignatures, {
+          window: toolLoopWindow,
+        });
+        if (loopHit.looping && toolLoopNudges < MAX_TOOL_LOOP_NUDGES) {
+          toolLoopNudges++;
+          const ctrl = buildToolLoopControl(loopHit.dominant);
+          yield this.logEvent(
+            "warning",
+            `检测到工具调用死循环倾向（${toolLoopNudges}/${MAX_TOOL_LOOP_NUDGES}）dominant≈${(loopHit.dominant ?? "").slice(0, 80)}`,
+          );
+          appendSessionEvent(this.sessions, sessionId!, {
+            kind: "runtime_control",
+            content: ctrl,
+            source: "tool_loop",
+            author: authorSystem("runtime", "runtime"),
+            meta: { round: currentRound, dominant: loopHit.dominant, count: loopHit.count },
+          });
+          yield this.event("session_inject", {
+            kind: "runtime_control",
+            source: "tool_loop",
+            content: "工具循环警告：请换策略",
+            round: currentRound,
+            author: { type: "system", id: "runtime", displayName: "runtime" },
+          });
+        } else if (!loopHit.looping) {
+          toolLoopNudges = 0;
+        }
+
         // task_complete phase：本轮若有工具完成（尤其 todo_finish），且全部 todo 已完成，
         // 立即投递 after_task_complete 模式的消息（不必等 loop_end 兜底）。
         if (this.checkAllTasksComplete(sessionId!)) {
@@ -2506,6 +2656,46 @@ export class AgentRuntime {
           roundCount++;
           continue;
         }
+      }
+
+      // ── max_tokens 截断续写（无工具收尾 或 endsLoop 后正文仍被截断）──
+      if (
+        outputTruncated &&
+        !result.aborted &&
+        !result.validationError &&
+        lengthContinuations < MAX_LENGTH_CONTINUATIONS &&
+        !effectiveAbortSignal.aborted
+      ) {
+        lengthContinuations++;
+        const ctrl = buildLengthContinuationControl({
+          round: currentRound,
+          hasToolCalls: result.nativeToolCalls.length > 0,
+        });
+        yield this.logEvent(
+          "warning",
+          `length 截断续写 ${lengthContinuations}/${MAX_LENGTH_CONTINUATIONS}`,
+        );
+        appendSessionEvent(this.sessions, sessionId!, {
+          kind: "runtime_control",
+          content: ctrl,
+          source: "length_continue",
+          author: authorSystem("runtime", "runtime"),
+          meta: { round: currentRound, finish_reason: result.finishReason },
+        });
+        yield this.event("session_inject", {
+          kind: "runtime_control",
+          source: "length_continue",
+          content: "续写：输出被截断",
+          round: currentRound,
+          author: { type: "system", id: "runtime", displayName: "runtime" },
+        });
+        yield this.event("status", {
+          text: `续写截断输出 (${lengthContinuations}/${MAX_LENGTH_CONTINUATIONS})`,
+        });
+        try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        this.hooks?.agentStop(currentRound);
+        roundCount++;
+        continue;
       }
 
       // ── #9 完成前自动验证（typecheck/test 等）──
@@ -2954,6 +3144,18 @@ export class AgentRuntime {
       yieldResult: this.getYieldHandler(sessionId ?? ""),
     });
 
+    // ── 同轮资源冲突：多写同一 path / 相同破坏性终端命令 → 后者不执行 ──
+    const resourceConflicts = findSameRoundResourceConflicts(toolCalls);
+    const blockedByConflict = new Map(
+      resourceConflicts.map((c) => [c.index, c] as const),
+    );
+    if (resourceConflicts.length > 0) {
+      yield this.logEvent(
+        "warning",
+        `同轮资源冲突 ${resourceConflicts.length} 处：${resourceConflicts.map((c) => `#${c.index + 1}:${c.toolName}`).join(", ")}`,
+      );
+    }
+
     // ── 按 parallelSafe / blocking 分组执行 ──
     // 连续的 parallelSafe（只读）工具合并为并发组并行执行；其余串行。
     // blocking=false 的工具（后台 fire-and-forget）：立即提交占位 tool_result，
@@ -2968,9 +3170,85 @@ export class AgentRuntime {
     // 用于 endsLoop 判定时考虑执行失败（todo_finish 失败时不应退出 loop）。
     const executedTools: { name: string; ok: boolean }[] = [];
 
+    const emitConflictResult = (
+      tc: LLMToolCall,
+      conflictMsg: string,
+    ): StreamEvent[] => {
+      const now = () => new Date().toISOString();
+      const fail = toolFail("precondition", conflictMsg, {
+        code: "resource_conflict",
+        details: { toolName: tc.name },
+      });
+      const events: StreamEvent[] = [];
+      this.sessions.appendRawEntry(sessionId, {
+        type: "tool_call",
+        round,
+        created_at: now(),
+        data: {
+          name: tc.name,
+          parameters: tc.parameters ?? {},
+          id: tc.id,
+          provider: tc.provider,
+          tool_type: tc.type,
+        },
+      });
+      events.push(
+        this.event("tool_call", {
+          tool: {
+            id: tc.id,
+            name: tc.name,
+            parameters: tc.parameters ?? {},
+            provider: tc.provider,
+            type: tc.type,
+          },
+          round,
+        }),
+      );
+      this.sessions.appendRawEntry(sessionId, {
+        type: "tool_result",
+        round,
+        created_at: now(),
+        data: {
+          tool_name: tc.name,
+          tool_call_id: tc.id,
+          content: fail.message,
+          ok: false,
+          error: fail.error,
+        },
+      });
+      events.push(
+        this.event("tool_result", {
+          toolCallId: tc.id,
+          name: tc.name,
+          content: fail.message,
+          ok: false,
+          round,
+          error: fail.error,
+          errorCategory: fail.error?.category,
+          durationMs: 0,
+        }),
+      );
+      this.sessions.appendMessage(sessionId, "tool", fail.message, {
+        round,
+        toolCallId: tc.id,
+        tool_name: tc.name,
+        tool_ok: false,
+        tool_error: fail.error,
+        tool_error_category: fail.error?.category,
+      });
+      return events;
+    };
+
     let i = 0;
     while (i < toolCalls.length) {
       const tc = toolCalls[i];
+      const conflict = blockedByConflict.get(i);
+      if (conflict) {
+        for (const ev of emitConflictResult(tc, conflict.message)) yield ev;
+        executedTools.push({ name: tc.name, ok: false });
+        i++;
+        continue;
+      }
 
       // blocking=false：fire-and-forget 后台执行，立即占位
       if (!this.toolIsBlocking(tc.name)) {
@@ -3184,21 +3462,8 @@ export class AgentRuntime {
    * 注意：空字符串 / null / undefined 都算「缺失」，但 false / 0 / 空数组 不算。
    */
   private collectMissingRequiredParams(toolCall: LLMToolCall): string[] {
-    try {
-      const tool = this.tools.get(toolCall.name);
-      if (!tool) return [];
-      const required = tool.definition.parameters?.required;
-      if (!Array.isArray(required) || required.length === 0) return [];
-      const params = toolCall.parameters ?? {};
-      const missing: string[] = [];
-      for (const key of required) {
-        const v = params[key];
-        if (v === undefined || v === null || v === "") missing.push(key);
-      }
-      return missing;
-    } catch {
-      return [];
-    }
+    const tool = this.tools.get(toolCall.name);
+    return collectMissingRequiredParams(tool, toolCall.parameters ?? {});
   }
 
   /**
@@ -3402,9 +3667,9 @@ export class AgentRuntime {
     // 注意：参数为空但工具 schema 没有任何 required 时，不拦截——有些工具所有参数都可选。
     const missingRequired = this.collectMissingRequiredParams(toolCall);
     if (missingRequired.length > 0) {
-      const emptyMsg =
-        `❌ 工具 ${toolCall.name} 缺少必填参数: ${missingRequired.join(", ")}\n` +
-        `请重新调用并填写上述参数。如果你不想调用任何工具，请直接回复文本，不要生成缺参数的工具调用。`;
+      const failRes = missingRequiredToolResponse(toolCall.name, missingRequired);
+      const emptyMsg = failRes.message;
+      const toolError = failRes.error;
       this.log("warn", `[Runtime] 拦截缺参数工具调用: ${toolCall.name} (round=${round}, missing=${missingRequired.join(",")})`);
       return (): StreamEvent[] => {
         const now = () => new Date().toISOString();
@@ -3413,10 +3678,19 @@ export class AgentRuntime {
           this.sessions.appendRawEntry(sessionId, { type: "tool_call", round, created_at: now(), data: { name: toolCall.name, parameters: toolCall.parameters ?? {}, id: toolCall.id, provider: toolCall.provider, tool_type: toolCall.type } });
           events.push(this.event("tool_call", { tool: { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters ?? {}, provider: toolCall.provider, type: toolCall.type }, round }));
         }
-        this.sessions.appendRawEntry(sessionId, { type: "tool_result", round, created_at: now(), data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: emptyMsg, ok: false, background } });
-        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: emptyMsg, ok: false, round, background }));
+        this.sessions.appendRawEntry(sessionId, {
+          type: "tool_result", round, created_at: now(),
+          data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: emptyMsg, ok: false, background, error: toolError },
+        });
+        events.push(this.event("tool_result", {
+          toolCallId: toolCall.id, name: toolCall.name, content: emptyMsg, ok: false, round, background,
+          error: toolError, errorCategory: toolError?.category,
+        }));
         if (!background) {
-          this.sessions.appendMessage(sessionId, "tool", emptyMsg, { round, toolCallId: toolCall.id, tool_name: toolCall.name, tool_ok: false });
+          this.sessions.appendMessage(sessionId, "tool", emptyMsg, {
+            round, toolCallId: toolCall.id, tool_name: toolCall.name, tool_ok: false,
+            tool_error: toolError, tool_error_category: toolError?.category,
+          });
         }
         return events;
       };
@@ -3468,79 +3742,121 @@ export class AgentRuntime {
       }
 
       if (blocked) {
-        const blockedMsg =
-          this.hooks?.lastBlockReason?.trim() ||
-          `工具 ${toolCall.name} 被钩子拦截`;
+        const failRes = hookBlockedToolResponse(
+          toolCall.name,
+          this.hooks?.lastBlockReason,
+        );
+        const blockedMsg = failRes.message;
+        const toolError = failRes.error;
         this.sessions.appendRawEntry(sessionId, {
           type: "tool_result", round, created_at: now(),
-          data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: blockedMsg, ok: false, background },
+          data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: blockedMsg, ok: false, background, error: toolError },
         });
         // 拦截未执行 → 耗时 0（而非「未知」，UI 显示 0ms 而不是空白）
-        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: blockedMsg, ok: false, round, background, durationMs: 0 }));
+        events.push(this.event("tool_result", {
+          toolCallId: toolCall.id, name: toolCall.name, content: blockedMsg, ok: false, round, background, durationMs: 0,
+          error: toolError, errorCategory: toolError?.category,
+        }));
         if (!background) {
           this.sessions.appendMessage(sessionId, "tool", blockedMsg, {
             round, toolCallId: toolCall.id, tool_name: toolCall.name,
             tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
             tool_ok: false,
+            tool_error: toolError,
+            tool_error_category: toolError?.category,
           });
         }
         return events;
       }
 
       if (execError !== null) {
-        const errorMsg = `工具执行失败: ${execError}`;
+        const failRes = executeThrownToolResponse(toolCall.name, execError);
+        const errorMsg = failRes.message;
+        const toolError = failRes.error;
         this.hooks?.toolError(tcInfo, errorMsg);
         this.sessions.appendRawEntry(sessionId, {
           type: "tool_result", round, created_at: now(),
-          data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: errorMsg, ok: false, background },
+          data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: errorMsg, ok: false, background, error: toolError },
         });
-        events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: errorMsg, ok: false, round, background, durationMs: toolElapsedMs }));
+        events.push(this.event("tool_result", {
+          toolCallId: toolCall.id, name: toolCall.name, content: errorMsg, ok: false, round, background, durationMs: toolElapsedMs,
+          error: toolError, errorCategory: toolError?.category,
+        }));
         if (!background) {
           this.sessions.appendMessage(sessionId, "tool", errorMsg, {
             round, toolCallId: toolCall.id, tool_name: toolCall.name,
             tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
             tool_ok: false,
+            tool_error: toolError,
+            tool_error_category: toolError?.category,
           });
         }
         return events;
       }
 
       const res = result!;
+      const normalized = ensureToolError(res.result);
       // G4: 空字符串 tool_result 会让大部分 LLM API 报 400。
       // ?? 只兜底 null/undefined，空字符串会穿透——所以再判断一次。
       // payload 也要兜底（部分工具只填 payload 不填 message）。
-      let toolResultContent = res.result.message ?? "";
+      let toolResultContent = normalized.message ?? "";
       if (!toolResultContent.trim()) {
-        const fallback = res.result.payload;
+        const fallback = normalized.payload;
         toolResultContent = fallback
-          ? JSON.stringify({ ok: res.result.ok, payload: fallback })
-          : `工具 ${toolCall.name} 执行完成（ok=${res.result.ok}，无 message）`;
+          ? JSON.stringify({ ok: normalized.ok, payload: fallback })
+          : `工具 ${toolCall.name} 执行完成（ok=${normalized.ok}，无 message）`;
       }
-      const toolImages = res.result.images;
+      const toolImages = normalized.images;
+      const toolError: ToolErrorInfo | undefined = !normalized.ok
+        ? normalized.error
+        : undefined;
 
       this.sessions.appendRawEntry(sessionId, {
         type: "tool_result", round, created_at: now(),
-        data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: toolResultContent, ok: res.result.ok, background },
+        data: {
+          tool_name: toolCall.name,
+          tool_call_id: toolCall.id,
+          content: toolResultContent,
+          ok: normalized.ok,
+          background,
+          ...(toolError ? { error: toolError } : {}),
+        },
       });
       // tool_result 事件带上 displayEvents（supervisor_task_control end 用此机制通知前端切回主 Agent）
       const toolResultEvent: Record<string, unknown> = {
         toolCallId: toolCall.id,
         name: toolCall.name,
         content: toolResultContent,
-        ok: res.result.ok,
+        ok: normalized.ok,
         round,
         background,
         durationMs: toolElapsedMs,
       };
-      if (Array.isArray(res.result.displayEvents) && res.result.displayEvents.length > 0) {
-        toolResultEvent.displayEvents = res.result.displayEvents;
+      if (toolError) {
+        toolResultEvent.error = toolError;
+        toolResultEvent.errorCategory = toolError.category;
+      }
+      if (Array.isArray(normalized.displayEvents) && normalized.displayEvents.length > 0) {
+        toolResultEvent.displayEvents = normalized.displayEvents;
       }
       events.push(this.event("tool_result", toolResultEvent));
-      events.push(this.logEvent("info", `工具 ${toolCall.name} 完成: ok=${res.result.ok}${background ? " [后台]" : ""} ${toolElapsedMs}ms`));
-      this.hooks?.postToolUse(tcInfo, { toolCallId: toolCall.id, name: toolCall.name, output: toolResultContent, success: res.result.ok, error: "", elapsed: toolElapsedMs });
+      events.push(this.logEvent(
+        "info",
+        `工具 ${toolCall.name} 完成: ok=${normalized.ok}` +
+          `${!normalized.ok && toolError ? ` category=${toolError.category}` : ""}` +
+          `${background ? " [后台]" : ""} ${toolElapsedMs}ms`,
+      ));
+      this.hooks?.postToolUse(tcInfo, {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        output: toolResultContent,
+        success: normalized.ok,
+        error: toolError?.category ?? "",
+        elapsed: toolElapsedMs,
+      });
 
       // 文件 diff 监听：成功触碰 reader/edit/write 后入名单
-      if (res.result.ok && this.fileDiffWatch && sessionId) {
+      if (normalized.ok && this.fileDiffWatch && sessionId) {
         try {
           this.fileDiffWatch.noteToolTouch(
             sessionId,
@@ -3561,8 +3877,12 @@ export class AgentRuntime {
         author: authorTool(toolCall.name, toolCall.name),
         round, toolCallId: toolCall.id, tool_name: toolCall.name,
         tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
-        tool_ok: res.result.ok,
+        tool_ok: normalized.ok,
       };
+      if (toolError) {
+        toolMeta.tool_error = toolError;
+        toolMeta.tool_error_category = toolError.category;
+      }
       if (toolImages && toolImages.length > 0) toolMeta.images = toolImages;
       this.sessions.appendMessage(sessionId, "tool", toolResultContent, toolMeta);
       return events;

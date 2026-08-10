@@ -21,7 +21,7 @@
 import { Tool } from "@little-house-studio/tools";
 import type { ToolContext, ToolResponse, ToolDefinition } from "@little-house-studio/tools";
 import type { JsonSchema } from "@little-house-studio/types";
-import { createToolResponse } from "@little-house-studio/tools";
+import { createToolResponse, toolFail } from "@little-house-studio/tools";
 import type { McpToolDescriptor, McpToolInvoker } from "@little-house-studio/types";
 import { isMcpToolExecutionError } from "./mcp/manager.js";
 import { rejectIfMcpArgsInvalid } from "./mcp/validate-args.js";
@@ -89,10 +89,17 @@ export function createMcpProxyTool(
 
     async execute(params: Record<string, unknown>, _ctx: ToolContext): Promise<ToolResponse> {
       if (!invoker) {
-        return createToolResponse(
-          false,
+        return toolFail(
+          "dependency_unavailable",
           `MCP 工具「${descriptor.originalName}」未连接（父 Agent 未注入 MCP 转发器）。` +
             `父 Agent 需在 SubagentExecutor 装配时传入 invoker（调 McpClient.callTool）。`,
+          {
+            code: "mcp_invoker_missing",
+            details: {
+              mcpConnection: descriptor.connectionName,
+              mcpTool: descriptor.originalName,
+            },
+          },
         );
       }
       try {
@@ -114,7 +121,8 @@ export function createMcpProxyTool(
         // 兼容：旧 invoker 用 "[isError] …" 字符串标记工具失败
         if (typeof result === "string" && result.startsWith(IS_ERROR_PREFIX)) {
           const msg = result.slice(IS_ERROR_PREFIX.length).trim() || result;
-          return createToolResponse(false, msg, {
+          return toolFail("external", msg, {
+            code: "mcp_tool_is_error",
             payload: {
               mcp: true,
               mcpConnection: descriptor.connectionName,
@@ -128,6 +136,10 @@ export function createMcpProxyTool(
                 text: `[MCP Proxy] ${descriptor.connectionName}.${descriptor.originalName} isError`,
               },
             ],
+            details: {
+              mcpConnection: descriptor.connectionName,
+              mcpTool: descriptor.originalName,
+            },
           });
         }
         return createToolResponse(true, result || "(MCP 工具无输出)", {
@@ -146,7 +158,8 @@ export function createMcpProxyTool(
       } catch (err) {
         // 工具执行失败（CallToolResult.isError）→ ok:false，不是协议错误
         if (isMcpToolExecutionError(err)) {
-          return createToolResponse(false, err.message || "(MCP tool isError)", {
+          return toolFail("external", err.message || "(MCP tool isError)", {
+            code: "mcp_tool_is_error",
             payload: {
               mcp: true,
               mcpConnection: descriptor.connectionName,
@@ -160,13 +173,18 @@ export function createMcpProxyTool(
                 text: `[MCP Proxy] ${descriptor.connectionName}.${descriptor.originalName} isError`,
               },
             ],
+            details: {
+              mcpConnection: descriptor.connectionName,
+              mcpTool: descriptor.originalName,
+            },
           });
         }
-        return createToolResponse(
-          false,
+        return toolFail(
+          "external",
           `MCP 工具「${descriptor.originalName}」（连接 ${descriptor.connectionName}）调用失败: ` +
             `${err instanceof Error ? err.message : String(err)}`,
           {
+            code: "mcp_protocol_error",
             payload: {
               mcp: true,
               mcpConnection: descriptor.connectionName,

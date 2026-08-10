@@ -10,7 +10,11 @@ import {
   listDockPlugins,
   getDockPlugin,
   dockPluginIds,
+  resolveDockBoardLayout,
   DEFAULT_DOCK_CONTENT_KIND,
+  DEFAULT_DOCK_BOARD_LAYOUT,
+  clampDockBoardSize,
+  defaultDockBoardSize,
   paintDockCanvasUiFace,
   linesForDockCard,
   loadHtmlInCanvasPolyfill,
@@ -20,7 +24,7 @@ import {
 import { DOCK_CARDS, buildFolderPath, FOLDER_PATH_TAB } from "../drafts/bottom-dock";
 
 describe("dock-plugin registry", () => {
-  it("default registry covers all DOCK_CARDS with content kinds", () => {
+  it("default registry covers all DOCK_CARDS with content kinds + layouts", () => {
     const reg = createDefaultDockRegistry();
     const ids = dockPluginIds(reg);
     assert.equal(ids.length, DOCK_CARDS.length);
@@ -29,11 +33,33 @@ describe("dock-plugin registry", () => {
       assert.ok(slot);
       assert.equal(slot!.label, c.label);
       assert.equal(slot!.contentKind, DEFAULT_DOCK_CONTENT_KIND[c.id]);
+      assert.ok(slot!.layout);
+      assert.equal(
+        slot!.layout!.defaultWidth,
+        DEFAULT_DOCK_BOARD_LAYOUT[c.id].defaultWidth,
+      );
+      assert.ok(slot!.layout!.defaultHeight > 0);
     }
-    // at least one canvas-ui and one html-canvas slot
+    // at least one canvas-ui and one react slot
     const kinds = listDockPlugins(reg).map((s) => s.contentKind);
     assert.ok(kinds.includes("canvas-ui"));
-    assert.ok(kinds.includes("html-canvas"));
+    assert.ok(kinds.includes("react"));
+  });
+
+  it("resolveDockBoardLayout falls back to defaults", () => {
+    const layout = resolveDockBoardLayout(null, "proactive");
+    assert.equal(layout.defaultWidth, 680);
+    assert.equal(layout.surface, "paper");
+    assert.equal(layout.resizable, true);
+  });
+
+  it("clampDockBoardSize respects min/max", () => {
+    const layout = DEFAULT_DOCK_BOARD_LAYOUT.terminal;
+    const c = clampDockBoardSize({ w: 10, h: 10 }, layout);
+    assert.ok(c.w >= (layout.minWidth ?? 0));
+    assert.ok(c.h >= (layout.minHeight ?? 0));
+    const d = defaultDockBoardSize(layout);
+    assert.equal(d.w, clampDockBoardSize(d, layout).w);
   });
 
   it("registerDockPlugin replaces by id immutably", () => {

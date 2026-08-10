@@ -127,6 +127,14 @@ const VENDOR_DEFAULTS: Array<{ match: RegExp; compat: OpenAICompat }> = [
     reasoningEffortMap: { high: "high", xhigh: "max" },
     thinkingMinLevel: "low",
   } },
+  // OpenCode Zen 等中转：URL 无 deepseek 字样，但 deepseek-v4 模型同样要求 reasoning_content
+  { match: /opencode\.ai|\/zen\//i, compat: {
+    thinkingFormat: "deepseek",
+    supportsReasoningEffort: false,
+    supportsToolChoice: false,
+    requiresReasoningContentForToolCalls: true,
+    requiresAssistantContentForToolCalls: true,
+  } },
   { match: /qwen|dashscope/i, compat: { thinkingFormat: "qwen", structuredOutput: "qwen-response-format" } },
   { match: /zai|z\.ai/i, compat: { thinkingFormat: "zai", zaiToolStream: true } },
   { match: /together/i, compat: { thinkingFormat: "together" } },

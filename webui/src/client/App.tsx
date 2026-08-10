@@ -272,40 +272,39 @@ export function App() {
     }
   }, []);
 
-  const terminalFace = useMemo(
-    () => (
-      <Suspense
-        fallback={
-          <div className="live-project-hint" data-term-loading="true">
-            加载终端…
-          </div>
-        }
-      >
-        <TerminalPanelLazy
-          defaultAgent={activeAgentName || meta?.agentName || "coding"}
-          openRequest={openTerm}
-          onOpenConsumed={() => setOpenTerm(null)}
-        />
-      </Suspense>
-    ),
-    [activeAgentName, meta?.agentName, openTerm],
-  );
-
-  const proactiveFace = useMemo(
-    () => (
-      <Suspense
-        fallback={
-          <div className="proactive-host is-loading is-card">
-            <div className="proactive-bar">
-              <span className="proactive-hint">加载主动智能…</span>
+  /** Dock react faces — layout/size from dock-plugin registry; just mount content. */
+  const dockFaces = useMemo(
+    () => ({
+      terminal: (
+        <Suspense
+          fallback={
+            <div className="live-project-hint" data-term-loading="true">
+              加载终端…
             </div>
-          </div>
-        }
-      >
-        <ProactiveHostLazy presentation="card" />
-      </Suspense>
-    ),
-    [],
+          }
+        >
+          <TerminalPanelLazy
+            defaultAgent={activeAgentName || meta?.agentName || "coding"}
+            openRequest={openTerm}
+            onOpenConsumed={() => setOpenTerm(null)}
+          />
+        </Suspense>
+      ),
+      proactive: (
+        <Suspense
+          fallback={
+            <div className="proactive-host is-loading is-card">
+              <div className="proactive-bar">
+                <span className="proactive-hint">加载主动智能…</span>
+              </div>
+            </div>
+          }
+        >
+          <ProactiveHostLazy presentation="card" />
+        </Suspense>
+      ),
+    }),
+    [activeAgentName, meta?.agentName, openTerm],
   );
 
   const draftMeta = useMemo(() => {
@@ -585,8 +584,7 @@ export function App() {
         agentBusy={agentBusy}
         agents={agents}
         onTabChange={onDockTabChange}
-        terminalFace={terminalFace}
-        proactiveFace={proactiveFace}
+        faces={dockFaces}
         openTabRequest={dockOpenReq}
       />
     </div>

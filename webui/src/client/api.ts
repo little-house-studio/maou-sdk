@@ -34,6 +34,10 @@ export type ChatHistoryLine = {
   role: string;
   content: string;
   ts?: string;
+  /** 来自 session meta.tool_name（Agent 落盘） */
+  toolName?: string;
+  toolOk?: boolean;
+  toolCallId?: string;
 };
 
 export type PendingApproval = {
@@ -522,7 +526,11 @@ export type ModelSvgProbeRunResult = {
   defaultSubject?: string;
 };
 
-/** 无上下文 SVG 生成 → 解析图片 → 写入画廊 */
+/**
+ * 无上下文 SVG 生成 → 解析图片 → 写入画廊。
+ * 注意：HTTP 200 + body.ok=false 是「请求通了但模型没画出 SVG」的正常业务结果，
+ * 不能用 jsonOrThrow（会误报成无意义的 "http 200"）。
+ */
 export async function runLlmSvgProbe(body: {
   name?: string;
   url?: string;
@@ -540,13 +548,31 @@ export async function runLlmSvgProbe(body: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const j = await jsonOrThrow<ModelSvgProbeRunResult & { ok?: boolean; error?: string }>(
-    r,
-  );
+  const j = await readJsonBody<
+    ModelSvgProbeRunResult & { ok?: boolean; error?: string }
+  >(r);
+  // 传输层失败
   if (!r.ok && !j.result) {
-    return { ok: false, error: j.error || `svg-probe ${r.status}` };
+    return {
+      ok: false,
+      error: j.error || `画图探针请求失败（HTTP ${r.status}）`,
+    };
   }
-  return j;
+  // 业务结果：即便 ok=false（未抽出 SVG）也原样返回，由 UI 解释
+  // 绝不要 throw "http 200"
+  const extracted = Boolean(j.result?.ok && j.result?.extracted);
+  const errText =
+    j.error ||
+    j.result?.error ||
+    (extracted ? undefined : "模型未返回可解析的 SVG");
+  return {
+    ok: extracted,
+    error: errText,
+    result: j.result,
+    shot: j.shot,
+    reference: j.reference,
+    defaultSubject: j.defaultSubject,
+  };
 }
 
 export async function fetchSvgProbeGallery(q?: {
@@ -629,6 +655,7 @@ export async function fetchSessionStats(): Promise<{
     inputTokens: number;
     outputTokens: number;
     cacheRead: number;
+    file?: string;
   } | null;
   text: string;
 }> {
@@ -644,6 +671,7 @@ export async function fetchSessionStats(): Promise<{
       inputTokens: number;
       outputTokens: number;
       cacheRead: number;
+      file?: string;
     } | null;
     text?: string;
   }>(r);

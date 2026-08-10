@@ -11,7 +11,7 @@
 import { readFileSync, existsSync, readdirSync, statSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import type { Tool, ToolDefinition, ToolContext, ToolResponse } from "./base.js";
-import { createToolResponse } from "./base.js";
+import { toolFail } from "./errors.js";
 import { clearReadRegistry } from "./file/read-registry.js";
 import { clearHistory as clearFileEditHistory } from "./file/file-edit-history.js";
 
@@ -372,19 +372,29 @@ export class ToolRegistry {
     const { name } = toolCall;
     const tool = this.get(name);
     if (!tool) {
-      return createToolResponse(false, `Unknown tool: ${name}`);
+      return toolFail("unknown_tool", `Unknown tool: ${name}`, {
+        code: "unknown_tool",
+        details: { toolName: name },
+      });
     }
     if (
       tool.definition.allowedModes !== null &&
       !tool.definition.allowedModes.includes(context.agentMode)
     ) {
-      return createToolResponse(
-        false,
+      return toolFail(
+        "mode_denied",
         `Tool '${name}' not available in ${context.agentMode} mode`,
+        {
+          code: "mode_denied",
+          details: { toolName: name, agentMode: context.agentMode },
+        },
       );
     }
-    const parameters = { ...toolCall.parameters, __tool_name__: name };
-    return createToolResponse(false, "Use async ToolExecutor instead");
+    void toolCall.parameters;
+    void context;
+    return toolFail("precondition", "Use async ToolExecutor instead", {
+      code: "use_async_executor",
+    });
   }
 }
 

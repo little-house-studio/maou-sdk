@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorView } from "@codemirror/view";
@@ -12,8 +12,68 @@ export type SourceEditorProps = {
 };
 
 /**
- * Markdown 源码编辑器（CodeMirror）
- * 后续可扩展：diff、协同、插件栏等
+ * Wire 暖灰源码主题（对齐 draft-shell --n-*，避免默认 CM dark 冷蓝黑）
+ */
+function createWireEditorTheme() {
+  return EditorView.theme(
+    {
+      "&": {
+        backgroundColor: "#1a1817",
+        color: "#c9c2b6",
+        height: "100%",
+      },
+      ".cm-scroller": {
+        fontFamily:
+          'var(--font-code, ui-monospace, SFMono-Regular, Menlo, monospace)',
+        lineHeight: "1.55",
+      },
+      ".cm-content": {
+        caretColor: "#c7ff20",
+        padding: "8px 0",
+      },
+      ".cm-cursor, .cm-dropCursor": {
+        borderLeftColor: "#c7ff20",
+      },
+      "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
+        {
+          backgroundColor: "color-mix(in srgb, #c7ff20 22%, transparent) !important",
+        },
+      ".cm-activeLine": {
+        backgroundColor: "#211e1c",
+      },
+      ".cm-gutters": {
+        backgroundColor: "#282522",
+        color: "#8a8278",
+        border: "none",
+        borderRight: "1px solid #3d3834",
+      },
+      ".cm-activeLineGutter": {
+        backgroundColor: "#2f2b28",
+        color: "#c9c2b6",
+      },
+      ".cm-lineNumbers .cm-gutterElement": {
+        padding: "0 8px 0 6px",
+        minWidth: "2.4em",
+      },
+      ".cm-foldGutter .cm-gutterElement": {
+        color: "#8a8278",
+      },
+      ".cm-matchingBracket, .cm-nonmatchingBracket": {
+        backgroundColor: "color-mix(in srgb, #c7ff20 16%, transparent)",
+        outline: "1px solid color-mix(in srgb, #c7ff20 45%, transparent)",
+      },
+      ".cm-tooltip": {
+        backgroundColor: "#282522",
+        color: "#f5f0e8",
+        border: "1px solid #3d3834",
+      },
+    },
+    { dark: true },
+  );
+}
+
+/**
+ * Markdown 源码编辑器（CodeMirror）—— 文本预览/源码与 wire 壳同色
  */
 export function SourceEditor({
   value,
@@ -23,6 +83,7 @@ export function SourceEditor({
   onJumpHandled,
 }: SourceEditorProps) {
   const viewRef = useRef<EditorView | null>(null);
+  const wireTheme = useMemo(() => createWireEditorTheme(), []);
 
   const jumpToLine = (line: number) => {
     const view = viewRef.current;
@@ -49,11 +110,11 @@ export function SourceEditor({
   }, [pendingJumpLine, value, onJumpHandled]);
 
   return (
-    <div className="md-editor md-editor-full">
+    <div className="md-editor md-editor-full md-editor--wire">
       <CodeMirror
         value={value}
         height="100%"
-        theme="dark"
+        theme={wireTheme}
         extensions={[markdown(), EditorView.lineWrapping]}
         onChange={onChange}
         onCreateEditor={(view) => {

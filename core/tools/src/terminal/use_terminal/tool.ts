@@ -26,7 +26,7 @@
 import { Tool, toolDir } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { compressTerminalOutput, compressOutput } from "../../compress/output-compressor.js";
-import { createToolResponse } from "../../base.js";
+import { createToolResponse, toolFail } from "../../base.js";
 import { truncateMiddle, formatMetadata, errToString } from "../../util/common.js";
 import {
   getTerminalReviewer,
@@ -167,7 +167,9 @@ export class TerminalTool extends Tool {
     else if (action === "write") res = await this._actionWrite(params, ctx);
     else if (action === "scan") res = await this._actionScan(params, ctx);
     else {
-      return createToolResponse(false, `未知 action: ${action}，可选: run, manage, write, scan`);
+      return toolFail("invalid_args", `未知 action: ${action}，可选: run, manage, write, scan`, {
+        code: "unknown_action",
+      });
     }
     // 每次调用附带终端快照，避免后台任务「消失了也不知道」
     return this._withTerminalFooter(res, ctx, action);
@@ -700,15 +702,19 @@ export class TerminalTool extends Tool {
       }
       // deny_dangerous_pending / deny_fatal：无 UI，直接拒绝（黑名单 / 致命）
       if (gate.action === "deny_dangerous_pending") {
-        return createToolResponse(false, gate.message || "命令被策略拦截", {
+        return toolFail("policy_denied", gate.message || "命令被策略拦截", {
+          code: String((gate.payload as { policy?: string })?.policy ?? "deny_dangerous_pending"),
           payload: gate.payload,
+          details: { gateAction: gate.action },
         });
       }
     }
 
     if (gate.action === "deny_fatal") {
-      return createToolResponse(false, gate.message || "致命指令已拦截", {
+      return toolFail("policy_denied", gate.message || "致命指令已拦截", {
+        code: String((gate.payload as { policy?: string })?.policy ?? "deny_fatal"),
         payload: gate.payload,
+        details: { gateAction: gate.action },
       });
     }
 
@@ -752,20 +758,35 @@ export class TerminalTool extends Tool {
               return null;
             }
             // 审核拒绝：保留二次执行窗口（gate 已 mark）
-            return createToolResponse(false,
+            return toolFail(
+              "policy_denied",
               `⚠️ [危险·审核未通过] \`${command}\`\n理由：${verdict.reason}\n` +
                 `若仍需执行：在窗口期内再发送一次完全相同的命令以确认。`,
-              { payload: { ...gate.payload, policy: "dangerous-review-reject", reason: verdict.reason } });
+              {
+                code: "dangerous-review-reject",
+                payload: { ...gate.payload, policy: "dangerous-review-reject", reason: verdict.reason },
+              },
+            );
           } catch (err) {
-            return createToolResponse(false,
+            return toolFail(
+              "policy_denied",
               `⚠️ [危险·审核异常] \`${command}\`（${errToString(err)}）\n可稍后重试或二次相同命令确认。`,
-              { payload: { ...gate.payload, policy: "dangerous-review-error" } });
+              {
+                code: "dangerous-review-error",
+                payload: { ...gate.payload, policy: "dangerous-review-error" },
+              },
+            );
           }
         }
-        return createToolResponse(false,
+        return toolFail(
+          "dependency_unavailable",
           `⚠️ [危险·auto] 未配置审核器，无法自动审核：\`${command}\`\n` +
             `可在窗口期内再执行一次相同命令确认，或切换 yolo / normal。`,
-          { payload: { ...gate.payload, policy: "dangerous-no-reviewer" } });
+          {
+            code: "dangerous-no-reviewer",
+            payload: { ...gate.payload, policy: "dangerous-no-reviewer" },
+          },
+        );
       }
       if (mode === "normal") {
         const approver = getTerminalApprover();
@@ -777,15 +798,21 @@ export class TerminalTool extends Tool {
               return null;
             }
             if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
-            return createToolResponse(false,
+            return toolFail(
+              "user_rejected",
               `⛔ [危险] 用户拒绝了该危险命令：\`${command}\``,
-              { payload: { ...gate.payload, policy: "dangerous-user-denied" } });
+              {
+                code: "dangerous-user-denied",
+                payload: { ...gate.payload, policy: "dangerous-user-denied" },
+              },
+            );
           } catch {
             /* fall through to double-confirm message */
           }
         }
       }
-      return createToolResponse(false, gate.message || "危险指令需确认", {
+      return toolFail("policy_denied", gate.message || "危险指令需确认", {
+        code: String((gate.payload as { policy?: string })?.policy ?? "dangerous_pending"),
         payload: gate.payload,
       });
     }
@@ -795,9 +822,11 @@ export class TerminalTool extends Tool {
       if (mode === "auto") {
         const reviewer = getTerminalReviewer();
         if (!reviewer) {
-          return createToolResponse(false,
+          return toolFail(
+            "dependency_unavailable",
             `🔐 [安全层] auto 模式未配置审核器：\`${command}\``,
-            { payload: { policy: "review-no-reviewer", command, tier: "safe" } });
+            { code: "review-no-reviewer", payload: { policy: "review-no-reviewer", command, tier: "safe" } },
+          );
         }
         try {
           const verdict = await reviewer(command, {
@@ -830,10 +859,11 @@ export class TerminalTool extends Tool {
               if (human.persist === "blacklist") {
                 addToBlacklist(agent, commandPrefix(command));
               }
-              return createToolResponse(
-                false,
+              return toolFail(
+                "user_rejected",
                 `⛔ 用户确认后仍拒绝：\`${command}\`\nAI 理由：${verdict.reason}`,
                 {
+                  code: "review-reject-user-denied",
                   payload: {
                     policy: "review-reject-user-denied",
                     command,
@@ -847,12 +877,13 @@ export class TerminalTool extends Tool {
             }
           }
           recordReviewReject(agent, command);
-          return createToolResponse(
-            false,
+          return toolFail(
+            "policy_denied",
             `⛔ 审核未通过：\`${command}\`\n理由：${verdict.reason}\n` +
               `申诉：切换 normal/yolo，或再发完全相同命令（若策略允许二次确认）；` +
               `人手在场时 auto 拒批会弹出确认条。`,
             {
+              code: "review-reject",
               payload: {
                 policy: "review-reject",
                 command,
@@ -862,9 +893,11 @@ export class TerminalTool extends Tool {
             },
           );
         } catch (err) {
-          return createToolResponse(false,
+          return toolFail(
+            "policy_denied",
             `🔐 审核异常：\`${command}\`（${errToString(err)}）`,
-            { payload: { policy: "review-error", command, tier: "safe" } });
+            { code: "review-error", payload: { policy: "review-error", command, tier: "safe" } },
+          );
         }
       }
       if (mode === "yolo") return null;
@@ -878,19 +911,28 @@ export class TerminalTool extends Tool {
             return null;
           }
           if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
-          return createToolResponse(false,
+          return toolFail(
+            "user_rejected",
             `⛔ [系统拦截] 用户拒绝了此命令：\`${command}\``,
-            { payload: { policy: "ask-denied", command, tier: "safe" } });
+            { code: "ask-denied", payload: { policy: "ask-denied", command, tier: "safe" } },
+          );
         } catch (err) {
-          return createToolResponse(false,
+          return toolFail(
+            "cancelled",
             `🔐 [系统拦截] 命令审批被取消/超时：\`${command}\`（${errToString(err)}）`,
-            { payload: { policy: "ask-cancelled", command, tier: "safe" } });
+            { code: "ask-cancelled", payload: { policy: "ask-cancelled", command, tier: "safe" } },
+          );
         }
       }
-      return createToolResponse(false,
+      return toolFail(
+        "policy_denied",
         `🔐 [安全层·需确认] 非破坏性命令，但当前为审核模式且未在白名单：\`${command}\`\n` +
           `无人审批环境请用文件工具，或切换 yolo / 将命令加入白名单。`,
-        { payload: gate.payload });
+        {
+          code: String((gate.payload as { policy?: string })?.policy ?? "ask_pending"),
+          payload: gate.payload,
+        },
+      );
     }
 
     // review（安全层 auto）

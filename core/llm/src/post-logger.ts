@@ -18,7 +18,10 @@
 
 import type { LLMCallLogEntry } from "./client.js";
 import { encodeRawBody, type CompressedBody } from "./raw-codec.js";
-import { detectContextOverflow } from "./overflow.js";
+import {
+  classifyLlmError,
+  categoryToPostLogErrorType,
+} from "./errors.js";
 
 // ─── 标准记录 ────────────────────────────────────────────────────────────────
 
@@ -123,26 +126,21 @@ export function truncateBodyForSummary(
   }
 }
 
+/**
+ * Classify error for post logs — delegates to unified `classifyLlmError`
+ * so logs and client retry share the same path.
+ */
 export function classifyError(
   error: string | null,
   httpStatus: number | null,
 ): LLMPostLogRecord["error_type"] {
   if (!error && (!httpStatus || httpStatus < 400)) return null;
-  // 上下文溢出优先判定（常以 400/413 返回，需先于 bad_request 识别）
-  if (detectContextOverflow(error, httpStatus)) return "context_overflow";
-  if (httpStatus === 429) return "rate_limit";
-  if (httpStatus === 401 || httpStatus === 403) return "auth";
-  if (httpStatus === 400 || httpStatus === 422) return "bad_request";
-  if (httpStatus && httpStatus >= 500) return "server_error";
-  if (error) {
-    const lower = error.toLowerCase();
-    if (lower.includes("timeout") || lower.includes("timed out")) return "timeout";
-    if (lower.includes("econnrefused") || lower.includes("enotfound") || lower.includes("fetch failed")) return "network";
-    if (lower.includes("429") || lower.includes("rate limit")) return "rate_limit";
-    if (lower.includes("401") || lower.includes("403") || lower.includes("unauthorized")) return "auth";
-    return "unknown";
-  }
-  return null;
+  const classified = classifyLlmError({
+    status: httpStatus,
+    body: error,
+    message: error,
+  });
+  return categoryToPostLogErrorType(classified.category);
 }
 
 export function normalizePostLogRecord(
