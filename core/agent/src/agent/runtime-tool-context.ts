@@ -19,6 +19,7 @@ export interface BuildToolContextInput {
   agentName: string;
   workingDir?: string;
   compressionLevel?: "off" | "normal" | "aggressive";
+  terminalBackend?: "full" | "mini";
   pathGuard?: ToolContext["pathGuard"];
   skillOptions?: AgentSkillOptions;
   subagentExecutor?: ToolRuntimePorts["subagentExecutor"];
@@ -87,6 +88,7 @@ export function buildToolContext(input: BuildToolContextInput): ToolContext {
     workingDir: input.workingDir ?? input.projectRoot,
     pathGuard: input.pathGuard,
     compressionLevel: input.compressionLevel,
+    terminalBackend: input.terminalBackend,
     maouRoot: input.maouRoot,
     skillOptions: input.skillOptions,
     // 收口端口 + 顶层双写（旧工具仍可读 ctx.subagentExecutor 等）

@@ -33,6 +33,7 @@ describe("live shell production wiring", () => {
   it("App is draft-aligned wire shell with live modes", () => {
     assert.match(app, /data-live-shell/);
     assert.match(app, /WireTopbar/);
+    assert.match(app, /agentBusy=\{agentBusy\}/);
     assert.match(app, /BottomInfoBar/);
     assert.match(app, /UiMode/);
     // Mode surfaces（主动已迁到底栏卡片，不在顶栏 mode）
@@ -203,6 +204,7 @@ describe("live shell production wiring", () => {
     assert.match(chat, /composer-tool-btn/);
     assert.match(chat, /ChromeMark/);
     assert.match(chat, /wire-composer-card/);
+    assert.match(chat, /SessionTreeCrumbs/);
   });
 
   it("ThreadRail wire mode uses SessionList single-line rows (no thread-item mix)", () => {
@@ -326,7 +328,10 @@ describe("live shell production wiring", () => {
 
   it("TerminalPanel + api keep WS and list/stop", () => {
     assert.match(term, /agentTerminalWsUrl/);
+    assert.match(term, /humanTerminalWsUrl/);
+    assert.match(term, /新开壳/);
     assert.match(term, /fetchTerminals/);
+    assert.match(term, /fetchTerminalCapabilities/);
     assert.match(term, /stopTerminal/);
     // wire shell chrome (not legacy AGENT TERMINALS / linkish)
     assert.match(term, /term-panel--wire/);
@@ -339,6 +344,15 @@ describe("live shell production wiring", () => {
     assert.match(api, /\/api\/chat\/queue/);
     assert.match(api, /\/api\/terminals/);
     assert.match(api, /\/ws\/agent-terminal/);
+    assert.match(api, /\/ws\/terminal/);
+    const createServer = read("../server/create-server.ts");
+    assert.match(createServer, /\/ws\/terminal/);
+    assert.match(createServer, /\/ws\/agent-terminal/);
+    const hub = read("../server/terminal-hub.ts");
+    assert.match(hub, /openInteractive/);
+    assert.match(hub, /resolveTerminalBackend/);
+    assert.doesNotMatch(hub, /from\s+["']@lydell\/node-pty["']|from\s+["']node-pty["']/);
+    assert.doesNotMatch(hub, /createRequire/);
     assert.match(mdApi, /\/api\/fs\/md-tree/);
     assert.match(mdApi, /\/api\/fs\/file/);
   });

@@ -5,13 +5,35 @@
 
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { homedir, platform } from "node:os";
 
 let cachedBinary: string | null | undefined;
 
 function binNames(): string[] {
   return platform() === "win32" ? ["sqry.exe", "sqry"] : ["sqry"];
+}
+
+/** 源码树 scripts/vendor/bin；预编译包 <root>/vendor/bin */
+function discoverVendorBinDirs(): string[] {
+  const dirs: string[] = [];
+  const bundle = process.env.MAOU_BUNDLE_ROOT?.trim();
+  if (bundle) dirs.push(join(bundle, "vendor", "bin"));
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 10; i++) {
+    if (
+      existsSync(join(dir, "pnpm-workspace.yaml")) ||
+      existsSync(join(dir, "RELEASE.json"))
+    ) {
+      dirs.push(join(dir, "scripts", "vendor", "bin"), join(dir, "vendor", "bin"));
+      break;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return dirs;
 }
 
 /** 查找 sqry 二进制路径（带缓存） */
@@ -21,6 +43,7 @@ export function findSqryBinary(): string | null {
   const home = homedir();
   const names = binNames();
   const dirs = [
+    ...discoverVendorBinDirs(),
     join(home, ".cargo", "bin"),
     join(home, ".maou", "bin"),
     join(home, ".local", "bin"),

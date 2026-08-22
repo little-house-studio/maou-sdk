@@ -23,12 +23,23 @@ export interface Session {
   updatedAt: string
 }
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
+/** 用户消息附图（与 SessionMessage.images / LLM ImageContent 同形） */
+export interface MessageImage {
+  mimeType: string
+  data: string
+}
+/**
+ * 会话历史里的一条（user / assistant / system）。
+ * 发给 Agent 用 AgentSendMessage；工具回包用 ToolMessage。
+ */
 export interface Message {
   role: MessageRole
   content: string
   toolCalls?: ToolCall[]
   toolResults?: ToolResult[]
   timestamp: string
+  images?: MessageImage[]
+  source?: string
 }
 export interface JsonSchema {
   type: string
@@ -151,6 +162,11 @@ export interface ToolContext {
   }
   /** 工具输出压缩级别：off=不压；normal=保守(默认)；aggressive=更激进。由 AgentRuntime 从 agent.json 注入。 */
   compressionLevel?: "off" | "normal" | "aggressive"
+  /**
+   * 终端后端：full（Rust PTY）或 mini（纯 Node 管道）。
+   * 由 AgentRuntime 从 agent.json `terminalMode` 注入；与审批用的 `terminal_mode` 无关。
+   */
+  terminalBackend?: "full" | "mini"
   /**
    * maou 根目录（通常 ~/.maou）。由 AgentRuntime 注入。
    * use_skill / find_skill 等据此扫描全局 skills，勿用 sandboxRoot 顶替。
@@ -686,7 +702,20 @@ export interface StreamEvent {
 
 // ─── LLM 配置类型（@deprecated 权威定义在 @little-house-studio/llm；此处保留供 AppConfig 用）──
 /** @deprecated 用 @little-house-studio/llm 的 APIPreset */
-export type LLMProtocol = 'openai' | 'anthropic' | 'openai-responses'
+export type LLMProtocol =
+  | 'openai'
+  | 'anthropic'
+  | 'openai-responses'
+  | 'responses'
+  | 'google'
+  | 'mistral'
+  | 'bedrock'
+  | 'azure'
+  | 'cloudflare'
+  | 'google-vertex'
+  | 'openai-codex'
+  | 'github-copilot'
+  | 'faux'
 /** @deprecated */
 export type StructuredOutputMode = 'json_object' | 'json_schema'
 /** @deprecated 用 @little-house-studio/llm 的 APIPreset */
@@ -883,10 +912,17 @@ export interface ApiConfig {
   contextSettings: ContextSettings
   pluginSettings?: PluginSettings
 }
+export interface TerminalConfig {
+  /** 默认 full。显式 mini 则只走纯 Node，不加载 Rust。 */
+  mode: "full" | "mini"
+  /** 人壳可执行文件；缺省 $SHELL / PowerShell。也可由 MAOU_SHELL 覆盖。 */
+  shell?: string
+}
 export interface AppConfig {
   api: ApiConfig
   security?: SecurityConfig
   ui?: Record<string, unknown>
+  terminal?: TerminalConfig
 }
 export interface HealthResponse {
   ok: boolean
@@ -981,3 +1017,26 @@ export { Profiler } from './profiler.js'
 export type { SpanRecord, SpanSummary, ProfileReport } from './profiler.js'
 // 共享 token 文本启发式（llm / context 共用，避免双公式）
 export { estimateTokensFromText } from './token-estimate.js'
+export { toToolMessage } from './agent-message.js'
+export type {
+  AgentSendMode,
+  AgentSendMessage,
+  AgentSendContentBlock,
+  MessageMedia,
+  ToolMessage,
+} from './agent-message.js'
+export {
+  WEBHOOK_PROTOCOL_VERSION,
+  WEBHOOK_ACTIONS,
+  WEBHOOK_HELP,
+} from './webhook.js'
+export type {
+  WebhookAction,
+  WebhookSendMode,
+  WebhookAgentMessage,
+  WebhookApprovalChoice,
+  WebhookApprovalMode,
+  WebhookRequestBase,
+  WebhookRequest,
+  WebhookResponse,
+} from './webhook.js'

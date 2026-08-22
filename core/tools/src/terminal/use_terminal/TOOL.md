@@ -6,7 +6,7 @@
 - 每次 use_terminal 返回末尾会附带 **── 终端状态 ──** 快照（运行中 / 已结束），不必先 manage list。
 - command 中的路径含空格时必须用引号包裹。
 - timeout 默认 120 秒，长任务设 background=true 避免超时。
-- 前台超时会自动转后台，不会丢失进程。
+- 前台超时会终止进程并返回超时（不会自动转后台）。
 - result_limit 控制返回内容长度，大输出建议设小值（如 2000），避免 token 浪费。
 - manage_action=list 查看全表；logs / stop / rm 操作指定 id。
 - 列表为空时仍会说明原因（临时任务销毁、其它 agent 终端等）。

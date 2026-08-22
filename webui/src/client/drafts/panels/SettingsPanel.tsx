@@ -4,6 +4,7 @@ import {
   API_PROTOCOLS,
   PROTOCOL_LABEL,
   addApiPreset,
+  emptyApiPreset,
   capabilitySummary,
   getDefaultPreset,
   isApiPresetValid,
@@ -14,6 +15,13 @@ import {
   validateApiPreset,
 } from "../api-settings";
 import { ChromeMark } from "../icons/Marks";
+import { PasteFillCard } from "../../settings/PasteFillCard";
+import {
+  applyDraftPasteToPresets,
+  modelsFromParse,
+  type ClipboardParseResult,
+} from "../../settings/paste-fill";
+import { parsePasteLocal } from "../paste-parse-local";
 
 export type SettingsPanelProps = {
   api: DraftApiConfig;
@@ -41,6 +49,8 @@ export function SettingsPanel({
     Math.min(Math.max(0, api.defaultPreset), Math.max(0, api.presets.length - 1)),
   );
   const [revealKey, setRevealKey] = useState(false);
+  const [pasteFlash, setPasteFlash] = useState<string[]>([]);
+  const [pasteConfirm, setPasteConfirm] = useState<string[]>([]);
 
   useEffect(() => {
     if (!onClose) return;
@@ -90,6 +100,31 @@ export function SettingsPanel({
     if (!preset) return;
     onApiChange(setDefaultApiPreset(api, selectedSafe));
   };
+
+  const applyClipboardParse = (parsed: ClipboardParseResult) => {
+    const models = modelsFromParse(parsed);
+    const flash: string[] = [];
+    if (parsed.fields.base_url?.value) flash.push("base_url");
+    if (parsed.fields.api_key?.value) flash.push("api_key");
+    if (parsed.fields.protocol?.value) flash.push("protocol");
+    if (models.length) flash.push("model");
+    setPasteFlash(flash);
+    setPasteConfirm(parsed.needsConfirm.filter((k) => flash.includes(k)));
+    if (parsed.fields.api_key?.value) setRevealKey(true);
+    const applied = applyDraftPasteToPresets(
+      api.presets,
+      selectedSafe,
+      parsed,
+      (n) => emptyApiPreset(n),
+    );
+    onApiChange({ ...api, presets: applied.presets });
+    setSelected(applied.selected);
+  };
+
+  const fieldFlash = (name: string) =>
+    `${pasteFlash.includes(name) ? " is-paste-filled" : ""}${
+      pasteConfirm.includes(name) ? " is-paste-confirm" : ""
+    }`;
 
   const isPage = presentation === "page";
   const rootClass = isPage
@@ -167,6 +202,8 @@ export function SettingsPanel({
               ) : null}
             </div>
 
+            <PasteFillCard parse={parsePasteLocal} onParsed={applyClipboardParse} />
+
             <div className="wire-settings-api-layout">
               <div className="wire-settings-preset-list" role="list">
                 <div className="wire-settings-list-head">
@@ -241,7 +278,7 @@ export function SettingsPanel({
                       ) : null}
                     </div>
 
-                    <div className="wire-settings-field">
+                    <div className={`wire-settings-field${fieldFlash("base_url")}`}>
                       <label htmlFor="api-preset-url">接口 URL</label>
                       <input
                         id="api-preset-url"
@@ -256,7 +293,7 @@ export function SettingsPanel({
                       ) : null}
                     </div>
 
-                    <div className="wire-settings-field">
+                    <div className={`wire-settings-field${fieldFlash("api_key")}`}>
                       <label htmlFor="api-preset-key">
                         API Key
                         <span className="wire-settings-muted"> · 默认脱敏</span>
@@ -294,7 +331,7 @@ export function SettingsPanel({
                       </div>
                     </div>
 
-                    <div className="wire-settings-field">
+                    <div className={`wire-settings-field${fieldFlash("model")}`}>
                       <label htmlFor="api-preset-model">模型 model</label>
                       <input
                         id="api-preset-model"
@@ -311,7 +348,7 @@ export function SettingsPanel({
                       ) : null}
                     </div>
 
-                    <div className="wire-settings-field">
+                    <div className={`wire-settings-field${fieldFlash("protocol")}`}>
                       <label htmlFor="api-preset-protocol">协议 protocol</label>
                       <select
                         id="api-preset-protocol"

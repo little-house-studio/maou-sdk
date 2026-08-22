@@ -69,6 +69,7 @@ import {
   projectSessionFile,
 } from "../config/paths.js";
 import { DEFAULT_AGENT_NAME, resolveAgentName } from "../config/defaults.js";
+import { notifyCacheRebuildPoint } from "../headless/cache-rebuild-sink.js";
 import {
   STREAM_THROTTLE_MS,
   TOAST_TEXT_MAX,
@@ -104,7 +105,12 @@ interface Store extends UIState {
    * 新会话：清空消息/事件/滚动，刷新画廊种子，可选清屏。
    * 画廊会立刻显示，直到用户发出第一条非命令内容。
    */
-  startNewSession: (opts?: { clearScreen?: boolean; toast?: string }) => void;
+  startNewSession: (opts?: {
+    clearScreen?: boolean;
+    toast?: string;
+    /** 缓存重建点原因；缺省按 toast 推断 */
+    rebuildReason?: "session_new" | "session_clear";
+  }) => void;
   onStream: (ev: StreamEvent) => void;
   setStreaming: (b: boolean) => void;
   /** 标记 send() 整段占用（含 supervisor），供 deferred agent switch 等使用 */
@@ -619,6 +625,16 @@ export const useStore = create<Store>((set, get) => ({
       void import("../lib/clear-screen.js").then((m) => m.clearTerminalScreen());
     }
     get().toastMsg(toast, "ok");
+    if (sessionId) {
+      const reason =
+        opts?.rebuildReason ??
+        (toast === "已清空" ? "session_clear" : "session_new");
+      notifyCacheRebuildPoint({
+        reason,
+        sessionId,
+        agentName,
+      });
+    }
   },
   setStreaming: (streaming) => set({ streaming }),
   setAgentBusy: (agentBusy) => set({ agentBusy }),
@@ -712,10 +728,18 @@ export const useStore = create<Store>((set, get) => ({
         break;
       }
       case "new_session":
-        get().startNewSession({ clearScreen: true, toast: "新会话" });
+        get().startNewSession({
+          clearScreen: true,
+          toast: "新会话",
+          rebuildReason: "session_new",
+        });
         break;
       case "clear_session":
-        get().startNewSession({ clearScreen: true, toast: "已清空" });
+        get().startNewSession({
+          clearScreen: true,
+          toast: "已清空",
+          rebuildReason: "session_clear",
+        });
         break;
       case "stop":
         // 中断由 cli-session.abort 处理；store 仅兜底 toast

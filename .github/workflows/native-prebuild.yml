@@ -75,7 +75,7 @@ jobs:
           RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -eo pipefail
-          cd terminal-engine
+          cd core/agent/terminal-engine
           if [ -n "$RUST_TARGET" ]; then
             cargo build --release --target "$RUST_TARGET"
             OUT_DIR="target/${RUST_TARGET}/release"
@@ -83,17 +83,17 @@ jobs:
             cargo build --release
             OUT_DIR="target/release"
           fi
-          mkdir -p ../dist-native
+          mkdir -p "$GITHUB_WORKSPACE/dist-native"
           SRC="${OUT_DIR}/${{ matrix.te_lib }}"
           if [ ! -f "$SRC" ]; then
             echo "missing $SRC"
             ls -la "${OUT_DIR}" || true
             exit 1
           fi
-          cp "$SRC" "../dist-native/${{ matrix.te_asset }}"
+          cp "$SRC" "$GITHUB_WORKSPACE/dist-native/${{ matrix.te_asset }}"
           HYPHEN=$(echo "${{ matrix.te_asset }}" | sed 's/terminal_engine/terminal-engine/')
-          cp "$SRC" "../dist-native/${HYPHEN}"
-          ls -la ../dist-native/
+          cp "$SRC" "$GITHUB_WORKSPACE/dist-native/${HYPHEN}"
+          ls -la "$GITHUB_WORKSPACE/dist-native/"
 
       - name: Build maou-tui-ratatui
         shell: bash

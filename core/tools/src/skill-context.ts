@@ -1,5 +1,5 @@
 /**
- * Skill 上下文管理 —— 扫描、烘焙、增量注入
+ * Skill 上下文管理 —— 扫描、写入文件缓存区、diff 进上下文动态区
  *
  * 扫描路径（优先级从低到高，后扫描覆盖同名）：
  * 0. 系统 / NPM 全局（可选，默认开）：~/.agents/skills、~/.claude/skills
@@ -8,8 +8,8 @@
  * 3. Agent：project/.maou/agents/<agent>/{skill,skills}、~/.maou/agents/<agent>/{skill,skills}
  *
  * 功能：
- * - 烘焙：首轮将 skill 索引（name+description）注入 system
- * - 增量：检测增删改，在后续轮注入 <skill_update>
+ * - 文件缓存区：首轮将 skill 索引（name+description）写入稳定前缀（缓存断点之前）
+ * - 上下文动态区：检测增删改，后续轮注入 <skill_update>
  * - use_skill：按 name 加载完整正文
  */
 
@@ -38,9 +38,9 @@ export interface SkillChange {
 }
 
 export interface SkillContextResult {
-  /** 烘焙内容（首轮注入 system） */
+  /** 文件缓存区（首轮写入稳定前缀，缓存断点之前） */
   bakedContent: string;
-  /** 增量内容（变动时注入动态区） */
+  /** 上下文动态区（变动时的 <skill_update>） */
   incrementalContent: string;
   /** 当前所有 skill 列表 */
   currentSkills: Map<string, SkillEntry>;
@@ -295,7 +295,7 @@ export class SkillScanner {
 // ─── SkillContextManager ──────────────────────────────────────────────────
 
 /**
- * Skill 上下文管理器 —— 烘焙和增量注入
+ * Skill 上下文管理器 —— 文件缓存区 + 上下文动态区
  */
 export class SkillContextManager {
   private scanner: SkillScanner;
@@ -342,7 +342,7 @@ export class SkillContextManager {
     this.enabledSkills = new Set(skillNames);
   }
 
-  /** 编译 skill 上下文（烘焙 + 增量） */
+  /** 编译 skill 上下文（文件缓存区首轮 + 上下文动态区增量） */
   compile(): SkillContextResult {
     const allSkills = this.scanner.scanAll(this.agentName);
 
@@ -406,6 +406,7 @@ export class SkillContextManager {
     return changes;
   }
 
+  /** 生成文件缓存区 skill 索引（稳定前缀，缓存断点之前） */
   private generateBakedContent(skills: Map<string, SkillEntry>): string {
     if (skills.size === 0) return "";
 
@@ -415,7 +416,7 @@ export class SkillContextManager {
     );
     parts.push("");
 
-    // 稳定排序，避免 map 迭代顺序抖动导致 system prompt 缓存失效
+    // 稳定排序，避免顺序抖动改写文件缓存区（= 缓存破坏）
     const sorted = [...skills.entries()].sort((a, b) => a[0].localeCompare(b[0]));
     for (const [name, entry] of sorted) {
       const desc = entry.description ? entry.description : "(无描述)";

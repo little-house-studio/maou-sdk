@@ -16,20 +16,21 @@
     "postinstall": "node scripts/postinstall.mjs",
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
+    "test:install": "node --test scripts/lib/*.test.mjs",
     "typecheck": "pnpm -r run typecheck",
     "clean": "pnpm -r run clean"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
   },
+  "packageManager": "pnpm@10.15.1",
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "pnpm": ">=10.15.1 <11"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild",
-      "node-pty",
-      "@lydell/node-pty"
+      "esbuild"
     ]
   }
 }

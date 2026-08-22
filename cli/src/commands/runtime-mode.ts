@@ -117,7 +117,12 @@ export function detectRuntime(opts: { refresh?: boolean } = {}): RuntimeInfo {
 
   const root = mode === "bundle" ? bundle!.root : monoRoot;
   const scriptsDir = root && existsSync(join(root, "scripts")) ? join(root, "scripts") : null;
-  const vendorBinDir = root ? join(root, "vendor", "bin") : null;
+  const vendorBinDir =
+    mode === "bundle" && bundle
+      ? join(bundle.root, "vendor", "bin")
+      : monoRoot
+        ? join(monoRoot, "scripts", "vendor", "bin")
+        : null;
 
   cached = {
     mode,

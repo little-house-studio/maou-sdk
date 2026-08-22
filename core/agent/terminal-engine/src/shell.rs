@@ -7,6 +7,7 @@
  *   - pager_env()
  *
  * 禁止在 spawn_pipe / spawn_pty 里各自手写 cmd.exe / bash -c。
+ * Windows Agent 默认与人壳同源（PowerShell）；Unix Agent 仍走 $SHELL -c。
  */
 
 use std::collections::HashMap;
@@ -23,15 +24,139 @@ pub struct ShellInvocation {
     pub extra_env: Vec<(String, String)>,
 }
 
+/// 人壳：裸 shell，不要 `-c` / `/c`。`shell_override` 优先于 $SHELL / PowerShell。
+pub fn interactive_shell_argv(shell_override: Option<&str>) -> ShellInvocation {
+    let override_path = shell_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    #[cfg(windows)]
+    {
+        let root = windows_system_root();
+        let extra = vec![
+            ("PYTHONUTF8".into(), "1".into()),
+            ("PYTHONIOENCODING".into(), "utf-8:surrogateescape".into()),
+        ];
+        if let Some(program) = override_path {
+            let args = if classify_windows_shell(&program) == WindowsShellKind::PowerShell {
+                vec!["-NoLogo".into()]
+            } else {
+                vec![]
+            };
+            return ShellInvocation {
+                program,
+                args,
+                windows_cmd_raw_c: None,
+                extra_env: extra,
+            };
+        }
+        let ps = format!(r"{}\System32\WindowsPowerShell\v1.0\powershell.exe", root);
+        if std::path::Path::new(&ps).is_file() {
+            return ShellInvocation {
+                program: ps,
+                args: vec!["-NoLogo".into()],
+                windows_cmd_raw_c: None,
+                extra_env: extra,
+            };
+        }
+        let comspec = std::env::var("ComSpec")
+            .or_else(|_| std::env::var("COMSPEC"))
+            .unwrap_or_else(|_| format!(r"{}\System32\cmd.exe", root));
+        ShellInvocation {
+            program: comspec,
+            args: vec![],
+            windows_cmd_raw_c: None,
+            extra_env: extra,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = override_path
+            .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()));
+        ShellInvocation {
+            program: shell,
+            args: vec![],
+            windows_cmd_raw_c: None,
+            extra_env: vec![],
+        }
+    }
+}
+
 /// 将 agent 给出的 shell 命令字符串解析为跨平台 invocation。
+/// Unix：`$SHELL -c`（忽略 MAOU_SHELL，Mac 行为不变）。
+/// Windows：与人壳同源 — `MAOU_SHELL` → Windows PowerShell 5.1 → cmd。
 pub fn shell_command_argv(command: &str) -> ShellInvocation {
     #[cfg(windows)]
     {
-        windows_cmd_invocation(command)
+        windows_agent_invocation(command, &resolve_windows_agent_program())
     }
     #[cfg(not(windows))]
     {
         unix_shell_invocation(command)
+    }
+}
+
+/// Windows 可执行文件归类（路径无关，便于与 TS `windows-shell.ts` 对齐）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsShellKind {
+    PowerShell,
+    Cmd,
+    UnixLike,
+}
+
+pub fn classify_windows_shell(program: &str) -> WindowsShellKind {
+    let n = program.replace('\\', "/").to_ascii_lowercase();
+    let file = n.rsplit('/').next().unwrap_or(n.as_str());
+    let stem = file.strip_suffix(".exe").unwrap_or(file);
+    if stem == "pwsh" || stem.contains("powershell") {
+        WindowsShellKind::PowerShell
+    } else if stem == "cmd" {
+        WindowsShellKind::Cmd
+    } else if matches!(stem, "bash" | "sh" | "zsh" | "fish" | "dash") || stem.contains("git-bash")
+    {
+        WindowsShellKind::UnixLike
+    } else {
+        WindowsShellKind::Cmd
+    }
+}
+
+/// 按 shell 种类拼 agent 命令（不探测磁盘；program 由调用方解析）。
+pub fn windows_agent_invocation(command: &str, program: &str) -> ShellInvocation {
+    let extra = vec![
+        ("PYTHONUTF8".into(), "1".into()),
+        ("PYTHONIOENCODING".into(), "utf-8:surrogateescape".into()),
+    ];
+    match classify_windows_shell(program) {
+        WindowsShellKind::PowerShell => ShellInvocation {
+            program: program.to_string(),
+            args: vec![
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                command.to_string(),
+            ],
+            windows_cmd_raw_c: None,
+            extra_env: extra,
+        },
+        WindowsShellKind::UnixLike => ShellInvocation {
+            program: program.to_string(),
+            args: vec!["-c".into(), command.to_string()],
+            windows_cmd_raw_c: None,
+            extra_env: extra,
+        },
+        WindowsShellKind::Cmd => {
+            let mut wrapped = String::with_capacity(command.len() + 2);
+            wrapped.push('"');
+            wrapped.push_str(command);
+            wrapped.push('"');
+            ShellInvocation {
+                program: program.to_string(),
+                args: vec!["/d".into(), "/s".into(), "/c".into()],
+                windows_cmd_raw_c: Some(wrapped),
+                extra_env: extra,
+            }
+        }
     }
 }
 
@@ -47,30 +172,24 @@ fn unix_shell_invocation(command: &str) -> ShellInvocation {
     }
 }
 
-/// Windows：固定用 cmd.exe（路径绝对），引号语义对齐 Node shell:true。
-/// 暂不自动探测 Git Bash / pwsh（可后续扩展）；优先「全平台行为可预期」。
+/// Windows Agent：`MAOU_SHELL` → Windows PowerShell 5.1（与人壳默认一致）→ cmd。
+/// 不自动把 Git Bash / pwsh 掺进默认；显式 `MAOU_SHELL` 才用。
 #[cfg(windows)]
-fn windows_cmd_invocation(command: &str) -> ShellInvocation {
-    let root = windows_system_root();
-    let comspec = std::env::var("ComSpec")
-        .or_else(|_| std::env::var("COMSPEC"))
-        .unwrap_or_else(|_| format!(r"{}\System32\cmd.exe", root));
-
-    // /d 禁 AutoRun，/s + 包引号：与 Node child_process shell:true 一致
-    let mut wrapped = String::with_capacity(command.len() + 2);
-    wrapped.push('"');
-    wrapped.push_str(command);
-    wrapped.push('"');
-
-    ShellInvocation {
-        program: comspec,
-        args: vec!["/d".to_string(), "/s".to_string(), "/c".to_string()],
-        windows_cmd_raw_c: Some(wrapped),
-        extra_env: vec![
-            ("PYTHONUTF8".into(), "1".into()),
-            ("PYTHONIOENCODING".into(), "utf-8:surrogateescape".into()),
-        ],
+fn resolve_windows_agent_program() -> String {
+    if let Ok(s) = std::env::var("MAOU_SHELL") {
+        let t = s.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
     }
+    let root = windows_system_root();
+    let ps = format!(r"{}\System32\WindowsPowerShell\v1.0\powershell.exe", root);
+    if std::path::Path::new(&ps).is_file() {
+        return ps;
+    }
+    std::env::var("ComSpec")
+        .or_else(|_| std::env::var("COMSPEC"))
+        .unwrap_or_else(|_| format!(r"{}\System32\cmd.exe", root))
 }
 
 #[cfg(windows)]
@@ -131,6 +250,14 @@ pub fn interactive_env() -> Vec<(String, String)> {
     dedupe_env(env)
 }
 
+/// 人壳：真 TTY 色，不压制 pager
+pub fn human_shell_env() -> Vec<(String, String)> {
+    let mut env = base_safe_env();
+    env.push(("TERM".into(), "xterm-256color".into()));
+    env.push(("COLORTERM".into(), "truecolor".into()));
+    dedupe_env(env)
+}
+
 fn dedupe_env(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut map = HashMap::new();
     for (k, v) in pairs {
@@ -148,7 +275,11 @@ fn base_safe_env() -> Vec<(String, String)> {
         let raw_path = std::env::var("Path")
             .or_else(|_| std::env::var("PATH"))
             .unwrap_or_default();
-        let clean_path = sanitize_windows_path(&raw_path, &root, &system32);
+        let keep_unix = std::env::var("MAOU_SHELL")
+            .ok()
+            .map(|s| classify_windows_shell(&s) == WindowsShellKind::UnixLike)
+            .unwrap_or(false);
+        let clean_path = sanitize_windows_path(&raw_path, &root, &system32, keep_unix);
 
         let mut env = vec![
             ("Path".into(), clean_path.clone()),
@@ -206,6 +337,13 @@ fn base_safe_env() -> Vec<(String, String)> {
             "CARGO_HOME",
             "NVM_DIR",
             "CONDA_PREFIX",
+            "SSH_AUTH_SOCK",
+            "SSH_AGENT_PID",
+            "DISPLAY",
+            "EDITOR",
+            "VISUAL",
+            "TERM_PROGRAM",
+            "COLORTERM",
         ];
         WHITELIST
             .iter()
@@ -215,7 +353,7 @@ fn base_safe_env() -> Vec<(String, String)> {
 }
 
 #[cfg(windows)]
-fn sanitize_windows_path(raw: &str, root: &str, system32: &str) -> String {
+fn sanitize_windows_path(raw: &str, root: &str, system32: &str, keep_unix_segs: bool) -> String {
     let mut segs: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -246,11 +384,12 @@ fn sanitize_windows_path(raw: &str, root: &str, system32: &str) -> String {
         if s.is_empty() || s.contains('\n') || s.contains('\r') {
             continue;
         }
-        if s.starts_with("/c/")
-            || s.starts_with("/C/")
-            || s.starts_with(r"\c\")
-            || s.starts_with("/usr/")
-            || s.starts_with("/mingw")
+        if !keep_unix_segs
+            && (s.starts_with("/c/")
+                || s.starts_with("/C/")
+                || s.starts_with(r"\c\")
+                || s.starts_with("/usr/")
+                || s.starts_with("/mingw"))
         {
             continue;
         }
@@ -260,10 +399,16 @@ fn sanitize_windows_path(raw: &str, root: &str, system32: &str) -> String {
             && bytes[1] == b':'
             && (bytes[2] == b'\\' || bytes[2] == b'/');
         let is_unc = s.starts_with(r"\\");
-        if !(is_drive || is_unc) {
+        let is_unix_abs = keep_unix_segs && s.starts_with('/');
+        if !(is_drive || is_unc || is_unix_abs) {
             continue;
         }
-        push(&mut segs, &mut seen, s.replace('/', r"\"));
+        let cleaned = if is_unix_abs {
+            s.to_string()
+        } else {
+            s.replace('/', r"\")
+        };
+        push(&mut segs, &mut seen, cleaned);
     }
     segs.join(";")
 }
@@ -320,5 +465,54 @@ pub fn normalize_cwd(cwd: &str) -> String {
         path.canonicalize()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| trimmed.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_windows_shell_paths() {
+        assert_eq!(
+            classify_windows_shell(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+            WindowsShellKind::PowerShell
+        );
+        assert_eq!(classify_windows_shell("pwsh"), WindowsShellKind::PowerShell);
+        assert_eq!(
+            classify_windows_shell(r"C:\Windows\System32\cmd.exe"),
+            WindowsShellKind::Cmd
+        );
+        assert_eq!(
+            classify_windows_shell(r"C:\Program Files\Git\bin\bash.exe"),
+            WindowsShellKind::UnixLike
+        );
+    }
+
+    #[test]
+    fn powershell_agent_invocation_is_minus_command() {
+        let inv = windows_agent_invocation(
+            "echo hi",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        );
+        assert_eq!(
+            inv.args,
+            vec!["-NoProfile", "-NonInteractive", "-Command", "echo hi"]
+        );
+        assert!(inv.windows_cmd_raw_c.is_none());
+    }
+
+    #[test]
+    fn cmd_agent_invocation_keeps_raw_c() {
+        let inv = windows_agent_invocation("echo hi", r"C:\Windows\System32\cmd.exe");
+        assert_eq!(inv.args, vec!["/d", "/s", "/c"]);
+        assert_eq!(inv.windows_cmd_raw_c.as_deref(), Some("\"echo hi\""));
+    }
+
+    #[test]
+    fn git_bash_agent_invocation_is_minus_c() {
+        let inv = windows_agent_invocation("echo hi", r"C:\Program Files\Git\bin\bash.exe");
+        assert_eq!(inv.args, vec!["-c", "echo hi"]);
+        assert!(inv.windows_cmd_raw_c.is_none());
     }
 }

@@ -19,7 +19,7 @@ import type {
 } from "@little-house-studio/prompt";
 
 /**
- * 格式化当前会话的 todo 清单，注入 before_user 区。
+ * 格式化当前会话的 todo 清单，注入上下文动态区（缓存断点之后）。
  *
  * 让 AI 每轮都能看到「还有哪些 todo 没做完 / 当前执行到哪一步」，
  * 并标注每个 todo 关联的归档块 ID（relatedBlockIds），
@@ -86,12 +86,12 @@ class TerminalRegistryStatusProvider implements TerminalStatusProvider {
 }
 
 /**
- * 编译动态注入内容：Agent 状态、终端状态面板、当前会话任务规划。
+ * 编译上下文动态区：Agent 状态、终端状态面板。
  *
  * agent 层负责组装 provider，模板编译委托给 prompt 层。
+ * 放在缓存断点之后，避免改写文件缓存区造成缓存破坏。
  *
- * @param sessionId - 会话 ID；传入时注入当前 todo 清单到 before_user 区，
- *                   让 AI 每轮感知「还有哪些 todo 没做完」并接管 loop 推进条件
+ * @param sessionId - 会话 ID（todo 已改走靠后 system_notice，此处不再写入前缀）
  */
 export function compileDynamicContext(maouRoot: string, agentName?: string, sessionId?: string): string {
   const parts: string[] = [];
@@ -115,8 +115,8 @@ export function compileDynamicContext(maouRoot: string, agentName?: string, sess
     }
   }
 
-  // Todo 状态改由 TodoOrchestrator 的靠后 user system_notice 注入（保护 prompt cache）。
-  // 此处不再把 <todo_plan> 塞进动态 system/before_user 前缀。
+  // Todo 状态改由 TodoOrchestrator 的靠后 user system_notice 注入（避免缓存破坏）。
+  // 此处不再把 <todo_plan> 塞进文件缓存区 / 上下文动态区前缀。
   void sessionId;
   void formatTodoPlan;
 

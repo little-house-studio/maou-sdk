@@ -48,6 +48,9 @@ export const AGENT_EVENT_TYPES = new Set([
   // 上下文
   "pre_compact",         // 上下文压缩前
   "post_compact",        // 上下文压缩后
+  "pre_cache_rebuild",   // 缓存重建点前（可取消重建）
+  "cache_rebuild_point", // 缓存重建点
+  "post_cache_rebuild",  // 缓存重建点后
   // 设备
   "device_online",       // 设备上线
   "device_offline",      // 设备离线

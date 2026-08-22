@@ -34,9 +34,12 @@ import {
   DOCK_TRACK_H,
   FOLDER,
   FOLDER_SCALE,
-  SPRING_CLOSE,
+  OPEN_KICK_V,
   SPRING_OPEN,
+  STOW_EASE_S,
   applyDockDragMove,
+  easeCloseHeight,
+  easeCloseProgress,
   boardHeightForPanel,
   boardPlacementFromSlot,
   boardTiltDeg,
@@ -55,12 +58,19 @@ import {
   shouldStowFloat,
   springSettled,
   springStep,
-  stepHoverProgress,
+  stepHoverMap,
   stripWidthForHoverProgress,
-  stowProgressFromHeight,
+  dockMagnetPose,
+  dockMagnetTransform,
+  dockMagnetWinner,
+  lerpMagnetPose,
+  magnetPoseSettled,
+  DOCK_MAGNET_REST,
   type BoardPos,
   type DockCardId,
   type DockDragSession,
+  type DockMagnetPose,
+  type DockMagnetSlot,
 } from "../bottom-dock";
 
 /** @deprecated alias */
@@ -268,7 +278,16 @@ export function dockCardGeometry(opts: {
   if (opts.phase === "expand") {
     const panel = Math.max(0, opts.panelH ?? 0);
     const cssH = boardHeightForPanel(panel);
-    const cssW = boardWidthForPanel(panel);
+    const hp = Math.max(0, Math.min(1, opts.hoverProgress ?? 0));
+    const pullW = boardWidthForPanel(panel);
+    const hoverW =
+      hp > 0.001
+        ? stripWidthForHoverProgress(
+            hp,
+            previewWidthPx(opts.title ?? "", opts.preview ?? ""),
+          )
+        : 0;
+    const cssW = Math.max(pullW, hoverW);
     const rightX = rightXFromCssWidth(cssW);
     const bottomY = bottomYFromCssHeight(cssH);
     return {
@@ -399,14 +418,14 @@ export function BottomInfoBar({
     return next;
   }, []);
   const [hoverId, setHoverId] = useState<DockCardId | null>(null);
-  /**
-   * Continuous strip morph: which card is expanding + progress 0..1.
-   * Path right edge grows; label/badge stay; title/preview fade in after width.
-   */
-  const [hoverAnim, setHoverAnim] = useState<{
-    id: DockCardId | null;
-    t: number;
-  }>({ id: null, t: 0 });
+  /** Per-card strip morph 0..1 — sweep keeps the previous card retracting. */
+  const [hoverMap, setHoverMap] = useState<Partial<Record<DockCardId, number>>>(
+    {},
+  );
+  const [magnetById, setMagnetById] = useState<
+    Partial<Record<DockCardId, DockMagnetPose>>
+  >({});
+  const [pointerOnTrack, setPointerOnTrack] = useState(false);
   const [openId, setOpenId] = useState<DockCardId | null>(null);
   const [panelH, setPanelH] = useState(0);
   const [floatPos, setFloatPos] = useState<FloatPos | null>(null);
@@ -427,13 +446,19 @@ export function BottomInfoBar({
   const springRef = useRef({ x: 0, v: 0 });
   const rafRef = useRef(0);
   const hoverRafRef = useRef(0);
-  const hoverAnimRef = useRef(hoverAnim);
+  const hoverMapRef = useRef(hoverMap);
+  const magnetRef = useRef(magnetById);
+  const hoverIdRef = useRef(hoverId);
+  const pointerXRef = useRef<number | null>(null);
   const dragRef = useRef<DockDragSession | null>(null);
+  const liveSnapRef = useRef(false);
   const earModeRef = useRef<EarMode>("pending");
   const detachDocListenersRef = useRef<(() => void) | null>(null);
   const slotRefs = useRef<Partial<Record<DockCardId, HTMLElement | null>>>({});
   const trackRef = useRef<HTMLDivElement | null>(null);
-  hoverAnimRef.current = hoverAnim;
+  hoverMapRef.current = hoverMap;
+  magnetRef.current = magnetById;
+  hoverIdRef.current = hoverId;
   /** Slot bottom/left captured at pull start for bottom-edge lift. */
   const slotAnchorRef = useRef<{ left: number; bottom: number } | null>(null);
   const slotAnchoredRef = useRef(true);
@@ -467,18 +492,34 @@ export function BottomInfoBar({
     onReservedHeightChange?.(DOCK_TRACK_H);
   }, [onReservedHeightChange]);
 
-  // Hover strip: animate path right edge (tab → preview), then reveal text
+  // Hover strip + magnet sweep: per-card morph, peek out of the slot
   const liveIdForHover: DockCardId | null =
     panelH > 0 ? (openId ?? pullingId) : null;
+
+  const readMagnetSlots = useCallback((): DockMagnetSlot[] => {
+    const slots: DockMagnetSlot[] = [];
+    for (const id of orderRef.current) {
+      const el = slotRefs.current[id];
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      slots.push({ id, center: r.left + r.width / 2 });
+    }
+    return slots;
+  }, []);
+
   useEffect(() => {
-    const wantId =
-      hoverId &&
-      !dragging &&
-      !pressing &&
-      reorderId == null &&
-      liveIdForHover == null
-        ? hoverId
-        : null;
+    const frozen =
+      dragging || pressing || reorderId != null || liveIdForHover != null;
+    // Keep the preview strip while the pointer is down but the board
+    // has not become live yet — otherwise width shrinks then grows.
+    const holdHover =
+      (pressing || dragging) &&
+      liveIdForHover == null &&
+      reorderId == null;
+    const wantId = holdHover ? null : frozen ? null : hoverId;
+    const reduceMotion =
+      typeof matchMedia === "function" &&
+      matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     if (hoverRafRef.current) {
       cancelAnimationFrame(hoverRafRef.current);
@@ -489,32 +530,47 @@ export function BottomInfoBar({
     const tick = (now: number) => {
       const dt = Math.min(0.048, (now - last) / 1000);
       last = now;
-      const prev = hoverAnimRef.current;
-      let id = prev.id;
-      let t = prev.t;
+      const ids = orderRef.current;
+      const nextMap = holdHover
+        ? hoverMapRef.current
+        : stepHoverMap(hoverMapRef.current, wantId, dt, ids);
+      hoverMapRef.current = nextMap;
+      setHoverMap(nextMap);
 
-      if (wantId) {
-        if (id !== wantId) {
-          // switch card: snap previous closed, grow the new one
-          id = wantId;
-          t = 0;
-        }
-        t = stepHoverProgress(t, 1, dt);
+      let magnetBusy = false;
+      if (holdHover) {
+        magnetBusy = Object.values(magnetRef.current).some(
+          (p) => p != null && !magnetPoseSettled(p),
+        );
       } else {
-        t = stepHoverProgress(t, 0, dt);
-        if (t <= 0.001) {
-          id = null;
-          t = 0;
+        const px = frozen ? null : pointerXRef.current;
+        const slots = px == null ? [] : readMagnetSlots();
+        const nextMagnet: Partial<Record<DockCardId, DockMagnetPose>> = {};
+        for (const id of ids) {
+          const slot = slots.find((s) => s.id === id);
+          const raw =
+            px == null || !slot
+              ? DOCK_MAGNET_REST
+              : dockMagnetPose(px, slot.center, id === wantId);
+          const target = reduceMotion
+            ? { ...raw, risePx: 0, leanDeg: 0, shiftX: 0 }
+            : raw;
+          const cur = magnetRef.current[id] ?? DOCK_MAGNET_REST;
+          const pose = lerpMagnetPose(cur, target, Math.min(1, dt * 16));
+          if (!magnetPoseSettled(pose)) {
+            nextMagnet[id] = pose;
+            magnetBusy = true;
+          } else if (target.influence > 0.02) {
+            nextMagnet[id] = target;
+          }
         }
+        magnetRef.current = nextMagnet;
+        setMagnetById(nextMagnet);
       }
 
-      const next = { id, t };
-      hoverAnimRef.current = next;
-      setHoverAnim(next);
-
-      const settled = wantId
-        ? id === wantId && t >= 0.999
-        : t <= 0.001 && id == null;
+      const hoverBusy = Object.keys(nextMap).length > 0;
+      const settled =
+        !pointerOnTrack && !hoverBusy && !magnetBusy && wantId == null;
       if (!settled) {
         hoverRafRef.current = requestAnimationFrame(tick);
       } else {
@@ -529,7 +585,15 @@ export function BottomInfoBar({
         hoverRafRef.current = 0;
       }
     };
-  }, [hoverId, dragging, pressing, reorderId, liveIdForHover]);
+  }, [
+    hoverId,
+    pointerOnTrack,
+    dragging,
+    pressing,
+    reorderId,
+    liveIdForHover,
+    readMagnetSlots,
+  ]);
 
   const stopSpring = useCallback(() => {
     if (rafRef.current) {
@@ -547,7 +611,12 @@ export function BottomInfoBar({
   const captureSlotAnchor = useCallback((id: DockCardId) => {
     const slot = slotRefs.current[id];
     if (slot) {
+      // Layout box, not the magnet-transformed rect — peek would shift the
+      // slot floor and the board would jump when the pose eases out.
+      const prev = slot.style.transform;
+      slot.style.transform = "none";
       const r = slot.getBoundingClientRect();
+      slot.style.transform = prev;
       slotAnchorRef.current = { left: r.left, bottom: r.bottom };
       return slotAnchorRef.current;
     }
@@ -654,53 +723,101 @@ export function BottomInfoBar({
     [placeBoardOnSlot, setFloat, setPanel, setSizeFor, sizeFor, stopSpring],
   );
 
+  const finishClose = useCallback(() => {
+    setPanel(0);
+    springRef.current = { x: 0, v: 0 };
+    setPopping(false);
+    rafRef.current = 0;
+    setBoardTilt(0);
+    setOpen(null);
+    setPullingId(null);
+    setFloat(null);
+    stowFromRef.current = null;
+    slotAnchorRef.current = null;
+    setSlotAnchored(true);
+    slotAnchoredRef.current = true;
+    liveSnapRef.current = false;
+    onCollapse?.();
+  }, [onCollapse, setFloat, setOpen, setPanel]);
+
   const runSpringTo = useCallback(
     (target: number, id: DockCardId | null) => {
       stopSpring();
-      setPopping(true);
       const open = target > 0 && id != null;
       const startH = Math.max(panelHRef.current, 1);
       if (open) {
+        setPopping(true);
         setOpen(id);
         setSlotAnchored(true);
         slotAnchoredRef.current = true;
         stowFromRef.current = null;
         captureSlotAnchor(id);
         placeBoardOnSlot(id, panelHRef.current || target * 0.15);
-      } else {
-        // Stow: remember free pos so board slides back into the slot while shrinking
-        const slot =
-          slotAnchorRef.current ??
-          (id || openIdRef.current
-            ? captureSlotAnchor((id ?? openIdRef.current) as DockCardId)
-            : { left: 24, bottom: window.innerHeight - 4 });
-        if (floatPosRef.current) {
-          stowFromRef.current = {
-            pos: { ...floatPosRef.current },
-            height: startH,
-            slot,
-          };
-        }
+        springRef.current = {
+          x: panelHRef.current,
+          v: springRef.current.v,
+        };
+        let last = performance.now();
+        const tick = (now: number) => {
+          const dt = now - last;
+          last = now;
+          springRef.current = springStep(
+            springRef.current,
+            target,
+            dt,
+            SPRING_OPEN,
+          );
+          const x = Math.max(0, springRef.current.x);
+          setPanel(x);
+          if (id && slotAnchoredRef.current) {
+            placeBoardOnSlot(id, x);
+          }
+          if (springSettled(springRef.current, target)) {
+            setPanel(target);
+            springRef.current = { x: target, v: 0 };
+            setPopping(false);
+            rafRef.current = 0;
+            setBoardTilt(0);
+            setOpen(id);
+            setPullingId(null);
+            if (slotAnchoredRef.current) placeBoardOnSlot(id, target);
+            onTabChange?.(id);
+            onExpand?.();
+            return;
+          }
+          rafRef.current = requestAnimationFrame(tick);
+        };
+        rafRef.current = requestAnimationFrame(tick);
+        return;
       }
-      springRef.current = {
-        x: panelHRef.current,
-        v: springRef.current.v,
-      };
-      let last = performance.now();
-      const tick = (now: number) => {
-        const dt = now - last;
-        last = now;
-        const opts = open ? SPRING_OPEN : SPRING_CLOSE;
-        springRef.current = springStep(springRef.current, target, dt, opts);
-        const x = Math.max(0, springRef.current.x);
-        setPanel(x);
 
-        if (open && id && slotAnchoredRef.current) {
-          // Grow upward from slot bottom — continuous board lift
-          placeBoardOnSlot(id, x);
-        } else if (!open && stowFromRef.current) {
-          // Slide + shrink back into rack
-          const prog = stowProgressFromHeight(x, stowFromRef.current.height);
+      // Close: short ease into the slot — no oscillating spring
+      setPopping(false);
+      const closeId = (id ?? openIdRef.current) as DockCardId | null;
+      const slot = closeId
+        ? captureSlotAnchor(closeId)
+        : (slotAnchorRef.current ?? {
+            left: 24,
+            bottom: window.innerHeight - 4,
+          });
+      const slideHome =
+        !slotAnchoredRef.current && floatPosRef.current != null;
+      if (slideHome && floatPosRef.current) {
+        stowFromRef.current = {
+          pos: { ...floatPosRef.current },
+          height: startH,
+          slot,
+        };
+      } else {
+        stowFromRef.current = null;
+      }
+      const t0 = performance.now();
+      const tick = (now: number) => {
+        const p = easeCloseProgress((now - t0) / 1000, STOW_EASE_S);
+        const x = easeCloseHeight(startH, p);
+        springRef.current = { x, v: 0 };
+        setPanel(x);
+        if (stowFromRef.current) {
           const boardH = boardHeightForPanel(x);
           const stowId = (id ?? openIdRef.current) as DockCardId | null;
           const boardW = stowId
@@ -713,32 +830,13 @@ export function BottomInfoBar({
             window.innerWidth,
             window.innerHeight,
           );
-          setFloat(lerpBoardPos(stowFromRef.current.pos, slotTarget, prog));
+          setFloat(lerpBoardPos(stowFromRef.current.pos, slotTarget, p));
+        } else if (closeId && floatPosRef.current) {
+          // Slot-pinned retract: keep the bottom on the rack (no p² lerp).
+          placeBoardOnSlot(closeId, x);
         }
-
-        if (springSettled(springRef.current, target)) {
-          setPanel(target);
-          springRef.current = { x: target, v: 0 };
-          setPopping(false);
-          rafRef.current = 0;
-          setBoardTilt(0);
-          if (!open) {
-            setOpen(null);
-            setPullingId(null);
-            setFloat(null);
-            stowFromRef.current = null;
-            slotAnchorRef.current = null;
-            setSlotAnchored(true);
-            slotAnchoredRef.current = true;
-            onCollapse?.();
-          } else {
-            setOpen(id);
-            setPullingId(null);
-            // Keep slot-anchored until user free-moves
-            if (id && slotAnchoredRef.current) placeBoardOnSlot(id, target);
-            onTabChange?.(id!);
-            onExpand?.();
-          }
+        if (p >= 1) {
+          finishClose();
           return;
         }
         rafRef.current = requestAnimationFrame(tick);
@@ -748,7 +846,7 @@ export function BottomInfoBar({
     [
       boardWFor,
       captureSlotAnchor,
-      onCollapse,
+      finishClose,
       onExpand,
       onTabChange,
       placeBoardOnSlot,
@@ -793,10 +891,8 @@ export function BottomInfoBar({
     setHoverId(null);
     setPullingId(null);
     setBoardTilt(0);
-    springRef.current = {
-      x: panelHRef.current,
-      v: Math.min(springRef.current.v, -280),
-    };
+    liveSnapRef.current = false;
+    springRef.current = { x: panelHRef.current, v: 0 };
     runSpringTo(0, null);
   }, [runSpringTo]);
 
@@ -816,10 +912,7 @@ export function BottomInfoBar({
 
       if (result.kind === "click-close") {
         setPullingId(null);
-        springRef.current = {
-          x: panelHRef.current,
-          v: result.velocityKick,
-        };
+        springRef.current = { x: panelHRef.current, v: 0 };
         runSpringTo(0, null);
         return;
       }
@@ -891,6 +984,7 @@ export function BottomInfoBar({
     e.stopPropagation();
     clearDocListeners();
     stopSpring();
+    liveSnapRef.current = false;
     setPressing(true);
     setHoverId(null);
     setBoardTilt(0);
@@ -1013,6 +1107,7 @@ export function BottomInfoBar({
 
       // open pull / vertical — board lifts with bottom edge on slot
       if (earModeRef.current === "open" || earModeRef.current === "pending") {
+        if (liveSnapRef.current) return;
         const out = applyDockDragMove(d, ev.clientY, performance.now(), {
           alreadyOpenId: pressOpenId,
         });
@@ -1035,6 +1130,19 @@ export function BottomInfoBar({
           if (d.kind === "open" && out.provisionalOpen) {
             setPullingId(d.id);
             setOpen(d.id);
+          }
+          if (out.breakaway && !out.freezeHeight) {
+            liveSnapRef.current = true;
+            setPullingId(null);
+            setOpen(d.id);
+            setSlotAnchored(true);
+            slotAnchoredRef.current = true;
+            captureSlotAnchor(d.id);
+            placeBoardOnSlot(d.id, out.height);
+            onTabChange?.(d.id);
+            onExpand?.();
+            springRef.current = { x: out.height, v: OPEN_KICK_V };
+            runSpringTo(openHFor(d.id), d.id);
           }
         }
       }
@@ -1070,6 +1178,11 @@ export function BottomInfoBar({
         return;
       }
 
+      if (liveSnapRef.current) {
+        liveSnapRef.current = false;
+        return;
+      }
+
       // open / pending (click or pull)
       finishOpenPull(d, ev.clientY);
     };
@@ -1088,6 +1201,30 @@ export function BottomInfoBar({
     panelH > 0 ? (openId ?? pullingId) : null;
   const expanded = liveId != null && panelH > 2;
 
+  const applyTrackPointer = useCallback(
+    (clientX: number | null) => {
+      if (clientX == null) {
+        pointerXRef.current = null;
+        setPointerOnTrack(false);
+        setHoverId(null);
+        return;
+      }
+      pointerXRef.current = clientX;
+      setPointerOnTrack(true);
+      if (dragging || pressing || reorderId != null || liveId != null) {
+        setHoverId(null);
+        return;
+      }
+      const win = dockMagnetWinner(
+        readMagnetSlots(),
+        clientX,
+        hoverIdRef.current,
+      );
+      if (win !== hoverIdRef.current) setHoverId(win);
+    },
+    [dragging, pressing, reorderId, liveId, readMagnetSlots],
+  );
+
   const orderedCards = useMemo(
     () => order.map((id) => dockCardById(id)),
     [order],
@@ -1102,6 +1239,7 @@ export function BottomInfoBar({
         popping ? "is-popping" : "",
         pressing ? "is-pressing" : "",
         reorderId ? "is-reordering" : "",
+        pointerOnTrack ? "is-sweeping" : "",
       ]
         .filter(Boolean)
         .join(" ")}
@@ -1124,13 +1262,19 @@ export function BottomInfoBar({
         className="wire-dock-track"
         role="tablist"
         aria-label="停靠卡片"
+        onPointerMove={(e) => applyTrackPointer(e.clientX)}
+        onPointerLeave={() => applyTrackPointer(null)}
       >
+        <div className="wire-dock-track-fill" aria-hidden />
         {orderedCards.map((card, index) => {
           const isLive = liveId === card.id;
           const isOpen = openId === card.id;
-          const hoverT =
-            !isLive && hoverAnim.id === card.id ? hoverAnim.t : 0;
-          const isHovering = hoverT > 0.02;
+          const hoverT = hoverMap[card.id] ?? 0;
+          const isHovering = !isLive && hoverT > 0.02;
+          const magnet = !isLive
+            ? (magnetById[card.id] ?? DOCK_MAGNET_REST)
+            : DOCK_MAGNET_REST;
+          const isPeeking = !isLive && (magnet.influence > 0.1 || isHovering);
           const title = cardTitle(card.id, titleCtx);
           const preview = cardPreviewLine(card.id, previewCtx);
           const count = cardCount(card.id, countCtx);
@@ -1139,11 +1283,17 @@ export function BottomInfoBar({
             title,
             preview,
             panelH: isLive ? panelH : 0,
-            hoverProgress: isLive ? 0 : hoverT,
+            hoverProgress: hoverT,
           });
           // Rightmost = highest z among docked; live board always topmost
           const zDock = dockTabZIndex(index, orderedCards.length);
-          const z = isLive ? 80 : isHovering ? 40 + zDock : zDock;
+          const z = isLive
+            ? 80
+            : isHovering
+              ? 40 + zDock
+              : isPeeking
+                ? 22 + zDock
+                : zDock;
           const isReordering = reorderId === card.id;
           const lifting = isLive && slotAnchored;
           const textOp = isLive ? 1 : geo.textOpacity;
@@ -1199,6 +1349,8 @@ export function BottomInfoBar({
                   width: liveGeo.cssW,
                   height: liveGeo.cssH,
                   zIndex: z,
+                  transform: dockMagnetTransform(magnet),
+                  transformOrigin: "50% 100%",
                 };
 
           // When board is out, keep a layout spacer in the track + fixed board
@@ -1369,6 +1521,7 @@ export function BottomInfoBar({
                 "wire-dock-card",
                 `tone-${card.tone}`,
                 isHovering ? "is-raised is-preview" : "",
+                isPeeking ? "is-peeking" : "",
                 isLive ? "is-raised is-live" : "",
                 isReordering ? "is-reorder" : "",
                 pressing && dragRef.current?.id === card.id ? "is-press" : "",
@@ -1377,12 +1530,7 @@ export function BottomInfoBar({
                 .join(" ")}
               style={floatStyle}
               title={`${title} · ${preview}`}
-              onMouseEnter={() => {
-                if (!dragging && !pressing && !isLive) setHoverId(card.id);
-              }}
-              onMouseLeave={() => {
-                setHoverId((h) => (h === card.id ? null : h));
-              }}
+              data-dock-peek={isPeeking ? magnet.influence.toFixed(2) : undefined}
             >
               <FolderShapeSvg
                 className="wire-dock-card-svg"
@@ -1471,7 +1619,6 @@ export function BottomInfoBar({
             </div>
           );
         })}
-        <div className="wire-dock-track-fill" aria-hidden />
       </div>
     </footer>
   );

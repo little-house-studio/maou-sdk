@@ -58,18 +58,34 @@ export type { ScaffoldOptions } from './scaffold.js'
 // 裁判评分工具（不进 registerBuiltins，裁判 agent 装配时单独注册）
 export { GradeTool } from './eval/grade/tool.js'
 
-// 终端引擎（Rust 驱动，harness/agent 运行时需要）
+// 终端引擎（full Rust / mini Node；harness/agent 运行时需要）
 export {
   initTerminalEngine,
   shutdownTerminalEngine,
   cleanupAgentTerminals,
   getTerminalStatusPanel,
-  setTerminalFilter,
-  setTerminalSandbox,
-  setTerminalPersistPath,
   listTerminals,
   getTerminalLogs,
 } from './terminal/use_terminal/tool.js'
+export {
+  resolveTerminalBackend,
+  resolveConfiguredMode,
+  getActiveBackend,
+  getTerminalResolution,
+  setAgentTerminalMode,
+  resolveInteractiveShell,
+  resolveTerminalPersistPath,
+  rebindTerminalPersist,
+} from './terminal/resolve-backend.js'
+export { isHumanTerminal } from './terminal/backend.js'
+export type {
+  TerminalBackend,
+  TerminalKind,
+  TerminalResolution,
+  TerminalInfo,
+  RunResult,
+  TerminalStreamEvent,
+} from './terminal/backend.js'
 
 // LSP 引擎生命周期（harness 退出时关语言服务器进程）
 export {
@@ -131,6 +147,14 @@ export type {
   SkillScanOptions,
   SkillSource,
 } from './skill-context.js'
+
+export {
+  toMaouToolName,
+  toPiToolName,
+  isSameTool,
+  PI_TO_MAOU_TOOL,
+  MAOU_TO_PI_TOOL,
+} from './compat/tool-names.js'
 
 // ── 动态工具加载器 ──
 export { DynamicToolLoader } from './dynamic-tool-loader.js'

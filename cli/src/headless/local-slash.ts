@@ -25,7 +25,8 @@ export type LocalSlashAction =
   | { type: "quit" }
   | { type: "stop" }
   | { type: "usage_hint"; hint: string }
-  | { type: "analyze_session" };
+  | { type: "analyze_session" }
+  | { type: "term"; sub?: string; id?: string };
 
 export interface ParseLocalSlashOpts {
   /** @deprecated 注册表已含 local 判断；保留参数兼容 */
@@ -74,6 +75,8 @@ function fromLocalAction(a: LocalDispatchAction): LocalSlashAction {
       return { type: "usage_hint", hint: a.hint };
     case "analyze_session":
       return { type: "analyze_session" };
+    case "term":
+      return { type: "term", sub: a.sub, id: a.id };
     default:
       return { type: "passthrough" };
   }

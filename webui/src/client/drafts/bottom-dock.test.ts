@@ -8,6 +8,9 @@ import {
   DOCK_EXPAND_H_UI,
   DOCK_EXPAND_W_UI,
   DOCK_OPEN_THRESHOLD,
+  DOCK_BREAKAWAY_RAW,
+  DOCK_DETENT_PEEK,
+  STOW_EASE_S,
   DOCK_PREVIEW_W_MIN,
   DOCK_TAB_H,
   DOCK_TAB_W,
@@ -24,6 +27,10 @@ import {
   buildFolderPath,
   createDockDragSession,
   displayPullHeight,
+  detentPull,
+  isPullBreakaway,
+  easeCloseProgress,
+  easeCloseHeight,
   displayResizeHeight,
   dockCardWidth,
   folderViewBox,
@@ -46,8 +53,18 @@ import {
   stowProgressFromHeight,
   boardTiltDeg,
   stepHoverProgress,
+  stepHoverMap,
   hoverTextOpacity,
   stripWidthForHoverProgress,
+  dockMagnetWeight,
+  dockMagnetWinner,
+  dockMagnetPose,
+  dockMagnetTransform,
+  lerpMagnetPose,
+  magnetPoseSettled,
+  DOCK_MAGNET_REST,
+  DOCK_MAGNET_MAX_RISE,
+  DOCK_MAGNET_HOLD_PX,
   springSettled,
   springStep,
   SPRING_OPEN,
@@ -105,13 +122,31 @@ describe("bottom-dock rubber + spring", () => {
   });
 
   it("displayPullHeight / spring / release", () => {
-    assert.ok(displayPullHeight(DOCK_EXPAND_H_UI / 2) < DOCK_EXPAND_H_UI);
+    assert.ok(displayPullHeight(DOCK_EXPAND_H_UI / 2) < DOCK_EXPAND_H_UI / 2);
     let s = { x: 0, v: 480 };
     for (let i = 0; i < 180; i++) s = springStep(s, DOCK_EXPAND_H_UI, 16, SPRING_OPEN);
     assert.ok(springSettled(s, DOCK_EXPAND_H_UI, 3, 25));
     assert.equal(releaseTarget(10, 0).open, false);
     assert.equal(releaseTarget(DOCK_OPEN_THRESHOLD, 0).open, true);
+    assert.equal(releaseTarget(DOCK_BREAKAWAY_RAW - 1, 2).open, false);
     assert.equal(releaseResizeTarget(20, 0).open, false);
+  });
+
+  it("detent pull lags the pointer then breakaway commits", () => {
+    assert.ok(DOCK_BREAKAWAY_RAW > DOCK_EXPAND_H_UI * 0.5);
+    assert.ok(DOCK_DETENT_PEEK < DOCK_EXPAND_H_UI * 0.4);
+    const half = DOCK_EXPAND_H_UI / 2;
+    const shown = detentPull(half);
+    assert.ok(shown < half * 0.7, "board stays low near halfway");
+    assert.ok(shown < detentPull(DOCK_BREAKAWAY_RAW));
+    assert.equal(isPullBreakaway(half), false);
+    assert.equal(isPullBreakaway(DOCK_BREAKAWAY_RAW), true);
+    assert.equal(displayPullHeight(half), detentPull(half));
+    assert.equal(easeCloseHeight(200, 0), 200);
+    assert.equal(easeCloseHeight(200, 1), 0);
+    assert.ok(easeCloseHeight(200, 0.5) > 0 && easeCloseHeight(200, 0.5) < 200);
+    assert.equal(easeCloseProgress(0), 0);
+    assert.equal(easeCloseProgress(STOW_EASE_S), 1);
   });
 
   it("gesture helpers", () => {
@@ -126,9 +161,30 @@ describe("bottom-dock rubber + spring", () => {
 describe("bottom-dock pointer machine", () => {
   it("open drag and click paths", () => {
     let s = createDockDragSession("agent", "open", 1, 500, 0, 0);
-    let m = applyDockDragMove(s, 500 - 120, 48);
-    assert.equal(m.session.moved, true);
-    const end = resolveDockPointerUp(m.session, null, m.height, 500 - 120);
+    const shy = applyDockDragMove(s, 500 - 80, 48);
+    assert.equal(shy.session.moved, true);
+    assert.equal(shy.breakaway, false);
+    assert.ok(shy.height < shy.raw);
+    const shyEnd = resolveDockPointerUp(
+      shy.session,
+      null,
+      shy.height,
+      500 - 80,
+    );
+    assert.equal(shyEnd.open, false);
+
+    const resume = createDockDragSession("agent", "open", 1, 500, 40, 0);
+    const resumeMove = applyDockDragMove(resume, 500 - 20, 48);
+    assert.ok(resumeMove.height >= 40, "interrupted close must not drop height");
+
+    let m = applyDockDragMove(s, 500 - DOCK_BREAKAWAY_RAW, 48);
+    assert.equal(m.breakaway, true);
+    const end = resolveDockPointerUp(
+      m.session,
+      null,
+      m.height,
+      500 - DOCK_BREAKAWAY_RAW,
+    );
     assert.equal(end.open, true);
 
     const click = resolveDockPointerUp(
@@ -229,6 +285,49 @@ describe("bottom-dock pointer machine", () => {
     assert.equal(t, 1);
     t = stepHoverProgress(1, 0, 0.05);
     assert.ok(t < 1);
+  });
+
+  it("magnet: gaussian pull, hysteresis winner, peek pose, sweep map", () => {
+    assert.ok(dockMagnetWeight(100, 100) > 0.99);
+    assert.ok(dockMagnetWeight(100, 200) < dockMagnetWeight(100, 140));
+
+    const slots = [
+      { id: "logs" as const, center: 100 },
+      { id: "tasks" as const, center: 200 },
+    ];
+    assert.equal(dockMagnetWinner(slots, 105), "logs");
+    assert.equal(dockMagnetWinner(slots, 190), "tasks");
+    // seam: stay on prev until holdPx past midpoint (150)
+    assert.equal(
+      dockMagnetWinner(slots, 155, "logs", DOCK_MAGNET_HOLD_PX),
+      "logs",
+    );
+    assert.equal(
+      dockMagnetWinner(slots, 175, "logs", DOCK_MAGNET_HOLD_PX),
+      "tasks",
+    );
+
+    const rest = dockMagnetPose(100, 100, false);
+    const win = dockMagnetPose(100, 100, true);
+    assert.ok(win.risePx > rest.risePx);
+    assert.ok(win.risePx > DOCK_MAGNET_MAX_RISE * 0.9);
+    assert.ok(Math.abs(win.leanDeg) < 0.2);
+    const side = dockMagnetPose(160, 100, true);
+    assert.ok(side.shiftX > 0);
+    assert.ok(side.leanDeg > 0);
+
+    const mid = lerpMagnetPose(DOCK_MAGNET_REST, win, 0.5);
+    assert.ok(mid.risePx > 0 && mid.risePx < win.risePx);
+    assert.equal(magnetPoseSettled(DOCK_MAGNET_REST), true);
+    assert.equal(magnetPoseSettled(win), false);
+    assert.match(dockMagnetTransform(win) ?? "", /translateY\(-/);
+
+    let map = stepHoverMap({}, "logs", 0.05);
+    assert.ok((map.logs ?? 0) > 0);
+    assert.equal(map.tasks, undefined);
+    map = stepHoverMap({ logs: 0.8 }, "tasks", 0.05);
+    assert.ok((map.logs ?? 0) > 0 && (map.logs ?? 0) < 0.8);
+    assert.ok((map.tasks ?? 0) > 0);
   });
 });
 

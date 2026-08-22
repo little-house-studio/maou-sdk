@@ -1,13 +1,8 @@
 /**
  * 跨平台加载 terminal-engine 原生绑定。
  *
- * 背景：Windows 侧曾把入口改成 terminal_engine.js（找 terminal_engine.*.node），
- * Mac/napi-rs 默认是 terminal-engine.darwin-arm64.node（连字符）。入口不一致会导致
- * 在 import 阶段直接 throw，整条 maou coding 起不来。
- *
- * 策略：
- * - 兼容 hyphen / underscore 的 .node 文件名
- * - **加载失败不 throw**，导出 stub；调用具体 API 时再报错（use_terminal 可降级）
+ * 兼容 hyphen / underscore 的 .node 文件名。
+ * 加载失败不 throw，导出 stub；调用具体 API 时再报错（use_terminal 可降级）。
  */
 
 import { createRequire } from "node:module";
@@ -31,7 +26,7 @@ function requirePath(relOrAbs) {
   if (!existsSync(abs)) return null;
   try {
     return require(abs);
-  } catch (e) {
+  } catch {
     return null;
   }
 }
@@ -64,10 +59,6 @@ function tryLoad() {
       const m = requirePath(`./${base}.${triple}.node`);
       if (m) return m;
     }
-  }
-  for (const js of ["./index.cjs", "./terminal_engine.cjs"]) {
-    const m = requirePath(js);
-    if (m) return m;
   }
   return null;
 }
@@ -109,8 +100,9 @@ export const isNativeAvailable = Boolean(nativeBinding);
 export const nativeLoadError = loadError;
 
 export const initEngine =
-  nb.initEngine ?? nb.init_engine ?? (() => {
-    /* soft no-op when missing — allow process start */
+  nb.initEngine ??
+  nb.init_engine ??
+  (() => {
     if (!nativeBinding) {
       console.warn(
         `[terminal-engine] 原生模块不可用（${process.platform}/${process.arch}）。` +
@@ -123,29 +115,79 @@ export const setPersistPath = nb.setPersistPath ?? nb.set_persist_path ?? (() =>
 export const run = nb.run ?? unavailable("run");
 export const runBackground = nb.runBackground ?? nb.run_background ?? unavailable("runBackground");
 export const write = nb.write ?? unavailable("write");
-export const resize = nb.resize ?? unavailable("resize");
-export const kill = nb.kill ?? nb.stop ?? unavailable("kill");
-export const stop = nb.stop ?? nb.kill ?? unavailable("stop");
-export const getOutput = nb.getOutput ?? nb.get_output ?? nb.logs ?? unavailable("getOutput");
-export const logs = nb.logs ?? nb.getOutput ?? unavailable("logs");
-export const getStatus = nb.getStatus ?? nb.get_status ?? nb.statusPanel ?? unavailable("getStatus");
+export const stop = nb.stop ?? unavailable("stop");
+export const logs = nb.logs ?? unavailable("logs");
 export const statusPanel =
   nb.statusPanel ??
+  nb.status_panel ??
   (() => (nativeBinding ? "" : "[terminal-engine offline]"));
-export const listAll = nb.listAll ?? nb.list_all ?? nb.list ?? (() => []);
-export const list = nb.list ?? nb.listAll ?? (() => []);
-export const listByAgent = nb.listByAgent ?? nb.list_by_agent ?? (() => []);
+export const list = nb.list ?? (() => []);
 export const cleanupAgent = nb.cleanupAgent ?? nb.cleanup_agent ?? (() => {});
 export const remove = nb.remove ?? unavailable("remove");
 export const shutdown = nb.shutdown ?? (() => {});
 export const setFilter = nb.setFilter ?? nb.set_filter ?? (() => {});
 export const setSandbox = nb.setSandbox ?? nb.set_sandbox ?? (() => {});
-export const clearSandbox = nb.clearSandbox ?? nb.clear_sandbox ?? (() => {});
-export const getFilter = nb.getFilter ?? nb.get_filter ?? (() => null);
-export const getSandbox = nb.getSandbox ?? nb.get_sandbox ?? (() => null);
-export const loadFilterFromFile = nb.loadFilterFromFile ?? (() => {});
-export const getSandboxPrompt = nb.getSandboxPrompt ?? (() => "");
-export const terminalCount = nb.terminalCount ?? (() => 0);
+export const loadFilterFromFile =
+  nb.loadFilterFromFile ?? nb.load_filter_from_file ?? (() => {});
+export const terminalCount = nb.terminalCount ?? nb.terminal_count ?? (() => 0);
+
+function missingFeature(name) {
+  return (..._args) => {
+    throw new Error(
+      nativeBinding
+        ? `[terminal-engine] 当前 .node 不支持 ${name}。请更新预编译：node scripts/ensure-terminal-engine.mjs --force`
+        : `[terminal-engine] 原生模块未加载，无法调用 ${name}。\n  ${rebuildHint()}`,
+    );
+  };
+}
+
+export const hasResize = typeof nb.resize === "function";
+export const hasSubscribe = typeof nb.subscribe === "function";
+export const hasOpenInteractive =
+  typeof (nb.openInteractive ?? nb.open_interactive) === "function";
+export const hasUnsubscribe =
+  typeof (nb.unsubscribe ?? nb.unsubscribe_terminal) === "function";
+
+export const resize = hasResize ? nb.resize : missingFeature("resize");
+
+const nativeSubscribe = nb.subscribe;
+const nativeUnsubscribe = nb.unsubscribe ?? nb.unsubscribe_terminal;
+export const subscribe = hasSubscribe
+  ? (id, onEvent) => {
+      const subId = nativeSubscribe(id, (err, ev) => {
+        if (typeof onEvent !== "function") return;
+        if (err) {
+          onEvent({ kind: "error", message: String(err.message ?? err) });
+          return;
+        }
+        if (ev && typeof ev === "object") {
+          const kind = ev.kind ?? ev.Kind;
+          if (kind === "exit") {
+            onEvent({
+              kind: "exit",
+              exitCode: ev.exitCode ?? ev.exit_code ?? null,
+            });
+            return;
+          }
+          onEvent({ kind: "data", data: ev.data ?? "" });
+        }
+      });
+      return () => {
+        if (typeof nativeUnsubscribe === "function") {
+          try {
+            nativeUnsubscribe(id, subId);
+          } catch {
+            /* ignore */
+          }
+        }
+      };
+    }
+  : undefined;
+
+export const unsubscribe = hasUnsubscribe ? nativeUnsubscribe : missingFeature("unsubscribe");
+export const openInteractive = hasOpenInteractive
+  ? (nb.openInteractive ?? nb.open_interactive)
+  : missingFeature("openInteractive");
 
 export default nativeBinding || {
   isNativeAvailable: false,
@@ -162,5 +204,14 @@ export default nativeBinding || {
   cleanupAgent,
   setFilter,
   setSandbox,
+  loadFilterFromFile,
   statusPanel,
+  terminalCount,
+  resize,
+  subscribe,
+  unsubscribe,
+  openInteractive,
+  hasResize,
+  hasSubscribe,
+  hasOpenInteractive,
 };

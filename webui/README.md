@@ -6,9 +6,10 @@ Maou **WebUI**（SDK 层）：对话 + **Agent 真实终端** + **Markdown 编�
 
 ### 终端面板做什么
 
-- 右侧列出 Agent 通过 `use_terminal` 创建的会话（来自 `terminal-engine`，不是旁路本地 shell）
-- 点击列表项或聊天里带 `terminal_id` 的工具行 → xterm 附着真实输出
-- 键盘输入经 `write` 写回进程（WebUI 默认 `MAOU_PTY_FORCE=1` 真 PTY；管道模式不可交互）
+- 右侧列出 Agent 通过 `use_terminal` 创建的会话（Rust full / 降级 mini）
+- 「新开壳」走 `/ws/terminal`（Rust `openInteractive`）；无 `.node` 时按钮禁用
+- 点击列表项或聊天里带 `terminal_id` 的工具行 → xterm 附着（优先 subscribe）
+- 键盘输入经 `write` 写回；`MAOU_PTY=0` 才是管道（不可交互）
 - 可停止会话
 
 ### Markdown 编辑器做什么

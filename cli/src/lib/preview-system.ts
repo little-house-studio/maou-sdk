@@ -77,7 +77,7 @@ export function previewCurrentSystemPrompt(
 }
 
 /**
- * 完整请求材料调试包：system / workspace / bake / tools / before_user / schemas 等。
+ * 完整请求材料调试包：system / workspace / 文件缓存区 / tools / 上下文动态区 / schemas 等。
  */
 export function previewCurrentRequestBundle(
   agentName: string,

@@ -44,16 +44,22 @@ export function resolveConditionEvalScript(): string | null {
   return null;
 }
 
+/** Windows 认 `py` 启动器（Store/官方安装常见）；Unix 仍优先 python3。 */
+export function pythonCandidates(platform = process.platform): string[] {
+  return platform === "win32" ? ["py", "python", "python3"] : ["python3", "python"];
+}
+
 function resolvePython(): string {
-  for (const cmd of ["python3", "python"]) {
+  const fallback = process.platform === "win32" ? "py" : "python3";
+  for (const cmd of pythonCandidates()) {
     try {
-      const r = spawnSync(cmd, ["--version"], { encoding: "utf-8" });
+      const r = spawnSync(cmd, ["--version"], { encoding: "utf-8", windowsHide: true });
       if (r.status === 0) return cmd;
     } catch {
       /* try next */
     }
   }
-  return "python3";
+  return fallback;
 }
 
 export interface EvalLinesOpts {

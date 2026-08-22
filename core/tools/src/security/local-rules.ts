@@ -53,6 +53,12 @@ const RULES: Array<{
     re: /\bbase64\s+(-d|--decode)\b[^|\n]*\|\s*(?:ba)?sh\b/i,
     reason: "base64 解码后直接交 shell，常见于恶意载荷",
   },
+  {
+    id: "local.supply:iex-download",
+    tier: "fatal",
+    re: /\b(iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^\n]*\|\s*(iex|Invoke-Expression)\b/i,
+    reason: "iwr|iex 远程管道执行",
+  },
 
   // ── 权限与磁盘（DCG system.disk 默认开，此处双保险）────────
   {
@@ -78,6 +84,48 @@ const RULES: Array<{
     tier: "fatal",
     re: />\s*\/dev\/sd[a-z]/i,
     reason: "重定向写入磁盘设备",
+  },
+  {
+    id: "local.os:win-rd-s",
+    tier: "fatal",
+    re: /\b(rd|rmdir)\s+\/s\b/i,
+    reason: "rd/rmdir /s 递归删除目录，可造成不可恢复的数据损失",
+  },
+  {
+    id: "local.os:win-format",
+    tier: "fatal",
+    re: /\bformat\s+[a-z]:/i,
+    reason: "format 会毁掉文件系统",
+  },
+  {
+    id: "local.os:win-remove-item-recurse",
+    tier: "fatal",
+    re: /\bRemove-Item\b[^\n]*\s-(?:Recurse|r)(?:\s|$)/i,
+    reason: "Remove-Item -Recurse 递归删除，可造成不可恢复的数据损失",
+  },
+  {
+    id: "local.os:win-diskpart",
+    tier: "fatal",
+    re: /\bdiskpart\b/i,
+    reason: "diskpart 可抹盘",
+  },
+  {
+    id: "local.os:win-clear-disk",
+    tier: "fatal",
+    re: /\bClear-Disk\b/i,
+    reason: "Clear-Disk 抹盘",
+  },
+  {
+    id: "local.os:win-cipher-w",
+    tier: "fatal",
+    re: /\bcipher\s+\/w\b/i,
+    reason: "cipher /w 覆写空闲空间",
+  },
+  {
+    id: "local.os:win-del-s",
+    tier: "dangerous",
+    re: /\bdel\s+(\/[a-z]+\s+)*\/s\b/i,
+    reason: "del /s 递归删除文件",
   },
 
   // ── 云 / 容器 / IaC / DB（DCG 默认未开 pack）──────────────

@@ -32,7 +32,7 @@ export interface MaouMessage {
   contents: MaouContent[];
   /** 压缩后是否保留 */
   keepAfterCompress: boolean;
-  /** 消息类别 */
+  /** 消息类别（`baked` = 文件缓存区消息，wire 值未改） */
   category: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'system' | 'injected' | 'compact' | 'diff' | 'baked';
   /** 创建时间 (ISO string) */
   createdAt?: string;
@@ -84,7 +84,7 @@ export interface MessageMeta {
   magId: string;
   /** 消息角色 */
   role: "user" | "assistant" | "tool" | "system";
-  /** 消息分类 */
+  /** 消息分类（`baked` = 文件缓存区） */
   category: 'user' | 'ai' | 'tool_result' | 'compact' | 'diff' | 'baked' | 'system' | 'custom';
   /** 本条消息摘要（压缩时使用） */
   summary?: string;

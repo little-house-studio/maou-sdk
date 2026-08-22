@@ -10,14 +10,16 @@ describe("doc-extract hooks", () => {
   it("blocks write/edit tools by name", () => {
     expect(shouldBlockDocExtractTool("write_file")).toBe(true);
     expect(shouldBlockDocExtractTool("edit_file")).toBe(true);
+    expect(shouldBlockDocExtractTool("write")).toBe(true);
+    expect(shouldBlockDocExtractTool("Write")).toBe(true);
     expect(shouldBlockDocExtractTool("reader")).toBe(false);
     expect(shouldBlockDocExtractTool("grep")).toBe(false);
   });
 
-  it("pre_tool_use returns reason string and sets lastBlockReason", () => {
+  it("pre_tool_use returns reason string and sets lastBlockReason", async () => {
     const hooks = new Hooks();
     registerDocExtractHooks(hooks);
-    const ok = hooks.preToolUse({
+    const ok = await hooks.preToolUse({
       id: "1",
       name: "write_file",
       parameters: { path: "x.py" },
@@ -27,10 +29,10 @@ describe("doc-extract hooks", () => {
     expect(hooks.lastBlockReason).toMatch(/write_file/);
   });
 
-  it("allows reader", () => {
+  it("allows reader", async () => {
     const hooks = new Hooks();
     registerDocExtractHooks(hooks);
-    const ok = hooks.preToolUse({
+    const ok = await hooks.preToolUse({
       id: "1",
       name: "reader",
       parameters: { path: "a.md" },

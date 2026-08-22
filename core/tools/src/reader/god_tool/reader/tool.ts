@@ -49,7 +49,7 @@ export class ReadTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "reader",
-    aliases: [],
+    aliases: ["read", "read_file"],
     description:
       "读取文件、网页或图片。支持：本地文件（文本）、网页 URL（提取正文）、图片文件（base64）。",
     parameters: {

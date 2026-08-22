@@ -81,10 +81,6 @@ Env:
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
 
-  if (process.env.MAOU_PTY_FORCE === undefined) {
-    process.env.MAOU_PTY_FORCE = "1";
-  }
-
   const plan = await resolveListenPlan({
     explicitPort: opts.explicitPort,
     bindHost: opts.bindHost,

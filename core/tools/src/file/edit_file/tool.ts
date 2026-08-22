@@ -31,7 +31,7 @@ export class EditFileTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "edit_file",
-    aliases: ["edit_file"],
+    aliases: ["edit_file", "edit"],
     description:
       "Replace exact text in a file. old_text 必须在文件中唯一匹配（否则报错，需补充上下文使其唯一）；" +
       "若要替换全部相同文本，传 replace_all=true。编辑后会自动用 LSP 验证是否引入错误。",

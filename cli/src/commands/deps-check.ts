@@ -113,7 +113,6 @@ export type CapabilityTier = {
   dcg: boolean;
   rg: boolean;
   sqry: boolean;
-  nodePty: boolean;
   lspTS: boolean;
   ddgr: boolean;
 };
@@ -140,7 +139,6 @@ export interface DepCheckResult {
     dcg: string;
     rg: string;
     sqry: string;
-    nodePty: string;
     lspTS: string;
     ddgr: string;
     git: string;
@@ -208,10 +206,10 @@ function monorepoPackagePresent(mono: string, pkgName: string): boolean {
     "@little-house-studio/llm": "core/llm",
     "@little-house-studio/tools": "core/tools",
     "@little-house-studio/context": "core/context",
-    "@little-house-studio/terminal-engine": "terminal-engine",
-    "@little-house-studio/sqry-engine": "sqry-engine",
-    "@little-house-studio/opencli-engine": "opencli-engine",
-    "@little-house-studio/lsp-engine": "lsp-engine",
+    "@little-house-studio/terminal-engine": "core/agent/terminal-engine",
+    "@little-house-studio/sqry-engine": "core/agent/sqry-engine",
+    "@little-house-studio/opencli-engine": "core/agent/opencli-engine",
+    "@little-house-studio/lsp-engine": "core/agent/lsp-engine",
   };
   const rel = map[pkgName];
   if (!rel) return false;
@@ -240,7 +238,7 @@ function detectTerminalEngine(rt: RuntimeInfo): { ok: boolean; detail: string } 
   if (rt.bundleRoot) {
     dirs.push(join(rt.bundleRoot, "node_modules", "@little-house-studio", "terminal-engine"));
   }
-  if (rt.monoRoot) dirs.push(join(rt.monoRoot, "terminal-engine"));
+  if (rt.monoRoot) dirs.push(join(rt.monoRoot, "core", "agent", "terminal-engine"));
   try {
     dirs.push(dirname(require.resolve("@little-house-studio/terminal-engine/package.json")));
   } catch {
@@ -327,17 +325,23 @@ function detectSqry(rt: RuntimeInfo): { ok: boolean; detail: string } {
   return { ok: false, detail: `未安装（find_code 不可用）— ${fixHint(rt, "ensure-sqry.mjs")}` };
 }
 
-/** 尝试 require("node-pty")，验证原生模块加载成功（不只是包是否 resolve） */
-function detectNodePty(): { ok: boolean; detail: string } {
+function readTerminalMode(): "full" | "mini" {
+  const env = process.env.MAOU_TERMINAL?.trim().toLowerCase();
+  if (env === "full" || env === "mini") return env;
   try {
-    const mod = require("node-pty") ?? require("@lydell/node-pty");
-    if (mod && typeof mod.spawn === "function") return { ok: true, detail: "已加载" };
-    return { ok: false, detail: "包存在但 spawn 不可用" };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    // Windows 典型：DLL 缺失 / STATUS_DLL_NOT_FOUND
-    return { ok: false, detail: `加载失败：${msg.split("\n")[0]}` };
+    const { resolveUserConfigPath } = require("@little-house-studio/types") as {
+      resolveUserConfigPath: () => string;
+    };
+    const p = resolveUserConfigPath();
+    if (existsSync(p)) {
+      const raw = JSON.parse(readFileSync(p, "utf8")) as { terminal?: { mode?: string } };
+      const m = raw.terminal?.mode;
+      if (m === "full" || m === "mini") return m;
+    }
+  } catch {
+    /* ignore */
   }
+  return "full";
 }
 
 /** 检测 typescript-language-server（TS/JS LSP）—— maou-sdk 主语言 */
@@ -375,7 +379,7 @@ function detectDdgr(rt: RuntimeInfo): { ok: boolean; detail: string } {
   const dirs = [
     rt.vendorBinDir ?? "",
     rt.bundleRoot ? join(rt.bundleRoot, "vendor", "bin") : "",
-    rt.monoRoot ? join(rt.monoRoot, "vendor", "bin") : "",
+    rt.monoRoot ? join(rt.monoRoot, "scripts", "vendor", "bin") : "",
     join(homedir(), ".maou", "bin"),
     join(homedir(), ".local", "bin"),
   ].filter(Boolean) as string[];
@@ -436,7 +440,7 @@ function detectGit(rt: RuntimeInfo): string {
 }
 
 function detectPnpm(): string {
-  return commandOnPath("pnpm") ? "✓ on PATH" : "✗ 未安装（npm i -g pnpm）";
+  return commandOnPath("pnpm") ? "✓ on PATH" : "✗ 未安装（corepack prepare pnpm@10.15.1 --activate）";
 }
 
 function detectApiConfig(): string {
@@ -579,10 +583,14 @@ export async function ensureDependencies(
   }
 
   const te = detectTerminalEngine(rt);
+  const termMode = readTerminalMode();
+  const terminalDegraded = termMode === "full" && !te.ok;
+  if (terminalDegraded) {
+    warnings.push("terminal-engine 无 .node，use_terminal 已降级 mini（人壳不可用）");
+  }
   const dcg = detectDcg(rt);
   const rg = detectRg(rt);
   const sqry = detectSqry(rt);
-  const nodePty = detectNodePty();
   const lspTS = detectLspTS();
   const ddgr = detectDdgr(rt);
   const gitInfo = detectGit(rt);
@@ -592,11 +600,11 @@ export async function ensureDependencies(
 
   const tiers: CapabilityTier = {
     core: node.ok && missingCritical.length === 0 && distOk,
-    terminal: te.ok,
+    // mini 始终可用；full 无 .node 也算可用（降级），警告已写入
+    terminal: te.ok || termMode === "mini" || terminalDegraded,
     dcg: dcg.ok,
     rg: rg.ok,
     sqry: sqry.ok,
-    nodePty: nodePty.ok,
     lspTS: lspTS.ok,
     ddgr: ddgr.ok,
   };
@@ -617,11 +625,14 @@ export async function ensureDependencies(
     distOk,
     tiers,
     details: {
-      terminalEngine: `${te.ok ? "✓" : "△"} ${te.detail}`,
+      terminalEngine: te.ok
+        ? `✓ full ${te.detail}`
+        : termMode === "mini"
+          ? "✓ mini（不要求 .node）"
+          : `△ mini (degraded from full) ${te.detail}`,
       dcg: `${dcg.ok ? "✓" : "△"} ${dcg.detail}`,
       rg: `${rg.ok ? "✓" : "△"} ${rg.detail}`,
       sqry: `${sqry.ok ? "✓" : "△"} ${sqry.detail}`,
-      nodePty: `${nodePty.ok ? "✓" : "△"} ${nodePty.detail}`,
       lspTS: `${lspTS.ok ? "✓" : "△"} ${lspTS.detail}`,
       ddgr: `${ddgr.ok ? "✓" : "△"} ${ddgr.detail}`,
       git: gitInfo,
@@ -663,7 +674,6 @@ export interface AutoFixResult {
   rgFixed: boolean;
   sqryFixed: boolean;
   lspTSFixed: boolean;
-  nodePtyFixed: boolean;
   actions: string[];
   errors: string[];
 }
@@ -693,7 +703,6 @@ export async function autoFixDependencies(opts: {
       rgFixed: false,
       sqryFixed: false,
       lspTSFixed: false,
-      nodePtyFixed: false,
       actions,
       errors: ["Node < 20，无法自动修复 — 请先安装 Node.js >= 20"],
     };
@@ -702,13 +711,13 @@ export async function autoFixDependencies(opts: {
   let needCore = !before.tiers.core;
   let needDcg = !before.tiers.dcg;
   let needRg = !before.tiers.rg;
-  let needTerminal = !before.tiers.terminal;
+  const rt = detectRuntime();
+  let needTerminal = readTerminalMode() === "full" && !detectTerminalEngine(rt).ok;
   let needSqry = !before.tiers.sqry;
   let needLspTS = !before.tiers.lspTS;
-  let needNodePty = !before.tiers.nodePty;
 
   // 已全绿
-  if (!needCore && !needDcg && !needRg && !needTerminal && !needSqry && !needLspTS && !needNodePty) {
+  if (!needCore && !needDcg && !needRg && !needTerminal && !needSqry && !needLspTS) {
     return {
       attempted: false,
       coreFixed: true,
@@ -717,7 +726,6 @@ export async function autoFixDependencies(opts: {
       rgFixed: before.tiers.rg,
       sqryFixed: before.tiers.sqry,
       lspTSFixed: before.tiers.lspTS,
-      nodePtyFixed: before.tiers.nodePty,
       actions: ["无需修复"],
       errors: [],
     };
@@ -727,8 +735,6 @@ export async function autoFixDependencies(opts: {
     log("");
     log("── 自动修复 ──");
   }
-
-  const rt = detectRuntime();
 
   if (rt.mode === "bundle" && rt.bundleRoot) {
     // 预编译包：只允许「下载缺失的二进制」，绝不构建（包内没有源码）
@@ -819,7 +825,6 @@ export async function autoFixDependencies(opts: {
       rgFixed: afterBundle.tiers.rg,
       sqryFixed: afterBundle.tiers.sqry,
       lspTSFixed: afterBundle.tiers.lspTS,
-      nodePtyFixed: afterBundle.tiers.nodePty,
       actions,
       errors,
     };
@@ -827,7 +832,7 @@ export async function autoFixDependencies(opts: {
 
   if (mono) {
     if (!commandOnPath("pnpm")) {
-      errors.push("未找到 pnpm — 请先: npm i -g pnpm");
+      errors.push("未找到 pnpm — 请先: corepack prepare pnpm@10.15.1 --activate（或 npm i -g pnpm@10.15.1）");
       return {
         attempted: true,
         coreFixed: false,
@@ -836,7 +841,6 @@ export async function autoFixDependencies(opts: {
         rgFixed: false,
         sqryFixed: before.tiers.sqry,
         lspTSFixed: before.tiers.lspTS,
-        nodePtyFixed: before.tiers.nodePty,
         actions,
         errors,
       };
@@ -883,8 +887,8 @@ export async function autoFixDependencies(opts: {
       }
     }
 
-    // Terminal / 完整 native：Core 已好但缺 engine，或刚修完 Core，或 node-pty 加载失败
-    const runNative = needTerminal || needCore || needNodePty;
+    // Terminal / 完整 native：full 模式缺 .node 时才修（显式 mini 不要求）
+    const runNative = needTerminal || needCore;
     if (runNative) {
       const isWin = platform() === "win32";
       if (isWin) {
@@ -894,7 +898,7 @@ export async function autoFixDependencies(opts: {
           if (!opts.quiet) log(`[fix] build-native.ps1…`);
           actions.push("build-native.ps1");
           if (!runInherit("powershell", args, mono)) {
-            if (needTerminal || needNodePty || !needCore) {
+            if (needTerminal || !needCore) {
               errors.push("build-native 失败 — terminal-engine 可能仍不可用");
             }
           }
@@ -906,7 +910,7 @@ export async function autoFixDependencies(opts: {
           if (!opts.quiet) log(`[fix] bash ${args.join(" ")}…`);
           actions.push("build-native.sh");
           if (!runInherit("bash", args, mono)) {
-            if (needTerminal || needNodePty || !needCore) {
+            if (needTerminal || !needCore) {
               errors.push("build-native 失败 — terminal-engine 可能仍不可用");
             }
           }
@@ -1018,7 +1022,6 @@ export async function autoFixDependencies(opts: {
     rgFixed: after.tiers.rg,
     sqryFixed: after.tiers.sqry,
     lspTSFixed: after.tiers.lspTS,
-    nodePtyFixed: after.tiers.nodePty,
     actions,
     errors,
   };
@@ -1046,11 +1049,12 @@ function printDoctorReport(r: DepCheckResult): void {
   log(`  dcg:      ${r.details.dcg}`);
   log(`  rg:       ${r.details.rg}`);
   log(`  sqry:     ${r.details.sqry}（find_code 必选）`);
-  log(`  node-pty: ${r.details.nodePty}（遗留，use_terminal 已不依赖）`);
-  if (!r.tiers.terminal) {
-    log("  兜底: 无 terminal-engine 时 use_terminal 不可用 — scripts/build-native");
+  if (r.details.terminalEngine.includes("degraded")) {
+    log("  说明: full 无 .node，已降级 mini（人壳不可用）。MAOU_TERMINAL=mini 则不要求 Rust");
+  } else if (r.details.terminalEngine.includes("mini")) {
+    log("  说明: 显式 mini（纯 Node 管道）；人壳需要改回 full 并安装 .node");
   } else {
-    log("  说明: use_terminal 默认全平台管道（Rust engine）；MAOU_PTY_FORCE=1 才开真 PTY");
+    log("  说明: full = Rust 真 PTY（默认）；MAOU_PTY=0 强制管道；MAOU_TERMINAL=mini 纯 Node");
   }
   if (!r.tiers.dcg) {
     log("  兜底: 危险命令门不可靠");
@@ -1117,13 +1121,13 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   let r = await ensureDependencies({ autoInstall: false, quiet: false });
   printDoctorReport(r);
 
-  // Coding 必选：engine + dcg + rg + sqry；lspTS 仍自动修但非「Coding 完整」硬门槛文案
-  // node-pty 已非 use_terminal 主路径，不作为门槛
+  // Coding 建议：dcg + rg + sqry；full 缺 .node 仍尝试修，但降级 mini 不是致命
+  const wantNativeFix = readTerminalMode() === "full" && !detectTerminalEngine(detectRuntime()).ok;
   const needsFix =
     !r.tiers.core ||
     !r.tiers.dcg ||
     !r.tiers.rg ||
-    !r.tiers.terminal ||
+    wantNativeFix ||
     !r.tiers.sqry ||
     !r.tiers.lspTS;
 
@@ -1194,7 +1198,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
       log("  缺失组件均可重新下载: maou doctor（不需要编译器）");
       if (!r.tiers.terminal) log("  terminal-engine: 检查能否访问 GitHub Release");
     } else {
-      if (!r.tiers.terminal) log("  terminal-engine: scripts/build-native 或 cd terminal-engine && npm run build");
+      if (!r.tiers.terminal) log("  terminal-engine: scripts/build-native 或 cd core/agent/terminal-engine && npm run build");
       if (!r.tiers.rg) log("  rg: node scripts/ensure-rg.mjs 或 winget install BurntSushi.ripgrep");
       if (!r.tiers.sqry) log("  sqry: node scripts/ensure-sqry.mjs 或 maou doctor（find_code 必选）");
     }
@@ -1208,9 +1212,13 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   }
 
   log("");
-  // Coding 完整就绪：engine + dcg + rg + sqry（node-pty 不计入）
+  // Coding 完整就绪：dcg + rg + sqry；终端 full 或已声明 mini/降级
   if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.rg && r.tiers.sqry) {
-    log("✓ Core+Terminal+Coding 就绪（含 find_code/sqry）");
+    if (r.details.terminalEngine.includes("degraded")) {
+      log("△ Core+Coding 就绪（终端已降级 mini，人壳不可用）");
+    } else {
+      log("✓ Core+Terminal+Coding 就绪（含 find_code/sqry）");
+    }
   } else if (r.tiers.core && r.tiers.terminal && r.tiers.dcg && r.tiers.rg) {
     log("△ Core+Terminal 就绪，缺 sqry — find_code 不可用");
   } else if (r.tiers.core) {

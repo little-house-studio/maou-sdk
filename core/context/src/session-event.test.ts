@@ -24,6 +24,12 @@ describe("session-event kind + author", () => {
     expect(resolveSessionEventKind({ role: "tool", source: "terminal-notification" })).toBe(
       "tool_async_notify",
     );
+    expect(
+      resolveSessionEventKind({
+        role: "user",
+        content: `<tool-followup name="use_terminal" id="c1">done</tool-followup>`,
+      }),
+    ).toBe("tool_async_notify");
   });
 
   it("author labels", () => {

@@ -81,12 +81,12 @@ node scripts/build-release-bundle.mjs --skip-build --keep-stage   # 复用 dist�
 
 ```bash
 # 例：在 Apple Silicon 上给 Intel Mac 打包
-cargo build --release --target x86_64-apple-darwin --manifest-path terminal-engine/Cargo.toml
+cargo build --release --target x86_64-apple-darwin --manifest-path core/agent/terminal-engine/Cargo.toml
 cargo build --release --target x86_64-apple-darwin --manifest-path cli/tui-ratatui/Cargo.toml
 
 node scripts/build-release-bundle.mjs \
   --target darwin-x64 \
-  --engine terminal-engine/target/x86_64-apple-darwin/release/libterminal_engine.dylib \
+  --engine core/agent/terminal-engine/target/x86_64-apple-darwin/release/libterminal_engine.dylib \
   --tui    cli/tui-ratatui/target/x86_64-apple-darwin/release/maou-tui-ratatui
 ```
 

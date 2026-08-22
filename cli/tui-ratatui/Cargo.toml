@@ -2,6 +2,7 @@
 name = "maou-tui-ratatui"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.88"
 description = "Maou CLI Ratatui backend (optional; Ink remains default)"
 license = "MIT"
 publish = false

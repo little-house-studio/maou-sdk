@@ -255,6 +255,7 @@ export function DraftShell({
         onToggleFiles={() =>
           setState((p) => ({ ...p, showFiles: !p.showFiles }))
         }
+        agentBusy={state.agentBusy}
       />
 
       {mode === "settings" ? (
@@ -355,6 +356,11 @@ export function DraftShell({
               onAgentChange={onAgentChange}
               onApprovalModeChange={onApprovalModeChange}
               onStop={onStop}
+              sessions={agentSessions}
+              activeSessionId={state.activeSessionId}
+              onSelectSession={(id) =>
+                setState((p) => ({ ...p, activeSessionId: id }))
+              }
             />
           </div>
 

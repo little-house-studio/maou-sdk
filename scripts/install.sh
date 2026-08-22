@@ -22,7 +22,7 @@ command -v node >/dev/null 2>&1 || die "Node.js not found. Install Node >= 20 fi
 NODE_MAJOR=$(node -p "process.versions.node.split('.')[0]")
 [[ "$NODE_MAJOR" -ge 20 ]] || die "Node >= 20 required (found $(node -v))"
 command -v npm >/dev/null 2>&1 || die "npm not found"
-command -v pnpm >/dev/null 2>&1 || die "pnpm required. Install: npm i -g pnpm"
+command -v pnpm >/dev/null 2>&1 || die "pnpm@10 required. Install: corepack prepare pnpm@10.15.1 --activate"
 
 MAOU_HOME="${MAOU_HOME:-$HOME/.maou}"
 BIN_DIR="${MAOU_BIN_DIR:-$MAOU_HOME/bin}"

@@ -5,11 +5,19 @@ import { tmpdir } from "node:os";
 import {
   evalConditionOnFile,
   evalConditionOnText,
+  pythonCandidates,
   resolveExpr,
   validateConditionParams,
 } from "./condition.js";
 
 describe("terminal condition return", () => {
+  it("pythonCandidates: Windows 含 py，Unix 仍 python3 优先", () => {
+    expect(pythonCandidates("win32")[0]).toBe("py");
+    expect(pythonCandidates("win32")).toContain("python");
+    expect(pythonCandidates("darwin")[0]).toBe("python3");
+    expect(pythonCandidates("linux")).not.toContain("py");
+  });
+
   it("resolveExpr defaults", () => {
     expect(resolveExpr(undefined, "a=(\\d+)")).toBe("m is not None");
     expect(resolveExpr("m and int(m.group(1))>0", "x")).toContain("group");

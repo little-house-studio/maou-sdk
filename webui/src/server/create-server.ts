@@ -1,7 +1,8 @@
 /**
  * createWebUiServer —— Express + WebSocket
  * - 聊天：NDJSON StreamEvent
- * - Agent 终端：list / attach（logs 轮询 + write）—— use_terminal 真实会话
+ * - Agent 终端：/ws/agent-terminal（subscribe / 轮询）
+ * - 人开壳：/ws/terminal（Rust openInteractive）
  */
 
 import express from "express";
@@ -20,10 +21,17 @@ import {
   stopAgentTerminal,
   attachAgentTerminalSocket,
 } from "./agent-terminals.js";
+import {
+  TerminalHub,
+  attachTerminalSocket,
+  getHumanShellCapabilities,
+} from "./terminal-hub.js";
 import { mountMarkdownRoutes } from "./markdown/index.js";
 import { ProactiveService } from "@little-house-studio/agent";
 import { mountProactiveRoutes } from "./proactive/routes.js";
 import { mountLlmConfigRoutes } from "./llm-config-routes.js";
+import { mountWebhookRoutes } from "./webhook.js";
+import { shutdownTerminalEngine } from "@little-house-studio/tools";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -77,7 +85,8 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     }),
   });
 
-  initAgentTerminalEngine(opts.maouRoot);
+  initAgentTerminalEngine(opts.maouRoot, hub.projectRoot);
+  const termHub = new TerminalHub();
 
   const app = express();
   app.use(express.json({ limit: "4mb" }));
@@ -685,6 +694,9 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
   // ── 全局 LLM api.presets（真配置持久化）──
   mountLlmConfigRoutes(app);
 
+  // ── 入站 webhook（按 Agent 名叫醒；与 proactive 无关）──
+  mountWebhookRoutes(app, hub);
+
   // ── 主动智能 ──
   mountProactiveRoutes(app, () => proactive);
 
@@ -745,6 +757,10 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
   });
 
   // ── Agent 终端（use_terminal / terminal-engine）──
+  app.get("/api/terminals/capabilities", (_req, res) => {
+    res.json({ ok: true, ...getHumanShellCapabilities() });
+  });
+
   app.get("/api/terminals", (req, res) => {
     const agent = String(req.query.agent ?? agentName);
     const all = req.query.all === "1";
@@ -821,8 +837,9 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
 
   const http = createHttpServer(app);
 
-  // WS: /ws/agent-terminal?id=xxx&agent=coding
+  // WS: /ws/agent-terminal?id=xxx&agent=coding  |  /ws/terminal 人开壳
   const wssAgent = new WebSocketServer({ noServer: true });
+  const wssHuman = new WebSocketServer({ noServer: true });
   http.on("upgrade", (req, socket, head) => {
     try {
       const url = new URL(req.url || "", "http://localhost");
@@ -836,6 +853,12 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
             return;
           }
           attachAgentTerminalSocket(ws, { id, agentName: agent });
+        });
+        return;
+      }
+      if (url.pathname === "/ws/terminal") {
+        wssHuman.handleUpgrade(req, socket, head, (ws) => {
+          attachTerminalSocket(termHub, ws, hub.projectRoot, hub.agentName || agentName);
         });
         return;
       }
@@ -875,7 +898,10 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
         hub.abortAllRuns();
         hub.cancelAllApprovals("server close");
         copilot.abortRun();
+        termHub.closeAll();
+        shutdownTerminalEngine();
         wssAgent.close();
+        wssHuman.close();
         http.close(() => resolve());
       });
     },

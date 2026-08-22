@@ -3,6 +3,8 @@ import type { DraftMeta, UiMode } from "../types";
 import { chromeMarkForMode } from "../visual-marks";
 import { ChromeMark } from "../icons/Marks";
 import { MaouLogo } from "../icons/MaouLogo";
+import { LedStrip } from "./LedStrip";
+import { resolveLedState } from "./led-strip";
 
 export type WireTopbarProps = {
   mode: UiMode;
@@ -11,6 +13,8 @@ export type WireTopbarProps = {
   usageLabel: string;
   showFiles: boolean;
   onToggleFiles: () => void;
+  /** Agent 是否在跑 — 驱动顶栏 3×18 LED */
+  agentBusy?: boolean;
 };
 
 const MODES: { id: UiMode; label: string }[] = [
@@ -28,7 +32,12 @@ export function WireTopbar({
   usageLabel,
   showFiles,
   onToggleFiles,
+  agentBusy = false,
 }: WireTopbarProps) {
+  const led = resolveLedState({
+    busy: agentBusy,
+    offline: meta.offline,
+  });
   return (
     <header className="wire-topbar">
       <div className="wire-topbar-left">
@@ -50,6 +59,10 @@ export function WireTopbar({
             </button>
           ))}
         </nav>
+      </div>
+
+      <div className="wire-topbar-center">
+        <LedStrip state={led} />
       </div>
 
       <div className="wire-topbar-right">

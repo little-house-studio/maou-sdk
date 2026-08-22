@@ -4,7 +4,7 @@
  * 统一：
  * - 扫描选项（含系统/NPM 全局 ~/.agents/skills，默认开启）
  * - SkillContextManager 工厂（Runtime / createStandardAgentDeps 共用）
- * - 同步 tools 层默认选项（use_skill 与 bake 同口径）
+ * - 同步 tools 层默认选项（use_skill 与文件缓存区 skill 索引同口径）
  */
 
 import {
@@ -29,7 +29,7 @@ export interface AgentSkillOptions {
   extraDirs?: string[];
   /**
    * 启用白名单。空 / 未设 = 全部；含 "*" = 全部。
-   * 仅影响 bake 列表与 listAvailableSkills 过滤。
+   * 仅影响文件缓存区 skill 列表与 listAvailableSkills 过滤。
    */
   enabledSkills?: string[];
 }
@@ -52,7 +52,7 @@ export function applyAgentSkillOptions(opts?: AgentSkillOptions): void {
 }
 
 /**
- * 创建与 Runtime bake / use_skill 同口径的 SkillContextManager。
+ * 创建与 Runtime 文件缓存区 / use_skill 同口径的 SkillContextManager。
  */
 export function createAgentSkillManager(
   agentName: string,

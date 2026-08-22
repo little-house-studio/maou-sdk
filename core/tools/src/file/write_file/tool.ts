@@ -50,7 +50,7 @@ export class WriteFileTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "write_file",
-    aliases: ["write_file"],
+    aliases: ["write_file", "write"],
     description:
       "Create or overwrite a file. " +
       "Existing files: need prior read/edit in session, or force=true for intentional full replace; " +

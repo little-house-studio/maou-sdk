@@ -11,7 +11,7 @@ log() { printf '%s\n' "$*" >&2; }
 log "[clean] before: $(du -sh "$ROOT" 2>/dev/null | awk '{print $1}')"
 
 rm -rf \
-  "$ROOT/terminal-engine/target" \
+  "$ROOT/core/agent/terminal-engine/target" \
   "$ROOT/cli/tui-ratatui/target" \
   "$ROOT/cli/native/term-raster/target" \
   "$ROOT/.sqry" \

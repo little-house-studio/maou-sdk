@@ -733,13 +733,27 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
     id: "normal",
     label: "正常会话",
     description: "上下文全量样例（角色/工具/错误/长文/审批/运行中）",
-    initialSessionId: "s-normal-1",
+    initialSessionId: "s-normal-1::fork::research::a",
     sessions: [
       {
         id: "s-normal-1",
         title: "搭建 Codex 风格外壳",
         agent: "coding",
         timeLabel: "2 分钟前",
+      },
+      {
+        id: "s-normal-1::fork::research::a",
+        title: "调研 JS NPC 方法全貌",
+        agent: "coding",
+        timeLabel: "1 分钟前",
+        parentSessionId: "s-normal-1",
+      },
+      {
+        id: "s-normal-1::fork::research::a::fork::npc::b",
+        title: "抽取适配的关键提示",
+        agent: "coding",
+        timeLabel: "刚刚",
+        parentSessionId: "s-normal-1::fork::research::a",
       },
       {
         id: "s-normal-2",
@@ -756,6 +770,8 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
     ],
     messagesBySession: {
       "s-normal-1": showcaseMessages("n1"),
+      "s-normal-1::fork::research::a": showcaseMessages("n1b"),
+      "s-normal-1::fork::research::a::fork::npc::b": showcaseMessages("n1c"),
       "s-normal-2": showcaseMessages("n2"),
       "s-normal-3": showcaseMessages("n3"),
     },

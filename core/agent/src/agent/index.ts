@@ -4,7 +4,7 @@
  * 按设计文档 docs/SDK设计.md 中 Agent 层的内容组织导出：
  * - 提示词与模板解析系统
  * - agent-loop 接口（条件与调用）
- * - 烘培与增量注入系统
+ * - 文件缓存区与上下文动态区
  * - 会话管理（创建/切换/fork/清空会话）
  * - token 用量追踪与费用计算
  * - agent 注册表与工厂
@@ -26,7 +26,7 @@ export type {
   LoopIterationResult,
 } from "./agent-loop.js";
 
-// ── 烘培与增量注入系统 ────────────────────────────────────────────────────
+// ── 文件缓存区（旧称烘培）──────────────────────────────────────────────────
 
 export { BakeSystem } from "./bake.js";
 export type {
@@ -34,6 +34,22 @@ export type {
   BakeEntry,
   BakeSystemConfig,
 } from "./bake.js";
+
+export {
+  CacheRebuildHost,
+  DEFAULT_CACHE_REBUILD_TRIGGERS,
+  isCacheRebuildCompressStage,
+  mergeCacheRebuildTriggers,
+  parseCacheRebuildTriggers,
+  shouldFireCacheRebuildPoint,
+} from "./cache-rebuild.js";
+export type {
+  CacheRebuildReason,
+  CacheRebuildTriggers,
+  CacheRebuildPointEvent,
+  CacheRebuildPointResult,
+  CacheRebuildHostOptions,
+} from "./cache-rebuild.js";
 
 // ── 会话管理 ───────────────────────────────────────────────────────────────
 // 注：SessionStore 及其类型的权威出口是 @little-house-studio/context，
@@ -466,6 +482,16 @@ export type {
 } from "./eval-suite.js";
 
 // ── 指令注册表 ──────────────────────────────────────────────────────────
+
+export {
+  registerShortcut,
+  unregisterShortcut,
+  listShortcuts,
+  resolveShortcut,
+  clearShortcuts,
+  normalizeShortcutKey,
+} from "./shortcuts.js";
+export type { RegisteredShortcut, ShortcutHandlerCtx } from "./shortcuts.js";
 
 export { CommandRegistry, registerBuiltinCommands, defineCommand } from "./command-registry.js";
 export type {

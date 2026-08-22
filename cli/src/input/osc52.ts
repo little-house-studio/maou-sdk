@@ -60,11 +60,7 @@ function spawnClipboard(text: string): boolean {
       return true;
     }
     if (p === "win32") {
-      // clip.exe 期望 UTF-16LE 时偶发乱码；仍作回退
-      const c = spawn("clip", [], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
-      c.stdin?.end(text);
-      c.unref();
-      return true;
+      return spawnWindowsClipboard(text);
     }
     // Linux：优先 wl-copy，再 xclip，再 xsel
     for (const [cmd, args] of [
@@ -83,6 +79,38 @@ function spawnClipboard(text: string): boolean {
     }
   } catch { /* ignore */ }
   return false;
+}
+
+/** Windows：PowerShell Set-Clipboard（UTF-8 stdin），失败再喂 clip.exe UTF-16LE。 */
+function spawnWindowsClipboard(text: string): boolean {
+  try {
+    const ps = spawn(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Console]::InputEncoding = New-Object Text.UTF8Encoding $false; $t = [Console]::In.ReadToEnd(); Set-Clipboard -Value $t",
+      ],
+      { stdio: ["pipe", "ignore", "ignore"], windowsHide: true },
+    );
+    if (ps.pid) {
+      ps.stdin?.end(text, "utf8");
+      ps.unref();
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const c = spawn("clip", [], { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    const payload = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
+    c.stdin?.end(payload);
+    c.unref();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

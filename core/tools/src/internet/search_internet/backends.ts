@@ -15,6 +15,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { guessInstallRoot, vendorBinDirs } from "../../util/vendor-bin.js";
 import { normalizeDateString, normalizeResult, stripHtml } from "./normalize.js";
 import {
   extractQueryCore,
@@ -95,23 +96,9 @@ function mapNormalized(
 /** 解析结果缓存：null = 还没查；"" = 查过且不可用 */
 let ddgrPath: string | null = null;
 
-/** 向上找 monorepo / 预编译包根（含 vendor/bin 或 ensure 脚本的那层） */
 function guessRepoRoot(): string | null {
   try {
-    let dir = dirname(fileURLToPath(import.meta.url));
-    for (let i = 0; i < 10; i++) {
-      if (
-        existsSync(join(dir, "pnpm-workspace.yaml")) ||
-        existsSync(join(dir, "RELEASE.json")) ||
-        existsSync(join(dir, "vendor", "bin"))
-      ) {
-        return dir;
-      }
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    return null;
+    return guessInstallRoot(dirname(fileURLToPath(import.meta.url)));
   } catch {
     return null;
   }
@@ -123,9 +110,9 @@ function guessRepoRoot(): string | null {
  * 以前这里只有 `which ddgr`，有两个问题：
  *   1. Windows 没有 `which`（是 `where`）→ 在 Windows 上**永远**探测不到，
  *      哪怕已经装好了
- *   2. 只看 PATH → 装在 vendor/bin（预编译包内置的位置）时找不到
+ *   2. 只看 PATH → 装在 scripts/vendor/bin 或包内 vendor/bin 时找不到
  *
- * 现在按显式路径 → 包内 vendor/bin → ~/.maou/bin → PATH 依次找。
+ * 现在按显式路径 → 源码树/包内 vendor bin → ~/.maou/bin → PATH 依次找。
  * Windows 上优先 .cmd shim（ddgr 本体是 .py，直接 spawn 跑不起来）。
  */
 function resolveDdgr(): string {
@@ -137,7 +124,7 @@ function resolveDdgr(): string {
   const dirs = [
     process.env.MAOU_DDGR_DIR,
     process.env.MAOU_BUNDLE_ROOT ? join(process.env.MAOU_BUNDLE_ROOT, "vendor", "bin") : "",
-    guessRepoRoot() ? join(guessRepoRoot()!, "vendor", "bin") : "",
+    ...(guessRepoRoot() ? vendorBinDirs(guessRepoRoot()!) : []),
     home ? join(home, ".maou", "bin") : "",
     home ? join(home, ".local", "bin") : "",
   ].filter(Boolean) as string[];

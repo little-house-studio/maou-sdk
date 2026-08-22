@@ -18,8 +18,10 @@
 
 import { execSync } from "node:child_process";
 import { PromptCompiler } from "@little-house-studio/prompt";
-import { SessionStore, SessionManager, MemoryStore, CheckpointStore, extractMemories } from "@little-house-studio/context";
+import { SessionStore, SessionManager, MemoryStore, CheckpointStore, extractMemories, unwrapAgentSendTag } from "@little-house-studio/context";
 import {
+  appendToolResult,
+  findToolCallIdByPayload,
   buildMessages,
   maybeCompress,
   ContextEngine,
@@ -104,6 +106,7 @@ import {
   listTerminals,
   getTerminalLogs,
   setTerminalMode,
+  setAgentTerminalMode,
   SkillContextManager,
   TASK_MANAGER,
   createSubagentDelegateTool,
@@ -123,15 +126,22 @@ import {
   authorHuman,
   authorAgent,
   authorSystem,
-  authorTool,
 } from "@little-house-studio/context";
 import type { AgentSkillOptions } from "../bootstrap/skills.js";
 import { createAgentSkillManager, applyAgentSkillOptions } from "../bootstrap/skills.js";
 import type { SubagentExecutorLike } from "@little-house-studio/types";
 import type { StreamEvent } from "@little-house-studio/types";
 import { Profiler, resolveUserMaouRoot } from "@little-house-studio/types";
-import type { Hooks } from "./hooks.js";
+import { Hooks, type HookUi } from "./hooks.js";
 import { FileDiffWatch } from "../agent_factory/file-diff-watch.js";
+import {
+  CacheRebuildHost,
+  mergeCacheRebuildTriggers,
+  parseCacheRebuildTriggers,
+  type CacheRebuildPointEvent,
+  type CacheRebuildPointResult,
+  type CacheRebuildTriggers,
+} from "./cache-rebuild.js";
 
 /** loop.ts 脚本的判定上下文（shouldContinueLoop 入参）。 */
 interface LoopScriptCtx {
@@ -189,6 +199,12 @@ export interface RuntimeOptions {
   resolveHelperPreset?: (agentName: string, mainPreset: APIPreset) => APIPreset;
   /** 钩子管理器（可选）。注入后 agent 循环会在各生命周期点触发 hooks。 */
   hooks?: Hooks;
+  /**
+   * 缓存重建点默认触发开关。
+   * 未传时：大压缩/归档、手动 /compact（非微压缩）、新建/清空会话均触发。
+   * agent.json `cacheRebuild` 可再覆盖。
+   */
+  cacheRebuild?: Partial<CacheRebuildTriggers>;
   /**
    * 消息队列（可选）。注入后 agent 循环会在 round_end / loop_end / task_complete
    * 检查队列，投递等待中的用户消息。缺省则使用全局 MESSAGE_QUEUE 单例。
@@ -271,6 +287,14 @@ export interface RunOptions {
   initAgentName?: string;
   /** 发送者名称，默认 "user" */
   userName?: string;
+  /** 附带指令（如 goal）→ 先走 /command，正文仍按 AgentSendMessage 写入 */
+  userCommand?: string;
+  /** 用户消息附图（写入 SessionMessage.images，buildMessages 会带上） */
+  userImages?: Array<{ mimeType: string; data: string }>;
+  userVideo?: Array<{ mimeType: string; data: string }>;
+  userAudio?: Array<{ mimeType: string; data: string }>;
+  /** 用户消息 source（缺省 human） */
+  userMessageSource?: string;
   /** 中断信号——收到中断时停止 agent 循环 */
   abortSignal?: AbortSignal;
   /** 平台上下文注入 —— 由插件（如飞书）提供，追加在 system prompt 之后 */
@@ -326,6 +350,8 @@ export class AgentRuntime {
   private agentScope: "project" | "global";
   /** 当前 run() 的实际工作目录（agent.json working_dir 或 projectRoot）—— workspaceChanges/PromptCompiler 用 */
   private effectiveWorkingDir: string = "";
+  /** agent.json terminalMode（full|mini），与审批用 terminal_mode 无关 */
+  private agentTerminalBackend?: "full" | "mini";
   /** ContextEngine 闭环依赖（可选） */
   private harnessStore?: HarnessSessionStore;
   private taskStore?: TaskSessionStore;
@@ -414,6 +440,8 @@ export class AgentRuntime {
   private skillOptions?: AgentSkillOptions;
   /** 会话级文件 diff 监听（coding 等产品可选启用） */
   private fileDiffWatch: FileDiffWatch | null = null;
+  private cacheRebuildTriggers: CacheRebuildTriggers;
+  private cacheRebuild: CacheRebuildHost;
 
   constructor(options: RuntimeOptions) {
     this.compiler = options.compiler;
@@ -435,13 +463,28 @@ export class AgentRuntime {
     this.hooks = options.hooks;
     this.messageQueue = options.messageQueue ?? MESSAGE_QUEUE;
     this.callMainAgentFn = options.callMainAgent;
+    this.cacheRebuildTriggers = mergeCacheRebuildTriggers(options.cacheRebuild);
+    this.cacheRebuild = new CacheRebuildHost({
+      hooks: () => this.hooks,
+      resolveTriggers: (agentName) =>
+        mergeCacheRebuildTriggers(
+          this.cacheRebuildTriggers,
+          this.lookupAgentCacheRebuild(agentName),
+        ),
+      onFired: (event, generation) => {
+        this.log(
+          "info",
+          `[cache_rebuild_point] reason=${event.reason} session=${event.sessionId ?? ""} gen=${generation}`,
+        );
+      },
+    });
 
     // 工厂：优先使用注入的实现，缺省使用内部默认
     this.createSessionManagerFn = options.createSessionManager ?? ((s, r) => new SessionManager(s, r));
     this.createCheckpointStoreFn = options.createCheckpointStore ?? ((s) => new CheckpointStore(s));
     this.createMemoryStoreFn = options.createMemoryStore ?? ((r, n) => new MemoryStore(r, n));
     this.createTokenTrackerFn = options.createTokenTracker ?? ((r, n, p) => new TokenTracker(r, n, p));
-    // skill 选项：先写入 tools 默认，保证 use_skill 与 bake 同口径
+    // skill 选项：先写入 tools 默认，保证 use_skill 与文件缓存区 skill 索引同口径
     applyAgentSkillOptions(options.skillOptions);
     this.skillOptions = options.skillOptions;
     this.createSkillManagerFn =
@@ -479,6 +522,65 @@ export class AgentRuntime {
     registerBuiltinCommands(this.commandRegistry);
   }
 
+  setHookUi(ui: HookUi): void {
+    if (!this.hooks) this.hooks = new Hooks();
+    this.hooks.ui = ui;
+  }
+
+  getHooks(): Hooks {
+    if (!this.hooks) this.hooks = new Hooks();
+    return this.hooks;
+  }
+
+  /**
+   * 缓存重建点：判断默认触发 → pre_cache_rebuild（可 cancel）→ 点 hook → post。
+   * 扩展与产品可直接调用；压缩 / 新建会话等内部时机也会走这里。
+   */
+  async atCacheRebuildPoint(
+    event: CacheRebuildPointEvent,
+  ): Promise<CacheRebuildPointResult> {
+    const sessionId = event.sessionId;
+    const agentName =
+      event.agentName ??
+      (sessionId ? this.sessions.load(sessionId)?.agentName : undefined);
+    return this.cacheRebuild.atPoint({ ...event, agentName });
+  }
+
+  getCacheRebuildGeneration(sessionId: string): number {
+    return this.cacheRebuild.getGeneration(sessionId);
+  }
+
+  private lookupAgentCacheRebuild(agentName?: string): Partial<CacheRebuildTriggers> | undefined {
+    const name = agentName?.trim();
+    if (!name) return undefined;
+    try {
+      const registry = new AgentRegistry(
+        this.maouRoot,
+        this.agentScope === "project" ? this.projectRoot : undefined,
+      );
+      const entry = registry.get(name);
+      return parseCacheRebuildTriggers(
+        (entry as { cacheRebuild?: unknown } | undefined)?.cacheRebuild,
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async afterCompressMaybeRebuild(opts: {
+    sessionId: string;
+    agentName?: string;
+    stage?: string;
+    source: "auto" | "manual" | "overflow";
+  }): Promise<void> {
+    await this.atCacheRebuildPoint({
+      reason: opts.source === "manual" ? "manual_compact" : "context_compress",
+      sessionId: opts.sessionId,
+      agentName: opts.agentName,
+      stage: opts.stage,
+    });
+  }
+
   /** 强制压缩（/compact 与 UI 触发） */
   async forceCompressSession(sessionId: string): Promise<{
     ok: boolean;
@@ -493,6 +595,14 @@ export class AgentRuntime {
       return { ok: false, error: "压缩引擎未启用" };
     }
     try {
+      const compactGate = await this.hooks?.preCompact({ sessionId, force: true, reason: "command" });
+      if (compactGate?.cancel) {
+        return { ok: false, error: "压缩被扩展取消" };
+      }
+      if (compactGate?.compaction?.summary) {
+        this.sessionManager.setRollingSummary(sessionId, compactGate.compaction.summary);
+        this.sessionManager.saveState();
+      }
       const engine = new ContextEngine({
         sessionId,
         harnessStore: this.harnessStore,
@@ -500,7 +610,8 @@ export class AgentRuntime {
         summarizer: this.summarizer,
       });
       const session = this.sessions.load(sessionId);
-      const msgs = (session?.messages ?? []) as unknown as Array<Record<string, unknown>>;
+      const branch = this.sessions.getLlmHistoryMessages(sessionId);
+      const msgs = (branch.length ? branch : session?.messages ?? []) as unknown as Array<Record<string, unknown>>;
       // B1：优先 harness 工作集 + session 增量，避免从全量 session 重压
       engine.seedWorkingSet(msgs);
       const limit =
@@ -528,6 +639,13 @@ export class AgentRuntime {
         }
         this.onCompress?.(sessionId, report.stage, report.droppedSummary, report.taskBlocks ?? []);
       }
+      await this.hooks?.postCompact(report.compressedTokens ?? 0);
+      await this.afterCompressMaybeRebuild({
+        sessionId,
+        agentName: session?.agentName,
+        stage: report.stage,
+        source: "manual",
+      });
       return {
         ok: true,
         stage: report.stage,
@@ -894,20 +1012,38 @@ export class AgentRuntime {
     MessageBus.global().register(runAgentName);
 
     // ── 1. 指令匹配：/xxx 指令直接执行，不走 AI ──
+    const commandName = (options.userCommand ?? "").replace(/^\//, "").trim();
+    const commandPlain = unwrapAgentSendTag(activeUserMessage).trim();
+    const commandInput = commandName
+      ? (commandPlain ? `/${commandName} ${commandPlain}` : `/${commandName}`)
+      : activeUserMessage;
     const cmdCtx: CommandContext = {
-      rawInput: activeUserMessage.trim(),
+      rawInput: commandInput.trim(),
       args: "",
       sessionId: sessionId!,
       agentName: session.agentName || "main",
       maouRoot: this.maouRoot,
       projectRoot: this.projectRoot,
       runtime: {
-        createSession: (initAgentName?: string) => this.sessions.create(undefined, initAgentName),
-        clearSession: (sid: string) => {
+        createSession: async (initAgentName?: string) => {
+          const created = this.sessions.create(undefined, initAgentName);
+          await this.atCacheRebuildPoint({
+            reason: "session_new",
+            sessionId: created.id,
+            agentName: initAgentName ?? created.agentName,
+          });
+          return created;
+        },
+        clearSession: async (sid: string) => {
           this.sessions.clearSession(sid);
           try { this.taskStore?.saveTaskPlan(sid, []); } catch { /* ignore */ }
           try { TASK_MANAGER.manage(sid, "delete", null); } catch { /* ignore */ }
           this.messageQueue.clear(sid);
+          await this.atCacheRebuildPoint({
+            reason: "session_clear",
+            sessionId: sid,
+            agentName: session.agentName,
+          });
         },
         setAgentName: (sid: string, name: string) => {
           try { (this.sessions as { setAgentName?: (id: string, n: string) => void }).setAgentName?.(sid, name); } catch { /* ignore */ }
@@ -952,7 +1088,7 @@ export class AgentRuntime {
         abortSignal: options.abortSignal,
       },
     };
-    const cmdResult = await this.commandRegistry.tryExecute(activeUserMessage, cmdCtx);
+    const cmdResult = await this.commandRegistry.tryExecute(commandInput, cmdCtx);
     if (cmdResult) {
       const meta = cmdResult.meta ?? {};
       // task 模式（如 /init）：把指令正文当作用户任务注入，继续走正常 AI 流程
@@ -1059,6 +1195,15 @@ export class AgentRuntime {
     if (tm === "normal" || tm === "auto" || tm === "yolo") {
       try { setTerminalMode(agentName, tm); } catch { /* ignore */ }
     }
+    const tb = (agentEntry as { terminalMode?: string; terminal_backend?: string }).terminalMode
+      ?? (agentEntry as { terminal_backend?: string }).terminal_backend;
+    if (tb === "full" || tb === "mini") {
+      this.agentTerminalBackend = tb;
+      try { setAgentTerminalMode(tb); } catch { /* ignore */ }
+    } else {
+      this.agentTerminalBackend = undefined;
+      try { setAgentTerminalMode(undefined); } catch { /* ignore */ }
+    }
     // working_dir：优先 agent.json 配置，否则 projectRoot（process.cwd）
     const agentWorkingDir = (agentEntry as { working_dir?: string }).working_dir;
     if (agentWorkingDir && typeof agentWorkingDir === "string" && agentWorkingDir.trim()) {
@@ -1105,7 +1250,7 @@ export class AgentRuntime {
 
     // yield session 事件
     yield this.event("session", { sessionId });
-    this.hooks?.sessionStart(sessionId!);
+    await this.hooks?.sessionStart(sessionId!);
 
     // ── 2. 编译 prompt ──
     yield this.event("status", { text: "编译 Prompt..." });
@@ -1218,8 +1363,8 @@ export class AgentRuntime {
     const dynamicInjections = prof.sync("dynamic_context", () => compileDynamicContext(maouRoot, agentName, sessionId!));
 
     // ── 2b2. Skill 注入（修复：原本 SkillContextManager 从未被 runtime 调用 → 技能列表从不进提示词）──
-    // compile() 首轮产出 bakedContent（全部可用 skill 列表，注入 system 区，可缓存），
-    // 后续轮产出 incrementalContent（新增/删除/更新的 skill，注入动态区）。
+    // compile() 首轮产出 bakedContent（skill 索引 → 文件缓存区 / 稳定前缀，缓存断点之前），
+    // 后续轮产出 incrementalContent（<skill_update> → 上下文动态区）。
     let skillManager: SkillContextManager | null = null;
     try {
       skillManager = this.createSkillManagerFn(agentName, this.projectRoot, maouRoot);
@@ -1566,11 +1711,17 @@ export class AgentRuntime {
     appendSessionEvent(this.sessions, sessionId!, {
       kind: "human_user",
       content: effectiveUserMessage,
-      source: "human",
-      author: authorHuman("user", "user"),
-      meta: todoPre.requirePlan ? { had_todo_slash: true } : undefined,
+      source: options.userMessageSource ?? "human",
+      author: authorHuman("user", options.userName ?? "user"),
+      meta: {
+        ...(todoPre.requirePlan ? { had_todo_slash: true } : {}),
+        ...(options.userImages?.length ? { images: options.userImages } : {}),
+        ...(options.userVideo?.length ? { video: options.userVideo } : {}),
+        ...(options.userAudio?.length ? { audio: options.userAudio } : {}),
+        ...(options.userCommand ? { command: options.userCommand } : {}),
+      },
     });
-    this.hooks?.preMessage({ role: "user", content: effectiveUserMessage } as any);
+    await this.hooks?.preMessage({ role: "user", content: effectiveUserMessage } as any);
 
     // ── 3. Agent 循环 ──
     let roundCount = 0;
@@ -1686,20 +1837,22 @@ export class AgentRuntime {
           continue;
         }
         this.log("info", `[RUN] session=${sessionId} 收到中断信号（${reason}），停止循环`);
-        this.hooks?.abort("用户中断");
+        await this.hooks?.abort("用户中断");
         yield this.event("info", { message: "已中断" });
         break;
       }
 
       this.log("info", `[RUN] round ${roundCount + 1} start`);
-      this.hooks?.agentStart(roundCount + 1);
+      await this.hooks?.trigger("before_agent_start", { roundNumber: roundCount + 1 });
+      await this.hooks?.agentStart(roundCount + 1);
 
-      // ── 3a-pre. 注入后台终端完成/超时通知（工具类消息，非 user）──
-      // 落盘 role=tool + source=terminal-notification；CLI 作 ToolCard；
-      // LLM 侧 message-builder 会为无配对 tool_call 的通知补合成 assistant.tool_calls，保证 API 合法。
+      // ── 3a-pre. 注入后台终端完成/超时通知 ──
+      // 找回原 use_terminal 的 toolCallId，走 appendToolResult：
+      // 已配对过则自动写成 role=user，不再伪造 term_notify_*。
       {
         const bgTerminals = listTerminals(agentName);
         for (const t of bgTerminals) {
+          if (t.kind === "human" || t.id.startsWith("human_")) continue;
           if (notifiedBgCompletions.has(t.id)) continue;
           if (t.state === "running") continue;
           if (t.state === "interrupted") continue;
@@ -1716,57 +1869,53 @@ export class AgentRuntime {
             `终端「${t.description}」(ID: ${t.id}) ${statusLabel}。\n` +
             (output ? `\n输出:\n${output}\n` : "") +
             `</terminal-message>`;
-          // 合成 tool_call_id：异步通知不绑原 tool_call（原 call 可能已用占位 tool_result 回过）
-          const notifyCallId = `term_notify_${t.id}_${Date.now().toString(36)}`;
-          appendSessionEvent(this.sessions, sessionId!, {
-            kind: "tool_async_notify",
-            wireRole: "tool",
-            content,
-            source: "terminal-notification",
-            author: authorTool("use_terminal", "use_terminal"),
-            meta: {
-              terminal_id: t.id,
-              tool_name: "use_terminal",
-              toolCallId: notifyCallId,
-              tool_call_id: notifyCallId,
-              tool_ok: ok,
-              ok,
-              tool_parameters: {
-                event: "background_complete",
-                terminal_id: t.id,
-                description: t.description,
-                exit_code: t.exitCode,
-                state: t.state,
-              },
-            },
-          });
-          // 实时 UI：先 tool_call 再 tool_result，挂到当前 assistant 作工具卡（非 user 气泡）
-          yield this.event("tool_call", {
-            tool: {
-              id: notifyCallId,
+          const sessionMsgs = (this.sessions.load(sessionId!)?.messages ?? []) as Array<
+            Record<string, unknown>
+          >;
+          const originalId =
+            findToolCallIdByPayload(sessionMsgs, "terminal_id", t.id) ??
+            findToolCallIdByPayload(sessionMsgs, "id", t.id);
+          const notifyParams = {
+            event: "background_complete",
+            terminal_id: t.id,
+            description: t.description,
+            exit_code: t.exitCode,
+            state: t.state,
+          };
+          this.persistToolResult(
+            sessionId!,
+            {
               name: "use_terminal",
-              parameters: {
-                event: "background_complete",
+              content,
+              ok,
+              toolCallId: originalId,
+              payload: notifyParams,
+            },
+            {
+              source: "terminal-notification",
+              meta: {
                 terminal_id: t.id,
-                description: t.description,
+                tool_parameters: notifyParams,
+                ok,
               },
             },
-            round: roundCount + 1,
-          });
-          yield this.event("tool_result", {
-            toolCallId: notifyCallId,
-            name: "use_terminal",
-            content,
-            ok,
-            round: roundCount + 1,
-            source: "terminal-notification",
-          });
+          );
+          if (originalId) {
+            yield this.event("tool_result", {
+              toolCallId: originalId,
+              name: "use_terminal",
+              content,
+              ok,
+              round: roundCount + 1,
+              source: "terminal-notification",
+            });
+          }
         }
       }
 
       // 重新加载 session
       const currentSession = this.sessions.load(sessionId!) ?? session;
-      const sessionMessages = currentSession.messages;
+      const sessionMessages = this.sessions.getLlmHistoryMessages(sessionId!) ?? currentSession.messages;
       const currentRound = roundCount + 1;
 
       // ── 3a-pre2. 每轮刷新动态注入（board / pending / agent 状态） ──
@@ -1779,7 +1928,7 @@ export class AgentRuntime {
           fileDiffNotice = this.fileDiffWatch.consumeUserTurnDiffs(sessionId);
         } catch { /* ignore */ }
       }
-      // Skill 增量：本轮新增/删除/更新的 skill（首轮已 baked 进 systemPrompt，这里只补增量）
+      // Skill 增量：本轮新增/删除/更新（首轮已写入文件缓存区，这里只补上下文动态区）
       let skillIncremental = "";
       if (roundCount > 0 && skillManager) {
         try { skillIncremental = skillManager.compile().incrementalContent ?? ""; } catch { /* ignore */ }
@@ -1851,7 +2000,18 @@ export class AgentRuntime {
               ignoreStaleApi: seed.fromHarness,
             });
             if (usedTokens >= compressTriggerAt) {
-              this.hooks?.preCompact();
+              const compactGate = await this.hooks?.preCompact({
+                sessionId,
+                usedTokens,
+                contextLimit,
+              });
+              if (compactGate?.cancel) {
+                // Pi session_before_compact: 扩展取消本次自动压缩
+              } else {
+              if (compactGate?.compaction?.summary) {
+                this.sessionManager.setRollingSummary(sessionId!, compactGate.compaction.summary);
+                this.sessionManager.saveState();
+              }
               if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
                 this.checkpointStore.createCheckpoint(
                   sessionId!, `auto_before_compression_round_${currentRound}`, true, "compression",
@@ -1898,10 +2058,17 @@ export class AgentRuntime {
                     `[ContextEngine] 微压缩静默 stage=${report.stage} token ${report.originalTokens}→${report.compressedTokens}`,
                   );
                 }
-                this.hooks?.postCompact(report.compressedTokens ?? 0);
+                await this.hooks?.postCompact(report.compressedTokens ?? 0);
+                await this.afterCompressMaybeRebuild({
+                  sessionId: sessionId!,
+                  agentName,
+                  stage: report.stage,
+                  source: "auto",
+                });
               } else if (seed.useAsLlmHistory) {
                 // 无新压缩但仍在 harness 路径：保持 compressedHistory
                 compressedHistory = engine.toLLMHistory();
+              }
               }
             }
           } else {
@@ -1952,7 +2119,10 @@ export class AgentRuntime {
       } else {
         // 旧路径：maybeCompress（同步 truncate shim）。
         // 压缩前自动快照
-        this.hooks?.preCompact();
+        const legacyGate = await this.hooks?.preCompact({ sessionId, path: "legacy" });
+        if (legacyGate?.cancel) {
+          finalMessages = messages;
+        } else {
         if (this.checkpointStore.shouldAutoCheckpoint("compression")) {
           this.checkpointStore.createCheckpoint(
             sessionId!,
@@ -2014,7 +2184,14 @@ export class AgentRuntime {
               taskBlocks: compressResult.taskBlocks,
             });
           }
-          this.hooks?.postCompact(compressResult.compressedTokens ?? 0);
+          await this.hooks?.postCompact(compressResult.compressedTokens ?? 0);
+          await this.afterCompressMaybeRebuild({
+            sessionId: sessionId!,
+            agentName,
+            stage: compressResult.stage,
+            source: "auto",
+          });
+        }
         }
       }
 
@@ -2032,8 +2209,8 @@ export class AgentRuntime {
       yield this.logEvent("info", `开始第 ${currentRound} 轮`);
       yield this.event("status", { text: "调用模型..." });
       yield this.logEvent("info", `调用模型: ${preset.model}`);
-      this.hooks?.agentThinking();
-      this.hooks?.responseStart();
+      await this.hooks?.agentThinking();
+      await this.hooks?.responseStart();
 
       // ── 3b. 调用 LLM（流式）──
       // - 瞬时故障：ModelCaller 内部可原样重试
@@ -2187,7 +2364,7 @@ export class AgentRuntime {
             yield this.event("status", {
               text: `Unsupported media · stripped · retry`,
             });
-            this.hooks?.agentThinking();
+            await this.hooks?.agentThinking();
             continue;
           }
         }
@@ -2258,7 +2435,7 @@ export class AgentRuntime {
                   `紧急截断历史 ${shrunk.dropped ?? 0} 条 · 估 ${shrunk.estimatedTokens} tokens`,
                 );
               }
-              this.hooks?.agentThinking();
+              await this.hooks?.agentThinking();
               continue;
             }
             yield this.logEvent(
@@ -2312,7 +2489,7 @@ export class AgentRuntime {
             "warning",
             `模型返回不可用（${result.validationError}），原样重试 ${modelAttempt}/${MODEL_RETRIES}`,
           );
-          this.hooks?.agentThinking();
+          await this.hooks?.agentThinking();
           continue;
         }
         break;
@@ -2553,14 +2730,14 @@ export class AgentRuntime {
             author: { type: "system", id: "runtime", displayName: "runtime" },
           });
           try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
-        this.hooks?.agentStop(currentRound);
+        await this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
         }
         // 重试次数耗尽，真正退出（但仍会走到 loop 结束推送 loop_report，让 supervisor 知道主 agent 卡住）
         yield this.logEvent("warning", `[RUN] session=${sessionId} 空转重试 ${MAX_EMPTY_RETRIES} 次仍无工具调用，退出循环`);
         try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
-        this.hooks?.agentStop(currentRound);
+        await this.hooks?.agentStop(currentRound);
         break;
       }
       // 有工具调用 → 重置空转计数
@@ -2573,8 +2750,8 @@ export class AgentRuntime {
         nativeToolCalls: result.nativeToolCalls.length > 0 ? result.nativeToolCalls : undefined,
         timing: result.timing,
       });
-      this.hooks?.responseEnd(contentToUse);
-      this.hooks?.postMessage({ role: "assistant", content: contentToUse } as any);
+      await this.hooks?.responseEnd(contentToUse);
+      await this.hooks?.postMessage({ role: "assistant", content: contentToUse } as any);
 
       // ── 3d/3e. 处理工具调用 ──
       if (result.nativeToolCalls.length > 0 && agentMode) {
@@ -2652,7 +2829,7 @@ export class AgentRuntime {
 
         if (shouldContinue) {
           try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
-        this.hooks?.agentStop(currentRound);
+        await this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
         }
@@ -2693,7 +2870,7 @@ export class AgentRuntime {
           text: `续写截断输出 (${lengthContinuations}/${MAX_LENGTH_CONTINUATIONS})`,
         });
         try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
-        this.hooks?.agentStop(currentRound);
+        await this.hooks?.agentStop(currentRound);
         roundCount++;
         continue;
       }
@@ -2725,7 +2902,7 @@ export class AgentRuntime {
           });
           yield this.event("verification", { ok: false, command: verifyCommand, attempt: verifyAttempts });
           try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
-        this.hooks?.agentStop(currentRound);
+        await this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
         }
@@ -2755,14 +2932,14 @@ export class AgentRuntime {
           }
         }
         try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
-        this.hooks?.agentStop(currentRound);
+        await this.hooks?.agentStop(currentRound);
         roundCount++;
         continue;
       }
 
       // 无队列消息 → 退出循环
       try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
-        this.hooks?.agentStop(currentRound);
+        await this.hooks?.agentStop(currentRound);
       break;
     }
 
@@ -2873,7 +3050,7 @@ export class AgentRuntime {
     this.log("info", `[PROFILE]\n${prof.renderText()}`);
     yield this.event("profile", { report });
 
-    this.hooks?.sessionEnd(sessionId!);
+    await this.hooks?.sessionEnd(sessionId!);
 
     // ── P1-4 生命周期：run 结束 → idle（arm TTL，TTL 后自动 park）──
     lifecycle.setStatus(sessionId, "idle");
@@ -3133,6 +3310,7 @@ export class AgentRuntime {
       workingDir: workingDir ?? this.projectRoot,
       pathGuard: this.getSessionPathGuard(sessionId ?? ""),
       compressionLevel,
+      terminalBackend: this.agentTerminalBackend,
       skillOptions: this.skillOptions,
       subagentExecutor: this.subagentExecutor as never,
       callMainAgentFn: this.callMainAgentFn,
@@ -3228,14 +3406,24 @@ export class AgentRuntime {
           durationMs: 0,
         }),
       );
-      this.sessions.appendMessage(sessionId, "tool", fail.message, {
-        round,
-        toolCallId: tc.id,
-        tool_name: tc.name,
-        tool_ok: false,
-        tool_error: fail.error,
-        tool_error_category: fail.error?.category,
-      });
+      this.persistToolResult(
+        sessionId,
+        {
+          name: tc.name,
+          content: fail.message,
+          ok: false,
+          toolCallId: tc.id,
+          error: fail.message,
+        },
+        {
+          round,
+          source: "tool",
+          meta: {
+            tool_error: fail.error,
+            tool_error_category: fail.error?.category,
+          },
+        },
+      );
       return events;
     };
 
@@ -3261,7 +3449,7 @@ export class AgentRuntime {
             // 后台执行完成后：
             // - raw 日志已写入（commit 内 appendRawEntry）
             // - tool_result 事件已 emit（前端可通过事件流看到）
-            // - background=true 跳过 appendMessage（占位已写入，避免重复 tool_call_id）
+            // - 占位已配对，真实结果走 appendToolResult → 自动写成 user
             try {
               for (const ev of commit()) {
                 // 后台结果通过 log 上报（无法 yield 到主生成器，因为已过提交点）
@@ -3562,6 +3750,15 @@ export class AgentRuntime {
     afterTodoToolsHelper(this.sessions, sessionId, hadToolCalls);
   }
 
+  /** 工具回包唯一写入口：同一 toolCallId 第一次 role=tool，之后自动 role=user。 */
+  private persistToolResult(
+    sessionId: string,
+    input: Parameters<typeof appendToolResult>[2],
+    extra: Parameters<typeof appendToolResult>[3] = {},
+  ) {
+    return appendToolResult(this.sessions, sessionId, input, extra);
+  }
+
   /**
    * 同步提交一个「后台派发」占位 tool_result（用于 blocking=false 的工具）。
    *
@@ -3594,12 +3791,25 @@ export class AgentRuntime {
       data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: placeholder, ok: true, background: true },
     });
     events.push(this.event("tool_result", { toolCallId: toolCall.id, name: toolCall.name, content: placeholder, ok: true, round, background: true }));
-    this.sessions.appendMessage(sessionId, "tool", placeholder, {
-      round, toolCallId: toolCall.id, tool_name: toolCall.name,
-      tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
-      background: true,
-      tool_ok: true, // 占位响应视为成功（真实结果后续异步上报）
-    });
+    this.persistToolResult(
+      sessionId,
+      {
+        name: toolCall.name,
+        content: placeholder,
+        ok: true,
+        toolCallId: toolCall.id,
+      },
+      {
+        round,
+        source: "tool",
+        meta: {
+          tool_provider: toolCall.provider,
+          tool_type: toolCall.type,
+          tool_parameters: toolCall.parameters,
+          background: true,
+        },
+      },
+    );
     return events;
   }
 
@@ -3657,8 +3867,8 @@ export class AgentRuntime {
     opts?: { background?: boolean; announced?: boolean },
   ): Promise<() => StreamEvent[]> {
     const tcInfo = { id: toolCall.id, name: toolCall.name, parameters: toolCall.parameters };
-    // background=true：后台执行（fire-and-forget），commit() 时跳过 appendMessage
-    // （占位 tool_result 已由 commitBackgroundToolCall 写入，重复写会破坏 tool_call_id 一一对应）
+    // background=true：占位已由 commitBackgroundToolCall 配对；真实结果仍要落盘，
+    // appendToolResult 会自动改写成 role=user。
     const background = opts?.background ?? false;
     const announced = opts?.announced ?? false;
 
@@ -3686,18 +3896,30 @@ export class AgentRuntime {
           toolCallId: toolCall.id, name: toolCall.name, content: emptyMsg, ok: false, round, background,
           error: toolError, errorCategory: toolError?.category,
         }));
-        if (!background) {
-          this.sessions.appendMessage(sessionId, "tool", emptyMsg, {
-            round, toolCallId: toolCall.id, tool_name: toolCall.name, tool_ok: false,
-            tool_error: toolError, tool_error_category: toolError?.category,
-          });
-        }
+        this.persistToolResult(
+          sessionId,
+          {
+            name: toolCall.name,
+            content: emptyMsg,
+            ok: false,
+            toolCallId: toolCall.id,
+            error: emptyMsg,
+          },
+          {
+            round,
+            source: "tool",
+            meta: {
+              tool_error: toolError,
+              tool_error_category: toolError?.category,
+            },
+          },
+        );
         return events;
       };
     }
 
-    // pre_tool_use hook（同步）：返回 false 拦截
-    const blocked = this.hooks ? !this.hooks.preToolUse(tcInfo) : false;
+    // pre_tool_use / tool_call（async，对齐 Pi；可 await ui.confirm）
+    const blocked = this.hooks ? !(await this.hooks.preToolUse(tcInfo)) : false;
 
     let result: Awaited<ReturnType<ToolExecutor["executeSingle"]>> | null = null;
     let execError: unknown = null;
@@ -3717,6 +3939,34 @@ export class AgentRuntime {
         // 失败也算耗时（错误同样花了墙钟时间）
         toolElapsedMs = Math.max(0, Date.now() - toolStartedAt);
         endTool?.();
+      }
+    }
+
+    let toolResultOverride: string | undefined;
+    if (execError !== null) {
+      const failRes = executeThrownToolResponse(toolCall.name, execError);
+      await this.hooks?.toolError(tcInfo, failRes.message);
+    } else if (!blocked && result) {
+      const normalizedEarly = ensureToolError(result.result);
+      let preview = normalizedEarly.message ?? "";
+      if (!preview.trim()) {
+        const fallback = normalizedEarly.payload;
+        preview = fallback
+          ? JSON.stringify({ ok: normalizedEarly.ok, payload: fallback })
+          : `工具 ${toolCall.name} 执行完成（ok=${normalizedEarly.ok}，无 message）`;
+      }
+      const hookOut = await this.hooks?.postToolUse(tcInfo, {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        output: preview,
+        success: normalizedEarly.ok,
+        error: normalizedEarly.ok ? "" : (normalizedEarly.error?.category ?? ""),
+        elapsed: toolElapsedMs,
+      });
+      if (hookOut?.content !== undefined) {
+        toolResultOverride = typeof hookOut.content === "string"
+          ? hookOut.content
+          : JSON.stringify(hookOut.content);
       }
     }
 
@@ -3757,15 +4007,27 @@ export class AgentRuntime {
           toolCallId: toolCall.id, name: toolCall.name, content: blockedMsg, ok: false, round, background, durationMs: 0,
           error: toolError, errorCategory: toolError?.category,
         }));
-        if (!background) {
-          this.sessions.appendMessage(sessionId, "tool", blockedMsg, {
-            round, toolCallId: toolCall.id, tool_name: toolCall.name,
-            tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
-            tool_ok: false,
-            tool_error: toolError,
-            tool_error_category: toolError?.category,
-          });
-        }
+        this.persistToolResult(
+          sessionId,
+          {
+            name: toolCall.name,
+            content: blockedMsg,
+            ok: false,
+            toolCallId: toolCall.id,
+            error: blockedMsg,
+          },
+          {
+            round,
+            source: "tool",
+            meta: {
+              tool_provider: toolCall.provider,
+              tool_type: toolCall.type,
+              tool_parameters: toolCall.parameters,
+              tool_error: toolError,
+              tool_error_category: toolError?.category,
+            },
+          },
+        );
         return events;
       }
 
@@ -3773,7 +4035,6 @@ export class AgentRuntime {
         const failRes = executeThrownToolResponse(toolCall.name, execError);
         const errorMsg = failRes.message;
         const toolError = failRes.error;
-        this.hooks?.toolError(tcInfo, errorMsg);
         this.sessions.appendRawEntry(sessionId, {
           type: "tool_result", round, created_at: now(),
           data: { tool_name: toolCall.name, tool_call_id: toolCall.id, content: errorMsg, ok: false, background, error: toolError },
@@ -3782,15 +4043,28 @@ export class AgentRuntime {
           toolCallId: toolCall.id, name: toolCall.name, content: errorMsg, ok: false, round, background, durationMs: toolElapsedMs,
           error: toolError, errorCategory: toolError?.category,
         }));
-        if (!background) {
-          this.sessions.appendMessage(sessionId, "tool", errorMsg, {
-            round, toolCallId: toolCall.id, tool_name: toolCall.name,
-            tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
-            tool_ok: false,
-            tool_error: toolError,
-            tool_error_category: toolError?.category,
-          });
-        }
+        this.persistToolResult(
+          sessionId,
+          {
+            name: toolCall.name,
+            content: errorMsg,
+            ok: false,
+            toolCallId: toolCall.id,
+            error: errorMsg,
+            elapsed: toolElapsedMs,
+          },
+          {
+            round,
+            source: "tool",
+            meta: {
+              tool_provider: toolCall.provider,
+              tool_type: toolCall.type,
+              tool_parameters: toolCall.parameters,
+              tool_error: toolError,
+              tool_error_category: toolError?.category,
+            },
+          },
+        );
         return events;
       }
 
@@ -3805,6 +4079,9 @@ export class AgentRuntime {
         toolResultContent = fallback
           ? JSON.stringify({ ok: normalized.ok, payload: fallback })
           : `工具 ${toolCall.name} 执行完成（ok=${normalized.ok}，无 message）`;
+      }
+      if (toolResultOverride !== undefined) {
+        toolResultContent = toolResultOverride;
       }
       const toolImages = normalized.images;
       const toolError: ToolErrorInfo | undefined = !normalized.ok
@@ -3846,15 +4123,6 @@ export class AgentRuntime {
           `${!normalized.ok && toolError ? ` category=${toolError.category}` : ""}` +
           `${background ? " [后台]" : ""} ${toolElapsedMs}ms`,
       ));
-      this.hooks?.postToolUse(tcInfo, {
-        toolCallId: toolCall.id,
-        name: toolCall.name,
-        output: toolResultContent,
-        success: normalized.ok,
-        error: toolError?.category ?? "",
-        elapsed: toolElapsedMs,
-      });
-
       // 文件 diff 监听：成功触碰 reader/edit/write 后入名单
       if (normalized.ok && this.fileDiffWatch && sessionId) {
         try {
@@ -3866,25 +4134,36 @@ export class AgentRuntime {
         } catch { /* ignore */ }
       }
 
-      // background=true：跳过 appendMessage（占位已写入，再写会破坏 tool_call_id 一一对应）
-      if (background) {
-        return events;
-      }
-
       const toolMeta: Record<string, unknown> = {
-        kind: "tool_result",
-        source: "tool",
-        author: authorTool(toolCall.name, toolCall.name),
-        round, toolCallId: toolCall.id, tool_name: toolCall.name,
-        tool_provider: toolCall.provider, tool_type: toolCall.type, tool_parameters: toolCall.parameters,
-        tool_ok: normalized.ok,
+        tool_provider: toolCall.provider,
+        tool_type: toolCall.type,
+        tool_parameters: toolCall.parameters,
+        background: background || undefined,
       };
       if (toolError) {
         toolMeta.tool_error = toolError;
         toolMeta.tool_error_category = toolError.category;
       }
-      if (toolImages && toolImages.length > 0) toolMeta.images = toolImages;
-      this.sessions.appendMessage(sessionId, "tool", toolResultContent, toolMeta);
+      this.persistToolResult(
+        sessionId,
+        {
+          name: toolCall.name,
+          content: toolResultContent,
+          ok: normalized.ok,
+          toolCallId: toolCall.id,
+          images: toolImages?.length ? toolImages : undefined,
+          error: normalized.ok ? undefined : toolResultContent,
+          elapsed: toolElapsedMs,
+          payload: normalized.payload && typeof normalized.payload === "object"
+            ? (normalized.payload as Record<string, unknown>)
+            : undefined,
+        },
+        {
+          round,
+          source: "tool",
+          meta: toolMeta,
+        },
+      );
       return events;
     };
   }
@@ -4048,7 +4327,7 @@ export class AgentRuntime {
     let taskBlocks: string[] = [];
     let finalMessages = opts.finalMessages;
 
-    this.hooks?.preCompact();
+    await this.hooks?.preCompact({ sessionId, force: true, reason: "overflow" });
     this.compressRetryAfter.delete(sessionId);
     this.sessionLastApiPromptTokens.delete(sessionId);
     this.sessionHistoryTokensAtLastApi.delete(sessionId);
@@ -4107,7 +4386,12 @@ export class AgentRuntime {
             this.onCompress(sessionId, report.stage, report.droppedSummary, taskBlocks);
           } catch { /* ignore */ }
         }
-        this.hooks?.postCompact(report.compressedTokens ?? 0);
+        await this.hooks?.postCompact(report.compressedTokens ?? 0);
+        await this.afterCompressMaybeRebuild({
+          sessionId,
+          stage: report.stage,
+          source: "overflow",
+        });
 
         finalMessages = buildMessages({
           systemPrompt,
@@ -4147,7 +4431,12 @@ export class AgentRuntime {
       droppedSummary = compressResult.droppedSummary;
       taskBlocks = compressResult.taskBlocks ?? [];
       if (compressResult.compressed) {
-        this.hooks?.postCompact(compressResult.compressedTokens ?? 0);
+        await this.hooks?.postCompact(compressResult.compressedTokens ?? 0);
+        await this.afterCompressMaybeRebuild({
+          sessionId,
+          stage: compressResult.stage,
+          source: "overflow",
+        });
       }
     }
 

@@ -3,7 +3,7 @@
  *
  * 行业实践：
  * - **主通道**：tools/list → LLM tool/function schema（协议强制，见 tool-bridge）
- * - **辅通道**：在 system 中给出 server/tool 索引，帮助模型建立心智地图（类 skill bake）
+ * - **辅通道**：在文件缓存区给出 server/tool 索引（与 skill 索引同类，缓存断点之前）
  *
  * 本模块只消费协议已暴露的数据（tools/list 的 name/description，
  * 可选 resources/list、prompts/list），不发明非标准 tool 语义。

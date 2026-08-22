@@ -23,6 +23,7 @@ import {
   saveSvgProbeShot,
   setSvgProbeReference,
 } from "./model-svg-probe-store.js";
+import { parseLlmClipboardText } from "./paste-parse.js";
 
 export function mountLlmConfigRoutes(app: Express): void {
   app.get("/api/config/llm", (_req, res) => {
@@ -204,6 +205,27 @@ export function mountLlmConfigRoutes(app: Express): void {
       }
       const reference = setSvgProbeReference(shotId);
       res.json({ ok: true, reference });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  /**
+   * 粘贴识别 → 表单字段。不写 config.json。
+   * body: { text: string }
+   */
+  app.post("/api/config/llm/parse", async (req, res) => {
+    try {
+      const text = String((req.body ?? {}).text ?? (req.body ?? {}).raw ?? "");
+      if (!text.trim()) {
+        res.status(400).json({ ok: false, error: "text required" });
+        return;
+      }
+      const parsed = await parseLlmClipboardText(text);
+      res.json({ ok: true, ...parsed });
     } catch (e) {
       res.status(500).json({
         ok: false,

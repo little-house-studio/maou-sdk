@@ -21,29 +21,12 @@ use once_cell::sync::Lazy;
 use std::sync::Arc;
 
 use registry::{TerminalInfo, TerminalRegistry};
-use terminal::{OutputEvent, OutputEventType};
+use terminal::StreamEvent;
 
 /// 全局注册表单例
 static REGISTRY: Lazy<Arc<TerminalRegistry>> = Lazy::new(|| Arc::new(TerminalRegistry::new()));
 
 // ─── napi 导出的结构体 ─────────────────────────────────────────────────────
-
-/// 创建终端的选项
-#[napi(object)]
-pub struct CreateTerminalOptions {
-    /// Agent 名称
-    pub agent_name: String,
-    /// 终端 ID（可选，不传则自动生成）
-    pub id: Option<String>,
-    /// 工作目录
-    pub cwd: String,
-    /// 终端列数（默认 80）
-    pub cols: Option<u16>,
-    /// 终端行数（默认 24）
-    pub rows: Option<u16>,
-    /// 描述
-    pub description: String,
-}
 
 /// 运行结果
 #[napi(object)]
@@ -60,23 +43,6 @@ pub struct RunResult {
     pub terminal_id: String,
     /// 错误信息（如果有）
     pub error: Option<String>,
-}
-
-/// 终端事件（流式回调）
-#[napi(object)]
-pub struct TerminalEvent {
-    /// 终端 ID
-    pub terminal_id: String,
-    /// 事件类型：data / exit / error / timeout
-    pub event_type: String,
-    /// 数据（纯文本）
-    pub data: Option<String>,
-    /// 退出码（exit 事件）
-    pub exit_code: Option<i32>,
-    /// 错误信息（error 事件）
-    pub error: Option<String>,
-    /// 时间戳（毫秒）
-    pub timestamp: f64,
 }
 
 /// 过滤器配置
@@ -120,6 +86,7 @@ pub struct TerminalInfoNapi {
     pub created_at: String,
     pub updated_at: String,
     pub last_viewed_at: Option<String>,
+    pub kind: String,
 }
 
 impl From<TerminalInfo> for TerminalInfoNapi {
@@ -135,8 +102,25 @@ impl From<TerminalInfo> for TerminalInfoNapi {
             created_at: t.created_at,
             updated_at: t.updated_at,
             last_viewed_at: t.last_viewed_at,
+            kind: t.kind,
         }
     }
+}
+
+#[napi(object)]
+pub struct TerminalStreamEventNapi {
+    pub kind: String,
+    pub data: Option<String>,
+    pub exit_code: Option<i32>,
+}
+
+#[napi(object)]
+pub struct OpenInteractiveOptions {
+    pub agent_name: String,
+    pub cwd: String,
+    pub cols: Option<u16>,
+    pub rows: Option<u16>,
+    pub shell: Option<String>,
 }
 
 // ─── napi 导出的函数 ───────────────────────────────────────────────────────
@@ -178,6 +162,7 @@ pub async fn run(
         cols: 80,
         rows: 24,
         description: description.clone(),
+        shell: None,
     };
 
     match REGISTRY.create(opts, &command) {
@@ -232,6 +217,7 @@ pub async fn run(
                         let mut terminal = entry.lock().unwrap();
                         terminal.mark_exited(Some(code));
                     }
+                    REGISTRY.persist();
                     logger::log_exit(&terminal_id, Some(code));
                     Ok(RunResult {
                         ok: true,
@@ -291,6 +277,7 @@ pub async fn run_background(
         cols: 80,
         rows: 24,
         description,
+        shell: None,
     };
 
     match REGISTRY.create(opts, &command) {
@@ -301,9 +288,10 @@ pub async fn run_background(
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
             let (output, exit_code, ok) = if let Some(entry) = REGISTRY.get_terminal(&tid) {
-                let terminal = entry.lock().unwrap();
+                let mut terminal = entry.lock().unwrap();
                 match terminal.try_wait_exit() {
                     Ok(Some(code)) => {
+                        terminal.mark_exited(Some(code));
                         let out = strip_ansi(&terminal.tail_chars(5000));
                         (out, Some(code), true)
                     }
@@ -312,7 +300,7 @@ pub async fn run_background(
                         let out = strip_ansi(&terminal.tail_chars(2000));
                         (out, None, true)
                     }
-                    Err(e) => {
+                    Err(_) => {
                         let out = strip_ansi(&terminal.tail_chars(5000));
                         (out, None, false)
                     }
@@ -320,6 +308,7 @@ pub async fn run_background(
             } else {
                 (String::new(), None, false)
             };
+            REGISTRY.persist();
 
             let duration_ms = start.elapsed().as_millis() as f64;
 
@@ -424,14 +413,6 @@ pub fn set_sandbox(config: SandboxConfigNapi) -> Result<()> {
     Ok(())
 }
 
-/// 获取沙箱注入的提示词
-#[napi]
-pub fn get_sandbox_prompt() -> Option<String> {
-    // 通过 registry 获取沙箱提示词
-    // 这里简化处理，直接返回 None（实际需要通过 registry 访问 sandbox）
-    None
-}
-
 /// 获取终端状态面板
 #[napi]
 pub fn status_panel(agent_name: String) -> String {
@@ -442,6 +423,56 @@ pub fn status_panel(agent_name: String) -> String {
 #[napi]
 pub fn terminal_count() -> u32 {
     REGISTRY.count() as u32
+}
+
+#[napi]
+pub fn resize(id: String, cols: u32, rows: u32) -> Result<()> {
+    REGISTRY
+        .resize(&id, cols as u16, rows as u16)
+        .map_err(Into::into)
+}
+
+#[napi]
+pub fn subscribe(
+    id: String,
+    callback: ThreadsafeFunction<TerminalStreamEventNapi, ()>,
+) -> Result<u32> {
+    let cb = Arc::new(move |ev: StreamEvent| {
+        let napi_ev = match ev {
+            StreamEvent::Data(data) => TerminalStreamEventNapi {
+                kind: "data".into(),
+                data: Some(data),
+                exit_code: None,
+            },
+            StreamEvent::Exit(code) => TerminalStreamEventNapi {
+                kind: "exit".into(),
+                data: None,
+                exit_code: code,
+            },
+        };
+        let _ = callback.call(Ok(napi_ev), ThreadsafeFunctionCallMode::NonBlocking);
+    });
+    REGISTRY.subscribe(&id, cb).map_err(Into::into)
+}
+
+#[napi]
+pub fn unsubscribe(id: String, sub_id: u32) -> Result<()> {
+    REGISTRY.unsubscribe(&id, sub_id).map_err(Into::into)
+}
+
+#[napi]
+pub fn open_interactive(opts: OpenInteractiveOptions) -> Result<String> {
+    let id = format!("human_{}", chrono::Utc::now().timestamp_millis());
+    let create = terminal::CreateOptions {
+        id: id.clone(),
+        agent_name: opts.agent_name,
+        cwd: opts.cwd,
+        cols: opts.cols.unwrap_or(80),
+        rows: opts.rows.unwrap_or(24),
+        description: "interactive".into(),
+        shell: opts.shell,
+    };
+    REGISTRY.create_interactive(create).map_err(Into::into)
 }
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────────

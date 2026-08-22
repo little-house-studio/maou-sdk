@@ -1,5 +1,5 @@
 /**
- * Structural check: context top chrome is jump-only.
+ * Structural check: context top chrome is session-tree crumbs + jump-only.
  * Busy stream banner + TASKS moved to bottom dock (not top float/in-flow tasks).
  * Reads shipped draft.css (no re-implementation of layout math).
  */
@@ -22,6 +22,18 @@ describe("context chrome CSS coexistence", () => {
     assert.doesNotMatch(contextSrc, /工作中/);
     // bgTasks not a context prop — tasks live in bottom dock
     assert.doesNotMatch(contextSrc, /bgTasks/);
+  });
+
+  it("session tree crumbs sit as a shrink-0 header strip", () => {
+    assert.match(contextSrc, /SessionTreeCrumbs/);
+    assert.match(
+      css,
+      /\.wire-session-tree\s*\{[^}]*flex-shrink:\s*0/s,
+    );
+    assert.match(
+      css,
+      /\.wire-session-tree-crumbs\s*\{/s,
+    );
   });
 
   it("jump bar is solid in-flow strip (no thread bleed)", () => {

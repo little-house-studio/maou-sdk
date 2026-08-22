@@ -5,7 +5,7 @@
  * 可追溯：每条日志包含 terminal_id, agent_name, command 等
  */
 
-use tracing::{info, warn, error, instrument};
+use tracing::{info, warn, error};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// 初始化日志
@@ -59,15 +59,6 @@ pub fn log_exit(terminal_id: &str, exit_code: Option<i32>) {
         exit_code = exit_code,
         action = "exit",
         "终端退出"
-    );
-}
-
-pub fn log_stop(terminal_id: &str, agent_name: &str) {
-    warn!(
-        terminal_id = terminal_id,
-        agent_name = agent_name,
-        action = "stop",
-        "终端停止"
     );
 }
 

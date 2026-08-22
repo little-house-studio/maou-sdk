@@ -71,6 +71,7 @@ export function createDefaultSubagentRunFn(
             sessionId: subSessionId,
             agentName: options?.agentName ?? "main",
             title: `fork: ${taskId}`,
+            parentSessionId: options.parentSessionId,
           });
         }
       }
@@ -79,6 +80,7 @@ export function createDefaultSubagentRunFn(
         sessionId: subSessionId,
         agentName: options?.agentName ?? "main",
         title: `fork: ${taskId}`,
+        parentSessionId: options?.parentSessionId,
       });
     }
 

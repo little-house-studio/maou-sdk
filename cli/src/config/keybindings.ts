@@ -6,6 +6,9 @@
  */
 
 import {
+  listShortcuts,
+} from "@little-house-studio/agent";
+import {
   cliCommands,
   registerBuiltinCliCommands,
 } from "../slash/index.js";
@@ -79,6 +82,11 @@ export function listKeyBindings(): KeyBindingDef[] {
       label: c.label,
       commandId: c.id,
     });
+  }
+
+  for (const sc of listShortcuts()) {
+    if (map.has(sc.key)) continue;
+    map.set(sc.key, { key: sc.key, label: sc.description });
   }
 
   return [...map.values()];

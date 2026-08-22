@@ -1,8 +1,8 @@
 /**
- * 模型注册表 SDK —— 纯动态，无硬编码
+ * 模型注册表 SDK
  *
- * 所有厂商和模型都通过 registerProvider/registerModel 动态注册，
- * 不依赖内置硬编码目录。
+ * 首次查询时灌入内置目录（catalog.generated，失败则手写 catalog）。
+ * registerProvider / registerModel 可覆盖或追加；同名厂商不覆盖已注册项。
  *
  * @example
  * import { registerProvider, getModel, toAPIPreset } from "core/llm/registry"
@@ -30,11 +30,25 @@ import type { APIPreset } from "../adapters/types.js";
 import type { ModelSpec, ProviderSpec } from "./types.js";
 import { getEnvApiKey } from "../env.js";
 import { readEnv } from "../runtime-env.js";
+import { builtinCatalog } from "./seed.js";
 
 export type { ModelSpec, ProviderSpec, ModelPricing, InputModality, OutputModality } from "./types.js";
+export { builtinCatalog } from "./seed.js";
 
-/** provider id → ProviderSpec（纯运行时注册） */
+/** provider id → ProviderSpec（纯运行时注册 + 首次查询时合并内置目录） */
 const PROVIDERS = new Map<string, ProviderSpec>();
+let catalogSeeded = false;
+
+/** 首次查询时灌入内置目录；已 register 的同名厂商不覆盖。 */
+export function ensureBuiltinCatalog(): void {
+  if (catalogSeeded) return;
+  catalogSeeded = true;
+  for (const spec of builtinCatalog()) {
+    if (!PROVIDERS.has(spec.id)) {
+      PROVIDERS.set(spec.id, structuredClone(spec));
+    }
+  }
+}
 
 // ── 类型 ──
 
@@ -51,21 +65,25 @@ export interface Model<TApi extends string = string> extends Omit<ModelSpec, "pr
 
 /** 列出所有已注册的 provider */
 export function getProviders(): ProviderSpec[] {
+  ensureBuiltinCatalog();
   return [...PROVIDERS.values()];
 }
 
 /** 取某个 provider 的元信息 */
 export function getProvider(provider: string): ProviderSpec | null {
+  ensureBuiltinCatalog();
   return PROVIDERS.get(provider) ?? null;
 }
 
 /** 列出某个 provider 的所有模型 */
 export function getModels(provider: string): ModelSpec[] {
+  ensureBuiltinCatalog();
   return PROVIDERS.get(provider)?.models ?? [];
 }
 
 /** 取某 provider 下指定 id 的模型 */
 export function getModel(provider: string, id: string): ModelSpec | null {
+  ensureBuiltinCatalog();
   const p = PROVIDERS.get(provider);
   if (!p) return null;
   return p.models.find((m) => m.id === id) ?? null;
@@ -73,6 +91,7 @@ export function getModel(provider: string, id: string): ModelSpec | null {
 
 /** 跨 provider 按模型 id 查找（返回首个命中） */
 export function findModel(id: string): ModelSpec | null {
+  ensureBuiltinCatalog();
   for (const p of PROVIDERS.values()) {
     const m = p.models.find((mm) => mm.id === id);
     if (m) return m;
@@ -82,9 +101,8 @@ export function findModel(id: string): ModelSpec | null {
 
 /** 列出所有模型（跨 provider 扁平化） */
 export function getAllModels(): ModelSpec[] {
-  const out: ModelSpec[] = [];
-  for (const p of PROVIDERS.values()) out.push(...p.models);
-  return out;
+  ensureBuiltinCatalog();
+  return [...PROVIDERS.values()].flatMap((p) => p.models);
 }
 
 // ── 注册 ──
@@ -92,6 +110,11 @@ export function getAllModels(): ModelSpec[] {
 /** 注册/覆盖一个 provider（含其模型） */
 export function registerProvider(spec: ProviderSpec): void {
   PROVIDERS.set(spec.id, structuredClone(spec));
+}
+
+/** 移除扩展注册的 provider（内置占位不存在时也安全） */
+export function unregisterProvider(id: string): boolean {
+  return PROVIDERS.delete(id);
 }
 
 /** 向已有 provider 追加/覆盖一个模型（provider 不存在时自动创建占位 provider） */
@@ -106,9 +129,10 @@ export function registerModel(provider: string, model: ModelSpec): void {
   else p.models.push({ ...model });
 }
 
-/** 清空所有注册（测试用） */
+/** 清空所有注册（测试用）。下次查询会重新灌入内置目录。 */
 export function clearProviders(): void {
   PROVIDERS.clear();
+  catalogSeeded = false;
 }
 
 // ── 桥接到 LLMClient ──
@@ -127,6 +151,7 @@ export function toAPIPreset(
   id: string,
   opts?: { key?: string; baseUrl?: string },
 ): APIPreset {
+  ensureBuiltinCatalog();
   const p = PROVIDERS.get(provider);
   if (!p) throw new Error(`未知 provider: ${provider}`);
   const m = p.models.find((mm) => mm.id === id);

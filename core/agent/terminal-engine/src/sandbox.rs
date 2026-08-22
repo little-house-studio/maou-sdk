@@ -92,18 +92,4 @@ impl Sandbox {
 
         Ok(())
     }
-
-    /// 获取注入的提示词（如果有）
-    pub fn get_injected_prompt(&self) -> Option<String> {
-        if self.inject_prompt {
-            self.prompt_text.clone().or_else(|| {
-                Some(
-                    "⚠️ 沙箱已启用：你的终端操作受路径限制。仅允许访问白名单中的路径，禁止访问系统关键目录。"
-                        .to_string(),
-                )
-            })
-        } else {
-            None
-        }
-    }
 }

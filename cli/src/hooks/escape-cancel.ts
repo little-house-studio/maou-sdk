@@ -16,6 +16,7 @@
 
 import { useStore } from "../state/store.js";
 import { answerTerminalApproval } from "../input/terminal-approval.js";
+import { settleHookConfirm } from "./hook-ui.js";
 
 export type EscapeAction =
   | "full_editor"
@@ -111,6 +112,7 @@ export function handleEscapeCancel(ctx: EscapeCancelContext = {}): EscapeCancelR
 
   // 6. overlay 弹层
   if (s.overlay) {
+    if (s.overlay === "confirm") settleHookConfirm(false);
     s.setOverlay(null);
     return { handled: true, action: "overlay" };
   }

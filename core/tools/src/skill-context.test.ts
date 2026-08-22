@@ -131,7 +131,7 @@ describe("skill-context", () => {
     expect(map.has("no-meta")).toBe(true);
   });
 
-  it("bake lists skills with available_skills tag", () => {
+  it("file cache zone lists skills with available_skills tag", () => {
     writeSkill(join(projectRoot, "skills", "a"), "a");
     const mgr = new SkillContextManager("main", projectRoot, maouRoot, {
       includeSystemNpmSkills: false,

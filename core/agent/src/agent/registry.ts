@@ -100,6 +100,16 @@ export interface AgentEntry {
    * 优先级：helperModel > roles.helper > helperPreset(legacy) > roles.fast > 主模型
    */
   helperModel?: string;
+  /**
+   * 缓存重建点触发开关（覆盖 Runtime 默认）。
+   * 微压缩（compactStage）从不触发，无需配置。
+   */
+  cacheRebuild?: {
+    onContextCompress?: boolean;
+    onManualCompact?: boolean;
+    onSessionNew?: boolean;
+    onSessionClear?: boolean;
+  };
   removal_request?: {
     reason: string;
     requested_by: string;

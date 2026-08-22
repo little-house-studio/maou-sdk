@@ -135,7 +135,9 @@ export function resolveSessionEventKind(msg: {
 
   if (role === "user") {
     const c = String(msg.content ?? "");
-    if (c.includes("<terminal-message>")) return "tool_async_notify";
+    if (c.includes("<terminal-message>") || c.includes("<tool-followup")) {
+      return "tool_async_notify";
+    }
     if (c.includes("<system_notice")) return "system_notice";
     if (c.includes("<continue>")) return "runtime_control";
     if (c.includes("<verification-failed>") || c.includes("<verification>")) {

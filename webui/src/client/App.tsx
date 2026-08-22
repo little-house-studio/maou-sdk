@@ -439,6 +439,7 @@ export function App() {
           setMode("chat");
           setShowFiles((v) => !v);
         }}
+        agentBusy={agentBusy}
       />
 
       {mode === "settings" ? (

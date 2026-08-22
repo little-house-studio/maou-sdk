@@ -106,6 +106,8 @@ function searchDirs(): string[] {
   const dirs = [
     // 预编译包自带的优先于用户全局，避免跨版本混用
     bundleVendorBin() ?? "",
+    // 源码树：scripts/vendor/bin（不占仓库根）
+    monoCli ? join(monoCli, "..", "scripts", "vendor", "bin") : "",
     userBinDir(),
     join(cliRoot, "tui-ratatui", "target", "release"),
     join(cliRoot, "tui-ratatui", "target", "debug"),
@@ -199,6 +201,23 @@ export function tryBuildRatatuiBinary(opts?: {
   const cargo = resolveCargo();
   if (!cargo) {
     log("[maou] 未找到 cargo，无法自动编译 maou-tui-ratatui");
+    return null;
+  }
+  const rustcBin = cargo.replace(/cargo(\.exe)?$/i, isWin() ? "rustc.exe" : "rustc");
+  const rustc = spawnSync(existsSync(rustcBin) ? rustcBin : isWin() ? "rustc.exe" : "rustc", ["--version"], {
+    encoding: "utf-8",
+    windowsHide: true,
+  });
+  const rustcText = `${rustc.stdout ?? ""} ${rustc.stderr ?? ""}`;
+  const rustcVer = /rustc\s+(\d+)\.(\d+)\.(\d+)/i.exec(rustcText);
+  const rustcOk =
+    rustcVer != null &&
+    (Number(rustcVer[1]) > 1 ||
+      (Number(rustcVer[1]) === 1 && Number(rustcVer[2]) >= 88));
+  if (!rustcOk) {
+    log(
+      `[maou] rustc ${rustcVer ? `${rustcVer[1]}.${rustcVer[2]}.${rustcVer[3]}` : "?"} < 1.88，跳过本机编译（改下预编译）`,
+    );
     return null;
   }
   const dir = tuiManifestDir();

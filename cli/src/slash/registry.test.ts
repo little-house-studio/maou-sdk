@@ -98,5 +98,12 @@ describe("CliCommandSpec registry", () => {
     const vals = uiSlashCommands().map((c) => c.value);
     expect(vals).toContain("/model");
     expect(vals).toContain("/select");
+    expect(vals).toContain("/term");
+    expect(isLocalCommandId("term")).toBe(true);
+    const d = dispatchSlash("/term logs human_1");
+    expect(d.type).toBe("local");
+    if (d.type === "local") {
+      expect(d.action).toEqual({ kind: "term", sub: "logs", id: "human_1" });
+    }
   });
 });

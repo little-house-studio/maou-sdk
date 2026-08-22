@@ -3,7 +3,7 @@
  * 确保 terminal-engine 原生 .node 可用（优先下载预编译，可选本机构建）。
  *
  * 目标文件（与 load.mjs 一致，underscore 名）：
- *   terminal-engine/terminal_engine.<platform>.node
+ *   core/agent/terminal-engine/terminal_engine.<platform>.node
  * 同时写一份 hyphen 名兼容加载。
  *
  * 用法：
@@ -35,19 +35,20 @@ import { fileURLToPath } from "node:url";
 import { platform, arch, tmpdir } from "node:os";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
+import { MIN_RUSTC_LABEL, probeRustc } from "./lib/rustc-version.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "..");
 
 /**
  * 引擎目录：
- *   monorepo → <repo>/terminal-engine
+ *   monorepo → <repo>/core/agent/terminal-engine
  *   bundle   → <bundle>/node_modules/@little-house-studio/terminal-engine
  * （bundle 里没有 Rust 源码，只会走下载分支）
  */
 function resolveEngineDir() {
   if (process.env.MAOU_TE_DIR) return process.env.MAOU_TE_DIR;
-  const monorepo = join(REPO_ROOT, "terminal-engine");
+  const monorepo = join(REPO_ROOT, "core", "agent", "terminal-engine");
   if (existsSync(join(monorepo, "package.json"))) return monorepo;
   const bundled = join(
     REPO_ROOT,
@@ -195,6 +196,13 @@ function tryLocalCargoBuild(triple) {
   const cargo = spawnSync("cargo", ["--version"], { encoding: "utf-8" });
   if (cargo.status !== 0) {
     console.warn("[ensure-terminal-engine] 未找到 cargo，跳过本机构建");
+    return false;
+  }
+  const rustc = probeRustc();
+  if (!rustc.ok) {
+    console.warn(
+      `[ensure-terminal-engine] rustc ${rustc.version ?? "?"} < ${MIN_RUSTC_LABEL}，跳过本机构建（请升级或走预编译）`,
+    );
     return false;
   }
   console.log("[ensure-terminal-engine] 本机 cargo build --release …");

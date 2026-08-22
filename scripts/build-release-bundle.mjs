@@ -225,7 +225,7 @@ function stepEnsureTerminalEngine() {
     log(`⚠ 交叉目标 ${PLATFORM_TAG}：必须用 --engine <path> 注入 .node`);
     return;
   }
-  const engineDir = join(REPO_ROOT, "terminal-engine");
+  const engineDir = join(REPO_ROOT, "core", "agent", "terminal-engine");
   const has = () =>
     existsSync(engineDir) &&
     readdirSync(engineDir).some((f) => f.endsWith(".node") && sizeOf(join(engineDir, f)) > 10_000);

@@ -183,11 +183,17 @@ describe("ContextPanel semantic structure", () => {
       meta: state.meta,
       statusHint: state.statusHint,
       usageLabel: state.usageLabel,
+      sessions: state.sessions,
+      activeSessionId: state.activeSessionId,
+      onSelectSession: () => {},
     });
     assert.match(html, /has-busy/);
     assert.match(html, /has-approval/);
     assert.match(html, /is-orphan/);
     assert.match(html, /wire-tool-card/);
     assert.match(html, /wire-tool-name/);
+    assert.match(html, /data-session-tree="crumbs"/);
+    assert.match(html, /搭建 Codex 风格外壳/);
+    assert.match(html, /调研 JS NPC 方法全貌/);
   });
 });

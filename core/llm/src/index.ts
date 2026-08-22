@@ -1,7 +1,7 @@
 /**
  * core/llm — LLM 层 SDK
  *
- * 提供 ChatSession（对话）、PresetManager（API 预设管理）、
+ * 提供 ChatSession（对话）、LLMConfig / api-presets（厂商目录 + 用户 API 名单）、
  * StreamJsonAccumulator（流式结构化输出提取）、
  * LLMClient + ModelCaller（底层 LLM 通信），
  * 以及多协议适配器（OpenAI / Anthropic / Responses / Google / Mistral / Bedrock /
@@ -56,7 +56,30 @@ export type {
 
 // ─── LLMConfig（统一 LLM 配置管理：内置目录 + 自定义 + 配置文件）─────────────
 export { LLMConfig, DEFAULT_CONFIG_PATH } from './llm-config.js'
-export type { CustomPreset, LLMConfigFile, LLMConfigOptions } from './llm-config.js'
+export type {
+  CustomPreset,
+  CustomProvider,
+  CustomModel,
+  LLMConfigFile,
+  LLMConfigOptions,
+} from './llm-config.js'
+
+// ─── 用户 API 名单（config.json api.presets）────────────────────────────────
+export {
+  resolveMaouConfigPath,
+  loadPresetsFromMaouConfig,
+  loadRawPresetsFromMaouConfig,
+  getApiPreset,
+  getDefaultPresetFromMaouConfig,
+  getRolePresetFromMaouConfig,
+  getDefaultPresetFromConfigStore,
+  isGlobalApiConfigured,
+  saveGlobalApiConfig,
+  upsertApiPreset,
+  removeApiPreset,
+  getGlobalMaouRoot,
+} from './api-presets.js'
+export type { GlobalApiWriteOptions } from './api-presets.js'
 
 // ─── StreamJsonAccumulator（流式 JSON 提取）─────────────────────────────────
 export { StreamJsonAccumulator } from './stream-parser.js'
@@ -124,6 +147,7 @@ export type {
   ProtocolAdapter,
   ParsedLLMResponse,
 } from './adapters/types.js'
+export { registerAdapter, getAdapterRegistry } from './adapter-registry.js'
 
 // ─── 防傻瓜能力校验（guardrails）────────────────────────────────────────────
 export { validateRequest } from './guardrails.js'
@@ -178,7 +202,10 @@ export {
   findModel,
   getAllModels,
   registerProvider,
+  unregisterProvider,
   registerModel,
+  ensureBuiltinCatalog,
+  builtinCatalog,
   toAPIPreset as modelToAPIPreset,
 } from './registry/index.js'
 export type {
@@ -349,3 +376,68 @@ export type {
   LLMToolCall,
 } from './adapters/types.js'
 export { normalizeApiProtocol, completeApiUrl } from './adapters/types.js'
+
+export {
+  mapPiApiToProtocol,
+  registerExtensionProviderRuntime,
+  unregisterExtensionProviderRuntime,
+  extensionProviderToPresets,
+  loadPersistedExtensionPresets,
+  loadPersistedExtensionProviders,
+  upsertPersistedExtensionProvider,
+  removePersistedExtensionProvider,
+  loginExtensionProvider,
+  extensionProvidersPath,
+} from './extension-providers.js'
+export type {
+  ExtensionProviderInput,
+  ExtensionProviderModel,
+  ExtensionOAuthConfig,
+  ExtensionOAuthCredentials,
+} from './extension-providers.js'
+
+// ─── 粘贴识别（规则先抽 + 可选 LLM 补空）───────────────────────────────────
+export {
+  parseClipboard,
+  ADDRESS_SCHEMA,
+  LLM_PRESET_SCHEMA,
+  normalizePasteSchema,
+  normalizePasteText,
+  peelRegion,
+  extractApiKeys,
+  looksLikeApiKey,
+  API_KEY_MIN,
+  extractRequestUrls,
+  inferProtocolFromUrl,
+  guessProtocolFromUrl,
+  DEFAULT_PROTOCOL,
+  extractModelGuesses,
+  looksLikeModelName,
+  fetchModelIds,
+  fetchPublicCatalogIds,
+  matchModelsInText,
+  matchAllModelsInText,
+  extractDeclaredModelIds,
+  collectModelIds,
+  pickPrimaryModel,
+  MODEL_LIST_TIMEOUT_MS,
+  MODELS_DEV_URL,
+  llmPresetFromFields,
+  applyLlmPresetToConfig,
+} from './paste-parse/index.js'
+export type {
+  ExtractorId,
+  FieldSource,
+  ParseClipboardOptions,
+  ParseClipboardResult,
+  ParseClipboardSchema,
+  ParsedField,
+  PasteFieldSpec,
+  PasteLlmFill,
+  PasteParseResult,
+  PasteSchema,
+  LlmPresetFormValues,
+  LlmPresetApplyInput,
+  LlmPresetBuildResult,
+  LlmPresetApplyResult,
+} from './paste-parse/index.js'

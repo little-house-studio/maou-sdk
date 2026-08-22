@@ -70,7 +70,15 @@ export const DOCK_EXPAND_W = DOCK_EXPAND_W_UI;
 export const DOCK_EXPAND_H_MIN = 96;
 export const DOCK_EXPAND_H_MAX = 480;
 
-export const DOCK_OPEN_THRESHOLD = 40;
+/**
+ * Over-center detent: pointer travel that breaks the slot magnet.
+ * Display height stays well below this (see detentPull) until snap-through.
+ */
+export const DOCK_BREAKAWAY_RAW = Math.round(DOCK_EXPAND_H_UI * 0.62);
+/** How high the board is allowed to peek before the 啪嗒 pop. */
+export const DOCK_DETENT_PEEK = Math.round(DOCK_EXPAND_H_UI * 0.3);
+/** Open commits on raw pointer travel, not displayed height. */
+export const DOCK_OPEN_THRESHOLD = DOCK_BREAKAWAY_RAW;
 export const DOCK_OPEN_VELOCITY = 0.38;
 export const DOCK_CLICK_SLOP_PX = 10;
 export const DOCK_CLOSE_FRACTION = 0.42;
@@ -317,9 +325,9 @@ export function easeOutCubic(t: number): number {
 }
 
 /** Hover strip open duration (s) — right edge grows first. */
-export const HOVER_EXPAND_S = 0.2;
-/** Hover strip collapse duration (s). */
-export const HOVER_COLLAPSE_S = 0.16;
+export const HOVER_EXPAND_S = 0.18;
+/** Hover strip collapse duration (s) — slightly slower so sweep overlaps. */
+export const HOVER_COLLAPSE_S = 0.22;
 /**
  * Extra title/preview text starts fading after this progress of the width grow
  * (label + badge always stay; text is additive).
@@ -355,6 +363,146 @@ export function hoverTextOpacity(
   const p = Math.max(0, Math.min(1, progress));
   if (p <= after) return 0;
   return easeOutCubic((p - after) / Math.max(0.001, 1 - after));
+}
+
+/** Gaussian weight 0..1 — how hard the pointer pulls on a slot. */
+export const DOCK_MAGNET_SIGMA = 56;
+export const DOCK_MAGNET_HOLD_PX = 16;
+export const DOCK_MAGNET_MAX_RISE = 9;
+export const DOCK_MAGNET_MAX_LEAN = 2.6;
+export const DOCK_MAGNET_MAX_SHIFT = 5;
+
+export function dockMagnetWeight(
+  pointerX: number,
+  centerX: number,
+  sigma = DOCK_MAGNET_SIGMA,
+): number {
+  const d = pointerX - centerX;
+  const s = Math.max(8, sigma);
+  return Math.exp(-(d * d) / (2 * s * s));
+}
+
+export type DockMagnetSlot = { id: DockCardId; center: number };
+
+/**
+ * Winner under the pointer. Hysteresis: keep `prevId` until the pointer
+ * is `holdPx` past the midpoint toward a neighbor (no flicker on the seam).
+ */
+export function dockMagnetWinner(
+  slots: readonly DockMagnetSlot[],
+  pointerX: number,
+  prevId: DockCardId | null = null,
+  holdPx = DOCK_MAGNET_HOLD_PX,
+): DockCardId | null {
+  if (slots.length === 0) return null;
+  let best = slots[0]!;
+  let bestW = dockMagnetWeight(pointerX, best.center);
+  for (let i = 1; i < slots.length; i++) {
+    const s = slots[i]!;
+    const w = dockMagnetWeight(pointerX, s.center);
+    if (w > bestW) {
+      best = s;
+      bestW = w;
+    }
+  }
+  if (!prevId || prevId === best.id) return best.id;
+  const prev = slots.find((s) => s.id === prevId);
+  if (!prev) return best.id;
+  const mid = (prev.center + best.center) / 2;
+  const towardBest = best.center >= prev.center ? 1 : -1;
+  if ((pointerX - mid) * towardBest < holdPx) return prevId;
+  return best.id;
+}
+
+export type DockMagnetPose = {
+  risePx: number;
+  leanDeg: number;
+  shiftX: number;
+  influence: number;
+};
+
+export const DOCK_MAGNET_REST: DockMagnetPose = {
+  risePx: 0,
+  leanDeg: 0,
+  shiftX: 0,
+  influence: 0,
+};
+
+/** Peek / lean / adsorb toward the pointer. Winner rises more. */
+export function dockMagnetPose(
+  pointerX: number,
+  centerX: number,
+  isWinner: boolean,
+  opts?: {
+    sigma?: number;
+    maxRise?: number;
+    maxLean?: number;
+    maxShift?: number;
+  },
+): DockMagnetPose {
+  const influence = dockMagnetWeight(pointerX, centerX, opts?.sigma);
+  const maxRise = opts?.maxRise ?? DOCK_MAGNET_MAX_RISE;
+  const maxLean = opts?.maxLean ?? DOCK_MAGNET_MAX_LEAN;
+  const maxShift = opts?.maxShift ?? DOCK_MAGNET_MAX_SHIFT;
+  const toward = Math.max(-1, Math.min(1, (pointerX - centerX) / 80));
+  const boost = isWinner ? 1 : 0.55;
+  return {
+    risePx: influence * maxRise * boost,
+    leanDeg: toward * influence * maxLean,
+    shiftX: toward * influence * maxShift,
+    influence,
+  };
+}
+
+export function lerpMagnetPose(
+  from: DockMagnetPose,
+  to: DockMagnetPose,
+  t: number,
+): DockMagnetPose {
+  const u = Math.max(0, Math.min(1, t));
+  return {
+    risePx: from.risePx + (to.risePx - from.risePx) * u,
+    leanDeg: from.leanDeg + (to.leanDeg - from.leanDeg) * u,
+    shiftX: from.shiftX + (to.shiftX - from.shiftX) * u,
+    influence: from.influence + (to.influence - from.influence) * u,
+  };
+}
+
+/** Independent per-card hover progress — sweep does not snap the previous shut. */
+export function stepHoverMap(
+  current: Partial<Record<DockCardId, number>>,
+  targetId: DockCardId | null,
+  dtSec: number,
+  ids: readonly DockCardId[] = defaultDockOrder(),
+): Partial<Record<DockCardId, number>> {
+  const next: Partial<Record<DockCardId, number>> = {};
+  let any = false;
+  for (const id of ids) {
+    const t = stepHoverProgress(current[id] ?? 0, id === targetId ? 1 : 0, dtSec);
+    if (t > 0.001) {
+      next[id] = t;
+      any = true;
+    }
+  }
+  return any ? next : {};
+}
+
+export function magnetPoseSettled(
+  pose: DockMagnetPose,
+  eps = 0.08,
+): boolean {
+  return (
+    Math.abs(pose.risePx) < eps &&
+    Math.abs(pose.leanDeg) < eps &&
+    Math.abs(pose.shiftX) < eps
+  );
+}
+
+/** CSS transform: bottom-edge pivot, peek out of the slot toward the pointer. */
+export function dockMagnetTransform(pose: DockMagnetPose): string | undefined {
+  if (magnetPoseSettled(pose, 0.04)) return undefined;
+  const y = -pose.risePx;
+  return `translateX(${pose.shiftX.toFixed(2)}px) translateY(${y.toFixed(2)}px) rotate(${pose.leanDeg.toFixed(2)}deg)`;
 }
 
 /**
@@ -422,6 +570,52 @@ export function rubberBand(x: number, max: number, dim = max): number {
   return max + (1 - 1 / ((over * c) / d + 1)) * d * 0.34;
 }
 
+/**
+ * Preload curve while the board is still in the slot magnet.
+ * Early travel follows a bit; near breakaway the gain collapses so the
+ * board stays low while the pointer keeps climbing (不跟手).
+ */
+export function detentPull(
+  rawPull: number,
+  breakaway = DOCK_BREAKAWAY_RAW,
+  peek = DOCK_DETENT_PEEK,
+): number {
+  const raw = Math.max(0, rawPull);
+  if (raw <= 0 || breakaway <= 0 || peek <= 0) return 0;
+  const u = Math.min(1, raw / breakaway);
+  // Cubic Hermite: start slope 1.15, end slope 0.08 (normalized 0..1)
+  const m0 = 1.15;
+  const m1 = 0.08;
+  const p =
+    m0 * u +
+    (-2 * m0 - m1 + 3) * u * u +
+    (m0 + m1 - 2) * u * u * u;
+  return peek * Math.max(0, Math.min(1, p));
+}
+
+export function isPullBreakaway(
+  rawPull: number,
+  breakaway = DOCK_BREAKAWAY_RAW,
+): boolean {
+  return rawPull >= breakaway;
+}
+
+/** Stow / failed-pull: short ease into the slot, no oscillating spring. */
+export const STOW_EASE_S = 0.2;
+
+export function easeCloseProgress(
+  elapsedSec: number,
+  durationS = STOW_EASE_S,
+): number {
+  if (durationS <= 0) return 1;
+  return easeOutCubic(Math.max(0, Math.min(1, elapsedSec / durationS)));
+}
+
+export function easeCloseHeight(startH: number, progress: number): number {
+  const p = Math.max(0, Math.min(1, progress));
+  return Math.max(0, startH * (1 - p));
+}
+
 export function clampPullHeight(h: number): number {
   return Math.max(0, Math.min(DOCK_EXPAND_H_MAX + 100, h));
 }
@@ -432,13 +626,6 @@ export type SpringState = { x: number; v: number };
 export const SPRING_OPEN = {
   stiffness: 440,
   damping: 30,
-  mass: 1,
-} as const;
-
-/** Snappy close — board snaps back into the rack. */
-export const SPRING_CLOSE = {
-  stiffness: 400,
-  damping: 36,
   mass: 1,
 } as const;
 
@@ -469,14 +656,15 @@ export function springSettled(
   return Math.abs(state.x - target) < posEps && Math.abs(state.v) < velEps;
 }
 
+/** Commit open from raw pointer travel — not the compressed display height. */
 export function releaseTarget(
-  pullH: number,
-  velocityUp: number,
+  rawPull: number,
+  _velocityUp = 0,
 ): { target: number; open: boolean } {
-  const open =
-    pullH >= DOCK_OPEN_THRESHOLD || velocityUp >= DOCK_OPEN_VELOCITY;
-  if (!open) return { target: 0, open: false };
-  return { target: DOCK_EXPAND_H_UI, open: true };
+  if (isPullBreakaway(rawPull)) {
+    return { target: DOCK_EXPAND_H_UI, open: true };
+  }
+  return { target: 0, open: false };
 }
 
 export function releaseResizeTarget(
@@ -508,7 +696,7 @@ export function pullFromPointer(startY: number, clientY: number): number {
 }
 
 export function displayPullHeight(rawPull: number): number {
-  return rubberBand(rawPull, DOCK_EXPAND_H_UI, DOCK_EXPAND_H_UI);
+  return detentPull(rawPull);
 }
 
 export function displayResizeHeight(
@@ -586,6 +774,10 @@ export type DockDragMoveOpts = {
 export type DockDragMoveResult = {
   session: DockDragSession;
   height: number;
+  /** Pointer travel up (px). Breakaway is judged on this, not `height`. */
+  raw: number;
+  /** Crossed the over-center threshold — live snap-through. */
+  breakaway: boolean;
   provisionalOpen: boolean;
   freezeHeight: boolean;
 };
@@ -620,6 +812,8 @@ export function applyDockDragMove(
     return {
       session: next,
       height: session.startH,
+      raw: 0,
+      breakaway: false,
       provisionalOpen: false,
       freezeHeight:
         switchingAway || (session.kind === "open" && already != null),
@@ -630,6 +824,8 @@ export function applyDockDragMove(
     return {
       session: next,
       height: session.startH,
+      raw: pullFromPointer(session.startY, clientY),
+      breakaway: false,
       provisionalOpen: true,
       freezeHeight: true,
     };
@@ -637,10 +833,13 @@ export function applyDockDragMove(
 
   if (session.kind === "open") {
     const raw = pullFromPointer(session.startY, clientY);
-    const height = displayPullHeight(raw);
+    // Interrupted close may leave startH > 0; never pop the board downward.
+    const height = Math.max(displayPullHeight(raw), session.startH);
     return {
       session: next,
       height,
+      raw,
+      breakaway: isPullBreakaway(raw),
       provisionalOpen: height > 4,
       freezeHeight: false,
     };
@@ -650,6 +849,8 @@ export function applyDockDragMove(
   return {
     session: next,
     height,
+    raw: Math.max(0, session.startY - clientY),
+    breakaway: false,
     provisionalOpen: true,
     freezeHeight: false,
   };
@@ -739,14 +940,14 @@ export function resolveDockPointerUp(
         velocityKick: Math.max(400, velUp * 1000),
       };
     }
-    const display = displayPullHeight(pullFromPointer(session.startY, y));
-    const { target, open } = releaseTarget(display, velUp);
+    const raw = pullFromPointer(session.startY, y);
+    const { target, open } = releaseTarget(raw, velUp);
     return {
       kind: "spring",
       targetH: target,
       open,
       id: session.id,
-      velocityKick: velUp * 1000,
+      velocityKick: open ? Math.max(OPEN_KICK_V, velUp * 1000) : 0,
     };
   }
 

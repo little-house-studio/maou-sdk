@@ -15,15 +15,24 @@ export type {
 export {
   loadPresetsFromMaouConfig,
   loadRawPresetsFromMaouConfig,
+  getApiPreset,
   getDefaultPresetFromMaouConfig,
   getDefaultPresetFromConfigStore,
   resolveMaouConfigPath,
   isGlobalApiConfigured,
   saveGlobalApiConfig,
+  upsertApiPreset,
+  removeApiPreset,
   getGlobalMaouRoot,
   getRolePresetFromMaouConfig,
 } from "./presets.js";
 export type { GlobalApiWriteOptions } from "./presets.js";
+
+export {
+  registerExtensionProvider,
+  unregisterExtensionProvider,
+  loginExtensionProvider,
+} from "./extension-providers.js";
 
 export {
   installTerminalReviewer,

@@ -165,7 +165,8 @@ export type OverlayKind =
   | "settings"
   | "agents"
   | "prompt"
-  | "theme";
+  | "theme"
+  | "confirm";
 
 /** 终端命令交互审批请求（normal 模式阻塞 agent 直至用户选择） */
 export interface TerminalApprovalState {

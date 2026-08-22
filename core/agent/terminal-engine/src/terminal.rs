@@ -1,15 +1,13 @@
 /**
  * terminal.rs — 终端实例管理
  *
- * 默认：全平台管道模式（stdout/stderr pipe），跨平台行为一致、输出抓取稳定。
- * 可选：MAOU_PTY_FORCE=1 时走 portable-pty（Unix openpty / Windows ConPTY），
- *       用于 write 键盘交互等真 TTY 场景。
+ * 默认：真 PTY（Unix openpty / Windows ConPTY）。`MAOU_PTY=0` 强制管道（调试/对比）。
+ * AI 会话仍压制 pager；人壳（spawn_interactive）不压制、不剥 ANSI。
  *
- * - spawn 命令（pipe 默认 / PTY 可选）
- * - 读取输出流 → ring buffer
- * - 写入（仅 PTY 模式）
- * - 停止（kill 子进程）
- * - 跨平台 shell 选择
+ * - spawn 命令（PTY 默认 / 管道可选）
+ * - 读取输出流 → ring buffer + subscribe 推 raw
+ * - 写入 / resize（仅 PTY）
+ * - 停止（kill 子进程；Unix 尽量挂进程组）
  */
 
 use crate::error::{TerminalError, TerminalResult};
@@ -19,11 +17,47 @@ use portable_pty::{CommandBuilder, PtyPair, PtySize, native_pty_system};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::process::{Child as StdChild, Command as StdCommand, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
-/// 子进程句柄：管道（默认）或 PTY（MAOU_PTY_FORCE）
+/// 流式订阅事件（给 JS subscribe；data 为 raw，含 ANSI）
+#[derive(Clone)]
+pub enum StreamEvent {
+    Data(String),
+    Exit(Option<i32>),
+}
+
+pub type StreamListener = Arc<dyn Fn(StreamEvent) + Send + Sync>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalKind {
+    Agent,
+    Human,
+}
+
+impl TerminalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Human => "human",
+        }
+    }
+
+    pub fn from_id_or_kind(id: &str, kind: Option<&str>) -> Self {
+        if kind == Some("human") || id.starts_with("human_") {
+            Self::Human
+        } else {
+            Self::Agent
+        }
+    }
+}
+
+enum PtyRole {
+    AgentCommand,
+    HumanShell,
+}
+
+/// 子进程句柄：管道或 PTY
 enum ChildHandle {
     Std(StdChild),
     Pty(Box<dyn portable_pty::Child + Send + Sync>),
@@ -37,13 +71,6 @@ impl ChildHandle {
         }
     }
 
-    fn wait(&mut self) -> std::io::Result<i32> {
-        match self {
-            Self::Std(c) => Ok(c.wait()?.code().unwrap_or(1)),
-            Self::Pty(c) => Ok(c.wait()?.exit_code() as i32),
-        }
-    }
-
     fn kill(&mut self) -> std::io::Result<()> {
         match self {
             Self::Std(c) => c.kill(),
@@ -52,14 +79,32 @@ impl ChildHandle {
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
         }
     }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn process_id(&self) -> Option<u32> {
+        match self {
+            Self::Std(c) => Some(c.id()),
+            Self::Pty(c) => c.process_id(),
+        }
+    }
 }
 
-/// 是否强制真 PTY（交互调试 / write 键盘）。默认 false = 全平台管道。
-fn pty_force_enabled() -> bool {
+/// 默认真 PTY。`MAOU_PTY=0`（或 false/no/off）强制管道。
+fn pty_enabled() -> bool {
     matches!(
-        std::env::var("MAOU_PTY_FORCE").ok().as_deref(),
-        Some("1") | Some("true") | Some("TRUE") | Some("yes")
+        std::env::var("MAOU_PTY").ok().as_deref(),
+        Some("0") | Some("false") | Some("FALSE") | Some("no") | Some("off")
     )
+    .then_some(false)
+    .unwrap_or(true)
+}
+
+fn emit_listeners(listeners: &Mutex<Vec<(u32, StreamListener)>>, ev: StreamEvent) {
+    if let Ok(ls) = listeners.lock() {
+        for (_, cb) in ls.iter() {
+            cb(ev.clone());
+        }
+    }
 }
 
 /// 把输出块写入 ring（按行切分，截断到 RING_MAX_LINES）
@@ -126,25 +171,6 @@ impl std::fmt::Display for TerminalState {
 /// ring buffer 最大行数
 const RING_MAX_LINES: usize = 2000;
 
-/// 终端输出事件
-#[derive(Debug, Clone)]
-pub struct OutputEvent {
-    pub terminal_id: String,
-    pub event_type: OutputEventType,
-    pub data: String,
-    pub exit_code: Option<i32>,
-    pub error: Option<String>,
-    pub timestamp_ms: u64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum OutputEventType {
-    Data,
-    Exit,
-    Error,
-    Timeout,
-}
-
 /// 终端实例
 pub struct Terminal {
     pub id: String,
@@ -179,10 +205,11 @@ pub struct Terminal {
     process_group: Option<ProcessGroup>,
     /// 是否正在运行
     running: Arc<AtomicBool>,
-    /// 启动时间
-    started_at: Option<Instant>,
-    /// 当前是否为真 PTY 会话（write 仅在此模式下可用）
+    /// 当前是否为真 PTY 会话（write / resize 仅在此模式下可用）
     is_pty: bool,
+    kind: TerminalKind,
+    listeners: Arc<Mutex<Vec<(u32, StreamListener)>>>,
+    next_sub: Arc<AtomicU32>,
 }
 
 /// 持久化结构
@@ -200,6 +227,8 @@ pub struct PersistedTerminal {
     pub last_viewed_at: Option<String>,
     /// ring buffer 持久化（最近 N 行）
     pub ring: Vec<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// 创建终端的选项
@@ -211,17 +240,28 @@ pub struct CreateOptions {
     pub cols: u16,
     pub rows: u16,
     pub description: String,
+    pub shell: Option<String>,
 }
 
 impl Terminal {
-    /// 创建并启动终端。默认管道；`MAOU_PTY_FORCE=1` 时真 PTY。
+    /// 创建并启动 AI 命令终端。默认 PTY；`MAOU_PTY=0` 时管道。
     pub fn spawn(opts: CreateOptions, command: &str) -> TerminalResult<Self> {
         let cwd = shell::normalize_cwd(&opts.cwd);
-        if pty_force_enabled() {
-            Self::spawn_pty(opts, command, cwd)
+        if pty_enabled() {
+            Self::spawn_pty(opts, command, cwd, PtyRole::AgentCommand)
         } else {
             Self::spawn_pipe(opts, command, cwd)
         }
+    }
+
+    /// 人壳：裸 shell，始终真 PTY，不走 -c / /c，不压制 pager。
+    pub fn spawn_interactive(opts: CreateOptions) -> TerminalResult<Self> {
+        let cwd = shell::normalize_cwd(&opts.cwd);
+        Self::spawn_pty(opts, "", cwd, PtyRole::HumanShell)
+    }
+
+    pub fn kind(&self) -> TerminalKind {
+        self.kind
     }
 
     /// 全平台管道模式：shell -c / cmd /c，stdout+stderr 管道异步读入 ring。
@@ -274,15 +314,19 @@ impl Terminal {
             child: Arc::new(Mutex::new(Some(ChildHandle::Std(child)))),
             process_group: pg,
             running: running.clone(),
-            started_at: Some(Instant::now()),
             is_pty: false,
+            kind: TerminalKind::Agent,
+            listeners: Arc::new(Mutex::new(Vec::new())),
+            next_sub: Arc::new(AtomicU32::new(1)),
         };
 
-        // 分别读 stdout / stderr，合并进同一 ring
+        // 分别读 stdout / stderr，合并进同一 ring，并推 subscribe
+        let listeners = terminal.listeners.clone();
         let spawn_reader = |mut reader: Box<dyn Read + Send>,
                             ring: Arc<Mutex<Vec<String>>>,
                             line_buf: Arc<Mutex<String>>,
-                            total_chars: Arc<Mutex<usize>>| {
+                            total_chars: Arc<Mutex<usize>>,
+                            listeners: Arc<Mutex<Vec<(u32, StreamListener)>>>| {
             std::thread::spawn(move || {
                 let mut buf = [0u8; 8192];
                 loop {
@@ -291,6 +335,7 @@ impl Terminal {
                         Ok(n) => {
                             let chunk = String::from_utf8_lossy(&buf[..n]);
                             append_output_chunk(&ring, &line_buf, &total_chars, &chunk);
+                            emit_listeners(&listeners, StreamEvent::Data(chunk.into_owned()));
                         }
                         Err(_) => break,
                     }
@@ -303,8 +348,9 @@ impl Terminal {
             ring.clone(),
             line_buf.clone(),
             total_chars.clone(),
+            listeners.clone(),
         );
-        spawn_reader(Box::new(stderr), ring, line_buf, total_chars);
+        spawn_reader(Box::new(stderr), ring, line_buf, total_chars, listeners);
 
         Ok(terminal)
     }
@@ -335,8 +381,13 @@ impl Terminal {
         Ok(cmd)
     }
 
-    /// 真 PTY 路径（MAOU_PTY_FORCE=1）：Unix openpty / Windows ConPTY
-    fn spawn_pty(opts: CreateOptions, command: &str, cwd: String) -> TerminalResult<Self> {
+    /// 真 PTY：Unix openpty / Windows ConPTY。人壳始终走这里。
+    fn spawn_pty(
+        opts: CreateOptions,
+        command: &str,
+        cwd: String,
+        role: PtyRole,
+    ) -> TerminalResult<Self> {
         let pty_system = native_pty_system();
 
         let pair = pty_system
@@ -348,23 +399,27 @@ impl Terminal {
             })
             .map_err(|e| TerminalError::PtySpawnFailed(e.to_string()))?;
 
-        // 与管道共用 shell_command_argv，避免两套拼装
-        let inv = shell::shell_command_argv(command);
+        let inv = match role {
+            PtyRole::HumanShell => shell::interactive_shell_argv(opts.shell.as_deref()),
+            PtyRole::AgentCommand => shell::shell_command_argv(command),
+        };
         let mut cmd = CommandBuilder::new(&inv.program);
         for a in &inv.args {
             cmd.arg(a);
         }
         // portable-pty CommandBuilder 无 raw_arg：Windows 把 /c 载荷作为普通 arg
-        // （ConPTY 路径本就少用；引号完整度略逊于管道 raw_arg）
         if let Some(ref raw) = inv.windows_cmd_raw_c {
-            // 去掉外包一层引号再交给 /c（CommandBuilder 会再处理）
             let inner = raw
                 .strip_prefix('"')
                 .and_then(|s| s.strip_suffix('"'))
                 .unwrap_or(raw.as_str());
             cmd.arg(inner);
         }
-        for (k, v) in shell::interactive_env() {
+        let env = match role {
+            PtyRole::HumanShell => shell::human_shell_env(),
+            PtyRole::AgentCommand => shell::interactive_env(),
+        };
+        for (k, v) in env {
             cmd.env(k, v);
         }
         for (k, v) in &inv.extra_env {
@@ -382,6 +437,32 @@ impl Terminal {
             }
         };
 
+        let child_pid = child.process_id();
+        let mut pg = None;
+        #[cfg(unix)]
+        {
+            if let Some(pid) = child_pid {
+                unsafe {
+                    libc::setpgid(pid as i32, 0);
+                }
+                if let Ok(mut g) = ProcessGroup::new() {
+                    let _ = g.attach_pid(pid);
+                    pg = Some(g);
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            // ConPTY 子进程挂 Job；Assign 失败（已在别的 Job 里）则 kill 时 taskkill /T
+            if let Some(pid) = child_pid {
+                if let Ok(mut g) = ProcessGroup::new() {
+                    if g.attach_pid(pid).is_ok() {
+                        pg = Some(g);
+                    }
+                }
+            }
+        }
+
         let reader = pair
             .master
             .try_clone_reader()
@@ -398,11 +479,19 @@ impl Terminal {
         drop(slave);
 
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let display_cmd = match role {
+            PtyRole::HumanShell => inv.program.clone(),
+            PtyRole::AgentCommand => command.to_string(),
+        };
+        let kind = match role {
+            PtyRole::HumanShell => TerminalKind::Human,
+            PtyRole::AgentCommand => TerminalKind::Agent,
+        };
 
         let terminal = Self {
             id: opts.id,
             agent_name: opts.agent_name,
-            command: command.to_string(),
+            command: display_cmd,
             description: opts.description,
             cwd,
             state: TerminalState::Running,
@@ -417,17 +506,19 @@ impl Terminal {
             master: Some(master),
             slave: None,
             child: Arc::new(Mutex::new(Some(ChildHandle::Pty(child)))),
-            // PTY 子进程树杀除依赖 portable-pty kill；Job/pg 对 ConPTY 孙进程不完全可靠
-            process_group: None,
+            process_group: pg,
             running: Arc::new(AtomicBool::new(true)),
-            started_at: Some(Instant::now()),
             is_pty: true,
+            kind,
+            listeners: Arc::new(Mutex::new(Vec::new())),
+            next_sub: Arc::new(AtomicU32::new(1)),
         };
 
         let ring = terminal.ring.clone();
         let line_buf = terminal.line_buf.clone();
         let total_chars = terminal.total_chars.clone();
         let running = terminal.running.clone();
+        let listeners = terminal.listeners.clone();
         let writer_for_dsr = writer;
 
         std::thread::spawn(move || {
@@ -463,6 +554,7 @@ impl Terminal {
                             let chunk = String::from_utf8_lossy(&pending).into_owned();
                             pending.clear();
                             append_output_chunk(&ring, &line_buf, &total_chars, &chunk);
+                            emit_listeners(&listeners, StreamEvent::Data(chunk));
                         }
                     }
                     Err(_) => break,
@@ -474,11 +566,40 @@ impl Terminal {
         Ok(terminal)
     }
 
+    pub fn resize(&mut self, cols: u16, rows: u16) -> TerminalResult<()> {
+        if !self.is_pty {
+            return Err(TerminalError::Other(
+                "当前为管道模式，不支持 resize（MAOU_PTY=0）".into(),
+            ));
+        }
+        let master = self.master.as_mut().ok_or_else(|| {
+            TerminalError::Other("PTY master 不可用，无法 resize".into())
+        })?;
+        master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| TerminalError::Other(format!("resize 失败: {e}")))
+    }
+
+    pub fn subscribe(&self, cb: StreamListener) -> u32 {
+        let id = self.next_sub.fetch_add(1, Ordering::SeqCst);
+        self.listeners.lock().unwrap().push((id, cb));
+        id
+    }
+
+    pub fn unsubscribe(&self, sub_id: u32) {
+        self.listeners.lock().unwrap().retain(|(id, _)| *id != sub_id);
+    }
+
     /// 写入（键盘输入模拟）—— 仅真 PTY 模式
     pub fn write(&self, data: &str) -> TerminalResult<()> {
         if !self.is_pty {
             return Err(TerminalError::PtyWriteFailed(
-                "当前为管道模式，不支持 write 键盘输入。需要交互时请设置环境变量 MAOU_PTY_FORCE=1 后重启 agent"
+                "当前为管道模式，不支持 write 键盘输入。需要交互时请去掉 MAOU_PTY=0 后重启"
                     .into(),
             ));
         }
@@ -501,7 +622,7 @@ impl Terminal {
         }
     }
 
-    /// 停止终端：先 ProcessGroup（整树），再 kill 直接 child
+    /// 停止终端：先 ProcessGroup（整树），再 kill 直接 child；Windows 再 taskkill /T
     pub fn kill(&mut self) -> TerminalResult<()> {
         self.running.store(false, Ordering::SeqCst);
 
@@ -513,26 +634,22 @@ impl Terminal {
         }
 
         let mut child_guard = self.child.lock().unwrap();
+        #[cfg(windows)]
+        let pid = child_guard.as_ref().and_then(ChildHandle::process_id);
         if let Some(ref mut child) = *child_guard {
             let _ = child.kill();
+        }
+        drop(child_guard);
+
+        #[cfg(windows)]
+        if let Some(pid) = pid {
+            process_group::taskkill_tree(pid);
         }
 
         self.state = TerminalState::Killed;
         self.updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        emit_listeners(&self.listeners, StreamEvent::Exit(self.exit_code));
         Ok(())
-    }
-
-    /// 等待子进程退出，返回 exit code
-    pub fn wait_exit(&self) -> TerminalResult<Option<i32>> {
-        let mut child_guard = self.child.lock().unwrap();
-        if let Some(ref mut child) = *child_guard {
-            let code = child
-                .wait()
-                .map_err(|e| TerminalError::PtyReadFailed(format!("wait exit: {}", e)))?;
-            Ok(Some(code))
-        } else {
-            Ok(self.exit_code)
-        }
     }
 
     /// 非阻塞检查是否已退出
@@ -611,13 +728,7 @@ impl Terminal {
         self.state = TerminalState::Exited;
         self.exit_code = exit_code;
         self.updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    }
-
-    /// 标记为已中断（重启恢复）
-    pub fn mark_interrupted(&mut self) {
-        self.running.store(false, Ordering::SeqCst);
-        self.state = TerminalState::Interrupted;
-        self.updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        emit_listeners(&self.listeners, StreamEvent::Exit(exit_code));
     }
 
     /// 是否正在运行
@@ -640,6 +751,7 @@ impl Terminal {
             updated_at: self.updated_at.clone(),
             last_viewed_at: self.last_viewed_at.clone(),
             ring,
+            kind: Some(self.kind.as_str().to_string()),
         }
     }
 
@@ -652,6 +764,7 @@ impl Terminal {
             "killed" => TerminalState::Killed,
             _ => TerminalState::Interrupted,
         };
+        let kind = TerminalKind::from_id_or_kind(&p.id, p.kind.as_deref());
 
         Self {
             id: p.id,
@@ -673,8 +786,10 @@ impl Terminal {
             child: Arc::new(Mutex::new(None)),
             process_group: None,
             running: Arc::new(AtomicBool::new(false)),
-            started_at: None,
             is_pty: false,
+            kind,
+            listeners: Arc::new(Mutex::new(Vec::new())),
+            next_sub: Arc::new(AtomicU32::new(1)),
         }
     }
 }

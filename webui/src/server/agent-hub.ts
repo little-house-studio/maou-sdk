@@ -12,12 +12,30 @@ import {
   listProvidersForCli,
   listModelsForCli,
   MESSAGE_QUEUE,
+  normalizeSendTurn,
+  sendDelivery,
+  resolveWebhookTarget,
+  resolveWorkspaceForSwitch,
+  WebhookResolveError,
   type MessageQueueMode,
   type QueuedMessage,
+  type WebhookHost,
+  type WebhookAgentInfo,
+  type WebhookChatLine,
+  type WebhookQueuedItem,
+  type WebhookSendResult,
+  type WebhookSessionInfo,
+  type WebhookStatusInfo,
+  type WebhookTarget,
 } from "@little-house-studio/agent";
-import type { StreamEvent } from "@little-house-studio/types";
+import type {
+  Message,
+  StreamEvent,
+  WebhookAgentMessage,
+  WebhookSendMode,
+} from "@little-house-studio/types";
 import { createCodingAgent } from "@little-house-studio/coding-agent";
-import type { SessionStore } from "@little-house-studio/context";
+import { type SessionStore } from "@little-house-studio/context";
 import {
   setTerminalPolicyRoot,
   setTerminalApprover,
@@ -39,7 +57,8 @@ import {
   resolveDefaultSwitchId,
   type LiveAgentDto,
 } from "./agent-list.js";
-import { listAgentTerminals } from "./agent-terminals.js";
+import { listAgentTerminals, rebindAgentTerminalPersist } from "./agent-terminals.js";
+export { resolveWorkspaceForSwitch } from "@little-house-studio/agent";
 
 function lastSessionPath(projectRoot: string): string {
   return join(projectRoot, ".maou", "last-session.json");
@@ -107,6 +126,7 @@ export type SessionSummary = {
   updatedAt?: string;
   messageCount: number;
   lastMsgAt?: string;
+  parentSessionId?: string;
 };
 
 export type ChatHistoryLine = {
@@ -118,7 +138,27 @@ export type ChatHistoryLine = {
   toolName?: string;
   toolOk?: boolean;
   toolCallId?: string;
+  images?: Message["images"];
+  source?: string;
 };
+
+export type WebhookDeliverOk = {
+  ok: true;
+  agent: string;
+  switchId: string;
+  sessionId: string;
+  status: "started" | "queued";
+  queueId?: number;
+};
+
+export type WebhookDeliverErr = {
+  ok: false;
+  error: string;
+  status: number;
+  candidates?: WebhookTarget[];
+};
+
+export type WebhookDeliverResult = WebhookDeliverOk | WebhookDeliverErr;
 
 export type PendingApproval = {
   id: string;
@@ -154,31 +194,6 @@ function asApprovalMode(v: string | undefined): ApprovalMode {
 }
 
 /**
- * Workspace root for sessions + coding-agent when an agent is active.
- * - project:<path>:<name> → <path>
- * - system:ops → ~/.maou/ops (if present) else maouRoot
- * - other system agents (main/coding/…) → hub boot cwd (webui --cwd)
- *   so launching webui in a repo still uses that repo's .maou/sessions
- */
-export function resolveWorkspaceForSwitch(opts: {
-  maouRoot: string;
-  bootProjectRoot: string;
-  kind: "system" | "project";
-  agentName: string;
-  projectPath: string | null;
-}): string {
-  if (opts.kind === "project" && opts.projectPath?.trim()) {
-    return opts.projectPath.trim();
-  }
-  const name = (opts.agentName || "").trim();
-  if (name === "ops") {
-    const ops = join(opts.maouRoot, "ops");
-    return existsSync(ops) ? ops : opts.maouRoot;
-  }
-  return opts.bootProjectRoot;
-}
-
-/**
  * 每个可切换 Agent（switch_id）的运行时槽。
  * 切换 Agent 时保留槽位与进行中的 run，不销毁、不 abort。
  */
@@ -195,7 +210,12 @@ type AgentRuntimeSlot = {
   restoredSession: boolean;
 };
 
-export class AgentHub {
+export class AgentHub implements WebhookHost {
+  /**
+   * 测试用：占住 runs / 入队，但不拉 Runtime（避免打到真 LLM）。
+   * HTTP webhook 不要开。
+   */
+  static skipWebhookRun = false;
   /** Launch cwd (webui --cwd); used as list ensure path + fallback workspace */
   readonly bootProjectRoot: string;
   readonly maouRoot: string;
@@ -279,6 +299,7 @@ export class AgentHub {
     this.sessionId = slot.sessionId;
     this.runs = slot.runs;
     this.restoredSession = slot.restoredSession;
+    rebindAgentTerminalPersist(this._projectRoot);
   }
 
   /** Effective workspace (sessions + agent run). */
@@ -361,6 +382,7 @@ export class AgentHub {
     this._activeProjectPath = nextProjectPath;
     this._activeSwitchId = nextSwitchId;
     this._projectRoot = nextRoot;
+    rebindAgentTerminalPersist(nextRoot);
     this.handle = null;
     this.sessionStore = null;
     this.sessionId = null;
@@ -401,23 +423,9 @@ export class AgentHub {
       this.restoreLastSessionIfNeeded();
       return this.handle;
     }
-    const deps = createStandardAgentDeps(this.projectRoot, this.maouRoot, {
-      reviewerOnMissingPreset: "approve",
-    });
-    this.sessionStore = deps.sessionStore;
-    this.handle = createCodingAgent({
-      name: this._agentName,
-      projectRoot: this.projectRoot,
-      maouRoot: this.maouRoot,
-      configStore: deps.configStore,
-      sessionStore: deps.sessionStore,
-      toolRegistry: deps.toolRegistry,
-      llmClient: deps.llmClient,
-      log: () => {},
-      enablePostLogger: false,
-    });
-    this.bootstrapPreset();
-    this.installTerminalApprover();
+    const built = this.buildHandle(this._agentName, this.projectRoot);
+    this.sessionStore = built.sessionStore;
+    this.handle = built.handle;
     // 同步磁盘策略（不强制覆盖 yolo 默认，除非磁盘有明确值）
     try {
       setTerminalPolicyRoot(this.maouRoot);
@@ -531,9 +539,10 @@ export class AgentHub {
     return listProvidersForCli();
   }
 
-  setModel(provider: string, model: string) {
+  setModel(provider: string, model: string): { provider: string; model: string } {
     this.provider = provider;
     this.model = model;
+    return { provider: this.provider, model: this.model };
   }
 
   /**
@@ -619,9 +628,11 @@ export class AgentHub {
     return m;
   }
 
-  listSessions(): SessionSummary[] {
-    this.ensureAgent();
-    const store = this.sessionStore!;
+  listSessions(agent?: string): SessionSummary[] {
+    const store = agent
+      ? this.slotFor(agent).sessionStore
+      : (this.ensureAgent(), this.sessionStore);
+    if (!store) return [];
     try {
       return store.list().map((s) => ({
         id: s.id,
@@ -629,30 +640,11 @@ export class AgentHub {
         updatedAt: s.updatedAt,
         messageCount: s.messageCount ?? 0,
         lastMsgAt: s.lastMsgAt,
+        ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
       }));
     } catch {
       return [];
     }
-  }
-
-  newSession(title?: string): { sessionId: string } {
-    this.ensureAgent();
-    // 新建会话不打断其它会话的并行 run
-    const id = this.handle!.startSession(title);
-    this.rememberSession(id);
-    return { sessionId: id };
-  }
-
-  switchSession(sessionId: string): { sessionId: string } {
-    this.ensureAgent();
-    const id = String(sessionId || "").trim();
-    if (!id) throw new Error("sessionId required");
-    const store = this.sessionStore!;
-    const data = store.load(id);
-    if (!data) throw new Error(`session not found: ${id}`);
-    // 切换焦点会话，不 abort 其它会话 run
-    this.rememberSession(id);
-    return { sessionId: id };
   }
 
   /** 清空会话消息（保留会话 id / 元数据） */
@@ -663,53 +655,12 @@ export class AgentHub {
     this.abortRun(id);
     this.sessionStore!.clearSession(id);
     this.rememberSession(id);
+    void this.handle?.runtime.atCacheRebuildPoint({
+      reason: "session_clear",
+      sessionId: id,
+      agentName: this.handle.agentName,
+    });
     return { sessionId: id };
-  }
-
-  /** 删除会话文件；若删的是当前会话则开新会话 */
-  deleteSession(sessionId: string): {
-    deleted: boolean;
-    sessionId: string | null;
-  } {
-    this.ensureAgent();
-    const id = String(sessionId || "").trim();
-    if (!id) throw new Error("sessionId required");
-    this.abortRun(id);
-    const deleted = this.sessionStore!.delete(id);
-    if (this.sessionId === id) {
-      this.sessionId = null;
-    }
-    return { deleted, sessionId: this.sessionId };
-  }
-
-  /** 重命名会话标题（写 meta.json） */
-  renameSession(sessionId: string, title: string): { sessionId: string; title: string } {
-    this.ensureAgent();
-    const id = String(sessionId || "").trim();
-    const t = String(title || "").trim();
-    if (!id) throw new Error("sessionId required");
-    if (!t) throw new Error("title required");
-    const metaPath = join(
-      this.projectRoot,
-      ".maou",
-      "sessions",
-      `${id}.meta.json`,
-    );
-    if (!existsSync(metaPath)) throw new Error(`session not found: ${id}`);
-    let meta: Record<string, unknown> = {};
-    try {
-      meta = JSON.parse(readFileSync(metaPath, "utf8")) as Record<
-        string,
-        unknown
-      >;
-    } catch {
-      meta = { id };
-    }
-    meta.id = id;
-    meta.title = t.slice(0, 80);
-    meta.updated_at = new Date().toISOString();
-    writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
-    return { sessionId: id, title: String(meta.title) };
   }
 
   /** 导出当前会话纯文本 transcript */
@@ -760,6 +711,10 @@ export class AgentHub {
           : typeof m.toolOk === "boolean"
             ? m.toolOk
             : undefined;
+      const images = Array.isArray(m.images)
+        ? (m.images as Message["images"])
+        : undefined;
+      const source = typeof m.source === "string" ? m.source : undefined;
       return {
         id: `${id}-${i}`,
         role: String(m.role ?? "assistant"),
@@ -768,6 +723,8 @@ export class AgentHub {
         ...(toolName ? { toolName } : {}),
         ...(toolCallId ? { toolCallId } : {}),
         ...(toolOk !== undefined ? { toolOk } : {}),
+        ...(images?.length ? { images } : {}),
+        ...(source ? { source } : {}),
       };
     });
   }
@@ -778,7 +735,7 @@ export class AgentHub {
 
   answerApproval(
     id: string,
-    choice: "once" | "always" | "deny" | "blacklist",
+    choice: string,
   ): boolean {
     const p = this.pendingApprovals.get(id);
     if (!p) return false;
@@ -1063,5 +1020,626 @@ export class AgentHub {
   removeQueuedMessage(id: number): boolean {
     if (!this.sessionId) return false;
     return MESSAGE_QUEUE.remove(this.sessionId, id);
+  }
+
+  resolveAgent(raw?: string | null): WebhookTarget {
+    return resolveWebhookTarget({
+      raw,
+      agents: this.listAgents(),
+      activeSwitchId: this._activeSwitchId,
+      bootProjectRoot: this.bootProjectRoot,
+      maouRoot: this.maouRoot,
+    });
+  }
+
+  status(agent?: string, session?: string): WebhookStatusInfo {
+    const slot = this.slotFor(agent, session);
+    const sid = session?.trim() || slot.sessionId;
+    return {
+      agent: slot.agentName,
+      switchId: slot.switchId,
+      sessionId: sid,
+      busy: sid ? slot.runs.has(sid) : slot.runs.size > 0,
+      provider: this.provider,
+      model: this.model,
+      approvalMode: this.sandboxMode,
+      projectRoot: slot.projectRoot,
+    };
+  }
+
+  async send(opts: {
+    agent?: string;
+    session?: string;
+    message: WebhookAgentMessage;
+    mode?: WebhookSendMode;
+    wait?: boolean;
+    timeoutMs?: number;
+  }): Promise<WebhookSendResult> {
+    const n = normalizeSendTurn(opts.message, opts.mode);
+    const slot = this.slotFor(opts.agent, opts.session);
+    if (!slot.sessionId) this.startSlotSession(slot);
+    const sid = slot.sessionId;
+    if (!sid || !slot.handle) throw new Error("failed to open session");
+    const busy = slot.runs.has(sid);
+    const delivery = sendDelivery(n.mode, busy);
+
+    if (delivery === "queue" || delivery === "insert") {
+      const { id } = MESSAGE_QUEUE.enqueue(sid, n.sessionText, {
+        mode:
+          delivery === "insert"
+            ? "interrupt_immediately"
+            : "after_round_complete",
+        source: "webhook",
+        metadata: n.queueMeta,
+      });
+      return {
+        status: "queued",
+        sessionId: sid,
+        switchId: slot.switchId,
+        agent: slot.agentName,
+        queueId: id,
+      };
+    }
+    if (delivery === "stop_and_send") {
+      slot.runs.get(sid)?.abort();
+      slot.runs.delete(sid);
+    }
+
+    const ac = new AbortController();
+    slot.runs.set(sid, ac);
+    if (AgentHub.skipWebhookRun) {
+      return {
+        status: "started",
+        sessionId: sid,
+        switchId: slot.switchId,
+        agent: slot.agentName,
+      };
+    }
+    if (opts.wait) {
+      if (opts.timeoutMs && opts.timeoutMs > 0) {
+        setTimeout(() => ac.abort(), opts.timeoutMs);
+      }
+      const parts: string[] = [];
+      for await (const ev of this.runChatOnSlot(slot, n.turn, "webhook")) {
+        if (ev.type === "text" || ev.type === "assistant" || ev.type === "content") {
+          const bit = ev.delta ?? ev.content ?? ev.message;
+          if (typeof bit === "string" && bit) parts.push(bit);
+        }
+      }
+      return {
+        status: "started",
+        sessionId: sid,
+        switchId: slot.switchId,
+        agent: slot.agentName,
+        text: parts.join(""),
+      };
+    }
+    this.drainGenerator(this.runChatOnSlot(slot, n.turn, "webhook"));
+    return {
+      status: "started",
+      sessionId: sid,
+      switchId: slot.switchId,
+      agent: slot.agentName,
+    };
+  }
+
+  abort(opts: { agent?: string; session?: string } = {}): {
+    aborted: boolean;
+    sessionId: string | null;
+  } {
+    const slot = this.slotFor(opts.agent, opts.session);
+    const sid = (opts.session ?? slot.sessionId)?.trim() || null;
+    if (!sid) return { aborted: false, sessionId: null };
+    const ac = slot.runs.get(sid);
+    if (ac) {
+      try {
+        ac.abort();
+      } catch {
+        /* ignore */
+      }
+      slot.runs.delete(sid);
+    }
+    try {
+      MESSAGE_QUEUE.clear(sid);
+    } catch {
+      /* ignore */
+    }
+    if (slot.switchId === this._activeSwitchId) {
+      this.syncActiveIntoSlots();
+    }
+    return { aborted: Boolean(ac), sessionId: sid };
+  }
+
+  enqueue(opts: {
+    agent?: string;
+    session?: string;
+    message: WebhookAgentMessage;
+    mode?: "queue" | "insert";
+  }): { queueId: number; sessionId: string; switchId: string; agent: string } {
+    const n = normalizeSendTurn(opts.message, opts.mode);
+    const slot = this.slotFor(opts.agent, opts.session);
+    if (!slot.sessionId) this.startSlotSession(slot);
+    const sid = slot.sessionId!;
+    if (!slot.runs.has(sid)) {
+      throw new Error("agent idle — use action send");
+    }
+    const { id } = MESSAGE_QUEUE.enqueue(sid, n.sessionText, {
+      mode:
+        n.mode === "insert" || opts.mode === "insert"
+          ? "interrupt_immediately"
+          : "after_round_complete",
+      source: "webhook",
+      metadata: n.queueMeta,
+    });
+    return {
+      queueId: id,
+      sessionId: sid,
+      switchId: slot.switchId,
+      agent: slot.agentName,
+    };
+  }
+
+  /** @deprecated 用 send / handleWebhook；测试仍走这条同步口 */
+  deliverWebhook(opts: {
+    agent?: string;
+    message: WebhookAgentMessage;
+    sessionId?: string;
+  }): WebhookDeliverResult {
+    let n;
+    try {
+      n = normalizeSendTurn(opts.message);
+    } catch (e) {
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : "message required",
+        status: 400,
+      };
+    }
+    try {
+      const slot = this.slotFor(opts.agent, opts.sessionId);
+      if (!slot.sessionId) this.startSlotSession(slot);
+      const sid = slot.sessionId;
+      if (!sid) return { ok: false, error: "failed to open session", status: 500 };
+      if (slot.runs.has(sid)) {
+        const { id } = MESSAGE_QUEUE.enqueue(sid, n.sessionText, {
+          mode: "after_round_complete",
+          source: "webhook",
+          metadata: n.queueMeta,
+        });
+        return {
+          ok: true,
+          agent: slot.agentName,
+          switchId: slot.switchId,
+          sessionId: sid,
+          status: "queued",
+          queueId: id,
+        };
+      }
+      slot.runs.set(sid, new AbortController());
+      if (!AgentHub.skipWebhookRun) {
+        this.drainGenerator(this.runChatOnSlot(slot, n.turn, "webhook"));
+      }
+      return {
+        ok: true,
+        agent: slot.agentName,
+        switchId: slot.switchId,
+        sessionId: sid,
+        status: "started",
+      };
+    } catch (e) {
+      if (e instanceof WebhookResolveError) {
+        return {
+          ok: false,
+          error: e.message,
+          status: e.status,
+          candidates: e.candidates,
+        };
+      }
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        status: 400,
+      };
+    }
+  }
+
+  newSession(opts?: { agent?: string; title?: string } | string): { sessionId: string } {
+    const title = typeof opts === "string" ? opts : opts?.title;
+    const agent = typeof opts === "string" ? undefined : opts?.agent;
+    if (!agent) {
+      this.ensureAgent();
+      const id = this.handle!.startSession(title);
+      this.rememberSession(id);
+      return { sessionId: id };
+    }
+    const slot = this.slotFor(agent);
+    this.startSlotSession(slot, title);
+    return { sessionId: slot.sessionId! };
+  }
+
+  switchSession(
+    sessionIdOrOpts: string | { agent?: string; session: string },
+  ): { sessionId: string } {
+    if (typeof sessionIdOrOpts === "string") {
+      this.ensureAgent();
+      const id = String(sessionIdOrOpts || "").trim();
+      if (!id) throw new Error("sessionId required");
+      const data = this.sessionStore!.load(id);
+      if (!data) throw new Error(`session not found: ${id}`);
+      this.rememberSession(id);
+      return { sessionId: id };
+    }
+    const slot = this.slotFor(sessionIdOrOpts.agent, sessionIdOrOpts.session);
+    return { sessionId: slot.sessionId! };
+  }
+
+  clearSession(opts: { agent?: string; session?: string } = {}): { sessionId: string } {
+    if (!opts.agent && !opts.session) {
+      return this.clearSessionMessages();
+    }
+    const slot = this.slotFor(opts.agent, opts.session);
+    const id = slot.sessionId;
+    if (!id || !slot.sessionStore) throw new Error("no active session");
+    this.abort({ agent: opts.agent, session: id });
+    slot.sessionStore.clearSession(id);
+    void slot.handle?.runtime.atCacheRebuildPoint({
+      reason: "session_clear",
+      sessionId: id,
+      agentName: slot.agentName,
+    });
+    return { sessionId: id };
+  }
+
+  deleteSession(
+    sessionIdOrOpts: string | { agent?: string; session: string },
+  ): { deleted: boolean; sessionId: string | null } {
+    if (typeof sessionIdOrOpts === "string") {
+      this.ensureAgent();
+      const id = String(sessionIdOrOpts || "").trim();
+      if (!id) throw new Error("sessionId required");
+      this.abortRun(id);
+      const deleted = this.sessionStore!.delete(id);
+      if (this.sessionId === id) this.sessionId = null;
+      return { deleted, sessionId: this.sessionId };
+    }
+    const slot = this.slotFor(sessionIdOrOpts.agent);
+    const id = sessionIdOrOpts.session.trim();
+    this.abort({ agent: sessionIdOrOpts.agent, session: id });
+    const deleted = slot.sessionStore?.delete(id) ?? false;
+    if (slot.sessionId === id) {
+      slot.sessionId = null;
+      if (slot.switchId === this._activeSwitchId) this.sessionId = null;
+    }
+    return { deleted, sessionId: slot.sessionId };
+  }
+
+  renameSession(
+    sessionIdOrOpts: string | { agent?: string; session: string; title: string },
+    titleArg?: string,
+  ): { sessionId: string; title: string } {
+    if (typeof sessionIdOrOpts === "string") {
+      return this.renameSessionOnRoot(
+        this.projectRoot,
+        sessionIdOrOpts,
+        String(titleArg ?? ""),
+      );
+    }
+    const slot = this.slotFor(sessionIdOrOpts.agent, sessionIdOrOpts.session);
+    return this.renameSessionOnRoot(
+      slot.projectRoot,
+      sessionIdOrOpts.session,
+      sessionIdOrOpts.title,
+    );
+  }
+
+  sessionMessages(opts: {
+    agent?: string;
+    session?: string;
+  } = {}): { sessionId: string; messages: WebhookChatLine[] } {
+    const mapLines = (lines: ChatHistoryLine[]): WebhookChatLine[] =>
+      lines.map((m) => ({
+        role:
+          m.role === "user" ||
+          m.role === "assistant" ||
+          m.role === "system" ||
+          m.role === "tool"
+            ? m.role
+            : "assistant",
+        content: m.content,
+        timestamp: m.ts || "",
+        id: m.id,
+        ...(m.toolName ? { toolName: m.toolName } : {}),
+        ...(m.images?.length ? { images: m.images } : {}),
+        ...(m.source ? { source: m.source } : {}),
+      }));
+    if (!opts.agent && !opts.session) {
+      const id = this.sessionId || "";
+      return { sessionId: id, messages: mapLines(this.loadSessionMessages(id)) };
+    }
+    const slot = this.slotFor(opts.agent, opts.session);
+    const id = slot.sessionId || "";
+    if (!id || !slot.sessionStore) return { sessionId: id, messages: [] };
+    const prevStore = this.sessionStore;
+    const prevRoot = this._projectRoot;
+    this.sessionStore = slot.sessionStore;
+    this._projectRoot = slot.projectRoot;
+    try {
+      return { sessionId: id, messages: mapLines(this.loadSessionMessages(id)) };
+    } finally {
+      this.sessionStore = prevStore;
+      this._projectRoot = prevRoot;
+    }
+  }
+
+  sessionStats(opts: {
+    agent?: string;
+    session?: string;
+  } = {}): { sessionId: string; stats: Record<string, unknown> } {
+    const slot = opts.agent || opts.session ? this.slotFor(opts.agent, opts.session) : null;
+    const id = slot?.sessionId || this.sessionId || "";
+    const stats = slot
+      ? collectSessionStats(slot.projectRoot, id)
+      : this.getSessionStats(id);
+    return { sessionId: id, stats: (stats ?? {}) as Record<string, unknown> };
+  }
+
+  exportSession(opts: {
+    agent?: string;
+    session?: string;
+  } = {}): { sessionId: string; text: string } {
+    const { sessionId, messages } = this.sessionMessages(opts);
+    if (messages.length === 0) {
+      return { sessionId, text: "(empty session)\n" };
+    }
+    const text =
+      messages
+        .map((m) => `### ${(m.role || "assistant").toUpperCase()}\n${m.content || ""}\n`)
+        .join("\n") + "\n";
+    return { sessionId, text };
+  }
+
+  getModel(): { provider: string; model: string } {
+    return { provider: this.provider, model: this.model };
+  }
+
+  listApprovals(): Array<Record<string, unknown>> {
+    return this.listPendingApprovals() as unknown as Array<Record<string, unknown>>;
+  }
+
+  listQueue(opts: { agent?: string; session?: string } = {}): WebhookQueuedItem[] {
+    if (!opts.agent && !opts.session) {
+      return this.listMessageQueue();
+    }
+    const slot = this.slotFor(opts.agent, opts.session);
+    const id = slot.sessionId;
+    if (!id) return [];
+    return MESSAGE_QUEUE.list(id).map((m: QueuedMessage) => ({
+      id: m.id,
+      message: m.message,
+      mode: m.mode,
+      enqueuedAt: m.enqueuedAt,
+      source: m.source,
+    }));
+  }
+
+  clearQueue(opts: { agent?: string; session?: string } = {}): number {
+    if (!opts.agent && !opts.session) return this.clearMessageQueue();
+    const slot = this.slotFor(opts.agent, opts.session);
+    const id = slot.sessionId;
+    if (!id) return 0;
+    const n = MESSAGE_QUEUE.size(id);
+    MESSAGE_QUEUE.clear(id);
+    return n;
+  }
+
+  removeQueue(opts: {
+    agent?: string;
+    session?: string;
+    queueId: number;
+  }): boolean {
+    if (!opts.agent && !opts.session) {
+      return this.removeQueuedMessage(opts.queueId);
+    }
+    const slot = this.slotFor(opts.agent, opts.session);
+    const id = slot.sessionId;
+    if (!id) return false;
+    return MESSAGE_QUEUE.remove(id, opts.queueId);
+  }
+
+  private renameSessionOnRoot(
+    projectRoot: string,
+    sessionId: string,
+    title: string,
+  ): { sessionId: string; title: string } {
+    const id = String(sessionId || "").trim();
+    const t = String(title || "").trim();
+    if (!id) throw new Error("sessionId required");
+    if (!t) throw new Error("title required");
+    const metaPath = join(projectRoot, ".maou", "sessions", `${id}.meta.json`);
+    if (!existsSync(metaPath)) throw new Error(`session not found: ${id}`);
+    let meta: Record<string, unknown> = {};
+    try {
+      meta = JSON.parse(readFileSync(metaPath, "utf8")) as Record<string, unknown>;
+    } catch {
+      meta = { id };
+    }
+    meta.id = id;
+    meta.title = t.slice(0, 80);
+    meta.updated_at = new Date().toISOString();
+    writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
+    return { sessionId: id, title: String(meta.title) };
+  }
+
+  private slotFor(agent?: string, session?: string): AgentRuntimeSlot {
+    const target = this.resolveAgent(agent);
+    const slot = this.ensureSlot(target);
+    if (session?.trim()) {
+      const id = session.trim();
+      const data = slot.sessionStore?.load(id);
+      if (!data) throw new Error(`session not found: ${id}`);
+      slot.sessionId = id;
+      writeLastSessionPointer(slot.projectRoot, id, slot.agentName);
+      if (slot.switchId === this._activeSwitchId) this.sessionId = id;
+    }
+    return slot;
+  }
+
+  /**
+   * 拿到（或新建）指定 Agent 槽，不切换 WebUI 焦点。
+   */
+  private ensureSlot(target: WebhookTarget): AgentRuntimeSlot {
+    this.syncActiveIntoSlots();
+    if (target.switchId === this._activeSwitchId) {
+      this.ensureAgent();
+      this.syncActiveIntoSlots();
+      const active = this.slots.get(target.switchId);
+      if (active) return active;
+    }
+
+    let slot = this.slots.get(target.switchId);
+    const projectRoot = resolveWorkspaceForSwitch({
+      maouRoot: this.maouRoot,
+      bootProjectRoot: this.bootProjectRoot,
+      kind: target.projectPath ? "project" : "system",
+      agentName: target.agentName,
+      projectPath: target.projectPath,
+    });
+
+    if (!slot) {
+      slot = {
+        switchId: target.switchId,
+        agentName: target.agentName,
+        projectRoot,
+        projectPath: target.projectPath,
+        handle: null,
+        sessionStore: null,
+        sessionId: null,
+        runs: new Map(),
+        restoredSession: false,
+      };
+      this.slots.set(target.switchId, slot);
+    }
+
+    if (!slot.handle || !slot.sessionStore) {
+      const built = this.buildHandle(slot.agentName, slot.projectRoot);
+      slot.handle = built.handle;
+      slot.sessionStore = built.sessionStore;
+    }
+    this.restoreSlotSession(slot);
+    return slot;
+  }
+
+  private buildHandle(agentName: string, projectRoot: string) {
+    const deps = createStandardAgentDeps(projectRoot, this.maouRoot, {
+      reviewerOnMissingPreset: "approve",
+    });
+    const handle = createCodingAgent({
+      name: agentName,
+      projectRoot,
+      maouRoot: this.maouRoot,
+      configStore: deps.configStore,
+      sessionStore: deps.sessionStore,
+      toolRegistry: deps.toolRegistry,
+      llmClient: deps.llmClient,
+      log: () => {},
+      enablePostLogger: false,
+    });
+    this.bootstrapPreset();
+    this.installTerminalApprover();
+    return { handle, sessionStore: deps.sessionStore };
+  }
+
+  private restoreSlotSession(slot: AgentRuntimeSlot): void {
+    if (slot.restoredSession || slot.sessionId) {
+      slot.restoredSession = true;
+      return;
+    }
+    slot.restoredSession = true;
+    const store = slot.sessionStore;
+    if (!store) return;
+    const fromPtr = readLastSessionPointer(slot.projectRoot);
+    if (fromPtr && store.load(fromPtr)) {
+      slot.sessionId = fromPtr;
+      return;
+    }
+    const latest = latestSessionId(slot.projectRoot);
+    if (latest && store.load(latest)) {
+      slot.sessionId = latest;
+      writeLastSessionPointer(slot.projectRoot, latest, slot.agentName);
+    }
+  }
+
+  private startSlotSession(slot: AgentRuntimeSlot, title?: string): void {
+    if (!slot.handle) return;
+    const id = slot.handle.startSession(title);
+    slot.sessionId = id;
+    writeLastSessionPointer(slot.projectRoot, id, slot.agentName);
+    if (slot.switchId === this._activeSwitchId) {
+      this.sessionId = id;
+      this.syncActiveIntoSlots();
+    }
+  }
+
+  private async *runChatOnSlot(
+    slot: AgentRuntimeSlot,
+    message: WebhookAgentMessage,
+    source: string,
+  ): AsyncGenerator<StreamEvent> {
+    const handle = slot.handle;
+    const n = normalizeSendTurn(message);
+    if (!handle || (!n.sessionText && !n.command)) return;
+
+    if (!slot.sessionId) {
+      this.startSlotSession(slot);
+    }
+    const sessionId = slot.sessionId;
+    if (!sessionId) return;
+
+    const runsMap = slot.runs;
+    const ac = runsMap.get(sessionId);
+    // 由 deliverToTarget 先占坑；已被 abort / 清槽则不再开跑
+    if (!ac || ac.signal.aborted) return;
+
+    const preset = resolvePresetForCli(this.provider, this.model) as Record<
+      string,
+      unknown
+    >;
+
+    try {
+      for await (const ev of handle.runtime.run({
+        sessionId,
+        userMessage: n.sessionText,
+        images: n.images,
+        userVideo: n.video,
+        userAudio: n.audio,
+        userName: n.name,
+        userCommand: n.command,
+        preset,
+        stream: true,
+        abortSignal: ac.signal,
+        source: source || "webhook",
+        initAgentName: slot.agentName,
+        sandboxMode: this.sandboxMode,
+      })) {
+        yield ev;
+        if (ev.type === "done" || ev.type === "error") break;
+      }
+    } finally {
+      if (runsMap.get(sessionId) === ac) {
+        runsMap.delete(sessionId);
+      }
+    }
+  }
+
+  private drainGenerator(gen: AsyncGenerator<unknown>): void {
+    void (async () => {
+      try {
+        for await (const _ev of gen) {
+          /* fire-and-forget：脚本只要 202，会话自己跑 */
+        }
+      } catch (e) {
+        console.error("[webhook]", e instanceof Error ? e.message : e);
+      }
+    })();
   }
 }

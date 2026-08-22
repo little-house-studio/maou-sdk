@@ -1,14 +1,3 @@
-/* auto-generated type declarations for terminal-engine */
-
-export interface CreateTerminalOptions {
-  agentName: string
-  id?: string
-  cwd: string
-  cols?: number
-  rows?: number
-  description: string
-}
-
 export interface RunResult {
   ok: boolean
   exitCode: number | null
@@ -16,15 +5,6 @@ export interface RunResult {
   durationMs: number
   terminalId: string
   error: string | null
-}
-
-export interface TerminalEvent {
-  terminalId: string
-  eventType: string
-  data: string | null
-  exitCode: number | null
-  error: string | null
-  timestamp: number
 }
 
 export interface FilterConfigNapi {
@@ -53,7 +33,26 @@ export interface TerminalInfoNapi {
   createdAt: string
   updatedAt: string
   lastViewedAt?: string
+  kind?: string
 }
+
+export interface TerminalStreamEvent {
+  kind: "data" | "exit" | "error"
+  data?: string
+  exitCode?: number | null
+  message?: string
+}
+
+export interface OpenInteractiveOptions {
+  agentName: string
+  cwd: string
+  cols?: number
+  rows?: number
+  shell?: string
+}
+
+export const isNativeAvailable: boolean
+export const nativeLoadError: string | null
 
 export function initEngine(logDir?: string): void
 export function setPersistPath(path: string): void
@@ -82,6 +81,15 @@ export function shutdown(): void
 export function setFilter(config: FilterConfigNapi): void
 export function loadFilterFromFile(path: string): void
 export function setSandbox(config: SandboxConfigNapi): void
-export function getSandboxPrompt(): string | null
 export function statusPanel(agentName: string): string
 export function terminalCount(): number
+export const hasResize: boolean
+export const hasSubscribe: boolean
+export const hasOpenInteractive: boolean
+export function resize(id: string, cols: number, rows: number): void
+export function subscribe(
+  id: string,
+  onEvent: (event: TerminalStreamEvent) => void,
+): () => void
+export function unsubscribe(id: string, subId: number): void
+export function openInteractive(opts: OpenInteractiveOptions): Promise<string>

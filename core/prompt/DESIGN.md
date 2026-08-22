@@ -17,7 +17,7 @@
 - 依赖：`@little-house-studio/types`（基础类型）
 - **不依赖llm层**：prompt层是纯文本处理，不调用LLM
 - 被依赖：
-    - `context`层依赖prompt层（buildMessages调compile、BakeFile调渲染）
+    - `context`层依赖prompt层（buildMessages调compile、BakeFile 写入文件缓存区）
     - `agent`层依赖prompt层（PromptCompiler、PersonaRegistry）
 - 依赖关系图：
     ```
@@ -141,7 +141,7 @@ core/prompt/src/
 
 ### context层依赖prompt层
 - buildMessages调用PromptCompiler编译system prompt
-- BakeFile（留context层）调用prompt层的渲染能力
+- BakeFile（留context层）把文件写入文件缓存区；渲染仍走 prompt 层
 - **压缩prompt模板属于context层**（业务提示词内容，不放prompt层）
 
 ### agent层依赖prompt层
@@ -150,7 +150,7 @@ core/prompt/src/
 - compileDynamicContext的依赖部分留agent层，模板部分调prompt层
 
 ### BakeFile边界
-- BakeFile整体留context层
+- BakeFile整体留context层（文件缓存区 + 上下文动态区 diff；折叠 = 缓存破坏）
 - 文件监听 + diff计算 = context层职责
 - 模板渲染 = 调用prompt层能力（通过接口注入）
 

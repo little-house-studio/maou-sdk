@@ -47,7 +47,7 @@ cleanup_rust_caches() {
     return 0
   fi
   log "[build-native] 清理 Rust 中间产物以控制磁盘…"
-  rm -rf "$ROOT/terminal-engine/target" \
+  rm -rf "$ROOT/core/agent/terminal-engine/target" \
          "$ROOT/cli/tui-ratatui/target" \
          "$ROOT/cli/native/term-raster/target" 2>/dev/null || true
   if [[ -n "${CARGO_TARGET_DIR:-}" && "$CARGO_TARGET_DIR" == *maou-cargo-target* ]]; then
@@ -70,7 +70,7 @@ if command -v pnpm >/dev/null 2>&1; then
   pnpm -r run build
   [[ -f "$ROOT/cli/dist/index.js" ]] || die "Core failed: cli/dist/index.js missing"
 else
-  die "pnpm required for monorepo build (npm i -g pnpm)"
+  die "pnpm@10 required for monorepo build (corepack prepare pnpm@10.15.1 --activate)"
 fi
 
 if [[ -f scripts/ensure-dcg.mjs ]]; then
@@ -84,10 +84,10 @@ if [[ "$PREFER_PREBUILD" -eq 1 && -f scripts/ensure-terminal-engine.mjs ]]; then
   log "[build-native] terminal-engine：尝试预编译下载…"
   node scripts/ensure-terminal-engine.mjs && _te_ok=1 || true
 fi
-if [[ "$_te_ok" -eq 0 && -d terminal-engine ]]; then
+if [[ "$_te_ok" -eq 0 && -d core/agent/terminal-engine ]]; then
   command -v cargo >/dev/null || die "Rust required for local terminal-engine build. Or publish prebuilds (docs/NATIVE_PREBUILD.md)."
   log "[build-native] terminal-engine (cargo build, release)…"
-  if ! (cd terminal-engine && cargo build --release); then
+  if ! (cd core/agent/terminal-engine && cargo build --release); then
     die "terminal-engine build failed. Check Rust installation."
   fi
   _dll="${CARGO_TARGET_DIR}/release/"
@@ -105,11 +105,11 @@ if [[ "$_te_ok" -eq 0 && -d terminal-engine ]]; then
     *)             die "unsupported platform for terminal-engine" ;;
   esac
   if [[ -f "$_dll" ]]; then
-    cp "$_dll" "terminal-engine/$_node"
-    cp "$_dll" "terminal-engine/terminal-engine.${_node#terminal_engine.}" 2>/dev/null || true
+    cp "$_dll" "core/agent/terminal-engine/$_node"
+    cp "$_dll" "core/agent/terminal-engine/terminal-engine.${_node#terminal_engine.}" 2>/dev/null || true
   fi
-  if [[ ! -f "terminal-engine/$_node" ]]; then
-    die "terminal-engine .node missing: terminal-engine/$_node"
+  if [[ ! -f "core/agent/terminal-engine/$_node" ]]; then
+    die "terminal-engine .node missing: core/agent/terminal-engine/$_node"
   fi
 fi
 
@@ -137,18 +137,6 @@ if [[ "$_tui_ok" -eq 0 && -d cli/tui-ratatui ]]; then
   cp "$_ratatui_bin" "$_maou_bin/maou-tui-ratatui"
   chmod +x "$_maou_bin/maou-tui-ratatui"
   log "[build-native] ratatui binary copied to $_maou_bin"
-fi
-
-if command -v npm >/dev/null 2>&1; then
-  log "[build-native] rebuild node-pty if present…"
-  node_pty_ok=1
-  (cd cli && npm rebuild node-pty 2>/dev/null) || node_pty_ok=0
-  (cd cli && npm rebuild @lydell/node-pty 2>/dev/null) || node_pty_ok=0
-  if [[ "$node_pty_ok" -ne 0 ]]; then
-    log "[build-native] node-pty rebuild: ✓（遗留依赖；use_terminal 主路径为 terminal-engine 管道）"
-  else
-    log "[build-native] ⚠ node-pty rebuild 失败 — 可忽略；use_terminal 由 terminal-engine 驱动，不依赖 node-pty"
-  fi
 fi
 
 cleanup_rust_caches

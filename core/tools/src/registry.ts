@@ -14,6 +14,7 @@ import type { Tool, ToolDefinition, ToolContext, ToolResponse } from "./base.js"
 import { toolFail } from "./errors.js";
 import { clearReadRegistry } from "./file/read-registry.js";
 import { clearHistory as clearFileEditHistory } from "./file/file-edit-history.js";
+import { toMaouToolName } from "./compat/tool-names.js";
 
 /** Schema with source path for whitelist matching */
 interface SchemaWithPath {
@@ -82,7 +83,7 @@ export class ToolRegistry {
    * Get tool by name or alias
    */
   get(name: string): Tool | undefined {
-    return this._tools.get(name);
+    return this._tools.get(name) ?? this._tools.get(toMaouToolName(name));
   }
 
   /**
@@ -152,7 +153,9 @@ export class ToolRegistry {
       // 白名单过滤
       if (effectiveWhitelist && !effectiveWhitelist.has(name)) {
         const aliases: string[] = tool.definition.aliases ?? [];
-        if (!aliases.some(a => effectiveWhitelist!.has(a))) {
+        const allowAlias = aliases.some(a => effectiveWhitelist!.has(a));
+        const allowCanon = [...effectiveWhitelist].some((w) => toMaouToolName(w) === name);
+        if (!allowAlias && !allowCanon) {
           continue;
         }
       }
@@ -271,7 +274,9 @@ export class ToolRegistry {
         if (!name || seenNames.has(name)) continue;
         if (effectiveWhitelist && !effectiveWhitelist.has(name)) {
           const aliases: string[] = tool.definition.aliases ?? [];
-          if (!aliases.some(a => effectiveWhitelist!.has(a))) continue;
+          const allowAlias = aliases.some(a => effectiveWhitelist!.has(a));
+          const allowCanon = [...effectiveWhitelist].some((w) => toMaouToolName(w) === name);
+          if (!allowAlias && !allowCanon) continue;
         }
         seenNames.add(name);
         schemas.push(schema);
@@ -290,6 +295,9 @@ export class ToolRegistry {
     if (whitelist.has(path)) return true;
     // Direct name match (backward compatible)
     if (whitelist.has(name)) return true;
+    if ([...whitelist].some((w) => toMaouToolName(w) === name || toMaouToolName(w) === toMaouToolName(name))) {
+      return true;
+    }
     // Prefix match: "terminal/*" matches all terminal tools
     for (const pattern of whitelist) {
       if (pattern.endsWith("/*") && path.startsWith(pattern.slice(0, -2))) return true;

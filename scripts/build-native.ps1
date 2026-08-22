@@ -13,7 +13,7 @@ function Die([string]$m) { Write-Host "error: $m" -ForegroundColor Red; exit 1 }
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Die "need Node.js >= 20" }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Die "need npm" }
-if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { Die "need pnpm (npm i -g pnpm)" }
+if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { Die "need pnpm@10 (corepack prepare pnpm@10.15.1 --activate)" }
 $PreferPrebuild = -not $FromSource
 $HasCargo = [bool](Get-Command cargo -ErrorAction SilentlyContinue)
 
@@ -29,7 +29,7 @@ function Cleanup-RustCaches {
   }
   Log "[build-native] cleaning Rust intermediate artifacts..."
   @(
-    (Join-Path $Root "terminal-engine\target"),
+    (Join-Path $Root "core\agent\terminal-engine\target"),
     (Join-Path $Root "cli\tui-ratatui\target"),
     (Join-Path $Root "cli\native\term-raster\target")
   ) | ForEach-Object {
@@ -72,11 +72,11 @@ if ($PreferPrebuild) {
   if (Test-Path $ensureTe) {
     Log "[build-native] terminal-engine: try prebuild download..."
     node $ensureTe
-    $teNode = Join-Path $Root "terminal-engine\terminal_engine.win32-x64-msvc.node"
+    $teNode = Join-Path $Root "core\agent\terminal-engine\terminal_engine.win32-x64-msvc.node"
     if (Test-Path $teNode) { $teOk = $true }
   }
 }
-$te = Join-Path $Root "terminal-engine"
+$te = Join-Path $Root "core\agent\terminal-engine"
 if (-not $teOk -and (Test-Path $te)) {
   if (-not $HasCargo) {
     Die "terminal-engine missing and no cargo. Publish prebuilds (docs/NATIVE_PREBUILD.md) or install Rust + VS Build Tools."
@@ -131,22 +131,6 @@ if (-not $tuiOk -and (Test-Path $rt)) {
   if (-not (Test-Path $maouBin)) { New-Item -ItemType Directory -Force -Path $maouBin | Out-Null }
   Copy-Item $ratatuiBin (Join-Path $maouBin "maou-tui-ratatui.exe") -Force
   Log "[build-native] ratatui binary copied to $maouBin"
-}
-
-Push-Location (Join-Path $Root "cli")
-$npOk = $true
-try {
-  $out = & npm rebuild node-pty 2>&1
-  if ($LASTEXITCODE -ne 0) { $npOk = $false; Write-Host "  node-pty rebuild stdout: $out" }
-  $out2 = & npm rebuild @lydell/node-pty 2>&1
-  if ($LASTEXITCODE -ne 0) { $npOk = $false; Write-Host "  @lydell/node-pty rebuild stdout: $out2" }
-} catch { $npOk = $false }
-Pop-Location
-if ($npOk) {
-  Log "[build-native] node-pty rebuild: OK"
-} else {
-  Log "[build-native] WARNING node-pty rebuild failed - use_terminal will degrade to spawn (Windows: install VS Build Tools + Windows SDK)"
-  Log "[build-native]   fix: winget install Microsoft.VisualStudio.2022.BuildTools --override --add Microsoft.VisualStudio.Workload.VCTools"
 }
 
 Cleanup-RustCaches

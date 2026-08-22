@@ -181,7 +181,7 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          cd terminal-engine
+          cd core/agent/terminal-engine
           if [ -n "$RUST_TARGET" ]; then
             cargo build --release --target "$RUST_TARGET"
             OUT="target/${RUST_TARGET}/release"
@@ -199,9 +199,9 @@ jobs:
           esac
           cp "$SRC" "terminal_engine.${TRIPLE}.node"
           cp "$SRC" "terminal-engine.${TRIPLE}.node"
-          mkdir -p ../dist-native
-          cp "$SRC" "../dist-native/terminal_engine.${TRIPLE}.node"
-          cp "$SRC" "../dist-native/terminal-engine.${TRIPLE}.node"
+          mkdir -p "$GITHUB_WORKSPACE/dist-native"
+          cp "$SRC" "$GITHUB_WORKSPACE/dist-native/terminal_engine.${TRIPLE}.node"
+          cp "$SRC" "$GITHUB_WORKSPACE/dist-native/terminal-engine.${TRIPLE}.node"
           echo "ENGINE_NODE=$(pwd)/terminal_engine.${TRIPLE}.node" >> "$GITHUB_ENV"
           ls -la *.node
 

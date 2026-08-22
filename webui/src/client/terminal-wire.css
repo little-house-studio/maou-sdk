@@ -94,6 +94,19 @@
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.term-panel--wire .term-search {
+  width: 88px;
+  min-height: 26px;
+  padding: 2px 6px;
+  border: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-code-bg, #1a1817);
+  color: var(--n-label, #f5f0e8);
+  font: inherit;
+  font-size: 11px;
 }
 
 /* Wire hard chips — 非 linkish 青绿 */

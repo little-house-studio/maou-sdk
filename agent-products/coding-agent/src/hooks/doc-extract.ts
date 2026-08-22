@@ -13,6 +13,7 @@
 
 import { Hooks } from "@little-house-studio/agent";
 import type { ToolCall } from "@little-house-studio/agent";
+import { toMaouToolName } from "@little-house-studio/tools";
 
 /** 默认拦截的写码 / 改文件工具 */
 export const DOC_EXTRACT_BLOCKED_TOOLS: ReadonlySet<string> = new Set([
@@ -63,7 +64,8 @@ export function shouldBlockDocExtractTool(toolName: string): boolean {
   const n = String(toolName ?? "").trim();
   if (!n) return false;
   if (DOC_EXTRACT_BLOCKED_TOOLS.has(n)) return true;
-  // 宽松：*write* / *edit_file* 类
+  const canon = toMaouToolName(n);
+  if (DOC_EXTRACT_BLOCKED_TOOLS.has(canon)) return true;
   const lower = n.toLowerCase();
   if (lower === "write_file" || lower === "edit_file") return true;
   return false;
@@ -89,9 +91,10 @@ export function registerDocExtractHooks(hooks: Hooks): void {
  * What: create_coding_hooks
  * How: optional_doc_extract
  */
-export function createCodingHooks(opts?: { docExtractMode?: boolean }): Hooks | undefined {
-  if (!isDocExtractEnabled(opts)) return undefined;
+export function createCodingHooks(opts?: { docExtractMode?: boolean }): Hooks {
   const hooks = new Hooks();
-  registerDocExtractHooks(hooks);
+  if (isDocExtractEnabled(opts)) {
+    registerDocExtractHooks(hooks);
+  }
   return hooks;
 }

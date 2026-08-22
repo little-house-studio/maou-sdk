@@ -31,7 +31,7 @@ Maou Agent 官方 SDK / Coding Agent monorepo（`@little-house-studio/*`）。
 | 你是 | 装法 | 需要什么 | 要编译吗 |
 |------|------|----------|----------|
 | **想用 maou** | 一行安装命令（下面 ↓） | 只要 Node ≥ 20 | **不用** |
-| **想改 maou** | `git clone` + `pnpm setup:dev` | Node ≥ 20 + pnpm（+ Rust 可选） | 要 |
+| **想改 maou** | `git clone` + `pnpm setup:dev` | Node ≥ 20 + **pnpm@10**（Linux 还要 make/g++；Rust 可选，rustc ≥ 1.88） | 要 |
 
 用户装的是 GitHub Release 上按平台预编译好的自包含包：JS 已编译、依赖已装齐、
 终端引擎 / TUI / dcg / rg / sqry / ddgr 全部内置。**不需要 git、pnpm、Rust、
@@ -111,15 +111,26 @@ git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 git checkout develop
 
-npm i -g pnpm          # 若还没有
-pnpm setup:dev         # 一条命令：install → build → 补外部工具 → 链接 maou → doctor
+# 钉 pnpm@10（不要 `npm i -g pnpm`：会装到 11，Node 20 上 node:sqlite 起不来）
+export COREPACK_HOME="$HOME/.local/share/corepack"
+mkdir -p "$COREPACK_HOME" ~/.local/bin
+export PATH="$HOME/.local/bin:$PATH"
+corepack enable --install-directory ~/.local/bin   # 不要写 /usr/bin，非 root 会 EACCES
+corepack prepare pnpm@10.15.1 --activate
+
+pnpm setup:dev         # install → build → 补外部工具 → 链接 maou → 写入 PATH → doctor
 ```
 
 `pnpm setup:dev` 三系统通用（内部是 Node 脚本，不分 bash / PowerShell）。装完
-`maou` 指向**这个源码树**，改完代码 `pnpm -r build` 立刻生效。
+`maou` 指向**这个源码树**，改完代码 `pnpm -r build` 立刻生效。它会把
+`~/.maou/bin` 写进 shell rc；**当前这个终端**还要 `export PATH="$HOME/.maou/bin:$PATH"`
+或新开一个窗口。
 
-**Rust 是可选的**：有 `cargo` 就本机编 `terminal-engine` 和 Ratatui TUI；
-没有就自动下载预编译版本，照样能跑。
+**Rust 是可选的**：`rustc ≥ 1.88` 才本机编 `terminal-engine` 和 Ratatui TUI；
+没有 cargo、或 rustc 更旧（例如 1.85），自动下载预编译，不会拿旧工具链硬编。
+
+`maou setup` 要交互式 TTY 配 API key。非 TTY / 没配 `~/.maou/config.json`
+不是安装失败，只是还不能对话。`typescript-language-server` 可选，doctor 里 △ 不影响起 CLI。
 
 ```bash
 pnpm -r build          # 改完代码重新构建

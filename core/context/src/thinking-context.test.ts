@@ -159,6 +159,29 @@ describe("thinking inject into LLM history", () => {
     expect(llm.content).toContain("out");
   });
 
+  it("buildMessages 把 user Message.images 收成多模态块", () => {
+    const messages = buildMessages({
+      systemPrompt: "sys",
+      sessionMessages: [
+        {
+          role: "user",
+          content: "看图",
+          createdAt: "2020-01-01T00:00:00.000Z",
+          images: [{ mimeType: "image/png", data: "abc" }],
+        },
+      ] as SessionMessage[],
+      roundCount: 1,
+    });
+    const user = messages.find((m) => m.role === "user");
+    expect(user?.content).toEqual([
+      { type: "text", text: "看图" },
+      {
+        type: "image_url",
+        image_url: { url: "data:image/png;base64,abc" },
+      },
+    ]);
+  });
+
   it("无 reasoningContent 时不注入标签", () => {
     const messages = buildMessages({
       systemPrompt: "sys",

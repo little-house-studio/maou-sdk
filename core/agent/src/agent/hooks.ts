@@ -1,74 +1,146 @@
 /**
- * SDK 钩子系统 — 18 种 Hook 事件
- * 对齐 Python: sdk/hooks.py
+ * SDK 钩子系统 — 对齐 Pi：async、可拦截、可改写结果、可取消压缩。
  *
- * 对齐 Claude Agent SDK / Pi Agent 的 Hook 设计。
- * 所有钩子均支持通配符订阅。
+ * 旧用法仍可用：pre_tool_use 返回 false / 原因字符串。
+ * 新用法：返回 `{ block, reason }` / `{ cancel }` / 改写后的 tool result；
+ * handler 可为 async，kwargs.ui 可弹确认（无 UI 时 confirm 默认拒绝）。
  */
 
 import type { Message, ToolCall, ToolResult } from "../agent_factory/types.js";
 
-/**
- * 钩子处理函数。
- * pre_tool_use：返回 false 或非空 string 可拦截（string = 拦截原因，回传给模型）。
- */
-export type HookHandler = (...args: unknown[]) => boolean | string | void;
+/** 与 tools/compat/tool-names 对齐；hooks 不依赖 tools 构建产物 */
+const MAOU_TO_PI: Record<string, string> = {
+  reader: "read",
+  write_file: "write",
+  edit_file: "edit",
+  use_terminal: "bash",
+  glob: "find",
+  grep: "grep",
+};
 
-// ── 全部 18 种 Hook 事件 ────────────────────────────────────────────────────
+function toPiToolName(name: string): string {
+  return MAOU_TO_PI[name] ?? MAOU_TO_PI[name.toLowerCase()] ?? name;
+}
 
-/** 所有支持的 Hook 事件类型 */
+export interface HookUi {
+  confirm(title: string, message: string, opts?: { timeout?: number }): Promise<boolean>;
+  notify(message: string, level?: "info" | "warning" | "error"): void;
+  select?(title: string, options: string[]): Promise<string | undefined>;
+  input?(title: string, placeholder?: string): Promise<string | undefined>;
+}
+
+/** 无 TUI 时 fail-closed：危险确认默认否 */
+export const FAIL_CLOSED_HOOK_UI: HookUi = {
+  async confirm() {
+    return false;
+  },
+  notify() {},
+};
+
+export interface HookDecision {
+  block?: boolean;
+  reason?: string;
+  cancel?: boolean;
+  content?: unknown;
+  details?: unknown;
+  isError?: boolean;
+  compaction?: {
+    summary: string;
+    firstKeptEntryId?: string;
+    tokensBefore?: number;
+  };
+  systemPrompt?: string;
+  message?: unknown;
+}
+
+export type HookHandlerResult = boolean | string | void | HookDecision;
+
+export type HookHandler = (
+  kwargs: Record<string, unknown>,
+) => HookHandlerResult | Promise<HookHandlerResult>;
+
+export interface HookTriggerResult {
+  allowed: boolean;
+  cancel: boolean;
+  blockReason?: string;
+  content?: unknown;
+  details?: unknown;
+  isError?: boolean;
+  compaction?: HookDecision["compaction"];
+  systemPrompt?: string;
+  message?: unknown;
+}
+
 export const ALL_HOOKS: ReadonlySet<string> = new Set([
-  // 工具相关
-  "pre_tool_use",        // 工具调用前（可拦截，返回 false 阻止执行）
-  "post_tool_use",       // 工具调用后
-  "tool_error",          // 工具执行异常
-  // Agent 循环
-  "agent_start",         // Agent 轮次开始
-  "agent_stop",          // Agent 轮次结束
-  "agent_thinking",      // Agent 正在思考
-  // 消息相关
-  "pre_message",         // 消息发送前
-  "post_message",        // 消息发送后
-  "response_start",      // 流式回复开始
-  "response_end",        // 流式回复结束
-  // 表情/状态
-  "expression_change",   // 表情变化
-  // 上下文
-  "pre_compact",         // 上下文压缩前
-  "post_compact",        // 上下文压缩后
-  // 设备
-  "device_online",       // 设备上线
-  "device_offline",      // 设备离线
-  // 会话
-  "session_start",       // 会话开始
-  "session_end",         // 会话结束
-  // 安全
-  "abort",               // 用户中断
+  "pre_tool_use",
+  "post_tool_use",
+  "tool_error",
+  "tool_call",
+  "tool_result",
+  "agent_start",
+  "agent_stop",
+  "agent_thinking",
+  "before_agent_start",
+  "pre_message",
+  "post_message",
+  "response_start",
+  "response_end",
+  "expression_change",
+  "pre_compact",
+  "post_compact",
+  "session_before_compact",
+  "session_compact",
+  "pre_cache_rebuild",
+  "cache_rebuild_point",
+  "post_cache_rebuild",
+  "device_online",
+  "device_offline",
+  "session_start",
+  "session_end",
+  "abort",
 ]);
 
-/** Hook 事件类型联合 */
 export type HookName = typeof ALL_HOOKS extends Set<infer T> ? T : never;
 
-/**
- * 钩子管理器 — 支持 18 种事件 + 通配符
- *
- * 用法:
- * ```ts
- * const hooks = new Hooks();
- * hooks.register("pre_tool_use", (toolCall) => {
- *   console.log("工具调用前:", toolCall);
- *   return true; // 返回 false 可拦截
- * });
- * hooks.trigger("pre_tool_use", { toolCall: tc });
- * ```
- */
+const EMPTY: HookTriggerResult = { allowed: true, cancel: false };
+
+function applyDecision(
+  hookName: string,
+  result: HookHandlerResult,
+  acc: HookTriggerResult,
+): HookTriggerResult {
+  if (result === undefined || result === true || result === null) return acc;
+  if (result === false) {
+    return { ...acc, allowed: false };
+  }
+  if (typeof result === "string" && result.trim()) {
+    return { ...acc, allowed: false, blockReason: result.trim() };
+  }
+  if (typeof result !== "object") return acc;
+  const d = result as HookDecision;
+  const next = { ...acc };
+  if (d.block) next.allowed = false;
+  if (typeof d.reason === "string" && d.reason.trim()) {
+    next.blockReason = d.reason.trim();
+    if (d.block !== false) next.allowed = false;
+  }
+  if (d.cancel) next.cancel = true;
+  if (d.content !== undefined) next.content = d.content;
+  if (d.details !== undefined) next.details = d.details;
+  if (d.isError !== undefined) next.isError = d.isError;
+  if (d.compaction) next.compaction = d.compaction;
+  if (d.systemPrompt !== undefined) next.systemPrompt = d.systemPrompt;
+  if (d.message !== undefined) next.message = d.message;
+  return next;
+}
+
 export class Hooks {
   private _hooks: Map<string, HookHandler[]>;
-  /**
-   * 最近一次 pre_tool_use 拦截原因（handler 返回 string 时写入）。
-   * Runtime 写 tool_result 时优先使用。
-   */
   lastBlockReason?: string;
+  lastToolResultOverride?: { content: unknown; details?: unknown; isError?: boolean };
+  lastCompactDecision?: HookTriggerResult;
+  lastCacheRebuildDecision?: HookTriggerResult;
+  ui?: HookUi;
 
   constructor() {
     this._hooks = new Map();
@@ -77,13 +149,12 @@ export class Hooks {
     }
   }
 
-  /**
-   * 注册钩子
-   *
-   * @param hookName - 钩子名称（建议在 ALL_HOOKS 中）
-   * @param handler - 处理函数。pre_tool_use 的 handler 返回 false 可阻止执行
-   */
-  register(hookName: string, handler: HookHandler): void {
+  /** 对齐 Pi `pi.on` */
+  on(hookName: string, handler: HookHandler): () => void {
+    return this.register(hookName, handler);
+  }
+
+  register(hookName: string, handler: HookHandler): () => void {
     let handlers = this._hooks.get(hookName);
     if (!handlers) {
       handlers = [];
@@ -91,144 +162,180 @@ export class Hooks {
       console.warn(`[sdk] 注册未知钩子: ${hookName}`);
     }
     handlers.push(handler);
+    return () => this.unregister(hookName, handler);
   }
 
-  /** 取消注册钩子 */
   unregister(hookName: string, handler: HookHandler): void {
     const handlers = this._hooks.get(hookName);
     if (!handlers) return;
     const idx = handlers.indexOf(handler);
-    if (idx !== -1) {
-      handlers.splice(idx, 1);
-    }
+    if (idx !== -1) handlers.splice(idx, 1);
   }
 
-  /**
-   * 触发钩子
-   *
-   * @returns true 表示允许继续，false 表示被拦截（仅 pre_tool_use 有意义）
-   */
-  trigger(hookName: string, kwargs: Record<string, unknown> = {}): boolean {
-    let allowed = true;
-    if (hookName === "pre_tool_use") {
+  async trigger(
+    hookName: string,
+    kwargs: Record<string, unknown> = {},
+  ): Promise<HookTriggerResult> {
+    let acc: HookTriggerResult = { ...EMPTY };
+    if (
+      hookName === "pre_tool_use" ||
+      hookName === "tool_call" ||
+      hookName === "session_before_compact" ||
+      hookName === "pre_compact" ||
+      hookName === "pre_cache_rebuild"
+    ) {
       this.lastBlockReason = undefined;
     }
     const handlers = this._hooks.get(hookName);
-    if (!handlers) return allowed;
+    if (!handlers || handlers.length === 0) return acc;
+
+    const payload = { ...kwargs, ui: kwargs.ui ?? this.ui ?? FAIL_CLOSED_HOOK_UI };
 
     for (const handler of handlers) {
       try {
-        const result = handler(kwargs);
-        if (hookName === "pre_tool_use") {
-          if (typeof result === "string" && result.trim()) {
-            allowed = false;
-            this.lastBlockReason = result.trim();
-            console.log(`[sdk] 钩子 '${hookName}' 拦截了工具调用: ${this.lastBlockReason.slice(0, 80)}`);
-          } else if (result === false) {
-            allowed = false;
-            console.log(`[sdk] 钩子 '${hookName}' 拦截了工具调用`);
-          }
+        const result = await handler(payload);
+        acc = applyDecision(hookName, result, acc);
+        if (!acc.allowed && acc.blockReason) {
+          this.lastBlockReason = acc.blockReason;
+          console.log(
+            `[sdk] 钩子 '${hookName}' 拦截: ${this.lastBlockReason.slice(0, 80)}`,
+          );
+        } else if (!acc.allowed) {
+          console.log(`[sdk] 钩子 '${hookName}' 拦截了操作`);
         }
       } catch (e) {
         console.error(`[sdk] 钩子 '${hookName}' 执行异常:`, e);
       }
     }
+    return acc;
+  }
+
+  async preToolUse(toolCall: ToolCall): Promise<boolean> {
+    const input = (toolCall as { parameters?: unknown }).parameters ?? {};
+    const nativeName = toolCall.name;
+    const toolName = toPiToolName(nativeName);
+    const r1 = await this.trigger("pre_tool_use", { toolCall, toolName: nativeName, input });
+    const r2 = await this.trigger("tool_call", {
+      toolCall,
+      toolName,
+      nativeName,
+      input,
+    });
+    const allowed = r1.allowed && r2.allowed;
+    this.lastBlockReason = r2.blockReason ?? r1.blockReason ?? this.lastBlockReason;
     return allowed;
   }
 
-  // ── 便捷方法 ──────────────────────────────────────
-
-  /** 工具调用前触发。返回 false 可阻止执行。 */
-  preToolUse(toolCall: ToolCall): boolean {
-    return this.trigger("pre_tool_use", { toolCall });
+  async postToolUse(toolCall: ToolCall, result: ToolResult): Promise<HookTriggerResult> {
+    await this.trigger("post_tool_use", { toolCall, result });
+    const r = await this.trigger("tool_result", {
+      toolCall,
+      result,
+      toolName: toPiToolName(toolCall.name),
+      nativeName: toolCall.name,
+    });
+    if (r.content !== undefined) {
+      this.lastToolResultOverride = {
+        content: r.content,
+        details: r.details,
+        isError: r.isError,
+      };
+    } else {
+      this.lastToolResultOverride = undefined;
+    }
+    return r;
   }
 
-  /** 工具调用后触发 */
-  postToolUse(toolCall: ToolCall, result: ToolResult): void {
-    this.trigger("post_tool_use", { toolCall, result });
+  async toolError(toolCall: ToolCall, error: string): Promise<void> {
+    await this.trigger("tool_error", { toolCall, error });
   }
 
-  /** 工具执行异常 */
-  toolError(toolCall: ToolCall, error: string): void {
-    this.trigger("tool_error", { toolCall, error });
+  async agentStart(roundNumber: number): Promise<void> {
+    await this.trigger("agent_start", { roundNumber });
   }
 
-  /** Agent 轮次开始 */
-  agentStart(roundNumber: number): void {
-    this.trigger("agent_start", { roundNumber });
+  async agentStop(roundNumber: number): Promise<void> {
+    await this.trigger("agent_stop", { roundNumber });
   }
 
-  /** Agent 轮次结束 */
-  agentStop(roundNumber: number): void {
-    this.trigger("agent_stop", { roundNumber });
+  async agentThinking(): Promise<void> {
+    await this.trigger("agent_thinking");
   }
 
-  /** Agent 正在思考 */
-  agentThinking(): void {
-    this.trigger("agent_thinking");
+  async preMessage(message: Message): Promise<void> {
+    await this.trigger("pre_message", { message });
   }
 
-  /** 消息发送前触发 */
-  preMessage(message: Message): void {
-    this.trigger("pre_message", { message });
+  async postMessage(message: Message, success = true): Promise<void> {
+    await this.trigger("post_message", { message, success });
   }
 
-  /** 消息发送后触发 */
-  postMessage(message: Message, success = true): void {
-    this.trigger("post_message", { message, success });
+  async responseStart(): Promise<void> {
+    await this.trigger("response_start");
   }
 
-  /** 流式回复开始 */
-  responseStart(): void {
-    this.trigger("response_start");
+  async responseEnd(fullText: string): Promise<void> {
+    await this.trigger("response_end", { fullText });
   }
 
-  /** 流式回复结束 */
-  responseEnd(fullText: string): void {
-    this.trigger("response_end", { fullText });
+  async expressionChange(old: string, newExpr: string): Promise<void> {
+    await this.trigger("expression_change", { old, new: newExpr });
   }
 
-  /** 表情变化 */
-  expressionChange(old: string, newExpr: string): void {
-    this.trigger("expression_change", { old, new: newExpr });
+  async preCompact(payload: Record<string, unknown> = {}): Promise<HookTriggerResult> {
+    const a = await this.trigger("pre_compact", payload);
+    const b = await this.trigger("session_before_compact", payload);
+    const merged: HookTriggerResult = {
+      allowed: a.allowed && b.allowed,
+      cancel: a.cancel || b.cancel,
+      blockReason: b.blockReason ?? a.blockReason,
+      compaction: b.compaction ?? a.compaction,
+    };
+    this.lastCompactDecision = merged;
+    return merged;
   }
 
-  /** 上下文压缩前 */
-  preCompact(): void {
-    this.trigger("pre_compact");
+  async postCompact(compressedCount: number): Promise<void> {
+    await this.trigger("post_compact", { compressedCount });
+    await this.trigger("session_compact", { compressedCount });
   }
 
-  /** 上下文压缩后 */
-  postCompact(compressedCount: number): void {
-    this.trigger("post_compact", { compressedCount });
+  /** 缓存重建点前；返回 `{ cancel: true }` 跳过本次重建（不撤销已发生的压缩 / 新建会话） */
+  async preCacheRebuild(payload: Record<string, unknown> = {}): Promise<HookTriggerResult> {
+    const r = await this.trigger("pre_cache_rebuild", payload);
+    this.lastCacheRebuildDecision = r;
+    return r;
   }
 
-  /** 设备上线 */
-  deviceOnline(deviceId: string): void {
-    this.trigger("device_online", { deviceId });
+  /** 缓存重建点本身（前缀将重新 cache write） */
+  async cacheRebuildPoint(payload: Record<string, unknown> = {}): Promise<HookTriggerResult> {
+    return this.trigger("cache_rebuild_point", payload);
   }
 
-  /** 设备离线 */
-  deviceOffline(deviceId: string): void {
-    this.trigger("device_offline", { deviceId });
+  async postCacheRebuild(payload: Record<string, unknown> = {}): Promise<void> {
+    await this.trigger("post_cache_rebuild", payload);
   }
 
-  /** 会话开始 */
-  sessionStart(sessionId: string): void {
-    this.trigger("session_start", { sessionId });
+  async deviceOnline(deviceId: string): Promise<void> {
+    await this.trigger("device_online", { deviceId });
   }
 
-  /** 会话结束 */
-  sessionEnd(sessionId: string): void {
-    this.trigger("session_end", { sessionId });
+  async deviceOffline(deviceId: string): Promise<void> {
+    await this.trigger("device_offline", { deviceId });
   }
 
-  /** 用户中断 */
-  abort(reason = ""): void {
-    this.trigger("abort", { reason });
+  async sessionStart(sessionId: string): Promise<void> {
+    await this.trigger("session_start", { sessionId });
   }
 
-  /** 返回所有已注册钩子的名称 */
+  async sessionEnd(sessionId: string): Promise<void> {
+    await this.trigger("session_end", { sessionId });
+  }
+
+  async abort(reason = ""): Promise<void> {
+    await this.trigger("abort", { reason });
+  }
+
   get hookNames(): string[] {
     return [...this._hooks.entries()]
       .filter(([, handlers]) => handlers.length > 0)

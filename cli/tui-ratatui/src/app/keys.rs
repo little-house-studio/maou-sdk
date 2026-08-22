@@ -370,6 +370,20 @@ impl App {
                     self.delete_word();
                     return;
                 }
+                KeyCode::Char(c) => {
+                    // 未占用的 Ctrl[+Shift|+Alt]+键交给 Node（扩展 registerShortcut）
+                    let mut combo = String::from("ctrl");
+                    if key.modifiers.contains(KeyModifiers::SHIFT) {
+                        combo.push_str("+shift");
+                    }
+                    if key.modifiers.contains(KeyModifiers::ALT) {
+                        combo.push_str("+alt");
+                    }
+                    combo.push('+');
+                    combo.push(c.to_ascii_lowercase());
+                    emit(&OutMsg::Hotkey { key: combo });
+                    return;
+                }
                 _ => {}
             }
         }

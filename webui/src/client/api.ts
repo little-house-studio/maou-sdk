@@ -27,6 +27,7 @@ export type SessionSummary = {
   updatedAt?: string;
   messageCount: number;
   lastMsgAt?: string;
+  parentSessionId?: string;
 };
 
 export type ChatHistoryLine = {
@@ -62,6 +63,14 @@ export type TerminalInfo = {
   cwd: string;
   createdAt: string;
   updatedAt: string;
+  kind?: "agent" | "human";
+};
+
+export type TerminalCapabilities = {
+  humanShell: boolean;
+  kind: "full" | "mini";
+  degraded: boolean;
+  reason?: string;
 };
 
 /** Parse JSON body; surface a clear error when Vite returns HTML (backend down). */
@@ -424,6 +433,26 @@ export type LlmConfigPresetWrite = {
 export async function fetchLlmConfig(): Promise<LlmConfigSnapshot> {
   const r = await fetch("/api/config/llm");
   return jsonOrThrow<LlmConfigSnapshot & { ok: boolean }>(r);
+}
+
+export type LlmClipboardParseResult = {
+  fields: Partial<
+    Record<
+      "api_key" | "base_url" | "protocol" | "model",
+      { value: string; confidence: number; source: string; candidates?: string[] }
+    >
+  >;
+  needsConfirm: string[];
+};
+
+/** 粘贴识别。只填表，不写 config.json。 */
+export async function parseLlmClipboard(text: string): Promise<LlmClipboardParseResult> {
+  const r = await fetch("/api/config/llm/parse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return jsonOrThrow<LlmClipboardParseResult & { ok: boolean }>(r);
 }
 
 /** Persist presets + roles via saveGlobalApiConfig. */
@@ -859,6 +888,25 @@ export async function fetchTerminals(
   return j.terminals ?? [];
 }
 
+export async function fetchTerminalCapabilities(): Promise<TerminalCapabilities> {
+  const r = await fetch("/api/terminals/capabilities");
+  const j = await readJsonBody<TerminalCapabilities & { ok?: boolean }>(r);
+  if (!r.ok) {
+    return {
+      humanShell: false,
+      kind: "mini",
+      degraded: true,
+      reason: `capabilities ${r.status}`,
+    };
+  }
+  return {
+    humanShell: Boolean(j.humanShell),
+    kind: j.kind === "full" ? "full" : "mini",
+    degraded: Boolean(j.degraded),
+    reason: j.reason,
+  };
+}
+
 export async function stopTerminal(id: string, agent: string): Promise<void> {
   await fetch(`/api/terminals/${encodeURIComponent(id)}/stop`, {
     method: "POST",
@@ -925,4 +973,10 @@ export function agentTerminalWsUrl(id: string, agent: string): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const q = new URLSearchParams({ id, agent });
   return `${proto}://${location.host}/ws/agent-terminal?${q}`;
+}
+
+/** 人开壳 */
+export function humanTerminalWsUrl(): string {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  return `${proto}://${location.host}/ws/terminal`;
 }

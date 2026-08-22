@@ -29,7 +29,7 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
   Die "npm not found (comes with Node)"
 }
 if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
-  Die "pnpm required. Install: npm i -g pnpm"
+  Die "pnpm@10 required. Install: corepack prepare pnpm@10.15.1 --activate  (or npm i -g pnpm@10.15.1)"
 }
 
 $homeDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $env:HOME }

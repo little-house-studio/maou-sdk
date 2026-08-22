@@ -61,6 +61,7 @@ import {
   type ModelCascadeMenuHandle,
 } from "./drafts/panels/ModelCascadeMenu";
 import { ChromeMark } from "./drafts/icons/Marks";
+import { SessionTreeCrumbs } from "./drafts/layout/SessionTreeCrumbs";
 import type { DraftApproval } from "./drafts/types";
 
 export type ChatLine = {
@@ -2831,6 +2832,16 @@ export function ChatPanel({
         >
           <span className="wire-jump-prev-text">{jumpPrevLabel}</span>
         </button>
+      ) : null}
+      {isWire ? (
+        <SessionTreeCrumbs
+          sessions={sessions}
+          activeSessionId={meta?.sessionId ?? null}
+          runningSessionIds={runningSessionIds}
+          onSelect={(id) => {
+            void onSessionChange(id);
+          }}
+        />
       ) : null}
       {!isWire ? approvalBlock : null}
       <div

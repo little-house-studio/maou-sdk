@@ -13,8 +13,8 @@
  *
  * ③ 扩展件（可选，按需用）
  *    提示词编译(PromptCompiler)、token 追踪(TokenTracker)、Agent 注册表/工厂、
- *    烘焙系统(BakeSystem)、技能注册(SkillRegistry)、Git 监听(GitWatcher)、
- *    动态上下文(compileDynamicContext)。
+ *    文件缓存区(BakeSystem)、技能注册(SkillRegistry)、Git 监听(GitWatcher)、
+ *    上下文动态区(compileDynamicContext)。
  *    这些是"重型 agent 管理"件，最小 agent 不强制依赖，但 SDK 全量提供以保证可扩展性。
  *
  *    注：EventBus / PluginBase / plugin-types 已迁至 @little-house-studio/hub，
@@ -34,7 +34,7 @@ export type {
   AgentLoopStopReason,
 } from "@little-house-studio/llm";
 
-// Agent 层核心（注册表、工厂、提示词编译、token 追踪、agent-loop 接口、烘焙）
+// Agent 层核心（注册表、工厂、提示词编译、token 追踪、agent-loop 接口、文件缓存区）
 export * from "./agent/index.js";
 
 // Hooks 钩子系统
@@ -150,12 +150,18 @@ export {
   createCallMainAgent,
   loadPresetsFromMaouConfig,
   loadRawPresetsFromMaouConfig,
+  getApiPreset,
   getDefaultPresetFromMaouConfig,
   getDefaultPresetFromConfigStore,
   resolveMaouConfigPath,
   isGlobalApiConfigured,
   saveGlobalApiConfig,
+  upsertApiPreset,
+  removeApiPreset,
   getGlobalMaouRoot,
+  registerExtensionProvider,
+  unregisterExtensionProvider,
+  loginExtensionProvider,
   getRolePresetFromMaouConfig,
   installTerminalReviewer,
   resolveTerminalReviewPreset,
@@ -175,6 +181,45 @@ export {
   previewAgentSystemPrompt,
   previewAgentRequestBundle,
 } from "./bootstrap/index.js";
+export {
+  toAgentSendMessage,
+  toAgentUserMessage,
+  agentUserMessageText,
+  formatAgentSendSessionText,
+  formatAgentSendRuntimeText,
+  normalizeSendTurn,
+  sendDelivery,
+  parseWebhookRequest,
+  WebhookParseError,
+  dispatchWebhook,
+  resolveWebhookTarget,
+  targetFromSwitchId,
+  resolveDefaultSwitchId,
+  WebhookResolveError,
+  resolveWorkspaceForSwitch,
+  WebhookAgentHost,
+  createDefaultWebhookHandle,
+  createWebhookServer,
+  handleWebhookHttp,
+  checkWebhookSecret,
+  webhookSecretFromEnv,
+} from "./agent/webhook/index.js";
+export type {
+  WebhookHost,
+  WebhookAgentInfo,
+  WebhookSessionInfo,
+  WebhookChatLine,
+  WebhookStatusInfo,
+  WebhookSendResult,
+  WebhookQueuedItem,
+  WebhookTarget,
+  WebhookAgentRef,
+  WebhookAgentHostOpts,
+  WebhookCreateHandle,
+  CreateWebhookServerOpts,
+  NormalizedSendTurn,
+} from "./agent/webhook/index.js";
+
 export type {
   CreateCallMainAgentOptions,
   MainAgentRunner,

@@ -39,6 +39,8 @@ import {
   resolveLatestSessionId,
   writeAnalyzeReport,
 } from "../lib/session-analyze.js";
+import { runTermSlash } from "../commands/term.js";
+import { setCacheRebuildSink } from "./cache-rebuild-sink.js";
 
 export interface CliSessionOpts {
   config: AgentCliConfig;
@@ -89,6 +91,9 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
   let agent: AgentHandle | null = null;
   let abortCtrl: AbortController | null = null;
   const sound = new SoundManager(enableSound ? loadSoundConfig() : { enabled: false });
+  setCacheRebuildSink((event) => {
+    void agent?.runtime.atCacheRebuildPoint(event);
+  });
 
   registerBuiltinCliCommands();
   syncSkillCommands();
@@ -279,11 +284,12 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
         switch (a.kind) {
           case "new_session": {
             abortCtrl?.abort();
-            agent = null;
             store.startNewSession({
               clearScreen: true,
               toast: a.clear ? "已清空" : "新会话",
+              rebuildReason: a.clear ? "session_clear" : "session_new",
             });
+            agent = null;
             return true;
           }
           case "switch_model":
@@ -330,6 +336,14 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
             } catch (e) {
               store.toastMsg(`诊断失败: ${String(e).slice(0, 80)}`, "err");
             }
+            return true;
+          }
+          case "term": {
+            void runTermSlash({ sub: a.sub, id: a.id, cwd })
+              .then((r) => store.toastMsg(r.toast, "info"))
+              .catch((e) =>
+                store.toastMsg(`终端列表失败: ${String(e).slice(0, 60)}`, "err"),
+              );
             return true;
           }
           default:
@@ -419,6 +433,10 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
         // ops 切到项目 coding 时用 agentProjectRoot；否则用产品 workspace
         const bindRoot = store.agentProjectRoot || cwd;
         agent = config.createAgent(bindRoot, maouRoot);
+        try {
+          const { createTuiHookUi } = await import("../hooks/hook-ui.js");
+          agent.runtime.setHookUi(createTuiHookUi());
+        } catch { /* headless / 无 TUI 时保持 fail-closed */ }
         // 若列表切到了其它 agent 名，对齐 handle
         if (store.agentName && agent.agentName && store.agentName !== agent.agentName) {
           // createAgent 可能固定返回 ops/coding；initAgentName 在 run 时再绑定
@@ -622,6 +640,7 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
 
   function dispose() {
     resetAgent();
+    setCacheRebuildSink(undefined);
     setSlashCatalogProvider(null);
   }
 

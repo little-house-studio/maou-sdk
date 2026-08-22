@@ -16,7 +16,7 @@
       },
       "id": {
         "type": "string",
-        "description": "终端名称（自定义）。不填为临时终端。已存在的 id 会复用该终端执行新任务。"
+        "description": "终端名称。后台/until 时复用已有 id；前台不填为临时终端，结束后销毁。"
       },
       "command": {
         "type": "string",

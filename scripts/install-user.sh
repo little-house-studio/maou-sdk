@@ -290,7 +290,7 @@ add_to_path() {
   case ":${PATH}:" in *":$BIN_DIR:"*) return 0 ;; esac
   local line="export PATH=\"$BIN_DIR:\$PATH\""
   local added=0
-  for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+  for rc in "$HOME/.zprofile" "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
     [ -f "$rc" ] || continue
     if ! grep -Fq "$BIN_DIR" "$rc" 2>/dev/null; then
       printf '\n# maou\n%s\n' "$line" >> "$rc"

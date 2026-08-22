@@ -2,7 +2,7 @@
  * 音效管理器 —— Ink CLI 版（无 Pi TUI 依赖）。
  *
  * 职责：
- *   - 平台检测：macOS→afplay，Linux→paplay/aplay，无播放器→BEL 回退
+ *   - 平台检测：macOS→afplay，Linux→paplay/aplay，Windows→SoundPlayer，无播放器→BEL 回退
  *   - play(id)：播放 WAV 音效
  *   - 空闲检测：startIdleTimer/resetIdleTimer/clearIdleTimer
  *   - 配置：SoundConfig + ~/.maou/config.json ui.sounds + 环境变量覆盖
@@ -125,6 +125,9 @@ function detectAudioPlayer(): AudioPlayer | null {
     if (hasCmd("aplay")) return { cmd: "aplay", baseArgs: ["-q"] };
     return null;
   }
+  if (platform === "win32") {
+    return { cmd: "powershell", baseArgs: [] };
+  }
   return null;
 }
 
@@ -204,13 +207,27 @@ export class SoundManager {
     if (!existsSync(filePath)) return;
 
     const player = this.player!;
-    const args = [...player.baseArgs];
-    if (player.volumeFlag) {
-      args.push(player.volumeFlag, String(this.config.volume));
-    }
-    args.push(filePath);
-
     try {
+      if (process.platform === "win32") {
+        const escaped = filePath.replace(/'/g, "''");
+        const child = spawn(
+          "powershell",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(New-Object Media.SoundPlayer '${escaped}').PlaySync()`,
+          ],
+          { stdio: "ignore", windowsHide: true },
+        );
+        child.unref();
+        return;
+      }
+      const args = [...player.baseArgs];
+      if (player.volumeFlag) {
+        args.push(player.volumeFlag, String(this.config.volume));
+      }
+      args.push(filePath);
       const child = spawn(player.cmd, args, { stdio: "ignore", detached: false });
       child.unref();
     } catch {

@@ -18,7 +18,21 @@ export { normalizeRuntimePreset, normalizeLoadedPreset } from './preset-normaliz
 
 // ─── Zod Schemas ────────────────────────────────────────────────────────────
 
-const LLMProtocolSchema = z.enum(['openai', 'anthropic', 'openai-responses'])
+const LLMProtocolSchema = z.enum([
+  'openai',
+  'anthropic',
+  'openai-responses',
+  'responses',
+  'google',
+  'mistral',
+  'bedrock',
+  'azure',
+  'cloudflare',
+  'google-vertex',
+  'openai-codex',
+  'github-copilot',
+  'faux',
+])
 
 /**
  * LLM preset schema。
@@ -150,10 +164,16 @@ const SecurityConfigSchema = z.object({
   blockedCommands: z.array(z.string()).optional(),
 })
 
+const TerminalConfigSchema = z.object({
+  mode: z.enum(['full', 'mini']).default('full'),
+  shell: z.string().min(1).optional(),
+})
+
 const AppConfigSchema = z.object({
   api: ApiConfigSchema.default({}),
   security: SecurityConfigSchema.optional(),
   ui: z.record(z.unknown()).optional(),
+  terminal: TerminalConfigSchema.optional(),
 }).passthrough()
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

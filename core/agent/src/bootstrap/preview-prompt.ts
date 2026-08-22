@@ -5,12 +5,12 @@
  * 分段：
  *  - system          system/system.md 编译结果
  *  - workspace       <workspace> 块
- *  - skills_bake     skill 列表 bake（可缓存区）
+ *  - file_cache      skill 索引（文件缓存区 / 稳定前缀，缓存断点之前）
  *  - tool_instructions TOOL.md 注入的 <tool_instructions>
- *  - before_user     before_user/before_user.md（用户轮注入，不在 system 字段）
- *  - compression     compression 模板
+ *  - before_user     上下文动态区：before_user/before_user.md（用户轮，不在 system 字段）
+ *  - compression     compression 模板（压缩会缓存破坏）
  *  - tool_schemas    发给 API 的 tools/function schema 摘要
- *  - assembled_system ≈ 实际 system 消息拼装（system+workspace+bake+tool_instructions）
+ *  - assembled_system ≈ 实际 system（system+workspace+文件缓存区+tool_instructions）
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -425,10 +425,10 @@ export function previewAgentRequestBundle(
           "",
           "Runtime.run 大致结构：",
           "  messages[0]  role=system   ← assembled_system",
-          "               = system.md + workspace + skills_bake + tool_instructions",
+          "               = system.md + workspace + 文件缓存区(skill 索引) + tool_instructions",
           "               +（运行时）MCP catalog",
           "  messages[…]  历史轮次",
-          "  messages[n]  role=user     ← 用户输入前可拼 before_user + 增量 skill/file notice",
+          "  messages[n]  role=user     ← 上下文动态区：before_user + skill/file diff",
           "  tools: [...]               ← tool_schemas（API 级 function calling，不是 system 文本）",
           "",
           "按键切换分段（CLI）：1–8 或 [ / ] · Tab",
@@ -454,10 +454,10 @@ export function previewAgentRequestBundle(
         "拼进 system 的工作目录块",
       ),
       section(
-        "skills_bake",
-        "3 · SKILLS BAKE（烘焙区）",
-        skillsBake || "（无 bake 内容）",
-        "首轮写入 system、可缓存的 skill 列表",
+        "file_cache",
+        "3 · 文件缓存区（skill 索引 / 稳定前缀）",
+        skillsBake || "（文件缓存区为空）",
+        "缓存断点之前；首轮写入，避免每轮改这段以免缓存破坏",
       ),
       section(
         "tool_instructions",
@@ -467,9 +467,9 @@ export function previewAgentRequestBundle(
       ),
       section(
         "before_user",
-        "5 · BEFORE_USER",
+        "5 · 上下文动态区（BEFORE_USER）",
         beforeUserBody || "（无 before_user/before_user.md）",
-        "用户新消息轮注入 user 侧，不在 system 字段",
+        "缓存断点之后：用户新消息轮注入，不在 system 字段",
       ),
       section(
         "tool_schemas",
@@ -481,13 +481,13 @@ export function previewAgentRequestBundle(
         "compression",
         "7 · COMPRESSION",
         compressionBody || "（无 compression 模板）",
-        "上下文压缩用，非每轮 system",
+        "上下文压缩用；执行压缩 = 缓存破坏，下一跳重新 write 前缀",
       ),
       section(
         "assembled_system",
         "8 · ASSEMBLED SYSTEM（≈ 实际 system）",
         assembledSystem || "（空）",
-        "system + workspace + bake + tool_instructions（不含 before_user / MCP catalog）",
+        "system + workspace + 文件缓存区 + tool_instructions（不含上下文动态区 / MCP catalog）",
       ),
     ];
 

@@ -93,4 +93,18 @@ describe("parseLocalSlash (registry-backed)", () => {
       clear: true,
     });
   });
+
+  it("/term 列出会话，不进 LLM", () => {
+    expect(parseLocalSlash("/term")).toMatchObject({ type: "term" });
+    expect(parseLocalSlash("/term logs human_1")).toEqual({
+      type: "term",
+      sub: "logs",
+      id: "human_1",
+    });
+    expect(parseLocalSlash("/term stop human_1")).toEqual({
+      type: "term",
+      sub: "stop",
+      id: "human_1",
+    });
+  });
 });

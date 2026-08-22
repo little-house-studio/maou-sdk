@@ -27,10 +27,6 @@
   },
   "files": [
     "load.mjs",
-    "index.cjs",
-    "index.js",
-    "index.d.ts",
-    "terminal_engine.js",
     "terminal_engine.d.ts",
     "*.node"
   ],

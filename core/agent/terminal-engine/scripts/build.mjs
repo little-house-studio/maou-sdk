@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { platform, arch } from "node:os";
+import { MIN_RUSTC_LABEL, probeRustc } from "../../../../scripts/lib/rustc-version.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_DIR = resolve(__dirname, "..");
@@ -121,8 +122,16 @@ function main() {
   if (!onPath("cargo")) {
     // 没有 Rust 也别让整个 monorepo 构建挂掉：预编译包/ensure 脚本可以补上
     log("⚠ 未找到 cargo —— 跳过原生构建");
-    log("  预编译获取: node ../scripts/ensure-terminal-engine.mjs");
+    log("  预编译获取: node scripts/ensure-terminal-engine.mjs");
     log("  或安装 Rust: https://rustup.rs");
+    return;
+  }
+
+  const rustc = probeRustc();
+  if (!rustc.ok) {
+    log(`⚠ rustc ${rustc.version ?? "?"} < ${MIN_RUSTC_LABEL} —— 跳过本机编译（旧 cargo 会编失败）`);
+    log("  预编译获取: node scripts/ensure-terminal-engine.mjs");
+    log(`  或升级 rustc ≥ ${MIN_RUSTC_LABEL}: rustup update`);
     return;
   }
 
@@ -130,7 +139,11 @@ function main() {
     log("napi 构建完成");
     return;
   }
-  if (!buildWithCargo()) die("构建失败");
+  if (!buildWithCargo()) {
+    if (FORCE) die("构建失败");
+    log("⚠ cargo 构建失败 —— 跳过（可用 node scripts/ensure-terminal-engine.mjs 拉预编译）");
+    return;
+  }
   log("构建完成");
 }
 

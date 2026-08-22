@@ -5,7 +5,7 @@
 | | 普通用户 | 开发者 |
 |---|---|---|
 | 装什么 | Release 上的预编译包 | git clone 的源码树 |
-| 前提 | Node ≥ 20（没有可自动装私有版） | Node ≥ 20 + pnpm（Rust 可选） |
+| 前提 | Node ≥ 20（没有可自动装私有版） | Node ≥ 20 + **pnpm@10**（Linux：make/g++/python3-setuptools；Rust 可选，rustc ≥ 1.88） |
 | 要编译吗 | **不用**，一行都不编 | 要 |
 | 命令 | `install-user.sh` / `install-user.ps1` | `pnpm setup:dev` |
 | 更新 | `maou update`（下载新包） | `maou update`（git pull + 构建） |
@@ -99,23 +99,36 @@ git clone https://github.com/little-house-studio/maou-sdk.git
 cd maou-sdk
 git checkout develop
 
-npm i -g pnpm
+# 钉 pnpm@10。不要 `npm i -g pnpm`（会装到 11，Node 20 上 `node:sqlite` 起不来）
+export COREPACK_HOME="$HOME/.local/share/corepack"
+mkdir -p "$COREPACK_HOME" ~/.local/bin
+export PATH="$HOME/.local/bin:$PATH"
+corepack enable --install-directory ~/.local/bin
+corepack prepare pnpm@10.15.1 --activate
+
 pnpm setup:dev
 ```
 
+Windows 没有 corepack 写 `/usr/bin` 的问题，可用 `npm i -g pnpm@10.15.1`，
+或同样 `corepack prepare pnpm@10.15.1 --activate`。
+
 `pnpm setup:dev` 一条命令覆盖三系统，依次做：
 
-1. 校验 Node ≥ 20 / pnpm（缺 pnpm 会试 `corepack enable`）
-2. `pnpm install`
+1. 校验 Node ≥ 20 / **pnpm@10**（缺 pnpm 会 `corepack enable --install-directory ~/.local/bin`，不写 `/usr/bin`）
+2. `pnpm install`（中途失败可再跑一次；半截 `node_modules` 就 `rm -rf node_modules && pnpm install`）
 3. `pnpm -r build`
-4. 补 `dcg` / `rg` / `sqry` / `ddgr` 到 `vendor/bin`
-5. 备好 Ratatui TUI 二进制（有 cargo 就编，没有就下载预编译）
-6. 写 `~/.maou/bin/maou`，指向**本源码树**的 `cli/dist/index.js`
+4. 补 `dcg` / `rg` / `sqry` / `ddgr` 到 `scripts/vendor/bin`
+5. 备好 Ratatui TUI（**rustc ≥ 1.88** 才本机编，否则下载预编译）
+6. 写 `~/.maou/bin/maou`，指向**本源码树**的 `cli/dist/index.js`，并写入 shell rc
 7. `maou doctor --check`
 
-**Rust 不是必需的。** 有 `cargo` 就本机编 `terminal-engine` / TUI；没有就走
-预编译下载。`terminal-engine` 的构建脚本也不再需要全局 `napi` CLI —— 有就用，
+**Rust 不是必需的。** `rustc ≥ 1.88` 才本机编 `terminal-engine` / TUI；没有
+cargo、或 rustc 更旧，走预编译。旧 cargo 不会再拖垮整次安装。
+`terminal-engine` 的构建脚本也不再需要全局 `napi` CLI —— 有就用，
 没有自动回退 `cargo build` 并生成 `.node`。
+
+`maou setup` 需要交互式终端写 API key；非 TTY 会跳过，**不是安装失败**。
+`typescript-language-server` 可选，doctor 里一个 △ 不影响起 CLI。
 
 ### 日常
 
@@ -178,12 +191,19 @@ maou doctor --check      # 只诊断
 
 | 症状 | 处理 |
 |------|------|
-| 找不到 `maou` | 开新终端；或 `export PATH="$HOME/.maou/bin:$PATH"` |
+| 找不到 `maou` | 开新终端；或 `export PATH="$HOME/.maou/bin:$PATH"`。`setup:dev` 会写 shell rc |
+| `pnpm` 11 + Node 20 报 `node:sqlite` | 改用 `corepack prepare pnpm@10.15.1 --activate`，不要装 pnpm 11 |
+| `corepack enable` EACCES `/usr/bin` | `corepack enable --install-directory ~/.local/bin`，并设 `COREPACK_HOME` |
+| 终端降级 mini / 人壳不可用 | 缺 Rust `.node`。`node scripts/ensure-terminal-engine.mjs` 或 `maou doctor`；显式 `MAOU_TERMINAL=mini` 则不要求 |
+| Debian `apt` 拉 `xz-utils` 报 400 | 镜像对带 `+` 的版本号会 400，换镜像或手动下 deb 再 `apt-get install -f` |
+| `pnpm install` 中途失败 | `rm -rf node_modules && pnpm install`，再 `pnpm setup:dev` |
 | `doctor` 报组件缺失（预编译包） | `maou doctor` 会重新下载；确认能访问 GitHub |
 | `doctor` 报 Core 不完整（预编译包） | 包解压损坏 → `maou update --force` 或重跑安装脚本 |
+| `doctor` ts-ls △ | 可选 LSP，不影响起 CLI。需要再 `npm i -g typescript-language-server typescript` |
+| `maou setup` 非 TTY 跳过 | 预期。进交互终端再跑，或手写 `~/.maou/config.json` |
 | 下载失败 / 限流 | 设 `GITHUB_TOKEN`，或用代理 |
 | 该平台无资产 | 该次发布缺这个平台，见 `docs/RELEASE.md` 平台矩阵 |
-| TUI 起不来（源码树） | 装 Rust 后 `cd cli && npm run build:tui-ratatui` |
+| TUI 起不来（源码树） | rustc ≥ 1.88 后 `cd cli && npm run build:tui-ratatui`；更旧的 rustc 请走预编译 |
 
 ---
 

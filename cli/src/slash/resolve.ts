@@ -31,7 +31,8 @@ export type LocalDispatchAction =
   | { kind: "open_model" }
   | { kind: "store_command"; id: string }
   | { kind: "usage_hint"; hint: string }
-  | { kind: "analyze_session" };
+  | { kind: "analyze_session" }
+  | { kind: "term"; sub?: string; id?: string };
 
 function ensureRegistry(): void {
   registerBuiltinCliCommands();
@@ -104,6 +105,8 @@ function localActionFromSpec(
       return { kind: "stop" };
     case "analyze_session":
       return { kind: "analyze_session" };
+    case "term_sessions":
+      return { kind: "term", sub: tokens[0], id: tokens[1] };
     case "switch_model": {
       const r = parseModelSwitchTokens(tokens);
       if (r.ok) return { kind: "switch_model", provider: r.provider, model: r.model };

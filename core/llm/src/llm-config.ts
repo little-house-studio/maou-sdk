@@ -1,62 +1,33 @@
 /**
- * LLMConfig —— 统一的 LLM 配置管理器
+ * LLMConfig —— 厂商/模型目录管理器（内置目录 + llm-config.json + 运行时）
  *
- * 纯动态配置，无硬编码：
- *   ① 配置文件持久化（默认 ~/.maou/llm-config.json）
- *   ② 运行时注册（重启丢失）
- *   ③ 种子数据（可选，通过 loadSeed() 从外部注入）
+ * 用户正在用的 API 名单（config.json `api.presets`）走 `api-presets.ts`。
+ * 本类管「有哪些厂商/模型可选用」，以及 sidecar 自定义厂商。
  *
- * 设计目标：所有厂商和模型配置都从文件或运行时注册获取，
- * 不依赖内置硬编码目录。
- *
- * @example
- * // 默认：自动从 ~/.maou/llm-config.json 加载
- * const config = new LLMConfig();
- *
- * // 添加自定义厂商（持久化）
- * config.addCustomProvider({
- *   id: "my-api",
- *   name: "My API",
- *   protocol: "openai",
- *   baseUrl: "https://my-api.com/v1/chat/completions",
- *   envKey: "MY_API_KEY",
- *   models: [
- *     { id: "v1", name: "V1", contextWindow: 128_000, maxTokens: 8_192 },
- *   ],
- * });
- * await config.save();
- *
- * // 添加单模型配置（持久化）
- * config.addCustom({ name: "my-model", provider: "my-api", model: "v1", url: "..." });
- * await config.save();
- *
- * // 运行时注册（不持久化）
- * config.registerProvider({ id: "temp", name: "Temp", ... });
- *
- * // 查询
- * config.listProviders();  // 所有厂商（文件 + 运行时）
- * config.listModels("my-api");
- * config.toAPIPreset("my-model");
+ *   ① ~/.maou/llm-config.json（尊重 $MAOU_HOME）
+ *   ② 运行时 registerProvider（重启丢失）
+ *   ③ 内置 catalog（useBuiltin，默认开）
+ *   ④ loadSeed() 注入额外厂商
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { homedir } from "node:os";
+import { resolveUserMaouRoot } from "@little-house-studio/types";
 import {
   getProviders as registryGetProviders,
   getModels as registryGetModels,
   getModel as registryGetModel,
-  registerProvider as registryRegisterProvider,
-  registerModel as registryRegisterModel,
+  getProvider as registryGetProvider,
   toAPIPreset as registryToAPIPreset,
   type ModelSpec,
   type ProviderSpec,
 } from "./registry/index.js";
 import { getEnvApiKey } from "./env.js";
+import { readEnv } from "./runtime-env.js";
 import { normalizeApiProtocol, completeApiUrl, type APIPreset, type APIProtocol } from "./adapters/types.js";
 
-/** 默认配置文件路径（~/.maou/llm-config.json） */
-export const DEFAULT_CONFIG_PATH = join(homedir(), ".maou", "llm-config.json");
+/** 默认 sidecar 路径（$MAOU_HOME/llm-config.json 或 ~/.maou/llm-config.json） */
+export const DEFAULT_CONFIG_PATH = join(resolveUserMaouRoot(), "llm-config.json");
 
 /** 自定义模型配置（用户层面向配置文件的形态） */
 export interface CustomPreset {
@@ -140,10 +111,7 @@ export interface LLMConfigOptions {
   configPath?: string;
   /** 是否在构造时自动加载文件（默认 true） */
   autoload?: boolean;
-  /**
-   * 是否使用内置注册表（默认 true）
-   * @deprecated 内置注册表现在仅作为运行时缓存，不再包含硬编码目录
-   */
+  /** 查询时是否合并内置模型目录（默认 true） */
   builtin?: boolean;
 }
 
@@ -245,6 +213,34 @@ export class LLMConfig {
     return this;
   }
 
+  /** 注入额外厂商到运行时表（文档里的 loadSeed） */
+  loadSeed(providers: ProviderSpec[]): this {
+    for (const spec of providers) {
+      if (spec?.id) this.runtimeProviders.set(spec.id, spec);
+    }
+    return this;
+  }
+
+  /** 从内置目录拷一条到 sidecar 单模型配置（需 save()） */
+  importFromCatalog(provider: string, modelId: string, name?: string): CustomPreset {
+    const preset = registryToAPIPreset(provider, modelId);
+    const custom: CustomPreset = {
+      name: name ?? preset.name ?? `${provider}/${modelId}`,
+      provider,
+      model: preset.model,
+      url: preset.url,
+      protocol: preset.protocol,
+      key: preset.key,
+      maxTokens: preset.maxTokens,
+      maxContext: preset.maxContext,
+      supportsVision: Boolean(preset.supportsVision),
+      supportsReasoning: Boolean(preset.supportsReasoning),
+      nativeToolCalling: preset.nativeToolCalling !== false,
+    };
+    this.addCustom(custom);
+    return custom;
+  }
+
   /** 运行时注册模型到已有厂商（不持久化） */
   registerModel(providerId: string, model: ModelSpec): this {
     let p = this.runtimeProviders.get(providerId);
@@ -290,15 +286,15 @@ export class LLMConfig {
 
   // ── 合并查询（文件 + 运行时 + 单模型配置）──
 
-  /** 列出所有厂商：持久化自定义 + 运行时注册 */
+  /** 列出所有厂商：sidecar + 运行时 +（可选）内置目录 */
   listProviders(): string[] {
     const set = new Set<string>();
-    // 持久化的自定义厂商
     for (const p of this.customProviders.values()) set.add(p.id);
-    // 运行时注册的厂商
     for (const p of this.runtimeProviders.values()) set.add(p.id);
-    // 单模型配置中声明的 provider
     for (const c of this.customs.values()) if (c.provider) set.add(c.provider);
+    if (this.useBuiltin) {
+      for (const p of registryGetProviders()) set.add(p.id);
+    }
     return [...set];
   }
 
@@ -320,13 +316,23 @@ export class LLMConfig {
       models.push(...runtimeProvider.models);
     }
 
-    // 3. 单模型配置
+    // 3. 内置目录
+    if (this.useBuiltin) {
+      models.push(...registryGetModels(provider));
+    }
+
+    // 4. 单模型配置
     const customs = [...this.customs.values()]
       .filter((c) => (c.provider ?? this.inferProvider(c)) === provider)
       .map((c) => this.customToSpec(c));
     models.push(...customs);
 
-    return models;
+    const seen = new Set<string>();
+    return models.filter((m) => {
+      if (seen.has(m.id)) return false;
+      seen.add(m.id);
+      return true;
+    });
   }
 
   /** 取某厂商下指定 id 的模型（持久化优先，否则运行时，最后单模型配置） */
@@ -345,7 +351,13 @@ export class LLMConfig {
       if (m) return m;
     }
 
-    // 3. 单模型配置
+    // 3. 内置目录
+    if (this.useBuiltin) {
+      const builtin = registryGetModel(provider, id);
+      if (builtin) return builtin;
+    }
+
+    // 4. 单模型配置
     const c = this.customs.get(id);
     if (c && (c.provider ?? this.inferProvider(c)) === provider) return this.customToSpec(c);
 
@@ -359,12 +371,16 @@ export class LLMConfig {
       const m = p.models.find((mm) => mm.id === id);
       if (m) return this.customModelToSpec(m, p.id, p);
     }
-    // 再查运行时厂商
     for (const p of this.runtimeProviders.values()) {
       const m = p.models.find((mm) => mm.id === id);
       if (m) return m;
     }
-    // 最后查单模型配置
+    if (this.useBuiltin) {
+      for (const p of registryGetProviders()) {
+        const m = p.models.find((mm) => mm.id === id);
+        if (m) return m;
+      }
+    }
     const c = this.customs.get(id);
     if (c) return this.customToSpec(c);
     return null;
@@ -381,10 +397,19 @@ export class LLMConfig {
     for (const p of this.runtimeProviders.values()) {
       out.push(...p.models);
     }
+    if (this.useBuiltin) {
+      for (const p of registryGetProviders()) out.push(...p.models);
+    }
     for (const c of this.customs.values()) {
       out.push(this.customToSpec(c));
     }
-    return out;
+    const seen = new Set<string>();
+    return out.filter((m) => {
+      const k = `${m.provider}:${m.id}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
   }
 
   /** 获取厂商详情（持久化优先，否则运行时） */
@@ -400,7 +425,10 @@ export class LLMConfig {
         models: custom.models.map((m) => this.customModelToSpec(m, id, custom)),
       };
     }
-    return this.runtimeProviders.get(id) ?? null;
+    const runtime = this.runtimeProviders.get(id);
+    if (runtime) return runtime;
+    if (this.useBuiltin) return registryGetProvider(id);
+    return null;
   }
 
   // ── 转 APIPreset（给 LLMClient 用）──
@@ -427,37 +455,16 @@ export class LLMConfig {
       if (m) return this.customModelToAPIPreset(m, nameOrProvider, customProvider);
     }
 
-    // 2. 运行时注册的厂商
     const runtimeProvider = this.runtimeProviders.get(nameOrProvider);
     if (runtimeProvider) {
       const m = runtimeProvider.models.find((mm) => mm.id === modelId);
-      if (m) {
-        const key = getEnvApiKey(nameOrProvider);
-        const preset: APIPreset = {
-          name: `${nameOrProvider}/${modelId}`,
-          model: m.id,
-          url: m.baseUrl ?? runtimeProvider.baseUrl,
-          protocol: m.protocol,
-          supportsVision: m.input.includes("image"),
-          supportsReasoning: m.reasoning,
-          nativeToolCalling: m.toolCall,
-          maxTokens: m.maxTokens,
-          maxContext: m.contextWindow,
-        };
-        if (key) preset.key = key;
-        if (m.pricing) {
-          (preset as Record<string, unknown>).pricing = {
-            inputPrice: m.pricing.input,
-            outputPrice: m.pricing.output,
-            cacheHitPrice: m.pricing.cacheRead ?? 0,
-            currency: m.pricing.currency ?? "USD",
-          };
-        }
-        return preset;
-      }
+      if (m) return this.specToAPIPreset(m, nameOrProvider, runtimeProvider);
     }
 
-    // 3. 单模型配置
+    if (this.useBuiltin && registryGetModel(nameOrProvider, modelId)) {
+      return registryToAPIPreset(nameOrProvider, modelId);
+    }
+
     const c = this.customs.get(modelId);
     if (c && (c.provider ?? this.inferProvider(c)) === nameOrProvider) {
       return this.customToAPIPreset(c);
@@ -466,28 +473,29 @@ export class LLMConfig {
     throw new Error(`未找到配置: ${nameOrProvider}/${modelId}`);
   }
 
+  /** 列出 sidecar 里全部单模型配置（转 APIPreset） */
+  listAPIPresets(): APIPreset[] {
+    return [...this.customs.values()].map((c) => this.customToAPIPreset(c));
+  }
+
   // ── 远程能力（保留旧 PresetManager 的实用功能）──
 
-  /** 从某自定义配置对应的 /v1/models 端点远程拉可用模型列表 */
+  /**
+   * 从 /v1/models 拉远程模型 id。
+   * name 可以是 sidecar 单模型名、自定义厂商 id、或内置 provider id。
+   */
   async fetchRemoteModels(name: string): Promise<string[]> {
-    const c = this.customs.get(name);
-    if (!c) throw new Error(`未找到自定义配置: ${name}`);
-    const baseUrl = c.url
-      .replace(/\/chat\/completions$/, "")
-      .replace(/\/v1\/messages$/, "")
-      .replace(/\/v1\/responses$/, "")
-      .replace(/\/v1$/, "")
-      .replace(/\/+$/, "");
+    const resolved = this.resolveFetchTarget(name);
+    if (!resolved) throw new Error(`未找到配置: ${name}`);
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (c.key) headers["Authorization"] = `Bearer ${c.key}`;
-    const res = await fetch(`${baseUrl}/v1/models`, {
+    if (resolved.key) headers.Authorization = `Bearer ${resolved.key}`;
+    const res = await fetch(`${resolved.base}/v1/models`, {
       headers,
       signal: AbortSignal.timeout(15_000),
     });
     if (!res.ok) throw new Error(`拉取模型失败 (${res.status})`);
     const data = (await res.json()) as Record<string, unknown>;
-    const list = (data.data ?? data.models) as Array<Record<string, unknown>> | undefined;
-    return list ? list.map((m) => String(m.id ?? m.name ?? "")) : [];
+    return parseRemoteModelIds(data);
   }
 
   // ── 内部转换 ──
@@ -526,8 +534,7 @@ export class LLMConfig {
       maxTokens: m.maxTokens,
       maxContext: m.contextWindow,
     };
-    // key：环境变量
-    const key = provider.envKey ? getEnvApiKey(providerId) : undefined;
+    const key = this.resolveProviderKey(providerId, provider.envKey);
     if (key) preset.key = key;
     if (m.pricing) {
       (preset as Record<string, unknown>).pricing = {
@@ -590,4 +597,79 @@ export class LLMConfig {
     if (c.extra) Object.assign(preset, c.extra);
     return preset;
   }
+
+  private specToAPIPreset(m: ModelSpec, providerId: string, provider: ProviderSpec): APIPreset {
+    const key = this.resolveProviderKey(providerId, provider.envKey);
+    const preset: APIPreset = {
+      name: `${providerId}/${m.id}`,
+      model: m.id,
+      url: m.baseUrl ?? provider.baseUrl,
+      protocol: m.protocol,
+      supportsVision: m.input.includes("image"),
+      supportsReasoning: m.reasoning,
+      nativeToolCalling: m.toolCall,
+      maxTokens: m.maxTokens,
+      maxContext: m.contextWindow,
+    };
+    if (key) preset.key = key;
+    if (m.pricing) {
+      (preset as Record<string, unknown>).pricing = {
+        inputPrice: m.pricing.input,
+        outputPrice: m.pricing.output,
+        cacheHitPrice: m.pricing.cacheRead ?? 0,
+        currency: m.pricing.currency ?? "USD",
+      };
+    }
+    return preset;
+  }
+
+  private resolveProviderKey(providerId: string, envKey?: string): string | undefined {
+    if (envKey) {
+      const direct = readEnv(envKey)?.trim();
+      if (direct) return direct;
+    }
+    return getEnvApiKey(providerId);
+  }
+
+  private resolveFetchTarget(name: string): { base: string; key?: string } | null {
+    const custom = this.customs.get(name);
+    if (custom) {
+      return {
+        base: stripApiBase(custom.url),
+        key: custom.key ?? (custom.provider ? getEnvApiKey(custom.provider) : undefined),
+      };
+    }
+    const provider = this.getProvider(name);
+    if (provider?.baseUrl) {
+      return {
+        base: stripApiBase(provider.baseUrl),
+        key: this.resolveProviderKey(name, provider.envKey),
+      };
+    }
+    return null;
+  }
+}
+
+function stripApiBase(url: string): string {
+  return url
+    .replace(/\/chat\/completions$/, "")
+    .replace(/\/v1\/messages$/, "")
+    .replace(/\/v1\/responses$/, "")
+    .replace(/\/v1$/, "")
+    .replace(/\/+$/, "");
+}
+
+function parseRemoteModelIds(data: Record<string, unknown>): string[] {
+  const raw = data.data ?? data.models;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((m) => {
+      if (typeof m === "string") return m.trim();
+      if (m && typeof m === "object") {
+        const o = m as Record<string, unknown>;
+        return String(o.id ?? o.name ?? "").trim();
+      }
+      return "";
+    })
+    .filter(Boolean);
 }

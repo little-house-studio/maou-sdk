@@ -53,10 +53,12 @@ export interface CommandResult {
 }
 
 export interface CommandRuntimeRef {
-  /** 创建新 session */
-  createSession: (initAgentName?: string) => { id: string; agentName?: string };
-  /** 清空 session 历史 */
-  clearSession: (sessionId: string) => void;
+  /** 创建新 session（默认触发缓存重建点） */
+  createSession: (
+    initAgentName?: string,
+  ) => { id: string; agentName?: string } | Promise<{ id: string; agentName?: string }>;
+  /** 清空 session 历史（默认触发缓存重建点） */
+  clearSession: (sessionId: string) => void | Promise<void>;
   /** 切换 session 的 agent */
   setAgentName: (sessionId: string, agentName: string) => void;
   /** 清理 task 相关状态 */
@@ -222,8 +224,8 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
   registry.register(defineCommand({
     name: "new",
     description: "新建会话",
-    execute: (ctx) => {
-      const newSession = ctx.runtime.createSession(ctx.agentName);
+    execute: async (ctx) => {
+      const newSession = await ctx.runtime.createSession(ctx.agentName);
       return {
         content: `✅ 已新建会话（agent: ${newSession.agentName || "main"}）。`,
         meta: { sessionId: newSession.id, newSession: true },
@@ -235,9 +237,9 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
   registry.register(defineCommand({
     name: "clear",
     description: "清空当前会话历史",
-    execute: (ctx) => {
+    execute: async (ctx) => {
       try {
-        ctx.runtime.clearSession(ctx.sessionId);
+        await ctx.runtime.clearSession(ctx.sessionId);
         ctx.runtime.clearTaskState(ctx.sessionId);
         ctx.runtime.clearMessageQueue(ctx.sessionId);
         return { content: "✅ 已清空当前会话的历史记录。" };

@@ -4,7 +4,9 @@ import type {
   DraftApproval,
   DraftMessage,
   DraftMeta,
+  DraftSession,
 } from "../types";
+import { SessionTreeCrumbs } from "../layout/SessionTreeCrumbs";
 import { ApprovalBanner } from "./ApprovalBanner";
 import { ComposerBar } from "./ComposerBar";
 import { WireThreadView } from "./WireThreadView";
@@ -38,6 +40,9 @@ export type ContextPanelProps = {
   onApprovalModeChange: (mode: string) => void;
   /** Draft local stop — clears busy without live agent. */
   onStop?: () => void;
+  sessions?: DraftSession[];
+  activeSessionId?: string;
+  onSelectSession?: (id: string) => void;
 };
 
 /**
@@ -62,6 +67,9 @@ export function ContextPanel({
   onAgentChange,
   onApprovalModeChange,
   onStop,
+  sessions,
+  activeSessionId,
+  onSelectSession,
 }: ContextPanelProps) {
   const empty = messages.length === 0;
   const canRetry = messages.some((m) => m.role === "user");
@@ -191,6 +199,13 @@ export function ContextPanel({
         .join(" ")}
       aria-label="上下文"
     >
+      {sessions && onSelectSession ? (
+        <SessionTreeCrumbs
+          sessions={sessions}
+          activeSessionId={activeSessionId ?? null}
+          onSelect={onSelectSession}
+        />
+      ) : null}
       {showJump ? (
         <button
           type="button"

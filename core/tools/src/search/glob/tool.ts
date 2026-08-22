@@ -147,7 +147,7 @@ export class GlobTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "glob",
-    aliases: ["find-files", "ls-glob"],
+    aliases: ["find-files", "ls-glob", "find", "ls"],
     description:
       "按文件名模式查找文件。返回匹配的文件路径，按修改时间排序（最新优先）。" +
       " 自动跳过 .gitignore 中的目录（node_modules、dist 等）。" +

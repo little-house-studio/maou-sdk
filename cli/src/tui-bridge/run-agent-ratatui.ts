@@ -30,7 +30,8 @@ import {
   shouldShowGalleryArt,
 } from "../gallery/catalog.js";
 import { loadFramedArt } from "../gallery/load-art.js";
-import { SUPERVISOR_MANAGER } from "@little-house-studio/agent";
+import { SUPERVISOR_MANAGER, resolveShortcut } from "@little-house-studio/agent";
+import { settleHookConfirm } from "../hooks/hook-ui.js";
 import type { SupervisorState } from "../state/types.js";
 import {
   handleEscapeCancel,
@@ -983,36 +984,48 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
 
     if (kb?.commandId) {
       if (kb.commandId === "new" || kb.commandId === "clear") {
+        store.runCommand(kb.commandId);
         cli.resetAgent();
+        pushState(undefined, true);
+        return;
       }
       store.runCommand(kb.commandId);
       pushState(undefined, true);
       return;
     }
 
-    switch (kb?.ui) {
-      case "command_palette":
-        store.setOverlay("command");
-        break;
-      case "full_editor":
-        session?.send({ type: "full_editor", text: lastInput });
-        break;
-      case "toggle_sound": {
-        const en = !cli.sound.isEnabled();
-        cli.sound.updateConfig({ enabled: en });
-        store.toastMsg(en ? "🔊 音效已开启" : "🔇 音效已关闭", "info");
-        break;
+    if (kb?.ui) {
+      switch (kb.ui) {
+        case "command_palette":
+          store.setOverlay("command");
+          break;
+        case "full_editor":
+          session?.send({ type: "full_editor", text: lastInput });
+          break;
+        case "toggle_sound": {
+          const en = !cli.sound.isEnabled();
+          cli.sound.updateConfig({ enabled: en });
+          store.toastMsg(en ? "🔊 音效已开启" : "🔇 音效已关闭", "info");
+          break;
+        }
+        case "cycle_approval": {
+          const next = store.cycleApprovalMode();
+          store.toastMsg(`审核 · ${next}`, "info");
+          break;
+        }
+        case "open_agents":
+          store.setOverlay("agents");
+          break;
+        default:
+          break;
       }
-      case "cycle_approval": {
-        const next = store.cycleApprovalMode();
-        store.toastMsg(`审核 · ${next}`, "info");
-        break;
-      }
-      case "open_agents":
-        store.setOverlay("agents");
-        break;
-      default:
-        break;
+      pushState(undefined, true);
+      return;
+    }
+
+    const ext = resolveShortcut(key);
+    if (ext) {
+      await ext.handler({ key: ext.key });
     }
     pushState(undefined, true);
   }
@@ -1025,10 +1038,18 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     const kind = store.overlay;
 
     if (action === "close") {
+      if (kind === "confirm") settleHookConfirm(false);
       store.setOverlay(null);
       modelProvider = null;
       promptSectionIndex = 0;
       pendingDeleteTarget = null;
+      pushState(undefined, true);
+      return;
+    }
+
+    if (kind === "confirm" && (action === "select" || action === "run")) {
+      settleHookConfirm(value === "yes");
+      store.setOverlay(null);
       pushState(undefined, true);
       return;
     }

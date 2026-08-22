@@ -14,6 +14,7 @@ import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
 import { groupGrepByFile } from "../../compress/output-compressor.js";
 import { resolveToolPath } from "../../path-guard.js";
+import { guessInstallRoot, resolveVendorBinary } from "../../util/vendor-bin.js";
 
 /** 默认跳过目录（Node 降级 + rg 额外 glob，避免未 gitignore 的 node_modules 噪声） */
 const SKIP_DIRS = new Set([
@@ -56,34 +57,8 @@ const RG_BIN = IS_WIN ? "rg.exe" : "rg";
 let cachedRgBinary: string | null | undefined;
 
 /**
- * 猜测 monorepo 根目录（向上找含 pnpm-workspace.yaml 或 vendor/bin 的目录）
- */
-function guessRepoRoot(): string | null {
-  try {
-    // .../core/tools/src/search/grep → 上 5 层到 sdk root
-    const here = dirname(fileURLToPath(import.meta.url));
-    let dir = here;
-    for (let i = 0; i < 8; i++) {
-      if (
-        existsSync(join(dir, "pnpm-workspace.yaml")) ||
-        existsSync(join(dir, "vendor", "bin", RG_BIN)) ||
-        existsSync(join(dir, "scripts", "ensure-rg.mjs"))
-      ) {
-        return dir;
-      }
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * 解析 rg 二进制路径。
- * 顺序：MAOU_RG_PATH → vendor/bin/rg → ~/.maou/bin/rg → PATH which/where
+ * 顺序：MAOU_RG_PATH → scripts/vendor/bin 或 bundle vendor/bin → ~/.maou/bin → PATH
  * 与 DCG 的 resolveDcgBinary() 同模式。
  */
 export function resolveRgBinary(): string | null {
@@ -99,9 +74,10 @@ export function resolveRgBinary(): string | null {
   const name = RG_BIN;
   const roots: string[] = [];
 
-  // 2. vendor/bin（monorepo 开发）
-  const repo = guessRepoRoot();
-  if (repo) roots.push(join(repo, "vendor", "bin", name));
+  // 2. 源码树 scripts/vendor/bin；预编译包 <root>/vendor/bin
+  const repo = guessInstallRoot(dirname(fileURLToPath(import.meta.url)));
+  const vendored = resolveVendorBinary(repo, name);
+  if (vendored) roots.push(vendored);
 
   // 3. ~/.maou/bin（用户安装）
   roots.push(join(homedir(), ".maou", "bin", name));

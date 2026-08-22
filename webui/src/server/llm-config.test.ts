@@ -240,3 +240,21 @@ describe("llm-config load/save persist (temp path)", () => {
     assert.equal(snap.configPath, configPath);
   });
 });
+
+describe("paste parse does not write config", () => {
+  it("fills fields from a compact paste", async () => {
+    const { parseLlmClipboardText } = await import("./paste-parse.js");
+    const r = await parseLlmClipboardText(
+      [
+        "api_key: sk-abcDEF1234567890xyz",
+        "base_url: https://api.deepseek.com/v1",
+        "model: gpt-4o",
+      ].join("\n"),
+      { probeModels: false },
+    );
+    assert.equal(r.fields.api_key?.value, "sk-abcDEF1234567890xyz");
+    assert.equal(r.fields.base_url?.value, "https://api.deepseek.com/v1");
+    assert.equal(r.fields.model?.value, "gpt-4o");
+    assert.equal(r.fields.protocol?.value, "openai");
+  });
+});

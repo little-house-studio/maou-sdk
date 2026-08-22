@@ -4,7 +4,7 @@
  * 设计（coding-agent/DESIGN.md）：
  * - 进入：agent 用 reader / edit_file / write_file 触碰文件 → 入名单并刷新 baseline
  * - 退出：连续 maxIdleRounds 轮未触碰；或累计 maxChangeNotices 次「有改动」通知却从未再触碰
- * - 用户新消息：对比 baseline，把有改动的文件以 XML 注入 before_user（可选、可忽略）
+ * - 用户新消息：对比 baseline，把有改动的文件以 XML 注入上下文动态区（可选、可忽略）
  *
  * 性能：只存 mtime/size/lineCount，不存全文；mtime+size 未变则跳过读盘。
  */
@@ -310,7 +310,7 @@ export class FileDiffWatch {
   }
 
   /**
-   * 用户新消息前调用：对比 baseline，生成 before_user XML；更新 baseline；按规则移出。
+   * 用户新消息前调用：对比 baseline，生成上下文动态区 XML；更新 baseline；按规则移出。
    * 返回空串表示无需注入。
    */
   consumeUserTurnDiffs(sessionId: string): string {

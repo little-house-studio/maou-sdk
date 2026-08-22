@@ -17,6 +17,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { homedir, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { guessInstallRoot, resolveVendorBinary } from "../../util/vendor-bin.js";
 
 export type DcgDecision = "allow" | "deny" | "error";
 
@@ -79,31 +80,9 @@ function binName(): string {
   return platform() === "win32" ? "dcg.exe" : "dcg";
 }
 
-/** 解析 monorepo 根（tools → core → sdk） */
 function guessRepoRoot(): string | null {
   try {
-    // .../core/tools/src/terminal/dcg-guard.ts → 上 4 层到 core/tools，再上 2 到 sdk
-    const here = dirname(fileURLToPath(import.meta.url));
-    // dist: .../core/tools/dist/terminal → 上 3 层到 tools，再上 2 到 sdk
-    const candidates = [
-      join(here, "..", "..", "..", ".."), // src: terminal→src→tools→core→sdk
-      join(here, "..", "..", ".."), // dist: terminal→dist→tools→?  wait
-    ];
-    // 更稳：向上找含 vendor/bin 或 pnpm-workspace.yaml 的目录
-    let dir = here;
-    for (let i = 0; i < 8; i++) {
-      if (
-        existsSync(join(dir, "pnpm-workspace.yaml")) ||
-        existsSync(join(dir, "vendor", "bin", binName())) ||
-        existsSync(join(dir, "scripts", "ensure-dcg.mjs"))
-      ) {
-        return dir;
-      }
-      const parent = dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-    return candidates[0] ?? null;
+    return guessInstallRoot(dirname(fileURLToPath(import.meta.url)));
   } catch {
     return null;
   }
@@ -111,7 +90,7 @@ function guessRepoRoot(): string | null {
 
 /**
  * 解析 dcg 二进制路径。
- * 顺序：opts / MAOU_DCG_PATH / DCG_PATH / vendor/bin / ~/.local/bin / PATH which
+ * 顺序：opts / MAOU_DCG_PATH / DCG_PATH / scripts|bundle vendor/bin / ~/.local/bin / PATH
  */
 export function resolveDcgBinary(explicit?: string): string | null {
   if (explicit && existsSync(explicit)) return explicit;
@@ -126,8 +105,8 @@ export function resolveDcgBinary(explicit?: string): string | null {
 
   const name = binName();
   const roots: string[] = [];
-  const repo = guessRepoRoot();
-  if (repo) roots.push(join(repo, "vendor", "bin", name));
+  const vendored = resolveVendorBinary(guessRepoRoot(), name);
+  if (vendored) roots.push(vendored);
   // 用户安装器默认路径（跨平台）
   roots.push(join(homedir(), ".maou", "bin", name));
   roots.push(join(homedir(), ".local", "bin", name));

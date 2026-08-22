@@ -161,6 +161,20 @@ impl Drop for ProcessGroup {
     }
 }
 
+/// Windows：`taskkill /T /F` 收孙进程（ConPTY 挂不上 Job 时的兜底）。
+#[cfg(windows)]
+pub fn taskkill_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 /// 配置 Command：子进程成为新进程组 leader（Unix）/ 新进程组（Windows flags 在 shell 里拼）
 pub fn configure_new_process_group(cmd: &mut std::process::Command) {
     #[cfg(unix)]

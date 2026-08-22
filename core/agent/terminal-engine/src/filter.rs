@@ -146,11 +146,6 @@ impl CommandFilter {
 
         Ok(())
     }
-
-    /// 获取当前配置
-    pub fn get_config(&self) -> FilterConfig {
-        self.config.read().unwrap().clone()
-    }
 }
 
 impl Default for CommandFilter {

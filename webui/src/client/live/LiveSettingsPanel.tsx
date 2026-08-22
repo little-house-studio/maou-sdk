@@ -11,6 +11,7 @@ import {
   fetchLlmConfig,
   fetchMeta,
   fetchModels,
+  parseLlmClipboard,
   fetchSvgProbeGallery,
   runLlmSvgProbe,
   saveLlmConfig,
@@ -40,6 +41,12 @@ import {
   type LiveSettingsSectionId,
   type LiveSettingsSnapshot,
 } from "./settings-adapters";
+import { PasteFillCard } from "../settings/PasteFillCard";
+import {
+  applyLivePasteToRows,
+  modelsFromParse,
+  type ClipboardParseResult,
+} from "../settings/paste-fill";
 
 export type LiveSettingsPanelProps = {
   onClose?: () => void;
@@ -213,6 +220,8 @@ export function LiveSettingsPanel({
   const [vendors, setVendors] = useState<LlmConfigSnapshot["vendors"]>([]);
   const [roleDefs, setRoleDefs] = useState<LlmConfigSnapshot["roleDefs"]>([]);
   const [revealKey, setRevealKey] = useState(false);
+  const [pasteFlash, setPasteFlash] = useState<string[]>([]);
+  const [pasteConfirm, setPasteConfirm] = useState<string[]>([]);
 
   const onMetaChangeRef = useRef(onMetaChange);
   onMetaChangeRef.current = onMetaChange;
@@ -383,6 +392,41 @@ export function LiveSettingsPanel({
     setSelected(activeGroup.indices[activeGroup.indices.length - 1]! + 1);
     setTestResult(null);
   };
+
+  const applyClipboardParse = (parsed: ClipboardParseResult) => {
+    const models = modelsFromParse(parsed);
+    const flash: string[] = [];
+    if (parsed.fields.base_url?.value) flash.push("base_url");
+    if (parsed.fields.api_key?.value) flash.push("api_key");
+    if (parsed.fields.protocol?.value) flash.push("protocol");
+    if (models.length) flash.push("model");
+    setPasteFlash(flash);
+    setPasteConfirm(parsed.needsConfirm.filter((k) => flash.includes(k)));
+    setRevealKey(Boolean(parsed.fields.api_key?.value));
+
+    const applied = applyLivePasteToRows({
+      rows,
+      selected: selectedSafe,
+      groupIndices: activeGroup?.indices ?? (rows.length ? [selectedSafe] : []),
+      parsed,
+      uniqueName: uniquePresetName,
+      seedRow: () => emptyDraft(1),
+    });
+    setRows(applied.rows);
+    setSelected(applied.selected);
+    setStatus(
+      models.length > 1
+        ? `已填入 ${models.length} 个模型（共用 URL / Key），确认后保存`
+        : rows.length === 0
+          ? "已填入新厂商，确认后保存"
+          : "已填入表单，确认后保存",
+    );
+  };
+
+  const fieldFlash = (name: string) =>
+    `${pasteFlash.includes(name) ? " is-paste-filled" : ""}${
+      pasteConfirm.includes(name) ? " is-paste-confirm" : ""
+    }`;
 
   const buildWritePayload = () => {
     for (const r of rows) {
@@ -837,6 +881,11 @@ export function LiveSettingsPanel({
                   <code>{cfgPath || "config.json"}</code>
                 </p>
               </div>
+              <PasteFillCard
+                disabled={busy}
+                parse={parseLlmClipboard}
+                onParsed={applyClipboardParse}
+              />
               <div className="wire-settings-api-layout">
                 {/* 左：厂商列表 */}
                 <aside className="wire-settings-preset-list" role="list">
@@ -952,7 +1001,7 @@ export function LiveSettingsPanel({
                                 title="列表展示名；多模型时预设名为 厂商/模型ID"
                               />
                             </label>
-                            <label className="wire-settings-field dense">
+                            <label className={`wire-settings-field dense${fieldFlash("protocol")}`}>
                               <span className="wire-settings-label">
                                 协议 / 标准
                               </span>
@@ -987,7 +1036,7 @@ export function LiveSettingsPanel({
                               </select>
                             </label>
                           </div>
-                          <label className="wire-settings-field dense">
+                          <label className={`wire-settings-field dense${fieldFlash("base_url")}`}>
                             <span className="wire-settings-label">Base URL</span>
                             <input
                               className="wire-settings-input"
@@ -1017,7 +1066,7 @@ export function LiveSettingsPanel({
                                 }
                               />
                             </label>
-                            <label className="wire-settings-field dense">
+                            <label className={`wire-settings-field dense${fieldFlash("api_key")}`}>
                               <span className="wire-settings-label">
                                 API Key{row.hasKey ? " · 已配" : ""}
                               </span>
@@ -1124,7 +1173,7 @@ export function LiveSettingsPanel({
                         </div>
                         <div className="wire-settings-card-body">
                           <div className="wire-settings-grid-2">
-                            <label className="wire-settings-field dense">
+                            <label className={`wire-settings-field dense${fieldFlash("model")}`}>
                               <span className="wire-settings-label">
                                 模型 ID
                               </span>

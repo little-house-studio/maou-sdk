@@ -11,7 +11,7 @@ use crate::error::{TerminalError, TerminalResult};
 use crate::filter::CommandFilter;
 use crate::persistence::Persistence;
 use crate::sandbox::Sandbox;
-use crate::terminal::{CreateOptions, PersistedTerminal, Terminal, TerminalState};
+use crate::terminal::{CreateOptions, PersistedTerminal, StreamListener, Terminal};
 use dashmap::DashMap;
 use std::sync::Arc;
 
@@ -94,7 +94,6 @@ impl TerminalRegistry {
         }
         drop(sandbox);
 
-        // 创建终端
         let terminal = Terminal::spawn(opts.clone(), command)?;
         let id = terminal.id.clone();
 
@@ -105,6 +104,64 @@ impl TerminalRegistry {
         self.persist_all();
 
         Ok(id)
+    }
+
+    /// 人壳：跳过命令过滤器（不是 AI 命令字符串）
+    pub fn create_interactive(&self, opts: CreateOptions) -> TerminalResult<String> {
+        if self.terminals.len() >= MAX_TERMINALS {
+            return Err(TerminalError::MaxTerminalsReached(MAX_TERMINALS));
+        }
+        if let Some(entry) = self.terminals.get(&opts.id) {
+            let terminal = entry.lock().unwrap();
+            if terminal.is_running() {
+                return Err(TerminalError::AlreadyRunning(opts.id.clone()));
+            }
+            drop(terminal);
+            drop(entry);
+            self.terminals.remove(&opts.id);
+        }
+        let sandbox = self.sandbox.read().unwrap();
+        if sandbox.enabled {
+            if let Err(reason) = sandbox.check_path(&opts.cwd) {
+                return Err(TerminalError::PathDenied(reason));
+            }
+        }
+        drop(sandbox);
+
+        let terminal = Terminal::spawn_interactive(opts)?;
+        let id = terminal.id.clone();
+        self.terminals
+            .insert(id.clone(), Arc::new(std::sync::Mutex::new(terminal)));
+        self.persist_all();
+        Ok(id)
+    }
+
+    pub fn resize(&self, id: &str, cols: u16, rows: u16) -> TerminalResult<()> {
+        let entry = self
+            .terminals
+            .get(id)
+            .ok_or_else(|| TerminalError::NotFound(id.to_string()))?;
+        let mut terminal = entry.lock().unwrap();
+        terminal.resize(cols, rows)
+    }
+
+    pub fn subscribe(&self, id: &str, cb: StreamListener) -> TerminalResult<u32> {
+        let entry = self
+            .terminals
+            .get(id)
+            .ok_or_else(|| TerminalError::NotFound(id.to_string()))?;
+        let terminal = entry.lock().unwrap();
+        Ok(terminal.subscribe(cb))
+    }
+
+    pub fn unsubscribe(&self, id: &str, sub_id: u32) -> TerminalResult<()> {
+        let entry = self
+            .terminals
+            .get(id)
+            .ok_or_else(|| TerminalError::NotFound(id.to_string()))?;
+        let terminal = entry.lock().unwrap();
+        terminal.unsubscribe(sub_id);
+        Ok(())
     }
 
     /// 写入（键盘输入模拟）
@@ -124,35 +181,40 @@ impl TerminalRegistry {
 
     /// 停止终端
     pub fn stop(&self, id: &str, agent_name: &str) -> TerminalResult<()> {
-        let entry = self
-            .terminals
-            .get(id)
-            .ok_or_else(|| TerminalError::NotFound(id.to_string()))?;
+        {
+            let entry = self
+                .terminals
+                .get(id)
+                .ok_or_else(|| TerminalError::NotFound(id.to_string()))?;
 
-        let mut terminal = entry.lock().unwrap();
-        if terminal.agent_name != agent_name {
-            return Err(TerminalError::AgentMismatch(id.to_string(), agent_name.to_string()));
+            let mut terminal = entry.lock().unwrap();
+            if terminal.agent_name != agent_name {
+                return Err(TerminalError::AgentMismatch(id.to_string(), agent_name.to_string()));
+            }
+
+            terminal.kill()?;
         }
-
-        terminal.kill()?;
+        // 必须先放锁再 persist：persist_all 对持锁条目 try_lock 会跳过
         self.persist_all();
         Ok(())
     }
 
     /// 获取终端日志
     pub fn logs(&self, id: &str, agent_name: &str, lines: usize) -> TerminalResult<String> {
-        let entry = self
-            .terminals
-            .get(id)
-            .ok_or_else(|| TerminalError::NotFound(id.to_string()))?;
+        let output = {
+            let entry = self
+                .terminals
+                .get(id)
+                .ok_or_else(|| TerminalError::NotFound(id.to_string()))?;
 
-        let mut terminal = entry.lock().unwrap();
-        if terminal.agent_name != agent_name {
-            return Err(TerminalError::AgentMismatch(id.to_string(), agent_name.to_string()));
-        }
+            let mut terminal = entry.lock().unwrap();
+            if terminal.agent_name != agent_name {
+                return Err(TerminalError::AgentMismatch(id.to_string(), agent_name.to_string()));
+            }
 
-        terminal.touch_viewed();
-        let output = terminal.tail(lines);
+            terminal.touch_viewed();
+            terminal.tail(lines)
+        };
         self.persist_all();
         Ok(output)
     }
@@ -178,6 +240,7 @@ impl TerminalRegistry {
                     created_at: terminal.created_at.clone(),
                     updated_at: terminal.updated_at.clone(),
                     last_viewed_at: terminal.last_viewed_at.clone(),
+                    kind: terminal.kind().as_str().to_string(),
                 }
             })
             .collect()
@@ -217,6 +280,8 @@ impl TerminalRegistry {
             .filter(|entry| {
                 let terminal = entry.value().lock().unwrap();
                 terminal.agent_name == agent_name
+                    && terminal.kind() != crate::terminal::TerminalKind::Human
+                    && !terminal.id.starts_with("human_")
             })
             .map(|entry| entry.key().clone())
             .collect();
@@ -264,11 +329,6 @@ impl TerminalRegistry {
         self.terminals.len()
     }
 
-    /// 检查终端是否存在
-    pub fn exists(&self, id: &str) -> bool {
-        self.terminals.contains_key(id)
-    }
-
     /// 获取终端引用（内部使用，给 lib.rs 调用）
     pub fn get_terminal(
         &self,
@@ -281,8 +341,10 @@ impl TerminalRegistry {
 
     /// 生成状态面板文本
     pub fn status_panel(&self, agent_name: &str) -> String {
-        let terminals: Vec<TerminalInfo> = self.list(Some(agent_name));
-        if terminals.is_empty() {
+        let all: Vec<TerminalInfo> = self.list(Some(agent_name));
+        let terminals: Vec<&TerminalInfo> = all.iter().filter(|t| t.kind != "human").collect();
+        let humans: Vec<&TerminalInfo> = all.iter().filter(|t| t.kind == "human").collect();
+        if terminals.is_empty() && humans.is_empty() {
             return format!("📋 Agent {} 当前没有终端", agent_name);
         }
 
@@ -309,8 +371,25 @@ impl TerminalRegistry {
                 t.id, t.description, emoji, t.state, exit_code, t.created_at
             ));
         }
+        if !humans.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "人壳 {} 个（输出不注入模型）: {}",
+                humans.len(),
+                humans
+                    .iter()
+                    .map(|t| format!("{} {} {}", t.id, t.state, t.cwd))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
 
         lines.join("\n")
+    }
+
+    /// 解锁后落盘（run / mark_exited 之后由 JS 侧或 lib.rs 调用）
+    pub fn persist(&self) {
+        self.persist_all();
     }
 
     /// 持久化所有终端
@@ -350,4 +429,5 @@ pub struct TerminalInfo {
     pub created_at: String,
     pub updated_at: String,
     pub last_viewed_at: Option<String>,
+    pub kind: String,
 }

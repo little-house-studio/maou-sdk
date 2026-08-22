@@ -53,5 +53,5 @@ export function shouldBlockDocExtractTool(toolName: string): boolean { ... }
 
 ## 事件名（若自写脚本 hook）
 
-文件名约定事件：`on_user_message`、`pre_compact`、`loop_end`、`pre_tool_use` 等。  
+文件名约定事件：`on_user_message`、`pre_compact`、`cache_rebuild_point`、`loop_end`、`pre_tool_use` 等。  
 当前 coding 产品以 **进程内 Hooks API** 为准（`pre_tool_use` 返回 `false` 或 **原因 string** 可拦截）。

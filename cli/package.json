@@ -33,7 +33,7 @@
     "dev:watch": "node scripts/dev-watch.mjs",
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
-    "postinstall": "node dist/commands/postinstall.js || exit 0",
+    "postinstall": "node scripts/run-postinstall.mjs",
     "gallery:bake": "node scripts/bake-gallery-ascii.mjs",
     "build:tui-ratatui": "cargo build --release --manifest-path tui-ratatui/Cargo.toml && node scripts/install-tui-bin.mjs",
     "build:tui-ratatui:debug": "cargo build --manifest-path tui-ratatui/Cargo.toml",
@@ -59,11 +59,9 @@
     "zustand": "^4.5.2"
   },
   "devDependencies": {
-    "@lydell/node-pty": "1.2.0-beta.12",
     "@types/diff": "^8.0.0",
     "@types/node": "^22.0.0",
     "@xterm/headless": "^6.0.0",
-    "node-pty": "^1.1.0",
     "tsx": "^4.7.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

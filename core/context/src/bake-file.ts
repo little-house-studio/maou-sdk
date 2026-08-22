@@ -1,16 +1,16 @@
 /**
- * BakeFile — 文件 diff 监听与增量注入
+ * BakeFile — 把磁盘文件钉进文件缓存区，用 diff 更新上下文动态区。
  *
  * 三种模式：
  * - listen: 仅监听变化，不注入内容
  * - diff: 链式 diff + 折叠（默认），保护 Prompt Cache
  * - snapshot: 字段级快照（高频变化文件专用）
- * - full: 每次完整注入
+ * - full: 每次完整注入（每轮写文件缓存区 = 缓存破坏）
  *
  * 链式 diff 策略：
- * - diff 追加到 before_user，不修改前缀 → 缓存命中
- * - 累积超过 maxPendingDiffs 时自动折叠为完整版本
- * - 折叠重置缓存，但只重置一次
+ * - diff 追加到上下文动态区（缓存断点之后），不修改前缀 → 缓存命中
+ * - 累积超过 maxPendingDiffs 时折叠为完整版本写入文件缓存区 = 缓存破坏
+ * - 只破坏这一次，随后新前缀可再命中
  */
 
 import { readFileSync, statSync, existsSync } from "node:fs";
@@ -151,8 +151,7 @@ export class BakeFile {
   // ── 快速版 ──
 
   /**
-   * bake() — commit() 后返回完整文件内容，带 xml
-   * 可直接 add 到 bakeblock
+   * bake() — commit 后返回完整文件（xml），写入文件缓存区（缓存断点之前）
    */
   bake(): string {
     this.commit();
@@ -160,8 +159,7 @@ export class BakeFile {
   }
 
   /**
-   * update() — 返回本次 diff 内容后 commit()，带 xml
-   * 可直接 add 到 before_user
+   * update() — 返回本次 diff 后 commit，写入上下文动态区（缓存断点之后）
    */
   update(): string | null {
     const result = this.diff();
@@ -191,7 +189,7 @@ export class BakeFile {
     return `${len}:${head}:${tail}:${mtime}`;
   }
 
-  /** 折叠：用当前完整文件替换烘焙区旧版本 + 清空 pendingDiffs */
+  /** 折叠：完整文件替换文件缓存区旧版（缓存破坏）+ 清空 pendingDiffs */
   private foldDiffs(): void {
     this._snapshot = this.readFileContent();
     this._commitHash = this.computeHash();
@@ -345,10 +343,10 @@ export class BakeFile {
 // ── 简易版工厂函数 ────────────────────────────────────────────────────────
 
 /**
- * bake() — 简易版，一行创建 BakeFile
+ * bake() — 绑定一个文件到文件缓存区（链式 diff，maxPendingDiffs=3）
  *
- * 默认 mode 为链式 diff，maxPendingDiffs=3
- * 后续自动在压缩等情况下自动渲染，每次 user 发送时自动注入更新内容
+ * 完整正文进文件缓存区；之后每轮 user 把 diff 注入上下文动态区。
+ * 攒满 diff 后折叠 = 缓存破坏，再写入新的完整正文。
  */
 export function bake(
   tag: string,

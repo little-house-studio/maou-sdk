@@ -20,6 +20,14 @@ import {
   maouToSessionMessage,
   sessionToMaouMessage,
 } from "./types/message.js";
+import {
+  filterLlmVisible,
+  newEntryId,
+  prefixThrough,
+  selectBranch,
+  type SessionVisibility,
+} from "./session-tree.js";
+import { patchPendingToolInterrupts } from "./tool-result.js";
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -36,6 +44,8 @@ export interface SessionMeta {
   last_prompt: string;
   last_raw_response: string;
   parent_session_id?: string;
+  /** 当前分支头（Pi leaf） */
+  leaf_id?: string;
   [key: string]: unknown;
 }
 
@@ -52,6 +62,7 @@ export interface SessionData {
   lastPrompt: string;
   lastRawResponse: string;
   parentSessionId?: string;
+  leafId?: string;
   raw_data: { rounds: unknown[] };
 }
 
@@ -81,6 +92,13 @@ export interface SessionMessage {
    * `<thinking>` 注入 LLM 历史。
    */
   reasoningContent?: string;
+  /** 稳定条目 ID（Pi / DSH 树） */
+  id?: string;
+  parentId?: string | null;
+  /** ui = 只给人看，不进模型 */
+  visibility?: SessionVisibility;
+  customType?: string;
+  label?: string;
   /** 图片数据 */
   images?: Array<{ mimeType: string; data: string }>;
   /** Maou 层注解元数据（旧数据可能为 _harness_meta） */
@@ -100,6 +118,8 @@ export interface SessionListItem {
   updatedAt?: string;
   messageCount: number;
   lastMsgAt: string;
+  /** 子会话 / fork 的父会话。列表投影用，避免再读 jsonl。 */
+  parentSessionId?: string;
 }
 
 // ─── 工具函数 ──────────────────────────────────────────────────────────────
@@ -183,12 +203,14 @@ export class SessionStore {
   /**
    * 创建新会话（支持对象或位置参数）
    */
-  create(titleOrOpts?: string | { title?: string; agentName?: string; sessionId?: string }, agentName?: string, sessionId?: string): SessionData {
+  create(titleOrOpts?: string | { title?: string; agentName?: string; sessionId?: string; parentSessionId?: string }, agentName?: string, sessionId?: string): SessionData {
     let title: string | undefined;
+    let parentSessionId: string | undefined;
     if (typeof titleOrOpts === 'object' && titleOrOpts !== null) {
       title = titleOrOpts.title;
       agentName = titleOrOpts.agentName;
       sessionId = titleOrOpts.sessionId;
+      parentSessionId = titleOrOpts.parentSessionId;
     } else {
       title = titleOrOpts;
     }
@@ -207,6 +229,7 @@ export class SessionStore {
       updated_at: ts,
       last_prompt: "",
       last_raw_response: "",
+      ...(parentSessionId ? { parent_session_id: parentSessionId } : {}),
     };
     atomicWriteJson(this.metaPath(sessionId), meta);
     writeFileSync(this.jsonlPath(sessionId), "", "utf-8");
@@ -303,6 +326,9 @@ export class SessionStore {
         updatedAt: meta.updated_at,
         messageCount,
         lastMsgAt: lastMsgTime,
+        ...(meta.parent_session_id
+          ? { parentSessionId: meta.parent_session_id }
+          : {}),
       });
     }
 
@@ -336,12 +362,16 @@ export class SessionStore {
             : (data.created_at as string) ?? "";
       }
 
+      const parentSessionId =
+        (data.parent_session_id as string | undefined) ??
+        (data.parentSessionId as string | undefined);
       sessions.push({
         id: sessionId,
         title: (data.title as string) ?? "新对话",
         updatedAt: data.updated_at as string | undefined,
         messageCount: msgs.length,
         lastMsgAt: lastMsgTime,
+        ...(parentSessionId ? { parentSessionId } : {}),
       });
     }
 
@@ -354,6 +384,7 @@ export class SessionStore {
    */
   save(session: SessionData): void {
     const sessionId = session.id;
+    const existing = tryReadJson(this.metaPath(sessionId)) as SessionMeta | null;
     const meta: SessionMeta = {
       id: session.id,
       title: session.title,
@@ -362,6 +393,9 @@ export class SessionStore {
       updated_at: nowIso(),
       last_prompt: session.lastPrompt,
       last_raw_response: session.lastRawResponse,
+      parent_session_id:
+        session.parentSessionId ?? existing?.parent_session_id,
+      leaf_id: session.leafId ?? existing?.leaf_id,
     };
     atomicWriteJson(this.metaPath(sessionId), meta);
 
@@ -447,6 +481,7 @@ export class SessionStore {
 
     // 更新元数据
     meta.updated_at = nowIso();
+    delete meta.leaf_id;
     atomicWriteJson(this.metaPath(sessionId), meta);
 
     return this.reconstructSession(meta, [], []);
@@ -493,13 +528,13 @@ export class SessionStore {
       }
     }
 
-    const item: Record<string, unknown> = {
+    const item: Record<string, unknown> = this.stampTreeFields(sessionId, {
       type: "message",
       role,
       content,
       createdAt: nowIso(),
       ...metadata,
-    };
+    });
     this.appendLine(sessionId, item);
 
     if (role === "user") {
@@ -800,41 +835,7 @@ export class SessionStore {
    * 返回 true 表示注入了中断消息
    */
   injectPendingToolInterrupts(sessionId: string): boolean {
-    const session = this.load(sessionId);
-    if (!session) return false;
-    const msgs = session.messages ?? [];
-    if (msgs.length === 0) return false;
-
-    const last = msgs[msgs.length - 1] as Record<string, unknown>;
-    if (last.role !== "assistant") return false;
-
-    const nativeToolCalls = (last.toolCalls ?? last.native_tool_calls ?? []) as Record<string, unknown>[];
-    if (nativeToolCalls.length === 0) return false;
-
-    // 找出没有配对 tool_result 的 tool_call
-    const pendingIds = new Set(nativeToolCalls.map(tc => String(tc.id ?? "")));
-    for (let i = msgs.length - 2; i >= 0; i--) {
-      const m = msgs[i] as Record<string, unknown>;
-      if (m.role === "tool") {
-        const tid = String(m.toolCallId ?? m.tool_call_id ?? "");
-        pendingIds.delete(tid);
-      }
-    }
-    if (pendingIds.size === 0) return false;
-
-    // 注入中断结果
-    for (const tc of nativeToolCalls) {
-      const callId = String(tc.id ?? "");
-      if (!pendingIds.has(callId)) continue;
-      const toolName = String(tc.name ?? "?");
-      this.appendMessage(sessionId, "tool", `工具 ${toolName} 已被用户打断`, {
-        toolCallId: callId,
-        tool_name: toolName,
-        tool_call: { name: toolName, parameters: tc.arguments ?? tc.parameters ?? {}, id: callId },
-        interrupted: true,
-      });
-    }
-    return true;
+    return patchPendingToolInterrupts(this, sessionId) > 0;
   }
 
   // ── 内部方法 ──
@@ -946,8 +947,131 @@ export class SessionStore {
       lastPrompt: meta.last_prompt || "",
       lastRawResponse: meta.last_raw_response || "",
       parentSessionId: meta.parent_session_id,
+      leafId: typeof meta.leaf_id === "string" ? meta.leaf_id : undefined,
       raw_data: { rounds: [] },
     };
+  }
+
+  private writeLeafId(sessionId: string, leafId: string): void {
+    const meta = tryReadJson(this.metaPath(sessionId)) as SessionMeta | null;
+    if (!meta) return;
+    meta.leaf_id = leafId;
+    meta.updated_at = nowIso();
+    atomicWriteJson(this.metaPath(sessionId), meta);
+  }
+
+  private stampTreeFields(sessionId: string, item: Record<string, unknown>): Record<string, unknown> {
+    const meta = tryReadJson(this.metaPath(sessionId)) as SessionMeta | null;
+    const leafId = typeof meta?.leaf_id === "string" ? meta.leaf_id : undefined;
+    if (!item.id) item.id = newEntryId();
+    if (item.parentId === undefined && leafId) item.parentId = leafId;
+    this.writeLeafId(sessionId, String(item.id));
+    return item;
+  }
+
+  /** 磁盘全量消息（不受 200 条内存窗截断），供 fork / 树导航 */
+  readAllMessages(sessionId: string): SessionMessage[] {
+    const jsonl = this.jsonlPath(sessionId);
+    if (!existsSync(jsonl)) return [];
+    const messages: SessionMessage[] = [];
+    for (const line of readFileSync(jsonl, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line);
+        if (event.type === "message") {
+          const { type: _, ...msg } = event;
+          messages.push(this.migrateSessionMessage(msg));
+        }
+      } catch {
+        continue;
+      }
+    }
+    return messages;
+  }
+
+  getLeafId(sessionId: string): string | undefined {
+    const meta = tryReadJson(this.metaPath(sessionId)) as SessionMeta | null;
+    if (typeof meta?.leaf_id === "string") return meta.leaf_id;
+    const msgs = this.load(sessionId)?.messages ?? [];
+    return msgs[msgs.length - 1]?.id;
+  }
+
+  /** 当前分支且模型可见的消息（发给 LLM）。从磁盘全量投影，再截到内存窗。 */
+  getLlmHistoryMessages(sessionId: string): SessionMessage[] {
+    const all = this.readAllMessages(sessionId);
+    const source = all.length > 0 ? all : (this.load(sessionId)?.messages ?? []);
+    if (source.length === 0) return [];
+    const branch = filterLlmVisible(selectBranch(source, this.getLeafId(sessionId)));
+    return branch.length > SessionStore.MAX_MESSAGES_IN_MEMORY
+      ? branch.slice(-SessionStore.MAX_MESSAGES_IN_MEMORY)
+      : branch;
+  }
+
+  /** 改当前 leaf（Pi `/tree` / navigateTree） */
+  branchTo(sessionId: string, entryId: string): boolean {
+    const all = this.readAllMessages(sessionId);
+    const hit = all.some((m) => m.id === entryId);
+    if (!hit) return false;
+    this.writeLeafId(sessionId, entryId);
+    return true;
+  }
+
+  setEntryLabel(sessionId: string, entryId: string, label?: string): boolean {
+    const loaded = this.load(sessionId);
+    if (!loaded) return false;
+    const idx = loaded.messages.findIndex((m) => m.id === entryId);
+    if (idx < 0) return false;
+    return this._updateMessageField(sessionId, idx, { label });
+  }
+
+  appendCustomEntry(
+    sessionId: string,
+    customType: string,
+    data?: unknown,
+    opts?: { visibility?: SessionVisibility; content?: string },
+  ): SessionData {
+    return this.appendMessage(sessionId, "system", opts?.content ?? "", {
+      kind: "custom",
+      customType,
+      visibility: opts?.visibility ?? "ui",
+      details: data,
+    });
+  }
+
+  /**
+   * 从某条消息（含）复制前缀到新会话。对齐 DSH `fork(boundary)` / Pi `/fork`。
+   */
+  forkFromEntry(
+    sourceSessionId: string,
+    entryId: string,
+    opts?: { title?: string; targetSessionId?: string },
+  ): SessionData {
+    const source = this.load(sourceSessionId);
+    if (!source) throw new Error(`源会话不存在: ${sourceSessionId}`);
+    const all = this.readAllMessages(sourceSessionId);
+    const prefix = prefixThrough(all, entryId);
+    if (prefix.length === 0) {
+      throw new Error(`找不到分叉边界: ${entryId}`);
+    }
+    const created = this.create({
+      title: opts?.title ?? `${source.title} (fork)`,
+      agentName: source.agentName,
+      sessionId: opts?.targetSessionId,
+    });
+    for (const msg of prefix) {
+      const { type: _t, ...rest } = msg as SessionMessage & { type?: string };
+      this.appendLine(created.id, { type: "message", ...rest });
+    }
+    const last = prefix[prefix.length - 1];
+    const meta = tryReadJson(this.metaPath(created.id)) as Record<string, unknown> | null;
+    if (meta) {
+      meta.parent_session_id = sourceSessionId;
+      meta.fork_boundary_id = entryId;
+      if (last?.id) meta.leaf_id = last.id;
+      meta.updated_at = nowIso();
+      atomicWriteJson(this.metaPath(created.id), meta);
+    }
+    return this.load(created.id) ?? created;
   }
 
   private appendLine(sessionId: string, item: Record<string, unknown>): void {
@@ -1099,7 +1223,10 @@ export class SessionStore {
       }
     }
 
-    this.appendLine(sessionId, { type: "message", ...sessionMsg });
+    this.appendLine(sessionId, {
+      type: "message",
+      ...this.stampTreeFields(sessionId, { ...sessionMsg } as Record<string, unknown>),
+    });
 
     if (hmsg.category === "user") {
       this.maybeUpdateTitle(sessionId, hmsg.contents.map(c => c.text).join('\n'));

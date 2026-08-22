@@ -42,7 +42,7 @@ describe("LiveSettingsPanel structure", () => {
   });
 
   it("LLM section: vendor + model + multimodal + price + advanced", () => {
-    assert.match(src, /厂商配置|预设厂商/);
+    assert.match(src, /厂商配置|预设厂商|厂商连接/);
     assert.match(src, /urlParams|URL 附加/);
     assert.match(src, /data-live-cap-image|图片/);
     assert.match(src, /data-live-cap-audio|音频/);
@@ -84,6 +84,15 @@ describe("LiveSettingsPanel structure", () => {
     assert.match(src, /role-main|role-vision|runtime_defaults/);
     assert.match(llmCfg, /AGENT_MODEL_ROLES/);
     assert.match(llmCfg, /templateHint/);
+  });
+
+  it("LLM section: paste fill card then form, no auto save", () => {
+    assert.match(src, /PasteFillCard/);
+    assert.match(src, /parseLlmClipboard/);
+    assert.match(src, /applyClipboardParse/);
+    assert.match(api, /\/api\/config\/llm\/parse/);
+    assert.match(api, /parseLlmClipboard/);
+    assert.doesNotMatch(src, /applyLlmPresetToConfig/);
   });
 
   it("persists via config APIs not only setModel", () => {

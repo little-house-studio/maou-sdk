@@ -29,7 +29,7 @@
         - [x] 压缩上下文（双模式，默认小模型完成）⚠️ 双模式（truncate + 可插拔 summarizer）已实现；"默认小模型"需消费方注入 summarizer/auxModelCaller，非内置默认
         - [x] 编号
     - [x] fork与合并与上下文管理
-    - [x] 烘焙与增量(继承context层)
+    - [x] 文件缓存区与上下文动态区(继承context层)
     - [x] 会话管理保存等（继承context层）
         - [x] 以为session单位存储会话记录，存储使用为带元数据的maoumessage格式。
         - [x] task为元数据存储
@@ -44,7 +44,7 @@
         - [x] 会话元数据记录存储
     - [x] skill系统
         - [x] 读取全局skill+agent自己的skill，支持自定义skill读取路径设计
-        - [x] skill列表注入bake区，支持增量消息加入
+        - [x] skill列表写入文件缓存区，变更走上下文动态区（<skill_update>）
     - [x] 消息队列系统
         - [x] 消息队列模式：完整task结束后、该loop结束后、当前轮结束后、立刻打断并发送、仅打断停止内容
         - [x] 防工具下一轮无返回的报错自动修复与防止机制（llm层与context层的内容）
@@ -72,7 +72,7 @@
                             - [x] PREVIEW_COMPRESSION.md
                             - [x] README.md 
                     - [x] hook/
-                        - [x] 里面的自定义脚本监听hook事件触发，比如用户输入、用户输入前、压缩上下文前、压缩上下文后、loop结束等
+                        - [x] 里面的自定义脚本监听hook事件触发，比如用户输入、用户输入前、压缩上下文前、压缩上下文后、缓存重建点、loop结束等
                         - [x] README.md 
                     - [x] loop/
                         - [x] end.md  （loop结束的判定标准，每次loop周期结束后会有agent检查是否达标，不达标会反馈给ai，继续干）⚠️ judgeLoopEnd 用 auxModelCaller 实现，最多 MAX_LOOP_CHECK=2 次
@@ -86,7 +86,7 @@
             - [x] 实例化路径：.maou/agents/<agent-name> 
             - [x] 结构：
                 - [x] <project_root>/.maou/agents/<agent_name>/
-                    - [x] memory/ 会被注入到烘焙区的内容
+                    - [x] memory/ 写入文件缓存区（稳定前缀；按 query 召回的 MemoryStore 不放这里）
                         - [x] USER.md （只是案例，不一定会有这个文件）   
                     - [x] triggers/  (自动运行里面的脚本，脚本内容是脚本发消息给ai，例如定时器、监听某个网站的具体位置有数据发生大幅度变化、智能家居检测到有人进来等等一个外部拓展的maoumessage标准的脚本路劲)
                         - [x] README.md 

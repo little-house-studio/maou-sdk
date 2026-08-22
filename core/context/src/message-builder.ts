@@ -7,7 +7,7 @@
  *   → system(平台上下文)
  *   → system(滚动摘要，若存在)
  *   → 历史(user/assistant/tool)
- *   → 仅首轮：BEFORE_USER / 动态注入 / 实际用户消息
+ *   → 仅首轮：上下文动态区（BEFORE_USER / 动态注入）/ 实际用户消息
  */
 
 import type { BuildMessagesParams, UserMessageOptions } from "./types.js";
@@ -34,8 +34,8 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
   const messages: Record<string, unknown>[] = [];
 
   // ── 上下文层槽位顺序（见 core/context/context需求.md §上下文层结构） ──
-  // system_pre → System.md(systemPrompt) → system_post → baked_context →
-  // compressed_summary → 历史消息 → before_user → dynamic_injections → user_message
+  // system_pre → System.md(systemPrompt) → system_post → 文件缓存区 →
+  // compressed_summary → 历史消息 → 上下文动态区(before_user / dynamic_injections) → user_message
 
   const userOptsSafe = userOpts ?? {};
 
@@ -54,12 +54,13 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
     messages.push({ role: "system", content: userOptsSafe.systemPost.trim() });
   }
 
-  // 4. baked_context（烘焙上下文区：用户偏好、项目信息等不变区域 + 增量注入）
-  if (userOptsSafe.bakedContext && userOptsSafe.bakedContext.trim()) {
-    messages.push({ role: "user", content: userOptsSafe.bakedContext.trim() });
+  // 4. 文件缓存区（稳定前缀：用户偏好、项目说明、钉死的文件；缓存断点之前）
+  const fileCacheZone = (userOptsSafe.fileCacheZone ?? userOptsSafe.bakedContext)?.trim();
+  if (fileCacheZone) {
+    messages.push({ role: "user", content: fileCacheZone });
   }
 
-  // 5. 项目上下文注入（.maou/project/*.md）—— 烘焙区的动态部分
+  // 5. 项目上下文注入（.maou/project/*.md）—— 同属文件缓存区，独立 system 块
   if (projectRoot) {
     const projectContext = compileProjectContext(projectRoot);
     if (projectContext) {
@@ -130,6 +131,7 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
     }
   } else {
     for (const msg of sessionMessages) {
+      if ((msg as { visibility?: string }).visibility === "ui") continue;
       // 后台终端完成通知：session 存 role=tool，但 call id 是合成的、历史上无对应 assistant.tool_calls。
       // 发给 LLM 前插入合成 assistant tool_call，保证 tool 角色合法，且语义仍是工具结果（非 user）。
       const isTermNotify =
@@ -208,10 +210,23 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
       } else if (msg.tool_call_id) {
         entry.tool_call_id = msg.tool_call_id;
       }
+      const msgImages = msg.images as Array<{ mimeType: string; data: string }> | undefined;
+      if (msg.role === "user" && msgImages && msgImages.length > 0) {
+        const parts: Array<Record<string, unknown>> = [];
+        if (typeof historyContent === "string" && historyContent.trim()) {
+          parts.push({ type: "text", text: historyContent });
+        }
+        for (const img of msgImages) {
+          parts.push({
+            type: "image_url",
+            image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+          });
+        }
+        entry.content = parts;
+      }
       messages.push(entry);
 
       // 工具结果含图片：追加一条 user 消息携带多模态图片（OpenAI tool role 不支持多模态）
-      const msgImages = msg.images as Array<{ mimeType: string; data: string }> | undefined;
       if (msg.role === "tool" && msgImages && msgImages.length > 0) {
         const imageContentParts: Array<Record<string, unknown>> = [
           { type: "text", text: `[以下是工具 ${msg.tool_name ?? "read"} 返回的图片]` },
@@ -292,7 +307,7 @@ function repairOrphanedToolCalls(messages: Record<string, unknown>[]): void {
 }
 
 /**
- * 注入用户上下文：BEFORE_USER / 动态注入 / 实际用户消息。
+ * 注入用户上下文：上下文动态区（BEFORE_USER / 动态注入）/ 实际用户消息。
  * 动态区始终合并为单条 user 消息——不连续发送多条 user。
  */
 function injectUserContext(

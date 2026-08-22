@@ -10,7 +10,8 @@
 .cache/
 **/.cache/
 
-# ─── 第三方必要二进制（ensure-dcg 下载，勿提交） ───
+# ─── 第三方必要二进制（ensure-* 下载，勿提交） ───
+scripts/vendor/bin/
 vendor/bin/
 
 # ─── 编译产物 ───
@@ -35,11 +36,12 @@ yarn-error.log*
 
 # ─── Rust / Cargo ───
 **/target/
-terminal-engine/*.node
+core/agent/terminal-engine/*.node
 # napi 本地生成（入口以 load.mjs 为准；构建产物勿提交）
-terminal-engine/index.cjs
-terminal-engine/index.js
-terminal-engine/index.d.ts
+core/agent/terminal-engine/index.cjs
+core/agent/terminal-engine/index.js
+core/agent/terminal-engine/index.d.ts
+core/agent/terminal-engine/terminal_engine.js
 
 # ─── CLI 基准 / 压测输出 ───
 cli/scroll-bench-result.txt

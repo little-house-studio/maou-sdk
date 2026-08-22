@@ -1,41 +1,41 @@
 /**
- * 烘培与增量注入系统 —— 预计算上下文注入内容，按触发策略注入到 system prompt。
+ * 文件缓存区条目注册 —— 预计算稳定前缀块，按策略注入。
  *
- * 设计文档: 烘培与增量注入系统
+ * 旧称「烘培 / BakeSystem」。术语见 core/context/DESIGN.md：
+ *   文件缓存区（稳定前缀）→ 缓存断点 → 上下文动态区
+ *   改写文件缓存区 = 缓存破坏（随后重新 cache write）
+ *   时机 = 缓存重建点（hook `cache_rebuild_point`）
  *
- * 概念：
- * - "烘培"（bake）：预计算一段上下文注入内容，生成 XML 标签包裹的文本块。
- * - "注入"（inject）：在构建 system prompt 时将烘培好的内容块插入。
- * - 触发策略：
+ * 触发策略：
  *   - "always"：每次构建 prompt 都注入
- *   - "on_change"：内容有变更时才注入
+ *   - "on_change"：内容有变更时才注入（变更即缓存破坏）
  *   - "manual"：仅手动触发注入
  */
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
-/** 烘培触发策略 */
+/** 写入文件缓存区的触发策略 */
 export type BakeTrigger = "always" | "on_change" | "manual";
 
-/** 单个烘培条目 */
+/** 单个文件缓存区条目 */
 export interface BakeEntry {
   /** XML 标签名（注入时用 <name>...</name> 包裹） */
   name: string;
-  /** 烘培后的内容（null 表示尚未烘培） */
+  /** 已写入文件缓存区的内容（null 表示尚未计算） */
   content: string | null;
   /** 触发策略 */
   trigger: BakeTrigger;
-  /** 内容是否已变更（on_change 策略使用） */
+  /** 内容是否已变更（on_change；true 表示待注入 / 视同缓存破坏后待 write） */
   dirty: boolean;
   /** 上次注入时的内容哈希（用于 on_change 对比） */
   lastHash: string;
-  /** 烘培函数（返回要注入的内容字符串） */
+  /** 计算要写入文件缓存区的函数 */
   baker: () => string | Promise<string>;
 }
 
-/** 烘培系统配置 */
+/** 文件缓存区注册表配置 */
 export interface BakeSystemConfig {
-  /** 是否启用烘培 */
+  /** 是否启用 */
   enabled: boolean;
 }
 
@@ -56,7 +56,7 @@ function simpleHash(s: string): string {
   return hash.toString(36);
 }
 
-// ─── BakeSystem ────────────────────────────────────────────────────────────
+// ─── BakeSystem（文件缓存区注册表）─────────────────────────────────────────
 
 export class BakeSystem {
   private entries: Map<string, BakeEntry> = new Map();
@@ -67,10 +67,10 @@ export class BakeSystem {
   }
 
   /**
-   * 注册一个烘培条目。
+   * 注册一个文件缓存区条目。
    *
-   * @param name - XML 标签名（注入时用 <name>...</name> 包裹）
-   * @param baker - 烘培函数，返回要注入的内容字符串
+   * @param name - XML 标签名
+   * @param baker - 返回要写入文件缓存区的字符串
    * @param trigger - 触发策略，默认 "always"
    */
   register(
@@ -89,14 +89,14 @@ export class BakeSystem {
   }
 
   /**
-   * 注销一个烘培条目。
+   * 注销一个文件缓存区条目。
    */
   unregister(name: string): boolean {
     return this.entries.delete(name);
   }
 
   /**
-   * 烘培单个条目：执行 baker 函数，缓存结果。
+   * 计算单个条目并写入缓存（on_change 且哈希未变则不视为缓存破坏）。
    */
   async bake(name: string): Promise<string | null> {
     const entry = this.entries.get(name);
@@ -116,12 +116,12 @@ export class BakeSystem {
 
       return content;
     } catch {
-      return entry.content; // 烘培失败，返回旧内容
+      return entry.content; // 失败则沿用旧内容
     }
   }
 
   /**
-   * 烘培所有条目。
+   * 计算所有条目。
    */
   async bakeAll(): Promise<Map<string, string | null>> {
     const results = new Map<string, string | null>();
@@ -132,8 +132,7 @@ export class BakeSystem {
   }
 
   /**
-   * 获取当前应注入的上下文文本。
-   * 根据触发策略决定哪些条目参与注入。
+   * 取出当前应注入文件缓存区的文本。
    *
    * @param trigger - 仅注入匹配此触发策略的条目（默认 "always"）
    */
@@ -142,14 +141,12 @@ export class BakeSystem {
 
     const parts: string[] = [];
     for (const entry of this.entries.values()) {
-      // 如果指定了 trigger，只注入匹配的
       if (trigger && entry.trigger !== trigger) continue;
-      // manual 策略不自动注入
       if (entry.trigger === "manual") continue;
 
       if (entry.content && entry.dirty) {
         parts.push(`<${entry.name}>\n${entry.content}\n</${entry.name}>`);
-        entry.dirty = false; // 注入后标记为已消费
+        entry.dirty = false;
       }
     }
 
@@ -157,7 +154,7 @@ export class BakeSystem {
   }
 
   /**
-   * 获取指定条目的烘培内容（手动触发用）。
+   * 获取指定条目已计算的内容（手动触发用）。
    */
   getBaked(name: string): string | null {
     const entry = this.entries.get(name);
@@ -165,7 +162,7 @@ export class BakeSystem {
   }
 
   /**
-   * 检查是否有待注入的变更内容。
+   * 是否有待注入的变更。
    */
   hasChanges(): boolean {
     for (const entry of this.entries.values()) {
@@ -176,7 +173,7 @@ export class BakeSystem {
   }
 
   /**
-   * 标记所有条目为脏（强制下次重新注入）。
+   * 标记全部 dirty（下次强制重新注入 = 缓存破坏）。
    */
   markAllDirty(): void {
     for (const entry of this.entries.values()) {
@@ -185,7 +182,7 @@ export class BakeSystem {
   }
 
   /**
-   * 获取所有已注册的条目名称。
+   * 已注册条目名称。
    */
   listEntries(): string[] {
     return Array.from(this.entries.keys());

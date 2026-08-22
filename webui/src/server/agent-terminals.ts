@@ -1,12 +1,17 @@
 /**
- * Agent 终端会话 —— 对接 @little-house-studio/terminal-engine
- * （use_terminal 实际跑命令的那套，不是旁路 node-pty）
+ * Agent 终端会话 —— 对接 TerminalBackend（full Rust / mini Node）
+ * 优先 subscribe 流式；旧 .node 或 mini 回退 250ms 轮询 logs。
  */
 
-import { createRequire } from "node:module";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { WebSocket } from "ws";
+import {
+  getActiveBackend,
+  initTerminalEngine,
+  resolveTerminalPersistPath,
+  type TerminalInfo as BackendInfo,
+} from "@little-house-studio/tools";
 
 export type TerminalInfo = {
   id: string;
@@ -18,80 +23,60 @@ export type TerminalInfo = {
   cwd: string;
   createdAt: string;
   updatedAt: string;
+  kind?: "agent" | "human";
 };
 
-type Engine = {
-  initEngine: (logDir?: string) => void;
-  setPersistPath: (path: string) => void;
-  list: (agentName?: string) => Array<{
-    id: string;
-    agentName: string;
-    command: string;
-    description: string;
-    state: string;
-    exitCode: number | null;
-    cwd: string;
-    createdAt: string;
-    updatedAt: string;
-  }>;
-  logs: (id: string, agentName: string, lines?: number) => Promise<string>;
-  write: (id: string, agentName: string, data: string) => Promise<void>;
-  stop: (id: string, agentName: string) => Promise<void>;
-};
+let inited = false;
 
-let engine: Engine | null = null;
-let initTried = false;
-
-export function initAgentTerminalEngine(maouRoot?: string): boolean {
-  if (engine) return true;
-  if (initTried && !engine) return false;
-  initTried = true;
+export function initAgentTerminalEngine(maouRoot?: string, projectRoot?: string): boolean {
+  const root = maouRoot ?? join(homedir(), ".maou");
+  const persist = resolveTerminalPersistPath(projectRoot);
   try {
-    const req = createRequire(import.meta.url);
-    const mod = req("@little-house-studio/terminal-engine") as Engine;
-    const root = maouRoot ?? join(homedir(), ".maou");
-    try {
-      mod.initEngine(join(root, "logs", "terminal-engine"));
-    } catch {
-      /* already inited */
+    if (!inited) {
+      initTerminalEngine(join(root, "logs", "terminal-engine"), persist);
+      inited = true;
+    } else {
+      getActiveBackend().setPersistPath(persist);
     }
-    try {
-      mod.setPersistPath(join(root, "terminals"));
-    } catch {
-      /* optional */
-    }
-    engine = mod;
     return true;
   } catch (e) {
     console.warn(
-      "[webui] terminal-engine 不可用，Agent 终端面板将为空:",
+      "[webui] 终端后端初始化失败:",
       e instanceof Error ? e.message : e,
     );
-    engine = null;
     return false;
   }
 }
 
-function eng(): Engine {
-  if (!engine) throw new Error("terminal-engine 未初始化");
-  return engine;
+/** 引擎已起来之后，随 AgentHub 切项目改 persist；未 init 则 no-op。 */
+export function rebindAgentTerminalPersist(projectRoot?: string): void {
+  if (!inited) return;
+  try {
+    getActiveBackend().setPersistPath(resolveTerminalPersistPath(projectRoot));
+  } catch {
+    /* ignore */
+  }
+}
+
+function mapInfo(t: BackendInfo): TerminalInfo {
+  return {
+    id: t.id,
+    agentName: t.agentName,
+    command: t.command ?? "",
+    description: t.description ?? "",
+    state: t.state ?? "",
+    exitCode: t.exitCode ?? null,
+    cwd: t.cwd ?? "",
+    createdAt: t.createdAt ?? "",
+    updatedAt: t.updatedAt ?? "",
+    kind: t.kind ?? (t.id.startsWith("human_") ? "human" : "agent"),
+  };
 }
 
 export function listAgentTerminals(agentName?: string): TerminalInfo[] {
-  if (!engine) return [];
   try {
-    const raw = agentName ? engine.list(agentName) : engine.list();
-    return (raw ?? []).map((t) => ({
-      id: t.id,
-      agentName: t.agentName,
-      command: t.command ?? "",
-      description: t.description ?? "",
-      state: t.state ?? "",
-      exitCode: t.exitCode ?? null,
-      cwd: t.cwd ?? "",
-      createdAt: t.createdAt ?? "",
-      updatedAt: t.updatedAt ?? "",
-    }));
+    const raw = agentName ? getActiveBackend().list(agentName) : getActiveBackend().list();
+    return (raw ?? []).map(mapInfo);
   } catch {
     return [];
   }
@@ -102,10 +87,9 @@ export async function getAgentTerminalLogs(
   agentName: string,
   lines = 8000,
 ): Promise<string> {
-  if (!engine) return "";
   try {
     return await Promise.race([
-      eng().logs(id, agentName, lines),
+      getActiveBackend().logs(id, agentName, lines),
       new Promise<string>((r) => setTimeout(() => r(""), 5000)),
     ]);
   } catch {
@@ -118,18 +102,30 @@ export async function writeAgentTerminal(
   agentName: string,
   data: string,
 ): Promise<void> {
-  await eng().write(id, agentName, data);
+  await getActiveBackend().write(id, agentName, data);
 }
 
 export async function stopAgentTerminal(
   id: string,
   agentName: string,
 ): Promise<void> {
-  await eng().stop(id, agentName);
+  await getActiveBackend().stop(id, agentName);
+}
+
+export async function resizeAgentTerminal(
+  id: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  const be = getActiveBackend();
+  if (!be.resize) {
+    throw new Error("当前终端后端不支持 resize（mini 或旧 .node）");
+  }
+  await be.resize(id, cols, rows);
 }
 
 /**
- * WebSocket：附着到指定 agent 终端，轮询 logs 推增量；stdin 走 write。
+ * WebSocket：附着到指定 agent 终端。优先 subscribe，否则轮询 logs。
  */
 export function attachAgentTerminalSocket(
   ws: WebSocket,
@@ -139,6 +135,7 @@ export function attachAgentTerminalSocket(
   let last = "";
   let closed = false;
   let timer: ReturnType<typeof setInterval> | null = null;
+  let unsub: (() => void) | null = null;
 
   const send = (msg: Record<string, unknown>) => {
     if (ws.readyState === ws.OPEN) {
@@ -147,6 +144,28 @@ export function attachAgentTerminalSocket(
       } catch {
         /* ignore */
       }
+    }
+  };
+
+  const sendStatus = () => {
+    const list = listAgentTerminals(opts.agentName);
+    const info = list.find((t) => t.id === opts.id);
+    if (!info) return;
+    send({
+      type: "status",
+      state: info.state,
+      exitCode: info.exitCode,
+      command: info.command,
+      description: info.description,
+    });
+    if (
+      info.state === "exited" ||
+      info.state === "failed" ||
+      info.state === "stopped" ||
+      info.state === "killed" ||
+      info.exitCode != null
+    ) {
+      send({ type: "exit", code: info.exitCode });
     }
   };
 
@@ -159,30 +178,10 @@ export function attachAgentTerminalSocket(
         if (delta) send({ type: "data", data: delta });
         last = full;
       } else if (full !== last) {
-        // 日志被截断/重置：全量刷新
         send({ type: "reset", data: full });
         last = full;
       }
-      const list = listAgentTerminals(opts.agentName);
-      const info = list.find((t) => t.id === opts.id);
-      if (info) {
-        send({
-          type: "status",
-          state: info.state,
-          exitCode: info.exitCode,
-          command: info.command,
-          description: info.description,
-        });
-        if (
-          info.state === "exited" ||
-          info.state === "failed" ||
-          info.state === "stopped" ||
-          info.exitCode != null
-        ) {
-          // 再推一次最终日志后停轮询
-          send({ type: "exit", code: info.exitCode });
-        }
-      }
+      sendStatus();
     } catch (e) {
       send({
         type: "error",
@@ -192,13 +191,7 @@ export function attachAgentTerminalSocket(
   };
 
   void (async () => {
-    if (!engine) {
-      send({
-        type: "error",
-        message: "terminal-engine 不可用（原生模块未加载）",
-      });
-      return;
-    }
+    const be = getActiveBackend();
     const initial = await getAgentTerminalLogs(opts.id, opts.agentName, 12000);
     last = initial;
     send({
@@ -207,6 +200,20 @@ export function attachAgentTerminalSocket(
       agentName: opts.agentName,
       data: initial,
     });
+
+    if (typeof be.subscribe === "function") {
+      unsub = be.subscribe(opts.id, (ev) => {
+        if (closed) return;
+        if (ev.kind === "data" && ev.data) send({ type: "data", data: ev.data });
+        if (ev.kind === "exit") send({ type: "exit", code: ev.exitCode ?? null });
+        if (ev.kind === "error") send({ type: "error", message: ev.message });
+      });
+      timer = setInterval(() => {
+        if (!closed) sendStatus();
+      }, Math.max(pollMs * 4, 1000));
+      return;
+    }
+
     timer = setInterval(() => void tick(), pollMs);
   })();
 
@@ -215,7 +222,13 @@ export function attachAgentTerminalSocket(
       const msg = JSON.parse(String(raw)) as {
         type?: string;
         data?: string;
+        cols?: number;
+        rows?: number;
       };
+      if (msg.type === "ping") {
+        send({ type: "pong" });
+        return;
+      }
       if (msg.type === "input" && typeof msg.data === "string") {
         void writeAgentTerminal(opts.id, opts.agentName, msg.data).catch((e) => {
           send({
@@ -223,6 +236,9 @@ export function attachAgentTerminalSocket(
             message: e instanceof Error ? e.message : String(e),
           });
         });
+      }
+      if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
+        void resizeAgentTerminal(opts.id, msg.cols, msg.rows).catch(() => {});
       }
       if (msg.type === "stop") {
         void stopAgentTerminal(opts.id, opts.agentName).catch(() => {});
@@ -236,6 +252,12 @@ export function attachAgentTerminalSocket(
     closed = true;
     if (timer) clearInterval(timer);
     timer = null;
+    try {
+      unsub?.();
+    } catch {
+      /* ignore */
+    }
+    unsub = null;
   };
   ws.on("close", cleanup);
   ws.on("error", cleanup);

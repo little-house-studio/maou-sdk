@@ -25,6 +25,7 @@ import {
   TASK_MANAGER,
   formatTodoNoticeMessage,
   initTerminalEngine,
+  resolveTerminalPersistPath,
   machineOpenPathGuard,
 } from "@little-house-studio/tools";
 import { TODO_ORCHESTRATOR } from "./todo/index.js";
@@ -42,8 +43,9 @@ import { createDefaultSubagentRunFn } from "./default-subagent-run-fn.js";
 import { McpConnectionManager } from "./mcp/manager.js";
 import { GitWatcher } from "../agent_factory/git-watcher.js";
 import { createAppLogger } from "./app-logger.js";
-import type { Hooks } from "./hooks.js";
+import { Hooks, type HookUi } from "./hooks.js";
 import { join } from "node:path";
+import type { CacheRebuildPointEvent, CacheRebuildPointResult, CacheRebuildTriggers } from "./cache-rebuild.js";
 
 // ─── Runtime 门面 ──────────────────────────────────────────────────────────
 
@@ -103,6 +105,8 @@ export interface AppRuntimeOptions {
    * coding-agent 在 MAOU_DOC_EXTRACT=1 时注入 doc_extract 策略。
    */
   hooks?: Hooks;
+  /** 缓存重建点默认触发开关（大压缩/归档、/compact、新建/清空会话） */
+  cacheRebuild?: Partial<CacheRebuildTriggers>;
 }
 
 /**
@@ -125,6 +129,7 @@ export class Runtime {
   private agentName: string;
   private fileDiffWatchOpt?: AppRuntimeOptions["fileDiffWatch"];
   private hooks?: Hooks;
+  private cacheRebuildOpt?: Partial<CacheRebuildTriggers>;
   private agentRuntime: AgentRuntime | null = null;
   /** Ops 等机器级 agent：在 ensure agentRuntime 后应用 */
   private _pendingDefaultPathGuard?: {
@@ -156,6 +161,7 @@ export class Runtime {
     this.agentName = options.agentName ?? "coding";
     this.fileDiffWatchOpt = options.fileDiffWatch;
     this.hooks = options.hooks;
+    this.cacheRebuildOpt = options.cacheRebuild;
     this.maouRoot = options.maouRoot ?? resolveUserMaouRoot();
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.summarizer = options.summarizer;
@@ -164,7 +170,7 @@ export class Runtime {
     // 终端引擎初始化（幂等）：SDK 独立使用时无 harness server，此处保证引擎可用。
     // 持久化路径与 harness 一致（<projectRoot>/.maou/terminals.json）。
     try {
-      initTerminalEngine(undefined, join(this.projectRoot, ".maou", "terminals.json"));
+      initTerminalEngine(undefined, resolveTerminalPersistPath(this.projectRoot));
     } catch { /* 已初始化或引擎不可用，忽略 */ }
 
     // ContextEngine 压缩闭环装配：
@@ -239,7 +245,36 @@ export class Runtime {
         TASK_MANAGER.restore(session.id, pending as unknown as Task[]);
       }
     }
+    try {
+      void this.atCacheRebuildPoint({
+        reason: "session_new",
+        sessionId: session.id,
+        agentName,
+      });
+    } catch {
+      /* 缓存重建点失败不影响新建会话 */
+    }
     return session.id;
+  }
+
+  /** 缓存重建点（暴露给 CLI / WebUI / 扩展） */
+  atCacheRebuildPoint(event: CacheRebuildPointEvent): Promise<CacheRebuildPointResult> {
+    return this.getRuntime().atCacheRebuildPoint(event);
+  }
+
+  getCacheRebuildGeneration(sessionId: string): number {
+    return this.getRuntime().getCacheRebuildGeneration(sessionId);
+  }
+
+  setHookUi(ui: HookUi): void {
+    if (!this.hooks) this.hooks = new Hooks();
+    this.hooks.ui = ui;
+    this.agentRuntime?.setHookUi(ui);
+  }
+
+  getHooks(): Hooks {
+    if (!this.hooks) this.hooks = new Hooks();
+    return this.hooks;
   }
 
   private getRuntime(): AgentRuntime {
@@ -405,6 +440,7 @@ export class Runtime {
         agentScope: this.agentScope,
         fileDiffWatch: this.fileDiffWatchOpt,
         hooks: this.hooks,
+        cacheRebuild: this.cacheRebuildOpt,
       });
 
       // ── 装配默认 SubagentExecutor（与 harness 共享 createDefaultSubagentRunFn）──
@@ -506,6 +542,7 @@ export class Runtime {
             sessionId: subSessionId,
             agentName: "main",
             title: `todo-fork: ${node.id}`,
+            parentSessionId: rootSessionId,
           });
         }
         for (const notice of notices) {
@@ -579,6 +616,9 @@ export class Runtime {
     images?: unknown[];
     userPostData?: unknown;
     userName?: string;
+    userCommand?: string;
+    userVideo?: Array<{ mimeType: string; data: string }>;
+    userAudio?: Array<{ mimeType: string; data: string }>;
     abortSignal?: AbortSignal;
     platformContext?: string;
     source?: string;
@@ -618,6 +658,13 @@ export class Runtime {
         stream: params.stream,
         initAgentName: params.initAgentName,
         userName: params.userName,
+        userCommand: params.userCommand,
+        userImages: Array.isArray(params.images)
+          ? (params.images as Array<{ mimeType: string; data: string }>)
+          : undefined,
+        userVideo: params.userVideo,
+        userAudio: params.userAudio,
+        userMessageSource: params.source,
         abortSignal: params.abortSignal,
         platformContext: params.platformContext,
         bindingProjectRoot: params.projectRoot,

@@ -9,8 +9,9 @@
         - 可注入system前区
         - System.md
         - 可注入system后区
-    - 烘焙阶段（bakedStage）
-        - 可增量注入
+    - 文件缓存区（稳定前缀，cacheable prefix）
+        - 缓存断点之前；可被 diff 在断点后增量更新
+        - 刻意改写本区（压缩 / 折叠成完整文件）= 缓存破坏，随后重新 write 前缀
     - 概要阶段（summaryStage）
     - 压缩阶段（compactStage）
     - 原始上下文
@@ -27,8 +28,8 @@
 
 ## 上下文压缩算法
     - [嵌入结构区] ->不变区域，除非大变
-        - 非烘焙阶段例如用户偏好，项目信息，环境信息，别的自定义嵌入文本信息
-        - 烘焙阶段（bakedStage）：这里固定，活跃阶段（activeStage）会增量注入
+        - 文件缓存区：用户偏好、项目说明、钉死的文件全文等，断点前尽量不改
+        - 上下文动态区：活跃阶段（activeStage）的 diff / before_user / 本轮状态
     - [归档阶段（archiveStage）]->第二次大压缩直接剩下任务块摘要+ID了，需要原始记录就去读取
         - 剩下任务块极简摘要+ID路径+任务并行结构图了
     - [概要阶段（summaryStage）] -> 第一次大压缩，压缩后剩下过去去的任务摘要
@@ -53,14 +54,28 @@
         - 原数据：{👨,消息集群}{🤖,消息集群}{👨,消息集群}{🤖,消息集群}
         - 压缩后：{👨,消息集群}{🤖,消息集群}{👨,消息集群}{🤖,消息集群}
 
-## 上下文增量
-增量注入通过 `UserMessageOptions.dynamicInjections` 字段传入，由 `harness/runtime.ts` 在每轮 agent loop 调用 `buildMessages` 时填入。增量内容典型来源：看板状态、未决任务、活跃 agent 状态（`compileDynamicContext`）。
+## 上下文动态区
+`UserMessageOptions.dynamicInjections` 由 `harness/runtime.ts` 在每轮 agent loop 调用 `buildMessages` 时填入（缓存断点之后）。典型来源：看板状态、未决任务、活跃 agent 状态（`compileDynamicContext`）、文件 diff notice。
 
 
-## 烘焙与增量
-- **烘焙阶段**（bakedStage）：用户偏好、项目信息等长期不变的内容，由调用方通过 `UserMessageOptions.bakedContext` 注入。
-- **活跃阶段**（activeStage）：每轮变化的状态，由 `compileDynamicContext` 生成。
+## 文件缓存区、缓存断点、上下文动态区
+
+旧称「烘焙 / bake」。与 Prompt Cache 对齐：
+
+| 现用名 | 含义 | 旧称 |
+|---|---|---|
+| **文件缓存区** | 请求里尽量不改的稳定前缀（钉死的文件、项目 md、skill 索引等）。对应 cacheable prefix | 烘焙区 / bakedStage |
+| **diff** | 相对上次 commit/baseline 的增量文本 | 不变 |
+| **缓存断点** | 上下文不再更改的最后位置：此前文件缓存区，此后上下文动态区 | — |
+| **上下文动态区** | 允许每轮改的后缀（before_user、diff、todo、用户话） | 增量注入 |
+| **缓存破坏** | 刻意改写文件缓存区（压缩、把 diff 折叠成完整文件、重建前缀）。旧 KV 前缀失效，下一跳重新 cache write | 打缓存 / 折叠打前缀 |
+| **缓存重建** | **行为**：缓存破坏之后重新 write 稳定前缀 | — |
+| **缓存重建点** | **时机**（内部 hook `cache_rebuild_point`）。默认：大压缩 / 归档、手动 `/compact`（非微压缩）、新建/清空会话。微压缩（compactStage）不是缓存重建点 | — |
+
+- **文件缓存区**：由 `UserMessageOptions.fileCacheZone` 注入（旧字段名 `bakedContext`）。
+- **上下文动态区**：`compileDynamicContext`、file_change_notice、skill `<skill_update>` 等。
 - **静态阶段**（staticStage）：压缩算法中永不参与压缩的部分，包括 `system` 消息与 `pins` 消息。
+- **缓存重建点**：agent 层 hook（`pre_cache_rebuild` / `cache_rebuild_point` / `post_cache_rebuild`）。接口：`Runtime.atCacheRebuildPoint` / `Hooks.on("cache_rebuild_point", …)`。默认触发见 `@little-house-studio/agent` 的 `DEFAULT_CACHE_REBUILD_TRIGGERS`。
 
 
 ## 消息结构体
@@ -156,36 +171,30 @@
         - diff增量消息
             -diffFile 文件diff监听类
                 - 结构体：
-                    - const bakefile = new BakeFile(){tag:"config",path:"config.xml",hint:"项目配置文件",mode:"diff_placeholder"}
+                    - const bakefile = new BakeFile(){tag:"config",path:"config.xml",hint:"项目配置文件",mode:"diff"}
                 - diffFile difffile
-                - difffile.init：[xml名称，文件路劲（绝对或者相对都行），提示词，预设方案(仅监听，diff占位符，diff完整注入))]
+                - difffile.init：[xml名称，文件路径，提示词，预设方案(仅监听，diff，完整注入)]
                 - difffile.hasChanges：文件距离上次commit是否有增量（函数）
                 - difffile.commit：做上次diff的标记
                 - difffile.read：读取文件完整内容（函数）
-                - difffile.diff：返回文件diff内容，（函数）
+                - difffile.diff：返回文件 diff 内容（函数）
                 - difffile.path：获取文件路径（函数）
-                - bake快速版
-                    - difffile.bake() 相当于commit后返回完整文件内容，带xml。可以直接add到bakeblock
-                    - difffile.update() 相当于返回本次diff内容后commit，带xml。可以直接add到before_user
-            - bake傻瓜式简易版：
-                - agent.bakeLink("xml","文件路劲", "提示词")     //后续自动会在压缩等情况下自动渲染，并且每次user发送时自动注入更新内容
-                - 这个无需其他配置，直接用一条就可以完成烘焙文件绑定，相当于进行了下面的一套操作并自动add到bakeblock和before_user
-                - 默认模式为链式diff，并且间隔参数为3，也就是每3条diff返回，就会返回一次完整文件内容
-                - 可以通过setInterval函数来设置间隔参数
+                - 写入文件缓存区：
+                    - difffile.bake() commit 后返回完整文件（xml），放入文件缓存区（断点前）
+                    - difffile.update() 返回本次 diff 后 commit，放入上下文动态区（断点后）
+                - 折叠满 maxPendingDiffs 次 diff：用当前完整文件替换文件缓存区旧版 = **缓存破坏**，再 write 新前缀
 
             - 案例：
                 - 每次发送检查是否有更新：
-                    - message.bakeblock.add(bakefile.read) //添加完整文件到烘焙阶段（bakedStage）
-                    - bakefile.snapshot()//标记
+                    - 完整文件 → 文件缓存区
+                    - bakefile.commit() // 标记 baseline
                     - 过了很久。。。
-                    - message.before_user.add(bakefile.getDiff(),history_back:true) //增量消息，返回文件变化内容到user前，并且会返回上下文中
-                    - message.send() //发送完整消息
-                    - bakefile.snapshot()//更新文件最新标记
-                    - 简易版：
-                        - const file = bake("xml","文件路劲", "提示词")     //后续自动会在压缩等情况下自动渲染，并且每次user自动注入更新内容
+                    - 将 bakefile.diff() 放入上下文动态区（before_user）
+                    - message.send()
+                    - bakefile.commit() // 更新 baseline
 
 
-        - 烘焙消息
+        - 文件缓存区消息
         - 用户消息
         - 系统消息
         - ai消息
@@ -244,7 +253,7 @@ interface llmMessage {
 - 案例
     - 上下文结构
         - {system,系统prompt}   //不变动的系统提示词
-        - {user,烘焙的消息}   //烘焙阶段（bakedStage）
+        - {user,文件缓存区}   //稳定前缀，缓存断点之前
         - {user,压缩后的大纲}   //概要阶段（summaryStage）
         - {user,消息集群}   //压缩阶段（compactStage）
         - {user,消息集群}   //活跃阶段（activeStage）

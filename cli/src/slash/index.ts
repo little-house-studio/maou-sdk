@@ -25,6 +25,8 @@ export {
   splitSlashTokens,
 } from "./registry.js";
 
+import { listShortcuts } from "@little-house-studio/agent";
+
 export {
   BUILTIN_CLI_COMMANDS,
   registerBuiltinCliCommands,
@@ -106,6 +108,9 @@ export function commandPaletteItems(): PaletteItem[] {
 
 export function helpKeyRows(): [string, string][] {
   registerBuiltinCliCommands();
+  const extRows: [string, string][] = listShortcuts().map(
+    (s) => [s.key, s.description] as [string, string],
+  );
   const fixed: [string, string][] = [
     ["Enter", "发送"],
     ["Alt+Enter", "换行"],
@@ -143,7 +148,12 @@ export function helpKeyRows(): [string, string][] {
     seen.add(k);
     return true;
   });
-  return [...fixed, ...extra, ...slashHint];
+  const extExtra = extRows.filter(([k]) => {
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  return [...fixed, ...extra, ...extExtra, ...slashHint];
 }
 
 /** 兼容：旧 CLI_COMMANDS 数组 */

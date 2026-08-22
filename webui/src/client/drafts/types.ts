@@ -48,6 +48,8 @@ export type DraftSession = {
   title: string;
   agent: string;
   timeLabel: string;
+  /** 子会话 / fork 的父会话，驱动顶部横向树 */
+  parentSessionId?: string;
 };
 
 /**

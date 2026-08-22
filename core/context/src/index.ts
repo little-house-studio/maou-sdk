@@ -14,6 +14,14 @@
 // 会话持久化
 export { SessionStore } from "./session-store.js";
 export type { SessionData, SessionMeta, SessionMessage, SessionListItem, SessionTrace } from "./session-store.js";
+export {
+  selectBranch,
+  filterLlmVisible,
+  prefixThrough,
+  ensureEntryIds,
+  newEntryId,
+} from "./session-tree.js";
+export type { SessionVisibility, TreeFields } from "./session-tree.js";
 
 // Maou 层消息结构体与转换函数
 export type {
@@ -115,6 +123,15 @@ export type {
   MessageAuthor,
   MessageAuthorType,
 } from "./session-event.js";
+export {
+  appendToolResult,
+  patchPendingToolInterrupts,
+  pendingToolCallIdsAtTail,
+  isToolCallIdPaired,
+  formatToolFollowupText,
+  findToolCallIdByPayload,
+} from "./tool-result.js";
+export type { AppendToolResultOutcome } from "./tool-result.js";
 
 // 上下文压缩
 export {
@@ -185,7 +202,7 @@ export type { PlatformContextRequest, PlatformContextProvider, BuildPlatformCont
 export { TaskSessionStore } from "./task-session-store.js";
 export type { TaskPlanEntry } from "./task-session-store.js";
 
-// BakeFile 文件 diff 监听与增量注入
+// BakeFile：磁盘文件 → 文件缓存区 + 上下文动态区 diff
 export { BakeFile, bake } from "./bake-file.js";
 export type { BakeFileOptions, BakeMode } from "./bake-file.js";
 
@@ -206,3 +223,17 @@ export type {
   StagedCompressConfig,
   SummaryModelConfig,
 } from "./auto-compress.js";
+
+export {
+  toAgentSendMessage,
+  toAgentUserMessage,
+  flattenAgentSendText,
+  formatAgentSendSessionText,
+  formatAgentSendRuntimeText,
+  agentSendImages,
+  agentSendVideo,
+  agentSendAudio,
+  resolveAgentSendMode,
+  agentUserMessageText,
+  unwrapAgentSendTag,
+} from "./user-message.js";

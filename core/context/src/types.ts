@@ -42,7 +42,9 @@ export interface UserMessageOptions {
   systemPre?: string;
   /** system 后区注入（位于 System.md 之后） */
   systemPost?: string;
-  /** 烘焙上下文区（用户偏好、项目信息等） */
+  /** 文件缓存区（稳定前缀，缓存断点之前；旧名 bakedContext） */
+  fileCacheZone?: string;
+  /** @deprecated 使用 fileCacheZone */
   bakedContext?: string;
   /** 压缩区摘要（来自 maybeCompress 的 droppedSummary） */
   compressedSummary?: string;

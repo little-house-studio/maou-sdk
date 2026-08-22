@@ -298,3 +298,67 @@ describe("AgentHub sessions model approval", () => {
     assert.ok(typeof text === "string");
   });
 });
+
+describe("AgentHub.deliverWebhook", () => {
+  before(() => {
+    AgentHub.skipWebhookRun = true;
+  });
+  after(() => {
+    AgentHub.skipWebhookRun = false;
+  });
+
+  it("wakes a named agent without stealing UI focus", () => {
+    const hub = new AgentHub({
+      projectRoot: project,
+      maouRoot: maou,
+      sandboxMode: "yolo",
+    });
+    hub.setActiveAgent("system:ops");
+    assert.equal(hub.agentName, "ops");
+    const focus = hub.activeSwitchId;
+
+    const r = hub.deliverWebhook({
+      agent: `project:${project}:coding`,
+      message: "人回来了",
+    });
+    try {
+      assert.equal(r.ok, true);
+      if (!r.ok) return;
+      assert.equal(r.status, "started");
+      assert.equal(r.agent, "coding");
+      assert.equal(r.switchId, `project:${project}:coding`);
+      assert.ok(r.sessionId);
+      assert.equal(hub.activeSwitchId, focus);
+      assert.equal(hub.agentName, "ops");
+    } finally {
+      hub.abortAllRuns();
+    }
+  });
+
+  it("queues a second shot while the first run is held", () => {
+    const hub = new AgentHub({
+      projectRoot: project,
+      maouRoot: maou,
+      sandboxMode: "yolo",
+    });
+    const first = hub.deliverWebhook({
+      agent: `project:${project}:coding`,
+      message: "first",
+    });
+    const second = hub.deliverWebhook({
+      agent: `project:${project}:coding`,
+      message: "second",
+    });
+    try {
+      assert.equal(first.ok, true);
+      assert.equal(second.ok, true);
+      if (!first.ok || !second.ok) return;
+      assert.equal(first.status, "started");
+      assert.equal(second.status, "queued");
+      assert.equal(first.sessionId, second.sessionId);
+      assert.ok(second.queueId);
+    } finally {
+      hub.abortAllRuns();
+    }
+  });
+});

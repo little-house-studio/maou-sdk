@@ -47,6 +47,9 @@ describe("SettingsPanel API 设置", () => {
     assert.match(html, /wire-settings-panel/);
     assert.doesNotMatch(html, /wire-settings-overlay/);
     assert.match(html, /API 设置/);
+    assert.match(html, /data-paste-fill="true"/);
+    assert.match(html, /粘贴识别/);
+    assert.match(html, /data-paste-fill-input/);
     // connection
     assert.match(html, /api-preset-name/);
     assert.match(html, /api-preset-url/);
@@ -129,8 +132,26 @@ describe("WireTopbar settings mode tab", () => {
     assert.match(html, />项目</);
     assert.match(html, />Team</);
     assert.match(html, />设置</);
+    assert.match(html, /data-led-strip="3x18"/);
+    assert.match(html, /data-state="idle"/);
     // gear drawer removed — settings is a mode tab
     assert.doesNotMatch(html, /打开设置|aria-haspopup="dialog"/);
+  });
+
+  it("LED strip turns run when agentBusy", () => {
+    const html = renderToStaticMarkup(
+      createElement(WireTopbar, {
+        mode: "chat",
+        onModeChange: () => {},
+        meta: META,
+        usageLabel: "1k",
+        showFiles: false,
+        onToggleFiles: () => {},
+        agentBusy: true,
+      }),
+    );
+    assert.match(html, /data-state="run"/);
+    assert.match(html, /aria-label="Agent 运行中"/);
   });
 
   it("marks 设置 tab selected when mode is settings", () => {
@@ -169,6 +190,8 @@ describe("DraftShell settings mode path (shipped source)", () => {
     assert.match(topbarSrc, /id:\s*["']settings["']/);
     assert.match(topbarSrc, /label:\s*["']设置["']/);
     assert.doesNotMatch(topbarSrc, /onOpenSettings/);
+    assert.match(topbarSrc, /LedStrip/);
+    assert.match(topbarSrc, /agentBusy/);
   });
 
   it("mode switch keeps chat/project/team paths", () => {

@@ -3,7 +3,7 @@
  * 确保 monorepo / 用户目录有 dcg 二进制（跨平台，不依赖 bash）。
  *
  * 安装到：
- *   1) <repo>/vendor/bin/dcg[.exe]   （monorepo 开发）
+ *   1) <repo>/scripts/vendor/bin/dcg[.exe]   （monorepo 开发）
  *   2) ~/.maou/bin/dcg[.exe]         （用户安装 / PATH 回退）
  *
  * 用法：
@@ -31,6 +31,7 @@ import { spawnSync, execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { platform as osPlatform, arch as osArch, homedir, tmpdir } from "node:os";
+import { vendorBinDirFromScriptsDir } from "./lib/vendor-bin.mjs";
 
 /**
  * 交叉打包：MAOU_TARGET_PLATFORM / MAOU_TARGET_ARCH 指定目标平台（默认本机）。
@@ -43,7 +44,6 @@ import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, "..");
 const OWNER = "Dicklesworthstone";
 const REPO = "destructive_command_guard";
 const FORCE = process.argv.includes("--force");
@@ -87,7 +87,7 @@ function defaultDests() {
   }
   const userBin = join(homedir(), ".maou", "bin", BIN);
   if (!USER_ONLY) {
-    list.push(join(REPO_ROOT, "vendor", "bin", BIN));
+    list.push(join(vendorBinDirFromScriptsDir(__dirname), BIN));
   }
   list.push(userBin);
   return list;

@@ -148,6 +148,18 @@ describe("BottomInfoBar dock tray", () => {
     assert.equal(mid.cssW, boardWidthForPanel(40));
     assert.match(mid.pathD, /H10\.5L9\.5 0H1L0 1Z$/);
 
+    const earlyExpand = dockCardGeometry({
+      phase: "expand",
+      panelH: 8,
+      title: "标题",
+      preview: "预览行",
+      hoverProgress: 1,
+    });
+    assert.ok(
+      earlyExpand.cssW > boardWidthForPanel(8),
+      "live pull keeps hover strip width so it does not snap skinny",
+    );
+
     const exp = dockCardGeometry({ phase: "expand", panelH: 240 });
     assert.equal(exp.cssW, DOCK_EXPAND_W_UI);
     assert.equal(exp.cssH, DOCK_TAB_H + 240);
@@ -209,12 +221,20 @@ describe("BottomInfoBar dock tray", () => {
     assert.match(src, /wire-dock-tab-extra/);
     assert.match(src, /wire-dock-tab-preview/);
     assert.match(src, /hoverProgress/);
-    assert.match(src, /stepHoverProgress/);
+    assert.match(src, /stepHoverMap/);
+    assert.match(src, /dockMagnetWinner/);
+    assert.match(src, /dockMagnetTransform/);
     assert.match(src, /beginEarPress/);
     assert.match(src, /position:\s*"fixed"/);
     assert.match(src, /placeBoardOnSlot/);
     assert.match(src, /shouldStowFloat/);
     assert.match(src, /is-lifting/);
+    assert.match(src, /breakaway/);
+    assert.match(src, /easeCloseProgress|STOW_EASE_S/);
+    assert.match(src, /OPEN_KICK_V/);
+    assert.match(src, /holdHover|liveSnapRef/);
+    assert.match(src, /style\.transform = "none"/);
+    assert.doesNotMatch(src, /SPRING_CLOSE/);
     // label+badge always; no branch that removes them on hover
     assert.match(src, /wire-dock-tab-label/);
     assert.doesNotMatch(src, /wire-dock-float/);
@@ -240,12 +260,10 @@ describe("BottomInfoBar dock tray", () => {
     assert.match(css, /\.wire-dock-track\s*\{[^}]*gap:\s*0/s);
     assert.match(css, /margin:\s*0\s+0\s+0\s+-6px/);
     assert.match(css, /drop-shadow\(\s*-2\.5px/);
-    // no upward translate on hover — right edge only
-    assert.doesNotMatch(
-      css,
-      /\.wire-dock-card\.is-preview\s*\{[^}]*translateY/s,
-    );
-    assert.match(css, /\.wire-dock-card\.is-preview\s*\{[^}]*transform:\s*none/s);
+    // magnet peek: bottom-origin lift (JS transform) + slot-mouth shadow
+    assert.match(css, /transform-origin:\s*50%\s+100%/);
+    assert.match(css, /\.wire-dock-card\.is-peeking/);
+    assert.match(css, /inset\s+0\s+3px\s+5px/);
     // track canvas transparent; fill rail uses body-band height (折角)
     assert.match(
       css,

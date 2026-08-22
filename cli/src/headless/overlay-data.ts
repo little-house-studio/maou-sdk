@@ -12,6 +12,7 @@ import { useStore } from "../state/store.js";
 import { commandPaletteItems, helpKeyRows } from "../config/cli-commands.js";
 import { settingsForSurface } from "../config/cli-settings.js";
 import { getActiveTheme, listThemesMeta } from "../theme/load-theme.js";
+import { getHookConfirm } from "../hooks/hook-ui.js";
 import {
   agentPresenceKey,
   resolvePresenceStatus,
@@ -485,6 +486,20 @@ export function buildOverlay(
           0,
           items.findIndex((it) => it.value === currentId),
         ),
+      };
+    }
+    case "confirm": {
+      const ask = getHookConfirm();
+      return {
+        kind,
+        title: ask?.title || "确认",
+        footer: "↑↓ 选择 · Enter 确认 · Esc 拒绝",
+        items: [
+          { value: "yes", label: "是" },
+          { value: "no", label: "否" },
+        ],
+        lines: ask?.message ? ask.message.split("\n").slice(0, 20) : undefined,
+        selected: 1,
       };
     }
     case "agents": {

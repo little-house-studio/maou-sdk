@@ -1,30 +1,20 @@
 /**
- * Terminal 工具 — 基于 Rust 终端引擎
+ * Terminal 工具 — 经 TerminalBackend（full Rust PTY / mini 纯 Node）
  *
  * 3 种模式：
  *   1. run — 前台/后台运行命令
  *   2. manage — 终端管理 (list/rm/stop/logs)
- *   3. write — 键盘输入模拟（交互式命令支持）
+ *   3. write — 键盘输入模拟（仅 full PTY）
  *
- * 底层由 Rust terminal-engine 驱动（对齐 Grok 思路的跨平台执行层）：
- * - 默认全平台管道（shell_command_argv + capture_env）
- * - ProcessGroup 杀进程树（Unix killpg / Windows Job Object）
- * - 可选 MAOU_PTY_FORCE=1 真 PTY（write 键盘交互）
- * - 命令过滤 + DCG 三层安全（TS gate）
- * - 200 并行上限、ring buffer、V1 路径沙箱
- * 勿再使用 terminal/registry.ts / pty.ts（已弃用，见 LEGACY.md）
- *
- * 安全三层（run 前，见 terminal-security.ts）：
- *   致命 fatal  — 硬拦（DCG critical/灾难规则 + maou-hard-deny），不可二次执行绕过
- *   危险 dangerous — 需确认（用户/审核 Agent/相同命令再执行一次）
- *   安全 safe — 放行或仅走普通白名单/ask/auto
- * 引擎层：sandbox + 自定义 filter
+ * 选型：MAOU_TERMINAL → agent.json terminalMode → config.json terminal.mode（默认 full）。
+ * full 无 .node 时自动降级 mini，并在返回/status panel 标明。
+ * 安全三层仍走 security/gate.ts（DCG），与后端无关。
  *
  * before_user 终端状态面板由 Runtime 层自动注入，无需 AI 主动调用。
  */
 
 import { Tool, toolDir } from "../../base.js";
-import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
+import type { JsonSchema, ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { compressTerminalOutput, compressOutput } from "../../compress/output-compressor.js";
 import { createToolResponse, toolFail } from "../../base.js";
 import { truncateMiddle, formatMetadata, errToString } from "../../util/common.js";
@@ -49,8 +39,46 @@ import {
   type ReturnWhen,
 } from "./condition.js";
 
-// Rust 终端引擎
-import * as engine from "@little-house-studio/terminal-engine";
+import {
+  getActiveBackend,
+  getTerminalResolution,
+  initActiveBackend,
+  shutdownActiveBackend,
+} from "../resolve-backend.js";
+import { isHumanTerminal, type TerminalInfo } from "../backend.js";
+
+function be(ctx?: ToolContext) {
+  return getActiveBackend({ agentTerminalMode: ctx?.terminalBackend });
+}
+
+function withWindowsShellHint(schemas: JsonSchema[]): JsonSchema[] {
+  const hint = " Windows 上命令在 PowerShell 中执行（与人壳相同），不要写 bash/zsh。";
+  return schemas.map((schema) => {
+    if (!schema || typeof schema !== "object") return schema;
+    const s = { ...(schema as Record<string, unknown>) };
+    if (typeof s.description === "string" && !s.description.includes("PowerShell")) {
+      s.description = `${s.description}${hint}`;
+    }
+    const params = s.parameters;
+    if (params && typeof params === "object") {
+      const p = { ...(params as Record<string, unknown>) };
+      const props = p.properties;
+      if (props && typeof props === "object") {
+        const pr = { ...(props as Record<string, unknown>) };
+        const cmd = pr.command;
+        if (cmd && typeof cmd === "object") {
+          pr.command = {
+            ...(cmd as Record<string, unknown>),
+            description: "要执行的 PowerShell 命令（run 时必填；不要写 bash/zsh）。",
+          };
+        }
+        p.properties = pr;
+      }
+      s.parameters = p;
+    }
+    return s as JsonSchema;
+  });
+}
 
 export class TerminalTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
@@ -77,7 +105,7 @@ export class TerminalTool extends Tool {
         id: {
           type: "string",
           description:
-            "终端名称（AI 自定义）。不填为临时终端。已存在的 id 会复用该终端。",
+            "终端名称。后台/until 时复用已有 id；前台不填为临时终端，结束后销毁。",
         },
         command: {
           type: "string",
@@ -156,6 +184,21 @@ export class TerminalTool extends Tool {
     allowedModes: ["execute"],
   };
 
+  /** Windows 才改 LLM schema 文案；Mac 仍读 schema.json 原句。 */
+  nativeToolSchemas(): JsonSchema[] {
+    const schemas = super.nativeToolSchemas();
+    if (process.platform !== "win32") return schemas;
+    return withWindowsShellHint(schemas);
+  }
+
+  toolPrompt(): string | null {
+    const base = super.toolPrompt();
+    if (process.platform !== "win32") return base;
+    const extra =
+      "\n\nWindows：命令在 PowerShell 中执行（与人壳相同），不要写 bash/zsh。显式 `MAOU_SHELL=cmd.exe` 才走 cmd。\n";
+    return `${base ?? ""}${extra}`;
+  }
+
   async execute(
     params: Record<string, unknown>,
     ctx: ToolContext,
@@ -185,11 +228,11 @@ export class TerminalTool extends Tool {
     action: string,
   ): ToolResponse {
     const agent = ctx.agentName || "main";
-    let mine: engine.TerminalInfoNapi[] = [];
+    let mine: TerminalInfo[] = [];
     let others = 0;
     try {
-      mine = engine.list(agent) ?? [];
-      const all = engine.list() ?? [];
+      mine = (be(ctx).list(agent) ?? []).filter((t) => !isHumanTerminal(t));
+      const all = (be(ctx).list() ?? []).filter((t) => !isHumanTerminal(t));
       others = Math.max(0, all.length - mine.length);
     } catch {
       return res;
@@ -230,8 +273,14 @@ export class TerminalTool extends Tool {
       lines.push(
         others > 0
           ? `本 agent「${agent}」无终端；系统另有 ${others} 个其它 agent 终端（可能 agentName 不一致）。`
-          : `本 agent「${agent}」当前没有终端（后台进程若已退出会被移出列表；长驻请用 id + background=true）。`,
+          : `本 agent「${agent}」当前没有终端（前台临时任务结束后会销毁；长驻请用 id + background=true）。`,
       );
+    }
+    const resolution = getTerminalResolution({ agentTerminalMode: ctx.terminalBackend });
+    if (resolution.degraded) {
+      lines.push("terminalBackend=mini (degraded from full)");
+    } else if (resolution.kind === "mini") {
+      lines.push("terminalBackend=mini");
     }
     lines.push(
       `提示: manage list 看全表 · manage logs id=… 看输出 · manage stop id=… 结束`,
@@ -244,6 +293,8 @@ export class TerminalTool extends Tool {
       terminals_running: running.length,
       terminals_total: mine.length,
       terminals_other_agents: others,
+      terminal_backend: resolution.kind,
+      terminal_degraded: resolution.degraded,
     };
 
     // list 已返回完整面板，只挂 payload，避免重复贴表
@@ -366,7 +417,6 @@ export class TerminalTool extends Tool {
         match,
         contextLines,
         maxHits,
-        background,
       });
     }
 
@@ -446,7 +496,7 @@ export class TerminalTool extends Tool {
 
     let terminalId: string;
     try {
-      const bg = await engine.runBackground(
+      const bg = await be(opts.ctx).runBackground(
         agent,
         opts.command,
         opts.cwd,
@@ -493,7 +543,7 @@ export class TerminalTool extends Tool {
       await new Promise((r) => setTimeout(r, pollMs));
       let output = "";
       try {
-        output = await engine.logs(terminalId, agent, 5000);
+        output = await be(opts.ctx).logs(terminalId, agent, 5000);
       } catch {
         continue;
       }
@@ -501,7 +551,7 @@ export class TerminalTool extends Tool {
       const key = `${output.length}:${output.slice(-200)}`;
       if (key === lastEvalKey) {
         // 检查是否已退出
-        const list = engine.list(agent) ?? [];
+        const list = be(opts.ctx).list(agent) ?? [];
         const t = list.find((x) => x.id === terminalId);
         if (t && t.state !== "running") {
           const cond = await evalConditionOnText(output, {
@@ -543,7 +593,7 @@ export class TerminalTool extends Tool {
       if (cond.ok && (cond.matched ?? 0) > 0) {
         if (!opts.keepRunning) {
           try {
-            await engine.stop(terminalId, agent);
+            await be(opts.ctx).stop(terminalId, agent);
           } catch {
             /* ignore */
           }
@@ -578,7 +628,7 @@ export class TerminalTool extends Tool {
     // 超时
     let tail = "";
     try {
-      tail = await engine.logs(terminalId, agent, 80);
+      tail = await be(opts.ctx).logs(terminalId, agent, 80);
     } catch {
       /* ignore */
     }
@@ -621,12 +671,11 @@ export class TerminalTool extends Tool {
     match?: string;
     contextLines: number;
     maxHits: number;
-    background: boolean;
   }): Promise<ToolResponse> {
-    // 前台跑到结束（或超时）再筛；background=true 时仍等一轮超时上限内完成
+    // 前台跑到结束（或超时）再筛
     const timeoutMs = opts.timeoutSec > 0 ? opts.timeoutSec * 1000 : 120_000;
     try {
-      const result = await engine.run(
+      const result = await be(opts.ctx).run(
         opts.ctx.agentName || "main",
         opts.command,
         opts.cwd,
@@ -634,6 +683,7 @@ export class TerminalTool extends Tool {
         timeoutMs,
         200_000, // 内部多取一点再 filter
       );
+      await discardTempTerminal(opts.id, result.terminalId, opts.ctx);
       const cond = await evalConditionOnText(result.output || "", {
         expr: opts.expr,
         match: opts.match,
@@ -975,7 +1025,7 @@ export class TerminalTool extends Tool {
     const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 120_000;
 
     try {
-      const result = await engine.run(
+      const result = await be(ctx).run(
         ctx.agentName,
         command,
         cwd,
@@ -983,6 +1033,7 @@ export class TerminalTool extends Tool {
         timeoutMs,
         resultLimit,
       );
+      await discardTempTerminal(id, result.terminalId, ctx);
 
       const ok = result.ok && result.exitCode === 0;
       const status = result.exitCode === 0
@@ -1029,7 +1080,7 @@ export class TerminalTool extends Tool {
     resultLimit: number,
   ): Promise<ToolResponse> {
     try {
-      const result = await engine.runBackground(
+      const result = await be(ctx).runBackground(
         ctx.agentName,
         command,
         cwd,
@@ -1091,11 +1142,11 @@ export class TerminalTool extends Tool {
 
   private async _manageList(ctx: ToolContext): Promise<ToolResponse> {
     const agent = ctx.agentName || "main";
-    const panel = engine.statusPanel(agent);
-    const terminals = engine.list(agent) ?? [];
-    let all: engine.TerminalInfoNapi[] = [];
+    const panel = be(ctx).statusPanel(agent);
+    const terminals = be(ctx).list(agent) ?? [];
+    let all: TerminalInfo[] = [];
     try {
-      all = engine.list() ?? [];
+      all = be(ctx).list() ?? [];
     } catch {
       all = terminals;
     }
@@ -1164,7 +1215,7 @@ export class TerminalTool extends Tool {
     if (!id) return createToolResponse(false, "rm 操作缺少 id 参数");
 
     try {
-      await engine.remove(id, ctx.agentName);
+      await be(ctx).remove(id, ctx.agentName);
       return createToolResponse(true, `终端 ${id} 已删除。`, {
         payload: { id },
       });
@@ -1182,7 +1233,7 @@ export class TerminalTool extends Tool {
     if (!id) return createToolResponse(false, "stop 操作缺少 id 参数");
 
     try {
-      await engine.stop(id, ctx.agentName);
+      await be(ctx).stop(id, ctx.agentName);
       return createToolResponse(true, `已向终端 ${id} 发送终止信号。`, {
         payload: { id },
       });
@@ -1202,8 +1253,8 @@ export class TerminalTool extends Tool {
     const limit = Math.max(0, Number(params.limit ?? 5000) || 5000);
 
     try {
-      const rawOutput = await engine.logs(id, ctx.agentName, limit);
-      const terminals = engine.list(ctx.agentName);
+      const rawOutput = await be(ctx).logs(id, ctx.agentName, limit);
+      const terminals = be(ctx).list(ctx.agentName);
       const term = terminals.find((t) => t.id === id);
       const stateLabel = term
         ? term.state === "running"
@@ -1242,7 +1293,7 @@ export class TerminalTool extends Tool {
     if (!data) return createToolResponse(false, "write 操作缺少 data 参数");
 
     try {
-      await engine.write(id, ctx.agentName, data);
+      await be(ctx).write(id, ctx.agentName, data);
       return createToolResponse(true, `已向终端 ${id} 发送输入: ${JSON.stringify(data)}`, {
         payload: { id, data },
       });
@@ -1266,53 +1317,36 @@ function applyResultLimit(output: string, limit: number): string {
   return truncateMiddle(output, limit);
 }
 
-// ─── Rust 引擎初始化（模块加载时自动执行） ────────────────────────────────────
-
-let engineInitialized = false;
-
-/** 初始化 Rust 终端引擎（由 harness/server.ts 调用） */
-export function initTerminalEngine(logDir?: string, persistPath?: string): void {
-  if (engineInitialized) return;
-  engineInitialized = true;
+/** 未指定 id 的前台任务：结束后销毁，不占列表（与 TOOL.md / manage list 文案一致） */
+async function discardTempTerminal(
+  requestedId: string | undefined,
+  terminalId: string,
+  ctx: ToolContext,
+): Promise<void> {
+  if (requestedId || !terminalId) return;
   try {
-    engine.initEngine(logDir);
-    if (persistPath) {
-      engine.setPersistPath(persistPath);
-    }
-    // 破坏性预设改由 DCG 负责；引擎层只保留自定义黑白名单 + 沙箱
-    try {
-      // napi 字段名以生成的 TS 类型为准（snake 或 camel）
-      const filterCfg = {
-        preset_blacklist_enabled: false,
-        presetBlacklistEnabled: false,
-        blacklist: [],
-        whitelist: [],
-        whitelist_mode: false,
-        whitelistMode: false,
-      };
-      engine.setFilter(filterCfg as engine.FilterConfigNapi);
-    } catch {
-      /* older native build may lack field */
-    }
+    await be(ctx).remove(terminalId, ctx.agentName);
   } catch {
-    // 引擎初始化失败时静默降级（可能 native module 未安装）
-    console.warn("[terminal-engine] Rust 引擎初始化失败，终端功能不可用");
+    /* 仍在跑或已不存在 */
   }
 }
 
-/** 关闭所有终端（由 harness/server.ts 在进程退出时调用） */
+// ─── 终端后端初始化（full / mini） ────────────────────────────────────────────
+
+/** 初始化终端后端（full 或 mini；AgentRuntime / WebUI / CLI 调用） */
+export function initTerminalEngine(logDir?: string, persistPath?: string): void {
+  initActiveBackend(logDir, persistPath);
+}
+
+/** 关闭所有终端（WebUI close / 进程退出） */
 export function shutdownTerminalEngine(): void {
-  try {
-    engine.shutdown();
-  } catch {
-    // best effort
-  }
+  shutdownActiveBackend();
 }
 
 /** 清理 Agent 的所有终端（由 runtime.ts 在 session 开始时调用） */
 export function cleanupAgentTerminals(agentName: string): void {
   try {
-    engine.cleanupAgent(agentName);
+    getActiveBackend().cleanupAgent(agentName);
   } catch {
     // best effort
   }
@@ -1321,43 +1355,16 @@ export function cleanupAgentTerminals(agentName: string): void {
 /** 获取终端状态面板（由 dynamic-context.ts 注入 prompt） */
 export function getTerminalStatusPanel(agentName: string): string {
   try {
-    return engine.statusPanel(agentName);
+    return getActiveBackend().statusPanel(agentName);
   } catch {
     return "";
   }
 }
 
-/** 设置命令过滤器配置 */
-export function setTerminalFilter(config: engine.FilterConfigNapi): void {
-  try {
-    engine.setFilter(config);
-  } catch {
-    // best effort
-  }
-}
-
-/** 设置沙箱配置 */
-export function setTerminalSandbox(config: engine.SandboxConfigNapi): void {
-  try {
-    engine.setSandbox(config);
-  } catch {
-    // best effort
-  }
-}
-
-/** 设置持久化路径 */
-export function setTerminalPersistPath(path: string): void {
-  try {
-    engine.setPersistPath(path);
-  } catch {
-    // best effort
-  }
-}
-
 /** 列出终端（供 runtime.ts 注入通知用） */
-export function listTerminals(agentName: string): engine.TerminalInfoNapi[] {
+export function listTerminals(agentName: string): TerminalInfo[] {
   try {
-    return engine.list(agentName);
+    return getActiveBackend().list(agentName);
   } catch {
     return [];
   }
@@ -1366,10 +1373,8 @@ export function listTerminals(agentName: string): engine.TerminalInfoNapi[] {
 /** 获取终端日志（供 runtime.ts 注入通知用） */
 export async function getTerminalLogs(id: string, agentName: string, lines: number): Promise<string> {
   try {
-    // 防御性超时：engine.logs（native addon）在某些状态下可能 async 挂起不返回，
-    // 用 5s 超时兜底，避免拖死 agent 循环（round 间读后台终端日志时）。
     return await Promise.race([
-      engine.logs(id, agentName, lines),
+      getActiveBackend().logs(id, agentName, lines),
       new Promise<string>((resolve) => setTimeout(() => resolve(""), 5000)),
     ]);
   } catch {

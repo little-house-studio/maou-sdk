@@ -7,7 +7,7 @@
  * 所以这里直接抓 raw 文件，不走 Release 资产、不区分平台架构。
  *
  * 目标：
- *   1) <repo|bundle>/vendor/bin/ddgr
+ *   1) 源码树 scripts/vendor/bin/ddgr；预编译包 <bundle>/vendor/bin/ddgr
  *   2) ~/.maou/bin/ddgr
  *   Windows 额外写 ddgr.cmd（调 python 跑脚本；.py 本身不可直接执行）
  *
@@ -36,9 +36,9 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { platform as osPlatform, arch as osArch, homedir } from "node:os";
+import { vendorBinDirFromScriptsDir } from "./lib/vendor-bin.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = join(__dirname, "..");
 
 /** 交叉打包：目标平台（默认本机） */
 const platform = () => process.env.MAOU_TARGET_PLATFORM || osPlatform();
@@ -86,7 +86,7 @@ function defaultDests() {
   const name = "ddgr";
   if (process.env.MAOU_DDGR_DEST) return [process.env.MAOU_DDGR_DEST];
   const list = [];
-  if (!USER_ONLY) list.push(join(REPO_ROOT, "vendor", "bin", name));
+  if (!USER_ONLY) list.push(join(vendorBinDirFromScriptsDir(__dirname), name));
   list.push(join(homedir(), ".maou", "bin", name));
   return list;
 }
