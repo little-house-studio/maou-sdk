@@ -265,7 +265,7 @@ impl Terminal {
     }
 
     /// 全平台管道模式：shell -c / cmd /c，stdout+stderr 管道异步读入 ring。
-    /// 支持后台长任务与超时 kill；不提供键盘 write（需 PTY）。
+    /// 支持后台长任务；前台超时转后台，不杀进程。不提供键盘 write（需 PTY）。
     fn spawn_pipe(opts: CreateOptions, command: &str, cwd: String) -> TerminalResult<Self> {
         let mut cmd = Self::build_pipe_command(command, &cwd)?;
 

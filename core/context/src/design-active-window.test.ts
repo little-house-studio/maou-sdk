@@ -4,10 +4,11 @@
 import { describe, it, expect } from "vitest";
 import {
   compressMaou,
-  activeWindowBoundary,
+  retainTailBoundary,
   activeWindowSeqIds,
   assignTaskIds,
 } from "./compressor.js";
+import { RETAIN_TAIL_RATIO } from "./constants.js";
 import type { MaouMessage } from "./types/message.js";
 import { estimateTokens } from "./token-estimate.js";
 
@@ -53,13 +54,15 @@ function buildHistory(n: number): MaouMessage[] {
 }
 
 describe("DESIGN active window", () => {
-  it("activeWindowBoundary keeps at least MIN and ~40%", () => {
-    expect(activeWindowBoundary(0)).toBe(0);
-    expect(activeWindowBoundary(5)).toBe(0); // all active when short
-    const b = activeWindowBoundary(20);
-    // keep max(6, floor(20*0.4)=8) = 8 → boundary 12
-    expect(b).toBe(12);
-    expect(20 - b).toBe(8);
+  it("retainTailBoundary keeps the newest unit and a token-sized tail", () => {
+    expect(retainTailBoundary([], 100)).toBe(0);
+    const short = buildHistory(4);
+    expect(retainTailBoundary(short, 50_000)).toBe(0);
+    const long = buildHistory(20);
+    const b = retainTailBoundary(long, 400);
+    expect(b).toBeGreaterThan(0);
+    expect(b).toBeLessThan(20);
+    expect(20 - b).toBeGreaterThanOrEqual(1);
   });
 
   it("summary stage keeps tail active messages as raw text", async () => {
@@ -78,6 +81,7 @@ describe("DESIGN active window", () => {
     const r = await compressMaou(assigned, {
       maxTokens: Math.max(800, Math.floor(before * 0.5)),
       knownTokens: before * 2,
+      retainTokens: Math.max(80, Math.floor(before * RETAIN_TAIL_RATIO)),
       force: true,
     });
 
@@ -107,11 +111,13 @@ describe("DESIGN active window", () => {
 
   it("micro stage does not rewrite active-zone messages", async () => {
     const history = buildHistory(20);
-    const b = activeWindowBoundary(history.length);
+    const retain = Math.max(80, Math.floor(estimateTokens(history) * RETAIN_TAIL_RATIO));
+    const b = retainTailBoundary(history, retain);
     const activeText = history[b]!.contents[0]!.text;
     const r = await compressMaou(history, {
       maxTokens: 50_000,
-      knownTokens: 40_000, // ≥70% of 50k → compact, likely not summary if micro enough
+      knownTokens: 40_000,
+      retainTokens: retain,
       force: true,
     });
     // 找 boundary 对应原 seq 的消息

@@ -234,6 +234,9 @@ describe("BottomInfoBar dock tray", () => {
     assert.match(src, /OPEN_KICK_V/);
     assert.match(src, /holdHover|liveSnapRef/);
     assert.match(src, /style\.transform = "none"/);
+    assert.match(src, /is-slot-pull/);
+    assert.match(src, /Stay in-flow until breakaway/);
+    assert.match(src, /setPointerCapture/);
     assert.doesNotMatch(src, /SPRING_CLOSE/);
     // label+badge always; no branch that removes them on hover
     assert.match(src, /wire-dock-tab-label/);
@@ -263,6 +266,7 @@ describe("BottomInfoBar dock tray", () => {
     // magnet peek: bottom-origin lift (JS transform) + slot-mouth shadow
     assert.match(css, /transform-origin:\s*50%\s+100%/);
     assert.match(css, /\.wire-dock-card\.is-peeking/);
+    assert.match(css, /\.wire-dock-card\.is-slot-pull/);
     assert.match(css, /inset\s+0\s+3px\s+5px/);
     // track canvas transparent; fill rail uses body-band height (折角)
     assert.match(

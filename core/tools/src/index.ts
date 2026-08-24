@@ -113,8 +113,29 @@ export {
   checkMaouHardDeny,
   parseHardCheckCommand,
   runHardCheck,
+  bindPermissionHookHost,
+  consultPermissionHook,
+  notifyPermissionDenied,
 } from './security/index.js'
 export type { HardCheckResult, HardCheckOptions } from './security/index.js'
+export type {
+  PermissionDecision,
+  PermissionRequestPayload,
+  PermissionHookResult,
+  PermissionHookHost,
+  PermissionConsult,
+} from './security/index.js'
+export {
+  bindTerminalHookHost,
+  gateTerminal,
+  emitTerminal,
+} from './terminal/terminal-hook-host.js'
+export type {
+  TerminalGateName,
+  TerminalEmitName,
+  TerminalGateResult,
+  TerminalHookHost,
+} from './terminal/terminal-hook-host.js'
 
 export type {
   TerminalMode,

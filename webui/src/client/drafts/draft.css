@@ -4276,6 +4276,11 @@
     drop-shadow(-2.5px 0 2px rgba(0, 0, 0, 0.26))
     drop-shadow(0 7px 5px rgba(0, 0, 0, 0.36));
 }
+.wire-dock-card.is-slot-pull .wire-dock-card-svg {
+  filter:
+    drop-shadow(-2.5px 0 2px rgba(0, 0, 0, 0.26))
+    drop-shadow(0 6px 5px rgba(0, 0, 0, 0.34));
+}
 .wire-dock-card.is-lifting .wire-dock-card-svg {
   filter:
     drop-shadow(-3px 0 2px rgba(0, 0, 0, 0.28))

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyWindowsShell,
   windowsAgentInvocation,
+  wrapUnixPipefail,
 } from "./windows-shell.js";
 
 describe("windows-shell", () => {
@@ -30,5 +31,23 @@ describe("windows-shell", () => {
   it("显式 Git Bash 走 -c", () => {
     const inv = windowsAgentInvocation("echo hi", String.raw`C:\Program Files\Git\bin\bash.exe`);
     expect(inv.args).toEqual(["-c", "echo hi"]);
+  });
+});
+
+describe("wrapUnixPipefail", () => {
+  it("bash/zsh/sh 包一层 pipefail", () => {
+    expect(wrapUnixPipefail("false | true", "/bin/zsh")).toBe("set -o pipefail; false | true");
+    expect(wrapUnixPipefail("false | true", "/bin/bash")).toBe("set -o pipefail; false | true");
+    expect(wrapUnixPipefail("false | true", "/bin/sh")).toBe("set -o pipefail; false | true");
+  });
+
+  it("已有 pipefail 不再包", () => {
+    expect(wrapUnixPipefail("set -o pipefail; echo x", "/bin/zsh")).toBe(
+      "set -o pipefail; echo x",
+    );
+  });
+
+  it("fish 不包", () => {
+    expect(wrapUnixPipefail("echo x", "/usr/bin/fish")).toBe("echo x");
   });
 });

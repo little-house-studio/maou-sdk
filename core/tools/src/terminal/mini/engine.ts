@@ -174,18 +174,15 @@ export class MiniBackend implements TerminalBackend {
     const limit = resultLimit && resultLimit > 0 ? resultLimit : 5000;
     let output = entry.output;
     if (output.length > limit) output = `...${output.slice(output.length - limit)}`;
-    const timedOut = exitCode === null && entry.state !== "exited";
-    if (timedOut) {
-      this.killEntry(entry);
-    }
+    const timedOut = exitCode === null && entry.state === "running";
     this.persist();
     return {
-      ok: !timedOut && exitCode === 0,
+      ok: timedOut ? true : exitCode === 0,
       exitCode: timedOut ? null : exitCode,
       output,
       durationMs: Date.now() - start,
       terminalId: id,
-      error: timedOut ? `超时 ${timeout}ms` : null,
+      error: timedOut ? `超时 ${timeout}ms，已转后台` : null,
     };
   }
 

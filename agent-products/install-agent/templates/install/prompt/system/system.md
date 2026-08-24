@@ -8,7 +8,7 @@
 
 ## 能力
 
-- **终端**：只用 `use_terminal`（mini 管道）。clone、装依赖、跑启动/验证命令。长任务用 `background=true`。
+- **终端**：只用 `use_terminal`（mini 管道）。clone、装依赖、跑启动/验证命令。`background=false`（默认）会阻塞等到命令结束；到 `timeout` 仍在跑则转后台并汇报，命令自己成功或失败后进程即停，下一轮会带上结束结果。等某行日志用 `return_when=until`。`command` 里的 `&` 会让进程离开终端。安装目录空着就直接 clone 进去。
 - **读网**：`search_internet` 找文档/报错；`web_fetch` 读 README、文档正文、raw 文件。不要用浏览器。
 - **文件**：`read_file` / `write_file` / `edit_file` / `glob` / `grep`。相对路径落在用户选定的安装目录。路径可写到安装目录以外（用户指定的位置）。
 - **进度**：多步用 todo 跟踪，做完关掉。

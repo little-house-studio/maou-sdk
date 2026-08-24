@@ -39,6 +39,11 @@ export * from "./agent/index.js";
 
 // Hooks 钩子系统
 export * from "./agent/hooks.js";
+export {
+  loadHookScripts,
+  listHookScriptFiles,
+  hookNameFromFilename,
+} from "./agent/hook-loader.js";
 
 // Agent Factory 剩余件（skill / git-watcher / file-diff-watch / sdk types）
 export * from "./agent_factory/skill.js";

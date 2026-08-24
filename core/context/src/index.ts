@@ -84,6 +84,7 @@ export {
   ARCHIVE_TRIGGER_PERCENT,
   ACTIVE_WINDOW_PERCENT,
   ACTIVE_WINDOW_MIN_MESSAGES,
+  RETAIN_TAIL_RATIO,
   MAX_AUTO_CHECKPOINTS,
 } from "./constants.js";
 
@@ -198,7 +199,22 @@ export {
   assignTaskIds,
   activeWindowBoundary,
   activeWindowSeqIds,
+  retainTailBoundary,
+  historyVisiblyChanged,
 } from "./compressor.js";
+export {
+  pruneTextHeadTail,
+  pruneToolResultText,
+  pruneBodyText,
+  TOOL_RESULT_PRUNE_MARKER,
+  TOOL_RESULT_PRUNE_THRESHOLD_CHARS,
+} from "./prune-text.js";
+export {
+  toolCallIdsOf,
+  toolResultIdOf,
+  snapRetainStartForToolPairs,
+  toolPairingBalancedAt,
+} from "./tool-pairing.js";
 export type { Summarizer, CompressOptions, CompressMaouResult, CompressionStage, CompressionResult, TaskSummary } from "./compressor.js";
 
 // Token 估算
@@ -269,6 +285,8 @@ export {
   AutoCompressSession,
   TokenThresholdPolicy,
   resolveAutoCompressConfig,
+  moduleConfigFor,
+  toModuleContext,
   DEFAULT_AUTO_COMPRESS_CONFIG,
   DEFAULT_SUMMARIZER_PROMPT,
 } from "./auto-compress.js";
@@ -279,8 +297,28 @@ export type {
   CompressMode,
   LegacyCompressConfig,
   StagedCompressConfig,
-  SummaryModelConfig,
 } from "./auto-compress.js";
+
+// 上下文模块（内置 legacy / staged，可注册替换）
+export {
+  contextModules,
+  registerContextModule,
+  resolveContextModule,
+  resetContextModulesForTest,
+  ContextModuleRegistry,
+  legacyContextModule,
+  stagedContextModule,
+  DEFAULT_LEGACY_CONFIG,
+  DEFAULT_STAGED_CONFIG,
+  BUILTIN_CONTEXT_MODULE_IDS,
+} from "./modules/index.js";
+export type {
+  ContextModule,
+  ContextModuleResult,
+  ContextCompressContext,
+  BuiltinContextModuleId,
+  SummaryModelConfig,
+} from "./modules/index.js";
 
 export {
   toAgentSendMessage,

@@ -26,6 +26,26 @@
 
 
 
+## 上下文模块
+
+压缩逻辑走注册表，不写死在宿主里。内置两行：
+
+| id | 模块 | 行为 |
+|---|---|---|
+| `legacy` | `modules/legacy.ts` | 过阈值留下最近 N 轮，更早的换成一条摘要 |
+| `staged` | `modules/staged.ts` | 微压缩 → 大压缩 → 归档（可逐级） |
+
+`ContextEngine` / `AutoCompressSession` 按 `module` / `mode` 解析。`registerContextModule` 可覆盖同 id，或挂新 id。
+
+```ts
+registerContextModule({
+  id: "mine",
+  shouldCompress(ctx) { /* … */ },
+  async compress(ctx) { /* … */ },
+});
+new ContextEngine({ sessionId, harnessStore, taskStore, module: "mine", moduleConfig: { /* … */ } });
+```
+
 ## 上下文压缩算法
     - [嵌入结构区] ->不变区域，除非大变
         - 文件缓存区：用户偏好、项目说明、钉死的文件全文等，断点前尽量不改
@@ -35,7 +55,8 @@
     - [概要阶段（summaryStage）] -> 第一次大压缩，压缩后剩下过去去的任务摘要
         - 原数据：[事件id-b开始位置]{👨，消息群},{🤖,消息集群}{👨，消息群},{🤖,消息集群}[事件id-b结束位置]
         - 压缩后：[id-b开始～结束时间的：内容过程摘要]
-    - [压缩阶段（compactStage）]-> 把标注微压缩的信息变摘要
+    - 最近原文区：自动压从尾部按路由窗口 token 的 16% 整条留下；`/compact` / 超窗只留最新一条不可拆单元。切边咬合 tool_call/result；压不动不改 stage、不落 harness。
+    - [压缩阶段（compactStage）]-> 旧侧头尾剪（工具结果超大留 4096+1024）
         - ai当前回复的消息变摘要:
             - 原数据：{🤖,消息集群,microCompact=true,摘要}
             - 微压缩后：{🤖,摘要}

@@ -81,6 +81,7 @@ export {
   isPullBreakaway,
   easeCloseProgress,
   easeCloseHeight,
+  easeOpenHeight,
   springStep,
   releaseTarget,
   releaseResizeTarget,

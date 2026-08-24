@@ -27,14 +27,26 @@ describe("mini terminal backend", () => {
     expect(r.terminalId).toBeTruthy();
   });
 
-  it("超时停", async () => {
+  it("超时转后台，不杀进程", async () => {
     be = new MiniBackend();
     const cmd = process.platform === "win32" ? "ping -n 20 127.0.0.1" : "sleep 20";
     const r = await be.run("mini-to", cmd, process.cwd(), "sleep", 250, 500);
     expect(r.exitCode).toBeNull();
+    expect(r.ok).toBe(true);
     expect(r.error).toMatch(/超时/);
+    expect(r.error).toMatch(/转后台/);
     const listed = be.list("mini-to");
-    expect(listed[0]?.state).toBe("killed");
+    expect(listed[0]?.state).toBe("running");
+    await be.stop(r.terminalId, "mini-to");
+    expect(be.list("mini-to")[0]?.state).toBe("killed");
+  });
+
+  it("unix 管道失败退出码非 0", async () => {
+    if (process.platform === "win32") return;
+    be = new MiniBackend();
+    const r = await be.run("mini-pf", "false | true", process.cwd(), "pipe", 8000, 200);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.ok).toBe(false);
   });
 
   it("unix 杀进程组", async () => {

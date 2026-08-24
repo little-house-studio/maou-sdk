@@ -29,7 +29,10 @@ import {
   getMode,
   gateTerminalCommand,
   describeCommandForApproval,
+  consultPermissionHook,
+  notifyPermissionDenied,
 } from "../../security/index.js";
+import { gateTerminal, emitTerminal } from "../terminal-hook-host.js";
 import {
   evalConditionOnText,
   formatConditionHits,
@@ -44,7 +47,7 @@ import {
   initActiveBackend,
   shutdownActiveBackend,
 } from "../resolve-backend.js";
-import { isHumanTerminal, type TerminalInfo } from "../backend.js";
+import { isHumanTerminal, type RunResult, type TerminalInfo } from "../backend.js";
 
 function be(ctx?: ToolContext) {
   return getActiveBackend({ agentTerminalMode: ctx?.terminalBackend });
@@ -91,7 +94,8 @@ export class TerminalTool extends Tool {
       " action=write 键盘输入。" +
       " 【条件返回】run 时 return_when=filter|until + match(正则可选) + expr(受限 Python 表达式)，盯命令输出。" +
       " 表达式可用 line/n/re/m；例: match='a\\\\s*=\\\\s*(\\\\d+)' expr='m is not None and 2 < int(m.group(1)) < 5'。" +
-      " until=第一次命中即返回（可 keep_running）；filter=命令结束后筛出所有命中行。",
+      " until=第一次命中即返回（可 keep_running）；filter=命令结束后筛出所有命中行。" +
+      " background=false（默认）阻塞等待；到 timeout 仍在跑则转后台并汇报。命令成功或失败后进程即停。",
     parameters: {
       type: "object",
       properties: {
@@ -103,7 +107,7 @@ export class TerminalTool extends Tool {
         id: {
           type: "string",
           description:
-            "终端名称。后台/until 时复用已有 id；前台不填为临时终端，结束后销毁。",
+            "终端名称。后台/until/前台超时转后台时复用或保留此 id；前台正常结束后未指定 id 则销毁。",
         },
         command: {
           type: "string",
@@ -115,12 +119,12 @@ export class TerminalTool extends Tool {
         },
         background: {
           type: "boolean",
-          description: "是否后台运行（run 且无 return_when 时可选，默认 false）",
+          description: "false（默认）=阻塞等待命令结束。true=立刻后台，不阻塞。",
         },
         timeout: {
           type: "number",
           description:
-            "超时秒数。前台默认 120；until 默认 3600；后台默认 0",
+            "前台阻塞等待秒数，默认 120。到点仍在跑则转后台并汇报当前输出。until 默认 3600。后台忽略。",
         },
         result_limit: {
           type: "integer",
@@ -266,7 +270,7 @@ export class TerminalTool extends Tool {
       lines.push(
         others > 0
           ? `本 agent「${agent}」无终端；系统另有 ${others} 个其它 agent 终端（可能 agentName 不一致）。`
-          : `本 agent「${agent}」当前没有终端（前台临时任务结束后会销毁；长驻请用 id + background=true）。`,
+          : `本 agent「${agent}」当前没有终端（前台任务结束后会销毁；仍在跑的会留在列表）。`,
       );
     }
     const resolution = getTerminalResolution({ agentTerminalMode: ctx.terminalBackend });
@@ -316,7 +320,7 @@ export class TerminalTool extends Tool {
   ): Promise<ToolResponse> {
     const returnWhen = String(params.return_when ?? "").trim() as ReturnWhen | "";
 
-    const command = String(params.command ?? "").trim();
+    let command = String(params.command ?? "").trim();
     if (!command) return createToolResponse(false,
       "❌ run 操作必须提供 command 参数。\n" +
       "正确用法示例：{\"action\":\"run\",\"command\":\"git status\",\"reason\":\"查看仓库状态\"}\n" +
@@ -333,9 +337,6 @@ export class TerminalTool extends Tool {
     });
     if (gate) return gate; // 非空 = 被拦截，返回审批提示/拒绝
 
-    // description 缺失时用命令兜底（而非报错），减少模型多花一轮补参数。
-    const description = aiDescription || `执行命令: ${command.slice(0, 60)}`;
-
     const id = params.id ? String(params.id) : undefined;
     const background = Boolean(params.background);
     // cwd 解析：默认在项目工作目录（与 reader/glob/grep 等文件工具一致，操作真实项目）。
@@ -350,6 +351,22 @@ export class TerminalTool extends Tool {
       : sandboxed
         ? (ctx.sandboxRoot || ctx.workingDir || ctx.projectRoot)
         : (ctx.workingDir || ctx.projectRoot || ctx.sandboxRoot);
+
+    const pre = await gateTerminal("terminal_pre_run", {
+      command,
+      cwd,
+      background,
+      return_when: returnWhen || "complete",
+      id,
+      ...terminalHookCtx(ctx),
+    });
+    if (!pre.allowed) return deniedByTerminalHook("run", command, pre.reason);
+    if (typeof pre.command === "string" && pre.command.trim()) {
+      command = pre.command.trim();
+    }
+
+    // description 缺失时用命令兜底（而非报错），减少模型多花一轮补参数。
+    const description = aiDescription || `执行命令: ${command.slice(0, 60)}`;
     const resultLimit = params.result_limit != null ? Number(params.result_limit) : 5000;
 
     // 条件返回路径
@@ -443,6 +460,13 @@ export class TerminalTool extends Tool {
         opts.id,
       );
       terminalId = bg.terminalId;
+      emitTerminalStarted(opts.ctx, {
+        id: terminalId,
+        command: opts.command,
+        cwd: opts.cwd,
+        background: true,
+        return_when: "until",
+      });
       // 已瞬间结束：对输出做 until
       if (bg.exitCode != null) {
         const cond = await evalConditionOnText(bg.output || "", {
@@ -451,6 +475,24 @@ export class TerminalTool extends Tool {
           mode: "until",
           contextLines: opts.contextLines,
         });
+        const ok = cond.ok && (cond.matched ?? 0) > 0;
+        if (ok) {
+          emitTerminal("terminal_until_hit", {
+            ...terminalHookCtx(opts.ctx),
+            id: terminalId,
+            command: opts.command,
+            cwd: opts.cwd,
+            matched: cond.matched ?? 0,
+            expr: opts.expr,
+            match: opts.match,
+          });
+        }
+        emitTerminalExit(opts.ctx, {
+          id: terminalId,
+          command: opts.command,
+          cwd: opts.cwd,
+          exit_code: bg.exitCode,
+        });
         const body = formatConditionHits(cond, opts.resultLimit);
         const meta = formatMetadata({
           terminal_id: terminalId,
@@ -458,7 +500,6 @@ export class TerminalTool extends Tool {
           cwd: opts.cwd,
           return_when: "until",
         });
-        const ok = cond.ok && (cond.matched ?? 0) > 0;
         return createToolResponse(ok, `${body}\n\n${meta}`, {
           payload: {
             terminal_id: terminalId,
@@ -507,7 +548,26 @@ export class TerminalTool extends Tool {
             return_when: "until",
             reason: "process_exited",
           });
-          return createToolResponse(cond.ok && (cond.matched ?? 0) > 0, `${body}\n\n${meta}`, {
+          const matched = cond.ok && (cond.matched ?? 0) > 0;
+          if (matched) {
+            emitTerminal("terminal_until_hit", {
+              ...terminalHookCtx(opts.ctx),
+              id: terminalId,
+              command: opts.command,
+              cwd: opts.cwd,
+              matched: cond.matched ?? 0,
+              expr: opts.expr,
+              match: opts.match,
+              process_exited: true,
+            });
+          }
+          emitTerminalExit(opts.ctx, {
+            id: terminalId,
+            command: opts.command,
+            cwd: opts.cwd,
+            exit_code: t.exitCode ?? null,
+          });
+          return createToolResponse(matched, `${body}\n\n${meta}`, {
             payload: {
               terminal_id: terminalId,
               exit_code: t.exitCode ?? null,
@@ -530,9 +590,24 @@ export class TerminalTool extends Tool {
         contextLines: opts.contextLines,
       });
       if (cond.ok && (cond.matched ?? 0) > 0) {
+        emitTerminal("terminal_until_hit", {
+          ...terminalHookCtx(opts.ctx),
+          id: terminalId,
+          command: opts.command,
+          cwd: opts.cwd,
+          matched: cond.matched ?? 0,
+          expr: opts.expr,
+          match: opts.match,
+        });
         if (!opts.keepRunning) {
           try {
             await be(opts.ctx).stop(terminalId, agent);
+            emitTerminal("terminal_stop", {
+              ...terminalHookCtx(opts.ctx),
+              id: terminalId,
+              command: opts.command,
+              keep_running: false,
+            });
           } catch {
             /* ignore */
           }
@@ -579,16 +654,19 @@ export class TerminalTool extends Tool {
       timeout_sec: opts.timeoutSec,
     });
     return createToolResponse(
-      false,
-      `until 超时（${opts.timeoutSec}s）未命中条件。\n` +
+      true,
+      `until 等待 ${opts.timeoutSec}s 未命中条件，进程仍在后台跑。\n` +
+        `命令结束或失败后进程即停，下一轮会带上结束结果。\n` +
         `expr: ${opts.expr}\n` +
         (opts.match ? `match: ${opts.match}\n` : "") +
         (tail ? `\n── 最近输出 ──\n${applyResultLimit(tail, opts.resultLimit)}\n` : "") +
         `\n${meta}`,
       {
+        background: true,
         payload: {
           terminal_id: terminalId,
           return_when: "until",
+          promoted_to_background: true,
           error: "timeout",
           timeout_sec: opts.timeoutSec,
           elapsed_ms: Date.now() - started,
@@ -622,7 +700,31 @@ export class TerminalTool extends Tool {
         timeoutMs,
         200_000, // 内部多取一点再 filter
       );
-      await discardTempTerminal(opts.id, result.terminalId, opts.ctx);
+      const promoted = isPromotedToBackground(result, opts.ctx);
+      emitTerminalStarted(opts.ctx, {
+        id: result.terminalId,
+        command: opts.command,
+        cwd: opts.cwd,
+        background: false,
+        return_when: "filter",
+      });
+      if (promoted) {
+        emitTerminal("terminal_promoted", {
+          ...terminalHookCtx(opts.ctx),
+          id: result.terminalId,
+          command: opts.command,
+          cwd: opts.cwd,
+          timeout_sec: opts.timeoutSec,
+        });
+      } else {
+        emitTerminalExit(opts.ctx, {
+          id: result.terminalId,
+          command: opts.command,
+          cwd: opts.cwd,
+          exit_code: result.exitCode ?? null,
+        });
+        await discardTempTerminal(opts.id, result.terminalId, opts.ctx);
+      }
       const cond = await evalConditionOnText(result.output || "", {
         expr: opts.expr,
         match: opts.match,
@@ -637,8 +739,13 @@ export class TerminalTool extends Tool {
         cwd: opts.cwd,
         return_when: "filter",
         duration_ms: Math.round(result.durationMs),
+        promoted_to_background: promoted || undefined,
       });
-      return createToolResponse(cond.ok, `${body}\n\n${meta}`, {
+      const prefix = promoted
+        ? `前台等待 ${opts.timeoutSec}s 未结束，已转入后台继续运行。命令结束或失败后进程即停，下一轮会带上结束结果。\n\n`
+        : "";
+      return createToolResponse(promoted ? true : cond.ok, `${prefix}${body}\n\n${meta}`, {
+        ...(promoted ? { background: true } : {}),
         payload: {
           terminal_id: result.terminalId,
           exit_code: result.exitCode ?? null,
@@ -646,6 +753,7 @@ export class TerminalTool extends Tool {
           matched: cond.matched ?? 0,
           hits: cond.hits ?? [],
           scanned: cond.scanned,
+          ...(promoted ? { promoted_to_background: true } : {}),
         },
       });
     } catch (err: unknown) {
@@ -654,6 +762,26 @@ export class TerminalTool extends Tool {
         `filter 执行失败: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private async _consultPermission(
+    command: string,
+    agent: string,
+    ctx: ToolContext,
+    extra: {
+      risk?: "low" | "high";
+      gateAction: string;
+      summary?: string;
+      reason?: string;
+      ruleId?: string;
+    },
+  ) {
+    return consultPermissionHook({
+      command,
+      agentName: agent,
+      cwd: ctx.workingDir || ctx.projectRoot,
+      ...extra,
+    });
   }
 
   /**
@@ -691,6 +819,14 @@ export class TerminalTool extends Tool {
       }
       // deny_dangerous_pending / deny_fatal：无 UI，直接拒绝（黑名单 / 致命）
       if (gate.action === "deny_dangerous_pending") {
+        notifyPermissionDenied({
+          command,
+          agentName: agent,
+          cwd: ctx.workingDir || ctx.projectRoot,
+          gateAction: gate.action,
+          reason: gate.assessment?.reason || gate.message,
+          ruleId: gate.assessment?.ruleId,
+        });
         return toolFail("policy_denied", gate.message || "命令被策略拦截", {
           code: String((gate.payload as { policy?: string })?.policy ?? "deny_dangerous_pending"),
           payload: gate.payload,
@@ -700,6 +836,14 @@ export class TerminalTool extends Tool {
     }
 
     if (gate.action === "deny_fatal") {
+      notifyPermissionDenied({
+        command,
+        agentName: agent,
+        cwd: ctx.workingDir || ctx.projectRoot,
+        gateAction: gate.action,
+        reason: gate.assessment?.reason || gate.message,
+        ruleId: gate.assessment?.ruleId,
+      });
       return toolFail("policy_denied", gate.message || "致命指令已拦截", {
         code: String((gate.payload as { policy?: string })?.policy ?? "deny_fatal"),
         payload: gate.payload,
@@ -730,6 +874,24 @@ export class TerminalTool extends Tool {
     };
 
     if (gate.action === "deny_dangerous_pending") {
+      const hooked = await this._consultPermission(command, agent, ctx, {
+        risk: "high",
+        gateAction: gate.action,
+        summary: (aiMeta.description || aiMeta.reason || "").trim() || undefined,
+        reason: gate.assessment?.reason || gate.message,
+        ruleId: gate.assessment?.ruleId,
+      });
+      if (hooked.decision === "allow") return null;
+      if (hooked.decision === "deny") {
+        return toolFail(
+          "policy_denied",
+          `⛔ 权限钩子拒绝了该命令：\`${command}\`${hooked.reason ? `\n理由：${hooked.reason}` : ""}`,
+          {
+            code: "permission-hook-denied",
+            payload: { ...gate.payload, policy: "permission-hook-denied", reason: hooked.reason },
+          },
+        );
+      }
       // 危险级：
       // - normal → 人手审批（若注入）
       // - auto → 只走 AI 审核，绝不弹人手卡
@@ -746,6 +908,15 @@ export class TerminalTool extends Tool {
               // 危险级 AI 放行：本轮执行，但不永久入白名单
               return null;
             }
+            notifyPermissionDenied({
+              command,
+              agentName: agent,
+              cwd: ctx.workingDir || ctx.projectRoot,
+              risk: "high",
+              gateAction: gate.action,
+              reason: verdict.reason,
+              ruleId: gate.assessment?.ruleId,
+            });
             // 审核拒绝：保留二次执行窗口（gate 已 mark）
             return toolFail(
               "policy_denied",
@@ -787,6 +958,15 @@ export class TerminalTool extends Tool {
               return null;
             }
             if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
+            notifyPermissionDenied({
+              command,
+              agentName: agent,
+              cwd: ctx.workingDir || ctx.projectRoot,
+              risk: "high",
+              gateAction: gate.action,
+              reason: "user_denied",
+              ruleId: gate.assessment?.ruleId,
+            });
             return toolFail(
               "user_rejected",
               `⛔ [危险] 用户拒绝了该危险命令：\`${command}\``,
@@ -800,6 +980,15 @@ export class TerminalTool extends Tool {
           }
         }
       }
+      notifyPermissionDenied({
+        command,
+        agentName: agent,
+        cwd: ctx.workingDir || ctx.projectRoot,
+        risk: "high",
+        gateAction: gate.action,
+        reason: gate.assessment?.reason || gate.message,
+        ruleId: gate.assessment?.ruleId,
+      });
       return toolFail("policy_denied", gate.message || "危险指令需确认", {
         code: String((gate.payload as { policy?: string })?.policy ?? "dangerous_pending"),
         payload: gate.payload,
@@ -807,6 +996,24 @@ export class TerminalTool extends Tool {
     }
 
     if (gate.action === "ask") {
+      const hooked = await this._consultPermission(command, agent, ctx, {
+        risk: "low",
+        gateAction: gate.action,
+        summary: (aiMeta.description || aiMeta.reason || "").trim() || undefined,
+        reason: gate.assessment?.reason || gate.message,
+        ruleId: gate.assessment?.ruleId,
+      });
+      if (hooked.decision === "allow") return null;
+      if (hooked.decision === "deny") {
+        return toolFail(
+          "policy_denied",
+          `⛔ 权限钩子拒绝了该命令：\`${command}\`${hooked.reason ? `\n理由：${hooked.reason}` : ""}`,
+          {
+            code: "permission-hook-denied",
+            payload: { policy: "permission-hook-denied", command, reason: hooked.reason, tier: "safe" },
+          },
+        );
+      }
       // auto 不应落到 ask；若落到此，强制走 AI review，绝不弹人手卡
       if (mode === "auto") {
         const reviewer = getTerminalReviewer();
@@ -848,6 +1055,14 @@ export class TerminalTool extends Tool {
               if (human.persist === "blacklist") {
                 addToBlacklist(agent, commandPrefix(command));
               }
+              notifyPermissionDenied({
+                command,
+                agentName: agent,
+                cwd: ctx.workingDir || ctx.projectRoot,
+                risk: "low",
+                gateAction: gate.action,
+                reason: verdict.reason,
+              });
               return toolFail(
                 "user_rejected",
                 `⛔ 用户确认后仍拒绝：\`${command}\`\nAI 理由：${verdict.reason}`,
@@ -866,6 +1081,14 @@ export class TerminalTool extends Tool {
             }
           }
           recordReviewReject(agent, command);
+          notifyPermissionDenied({
+            command,
+            agentName: agent,
+            cwd: ctx.workingDir || ctx.projectRoot,
+            risk: "low",
+            gateAction: gate.action,
+            reason: verdict.reason,
+          });
           return toolFail(
             "policy_denied",
             `⛔ 审核未通过：\`${command}\`\n理由：${verdict.reason}\n` +
@@ -900,6 +1123,14 @@ export class TerminalTool extends Tool {
             return null;
           }
           if (verdict.persist === "blacklist") addToBlacklist(agent, commandPrefix(command));
+          notifyPermissionDenied({
+            command,
+            agentName: agent,
+            cwd: ctx.workingDir || ctx.projectRoot,
+            risk: "low",
+            gateAction: gate.action,
+            reason: "user_denied",
+          });
           return toolFail(
             "user_rejected",
             `⛔ [系统拦截] 用户拒绝了此命令：\`${command}\``,
@@ -925,6 +1156,26 @@ export class TerminalTool extends Tool {
     }
 
     // review（安全层 auto）
+    {
+      const hooked = await this._consultPermission(command, agent, ctx, {
+        risk: "low",
+        gateAction: "review",
+        summary: (aiMeta.description || aiMeta.reason || "").trim() || undefined,
+        reason: gate.assessment?.reason || gate.message,
+        ruleId: gate.assessment?.ruleId,
+      });
+      if (hooked.decision === "allow") return null;
+      if (hooked.decision === "deny") {
+        return toolFail(
+          "policy_denied",
+          `⛔ 权限钩子拒绝了该命令：\`${command}\`${hooked.reason ? `\n理由：${hooked.reason}` : ""}`,
+          {
+            code: "permission-hook-denied",
+            payload: { policy: "permission-hook-denied", command, reason: hooked.reason, tier: "safe" },
+          },
+        );
+      }
+    }
     const reviewer = getTerminalReviewer();
     if (!reviewer) {
       return createToolResponse(false,
@@ -941,6 +1192,13 @@ export class TerminalTool extends Tool {
         return null;
       }
       recordReviewReject(agent, command);
+      notifyPermissionDenied({
+        command,
+        agentName: agent,
+        cwd: ctx.workingDir || ctx.projectRoot,
+        gateAction: "review",
+        reason: verdict.reason,
+      });
       return createToolResponse(false,
         `⛔ 审核未通过：\`${command}\`\n理由：${verdict.reason}`,
         { payload: { policy: "review-reject", command, reason: verdict.reason, tier: "safe" } });
@@ -972,6 +1230,66 @@ export class TerminalTool extends Tool {
         timeoutMs,
         resultLimit,
       );
+
+      if (isPromotedToBackground(result, ctx)) {
+        emitTerminalStarted(ctx, {
+          id: result.terminalId,
+          command,
+          cwd,
+          background: false,
+        });
+        emitTerminal("terminal_promoted", {
+          ...terminalHookCtx(ctx),
+          id: result.terminalId,
+          command,
+          cwd,
+          timeout_sec: Math.round(timeoutMs / 1000),
+        });
+        const timeoutSec = Math.round(timeoutMs / 1000);
+        const compressed = result.output
+          ? compressTerminalOutput(command, result.output, ctx.compressionLevel ?? "normal")
+          : "";
+        const body = compressed ? applyResultLimit(compressed, resultLimit) : "";
+        const meta = formatMetadata({
+          terminal_id: result.terminalId,
+          cwd,
+          promoted_to_background: true,
+          timeout_sec: timeoutSec,
+          duration_ms: Math.round(result.durationMs),
+        });
+        return createToolResponse(
+          true,
+          `前台等待 ${timeoutSec}s 未结束，已转入后台继续运行。\n` +
+            `终端 ID: ${result.terminalId}\n` +
+            `命令结束或失败后进程即停，下一轮会带上结束结果。\n` +
+            (body ? `\n── 目前输出 ──\n${body}\n` : "") +
+            `\n${meta}`,
+          {
+            background: true,
+            payload: {
+              terminal_id: result.terminalId,
+              cwd,
+              exit_code: null,
+              promoted_to_background: true,
+              timeout_sec: timeoutSec,
+              duration_ms: Math.round(result.durationMs),
+            },
+          },
+        );
+      }
+
+      emitTerminalStarted(ctx, {
+        id: result.terminalId,
+        command,
+        cwd,
+        background: false,
+      });
+      emitTerminalExit(ctx, {
+        id: result.terminalId,
+        command,
+        cwd,
+        exit_code: result.exitCode ?? null,
+      });
       await discardTempTerminal(id, result.terminalId, ctx);
 
       const ok = result.ok && result.exitCode === 0;
@@ -979,7 +1297,7 @@ export class TerminalTool extends Tool {
         ? "完成"
         : result.exitCode != null
           ? `失败(退出码${result.exitCode})`
-          : "超时";
+          : "已结束";
       const meta = formatMetadata({
         exit_code: result.exitCode ?? null,
         cwd,
@@ -1026,9 +1344,21 @@ export class TerminalTool extends Tool {
         description,
         id,
       );
+      emitTerminalStarted(ctx, {
+        id: result.terminalId,
+        command,
+        cwd,
+        background: true,
+      });
 
       // 已快速完成
       if (result.exitCode != null) {
+        emitTerminalExit(ctx, {
+          id: result.terminalId,
+          command,
+          cwd,
+          exit_code: result.exitCode,
+        });
         const ok = result.exitCode === 0;
         const status = ok ? "已完成" : `已失败(退出码${result.exitCode})`;
         // 摄入层压缩：与前台对齐（去噪去重超长截断/测试失败项抽取），off 时原样。
@@ -1097,9 +1427,9 @@ export class TerminalTool extends Tool {
         "",
         "说明：",
         "- 未指定 id 的临时前台任务结束后会销毁，不会出现在列表里",
-        "- 后台任务请用 background=true，建议同时指定 id 便于复用",
+        "- background=true 启动的任务会留在列表，可带 id 再 logs/stop",
         "- 已退出且被 rm/cleanup 的终端不会保留",
-        "- 进程若崩溃退出，状态会变为 exited（manage logs 仍可看尾部）",
+        "- 命令成功、失败或崩溃后状态为 exited（manage logs 仍可看尾部）",
       ];
       if (others.length > 0) {
         hints.push(
@@ -1153,8 +1483,15 @@ export class TerminalTool extends Tool {
     const id = params.id ? String(params.id) : "";
     if (!id) return createToolResponse(false, "rm 操作缺少 id 参数");
 
+    const pre = await gateTerminal("terminal_pre_rm", {
+      id,
+      ...terminalHookCtx(ctx),
+    });
+    if (!pre.allowed) return deniedByTerminalHook("rm", id, pre.reason);
+
     try {
       await be(ctx).remove(id, ctx.agentName);
+      emitTerminal("terminal_rm", { id, ...terminalHookCtx(ctx) });
       return createToolResponse(true, `终端 ${id} 已删除。`, {
         payload: { id },
       });
@@ -1171,8 +1508,15 @@ export class TerminalTool extends Tool {
     const id = params.id ? String(params.id) : "";
     if (!id) return createToolResponse(false, "stop 操作缺少 id 参数");
 
+    const pre = await gateTerminal("terminal_pre_stop", {
+      id,
+      ...terminalHookCtx(ctx),
+    });
+    if (!pre.allowed) return deniedByTerminalHook("stop", id, pre.reason);
+
     try {
       await be(ctx).stop(id, ctx.agentName);
+      emitTerminal("terminal_stop", { id, ...terminalHookCtx(ctx) });
       return createToolResponse(true, `已向终端 ${id} 发送终止信号。`, {
         payload: { id },
       });
@@ -1228,11 +1572,20 @@ export class TerminalTool extends Tool {
     const id = params.id ? String(params.id) : "";
     if (!id) return createToolResponse(false, "write 操作缺少 id 参数");
 
-    const data = String(params.data ?? "");
+    let data = String(params.data ?? "");
     if (!data) return createToolResponse(false, "write 操作缺少 data 参数");
+
+    const pre = await gateTerminal("terminal_pre_write", {
+      id,
+      data,
+      ...terminalHookCtx(ctx),
+    });
+    if (!pre.allowed) return deniedByTerminalHook("write", id, pre.reason);
+    if (typeof pre.data === "string") data = pre.data;
 
     try {
       await be(ctx).write(id, ctx.agentName, data);
+      emitTerminal("terminal_write", { id, data, ...terminalHookCtx(ctx) });
       return createToolResponse(true, `已向终端 ${id} 发送输入: ${JSON.stringify(data)}`, {
         payload: { id, data },
       });
@@ -1254,6 +1607,56 @@ function applyResultLimit(output: string, limit: number): string {
   if (limit === 0) return "";
   if (output.length <= limit) return output;
   return truncateMiddle(output, limit);
+}
+
+function terminalHookCtx(ctx: ToolContext): { agent_name: string; session_id?: string } {
+  return {
+    agent_name: ctx.agentName || "main",
+    session_id: ctx.sessionId,
+  };
+}
+
+function deniedByTerminalHook(action: string, target: string, reason?: string): ToolResponse {
+  return toolFail(
+    "policy_denied",
+    `⛔ 终端钩子拒绝了 ${action}：${target}${reason ? `\n理由：${reason}` : ""}`,
+    {
+      code: "terminal-hook-denied",
+      payload: { policy: "terminal-hook-denied", action, reason },
+    },
+  );
+}
+
+function emitTerminalStarted(
+  ctx: ToolContext,
+  payload: {
+    id: string;
+    command: string;
+    cwd: string;
+    background: boolean;
+    return_when?: string;
+  },
+): void {
+  emitTerminal("terminal_started", { ...terminalHookCtx(ctx), ...payload });
+}
+
+function emitTerminalExit(
+  ctx: ToolContext,
+  payload: {
+    id: string;
+    command: string;
+    cwd: string;
+    exit_code: number | null;
+  },
+): void {
+  emitTerminal("terminal_exit", { ...terminalHookCtx(ctx), ...payload });
+}
+
+function isPromotedToBackground(result: RunResult, ctx: ToolContext): boolean {
+  if (result.exitCode != null) return false;
+  if (!/超时/.test(result.error ?? "")) return false;
+  const listed = be(ctx).list(ctx.agentName) ?? [];
+  return listed.some((t) => t.id === result.terminalId && t.state === "running");
 }
 
 /** 未指定 id 的前台任务：结束后销毁，不占列表（与 TOOL.md / manage list 文案一致） */

@@ -98,7 +98,10 @@ import {
   formatDiffForReport,
   ensureToolError,
   toolFail,
+  bindPermissionHookHost,
+  bindTerminalHookHost,
 } from "@little-house-studio/tools";
+import type { PermissionRequestPayload, TerminalGateName, TerminalEmitName } from "@little-house-studio/tools";
 import {
   collectMissingRequiredParams,
   missingRequiredToolResponse,
@@ -148,8 +151,9 @@ import type { AgentSkillOptions } from "../bootstrap/skills.js";
 import { createAgentSkillManager, applyAgentSkillOptions } from "../bootstrap/skills.js";
 import type { SubagentExecutorLike } from "@little-house-studio/types";
 import type { StreamEvent } from "@little-house-studio/types";
-import { Profiler, resolveUserMaouRoot } from "@little-house-studio/types";
-import { Hooks, type HookUi } from "./hooks.js";
+import { Profiler, resolveUserMaouRoot, detectExpression } from "@little-house-studio/types";
+import { Hooks, type HookUi, appendHookSystemPrompt, takeHookMessage, isHookContinue } from "./hooks.js";
+import { loadHookScripts } from "./hook-loader.js";
 import { FileDiffWatch } from "../agent_factory/file-diff-watch.js";
 import {
   CacheRebuildHost,
@@ -465,6 +469,8 @@ export class AgentRuntime {
   private fileDiffWatch: FileDiffWatch | null = null;
   private cacheRebuildTriggers: CacheRebuildTriggers;
   private cacheRebuild: CacheRebuildHost;
+  private _hooksLoadedFor = new Set<string>();
+  private lastExpression = new Map<string, string>();
 
   constructor(options: RuntimeOptions) {
     this.compiler = options.compiler;
@@ -543,6 +549,8 @@ export class AgentRuntime {
     // 初始化指令注册表（内置指令 + 外部可扩展）
     this.commandRegistry = new CommandRegistry();
     registerBuiltinCommands(this.commandRegistry);
+    this.bindPermissionHooks();
+    this.bindTerminalHooks();
   }
 
   setHookUi(ui: HookUi): void {
@@ -571,6 +579,178 @@ export class AgentRuntime {
 
   getCacheRebuildGeneration(sessionId: string): number {
     return this.cacheRebuild.getGeneration(sessionId);
+  }
+
+  notifyDeviceOnline(deviceId: string): Promise<void> {
+    return this.getHooks().deviceOnline(deviceId);
+  }
+
+  notifyDeviceOffline(deviceId: string): Promise<void> {
+    return this.getHooks().deviceOffline(deviceId);
+  }
+
+  notifyConfigChange(payload: Record<string, unknown> = {}): Promise<void> {
+    return this.getHooks().configChange(payload);
+  }
+
+  notifySessionFork(
+    parentSessionId: string,
+    childSessionId: string,
+    extra: Record<string, unknown> = {},
+  ): void {
+    void this.getHooks().sessionFork(parentSessionId, childSessionId, extra);
+  }
+
+  private bindPermissionHooks(): void {
+    bindPermissionHookHost({
+      request: async (payload: PermissionRequestPayload) => {
+        const r = await this.getHooks().permissionRequest({ ...payload });
+        if (r.decision === "allow") return { decision: "allow" };
+        if (r.decision === "deny" || !r.allowed) {
+          return { decision: "deny", reason: r.blockReason ?? payload.reason };
+        }
+        return { decision: "ask" };
+      },
+      denied: (payload: PermissionRequestPayload) => {
+        void this.getHooks().permissionDenied({ ...payload });
+      },
+    });
+  }
+
+  /** use_terminal 专用闸门/观察；tools 经 bindTerminalHookHost 回调到这里。 */
+  private bindTerminalHooks(): void {
+    bindTerminalHookHost({
+      gate: async (name: TerminalGateName, payload: Record<string, unknown>) => {
+        const r = await this.getHooks().trigger(name, payload);
+        return {
+          allowed: r.allowed && !r.cancel,
+          reason: r.blockReason,
+          command: r.command,
+          data: r.data,
+        };
+      },
+      emit: (name: TerminalEmitName, payload: Record<string, unknown>) => {
+        void this.getHooks().trigger(name, payload);
+      },
+    });
+  }
+
+  /** stop / stop_failure 要求继续时，把 reason 注入会话再跑一轮 */
+  private injectHookContinue(
+    sessionId: string,
+    round: number,
+    source: string,
+    content: string,
+  ): StreamEvent[] {
+    const text = content.trim() || "请继续完成未竟事项。";
+    appendSessionEvent(this.sessions, sessionId, {
+      kind: "runtime_control",
+      content: text,
+      source,
+      author: authorSystem("hook", "hook"),
+      meta: { round },
+    });
+    return [
+      this.logEvent("info", `[hook] ${source} 要求继续`),
+      this.event("session_inject", {
+        kind: "runtime_control",
+        source,
+        content: text.slice(0, 200),
+        round,
+        author: { type: "system", id: "hook", displayName: "hook" },
+      }),
+    ];
+  }
+
+  private async evaluateStopHook(
+    sessionId: string,
+    round: number,
+    extra: Record<string, unknown> = {},
+  ): Promise<{ prevented: boolean; inject: string }> {
+    const r = await this.hooks?.stop({ sessionId, round, ...extra });
+    if (!isHookContinue(r)) {
+      void this.hooks?.notification({ kind: "idle", sessionId, round, ...extra });
+      return { prevented: false, inject: "" };
+    }
+    const inject =
+      r?.blockReason ||
+      takeHookMessage(r?.message, "") ||
+      (typeof r?.systemPrompt === "string" ? r.systemPrompt : "") ||
+      "请继续完成未竟事项。";
+    return { prevented: true, inject };
+  }
+
+  private fireErrorHooks(data: Record<string, unknown>): void {
+    const message = String(data.message ?? "");
+    void this.hooks?.error(message, data);
+  }
+
+  /**
+   * DSH tools/pre-execute：deny 拦截；ask 再走 permission_request（未批准则 fail-closed）。
+   * write_file / edit_file 先打 fs/*-intent。
+   */
+  private async gateToolCall(
+    tcInfo: { id?: string; name: string; parameters?: unknown },
+    sessionId: string,
+    round: number,
+  ): Promise<boolean> {
+    const hooks = this.hooks;
+    if (!hooks) return true;
+    const name = tcInfo.name;
+    const intentPayload = { toolCall: tcInfo, sessionId, round, toolName: name };
+    const intent =
+      name === "write_file" || name === "write"
+        ? await hooks.fsWriteIntent(intentPayload)
+        : name === "edit_file" || name === "edit"
+          ? await hooks.fsEditIntent(intentPayload)
+          : undefined;
+    if (intent && !intent.allowed) {
+      hooks.lastBlockReason = intent.blockReason ?? hooks.lastBlockReason;
+      return false;
+    }
+    const pre = await hooks.preToolUseGate(tcInfo as never);
+    if (!pre.allowed) return false;
+    if (pre.decision !== "ask") return true;
+    const perm = await hooks.permissionRequest({
+      toolName: name,
+      toolCall: tcInfo,
+      sessionId,
+      round,
+      reason: pre.blockReason,
+    });
+    if (perm.decision === "allow") return true;
+    hooks.lastBlockReason =
+      perm.blockReason ?? pre.blockReason ?? "permission ask 未获批准";
+    void hooks.permissionDenied({
+      toolName: name,
+      toolCall: tcInfo,
+      sessionId,
+      round,
+      reason: hooks.lastBlockReason,
+    });
+    return false;
+  }
+
+  private async ensureAgentHooksLoaded(agentName: string): Promise<void> {
+    if (this._hooksLoadedFor.has(agentName)) return;
+    this._hooksLoadedFor.add(agentName);
+    try {
+      const registry = new AgentRegistry(
+        this.maouRoot,
+        this.agentScope === "project" ? this.projectRoot : undefined,
+      );
+      const dir = registry.resolveAgentDir(agentName);
+      const templateDir = getTemplateRef(dir) ?? dir;
+      const dirs: string[] = [];
+      if (templateDir) dirs.push(join(templateDir, "hook"));
+      if (dir !== templateDir) dirs.push(join(dir, "hook"));
+      const { loaded } = await loadHookScripts(this.getHooks(), dirs);
+      if (loaded.length > 0) {
+        this.log("info", `[hook] 已加载 ${loaded.length} 个脚本`);
+      }
+    } catch (err) {
+      this.log("warning", `[hook] 脚本加载失败: ${err}`);
+    }
   }
 
   private lookupAgentCacheRebuild(agentName?: string): Partial<CacheRebuildTriggers> | undefined {
@@ -651,23 +831,32 @@ export class AgentRuntime {
       // 压缩后失效旧 API usage，等下一轮真回报
       this.sessionLastApiPromptTokens.delete(sessionId);
       this.sessionHistoryTokensAtLastApi.delete(sessionId);
-      if (report.stage !== "activeStage") {
-        const existing = this.sessionManager.getRollingSummary(sessionId) ?? "";
-        const merged = existing && report.droppedSummary
-          ? `${existing}\n\n---\n\n${report.droppedSummary}`
-          : (report.droppedSummary || existing);
-        if (merged) {
-          this.sessionManager.setRollingSummary(sessionId, merged);
-          this.sessionManager.saveState();
-        }
-        this.onCompress?.(sessionId, report.stage, report.droppedSummary, report.taskBlocks ?? []);
-        this.noteLedger(sessionId, "compact/end", {
+      if (report.stage === "activeStage") {
+        return {
+          ok: false,
+          error: "没有可压缩的区间",
           stage: report.stage,
-          source: "manual",
           originalTokens: report.originalTokens,
           compressedTokens: report.compressedTokens,
-        });
+          droppedSummary: report.droppedSummary,
+          taskBlocks: report.taskBlocks,
+        };
       }
+      const existing = this.sessionManager.getRollingSummary(sessionId) ?? "";
+      const merged = existing && report.droppedSummary
+        ? `${existing}\n\n---\n\n${report.droppedSummary}`
+        : (report.droppedSummary || existing);
+      if (merged) {
+        this.sessionManager.setRollingSummary(sessionId, merged);
+        this.sessionManager.saveState();
+      }
+      this.onCompress?.(sessionId, report.stage, report.droppedSummary, report.taskBlocks ?? []);
+      this.noteLedger(sessionId, "compact/end", {
+        stage: report.stage,
+        source: "manual",
+        originalTokens: report.originalTokens,
+        compressedTokens: report.compressedTokens,
+      });
       await this.hooks?.postCompact(report.compressedTokens ?? 0);
       await this.afterCompressMaybeRebuild({
         sessionId,
@@ -1061,7 +1250,10 @@ export class AgentRuntime {
   private goalDriverState(sessionId: string, goalId: string) {
     const current = this.goalDriver.get(sessionId);
     if (!current || current.goalId !== goalId) {
-      const next = { goalId, kickbacks: 0 };
+      const next: { goalId: string; kickbacks: number; closePending?: GoalClosePending } = {
+        goalId,
+        kickbacks: 0,
+      };
       this.goalDriver.set(sessionId, next);
       return next;
     }
@@ -1365,6 +1557,8 @@ export class AgentRuntime {
     if (!agentEntry) {
       const errMsg = `agent '${agentName}' 不存在（~/.maou/agents/${agentName}/agent.json 缺失）`;
       yield this.logEvent("error", errMsg);
+      this.fireErrorHooks({ message: errMsg, round: 0 });
+      void this.hooks?.stopFailure({ message: errMsg, round: 0, reason: "agent_missing" });
       yield this.event("error", { message: errMsg, round: 0 });
       yield this.event("done", { sessionId, rounds: 0, error: errMsg });
       return;
@@ -1409,6 +1603,8 @@ export class AgentRuntime {
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       yield this.logEvent("error", errMsg);
+      this.fireErrorHooks({ message: errMsg, round: 0 });
+      void this.hooks?.stopFailure({ message: errMsg, round: 0, reason: "prompt_root" });
       yield this.event("error", { message: errMsg, round: 0 });
       yield this.event("done", { sessionId, rounds: 0, error: errMsg });
       return;
@@ -1442,6 +1638,7 @@ export class AgentRuntime {
 
     // yield session 事件
     yield this.event("session", { sessionId });
+    await this.ensureAgentHooksLoaded(agentName);
     await this.hooks?.sessionStart(sessionId!);
 
     // ── 2. 编译 prompt ──
@@ -1459,6 +1656,8 @@ export class AgentRuntime {
     } catch (err) {
       const errMsg = `Prompt 编译失败: ${err}`;
       this.log("error", errMsg);
+      this.fireErrorHooks({ message: errMsg, round: 0 });
+      void this.hooks?.stopFailure({ message: errMsg, round: 0, reason: "prompt_compile" });
       yield this.event("error", { message: errMsg, round: 0 });
       yield this.event("done", { sessionId, rounds: 0, error: errMsg });
       return;
@@ -1928,6 +2127,17 @@ export class AgentRuntime {
     }
     endToolSetup();
 
+    {
+      const refresh = await this.hooks?.promptRefresh({
+        systemPrompt,
+        agentName,
+        sessionId,
+      });
+      if (refresh?.systemPrompt) {
+        systemPrompt = appendHookSystemPrompt(systemPrompt, refresh.systemPrompt);
+      }
+    }
+
     // ── /todo：清洗指令词 + 靠后追加 plan_required notice（不改 system，保 cache）──
     const todoPre = preprocessTodoSlash(activeUserMessage);
     let effectiveUserMessage = todoPre.message;
@@ -1970,6 +2180,29 @@ export class AgentRuntime {
     }
 
     // ── 将用户消息写入 session（kind=human_user, author=human）──
+    {
+      const preMsg = await this.hooks?.preMessage({
+        role: "user",
+        content: effectiveUserMessage,
+      } as never);
+      if (preMsg && !preMsg.allowed) {
+        const reason = preMsg.blockReason ?? "用户消息被 hook 拦截";
+        yield this.logEvent("warning", `[hook] pre_message 拦截: ${reason}`);
+        this.fireErrorHooks({ message: reason, round: 0, reason: "pre_message" });
+        yield this.event("error", { message: reason, round: 0, blocked: true });
+        yield this.event("done", { sessionId, rounds: 0, blocked: true });
+        this.abortControllers.delete(sessionId);
+        this.currentPreset = null;
+        this.clearYieldHandler(sessionId);
+        return;
+      }
+      if (preMsg?.message !== undefined) {
+        effectiveUserMessage = takeHookMessage(preMsg.message, effectiveUserMessage);
+      }
+      if (preMsg?.systemPrompt) {
+        systemPrompt = appendHookSystemPrompt(systemPrompt, preMsg.systemPrompt);
+      }
+    }
     appendSessionEvent(this.sessions, sessionId!, {
       kind: "human_user",
       content: effectiveUserMessage,
@@ -1986,7 +2219,6 @@ export class AgentRuntime {
         ...(options.userCommand ? { command: options.userCommand } : {}),
       },
     });
-    await this.hooks?.preMessage({ role: "user", content: effectiveUserMessage } as any);
 
     // ── 3. Agent 循环 ──
     let roundCount = 0;
@@ -2106,12 +2338,46 @@ export class AgentRuntime {
         this.pauseActiveHarness(sessionId!);
         this.pauseArmedGoal(sessionId!);
         await this.hooks?.abort("用户中断");
+        void this.hooks?.notification({ kind: "cancelled", sessionId, reason: "用户中断" });
         yield this.event("info", { message: "已中断" });
         break;
       }
 
       this.log("info", `[RUN] round ${roundCount + 1} start`);
-      await this.hooks?.trigger("before_agent_start", { roundNumber: roundCount + 1 });
+      {
+        const startGate = await this.hooks?.beforeAgentStart({
+          roundNumber: roundCount + 1,
+          systemPrompt,
+        });
+        if (startGate?.systemPrompt) {
+          systemPrompt = appendHookSystemPrompt(systemPrompt, startGate.systemPrompt);
+        }
+        if (startGate && !startGate.allowed) {
+          const reason = startGate.blockReason ?? "agent/pre-step 拒绝本步";
+          yield this.logEvent("warning", `[hook] before_agent_start 拒绝: ${reason}`);
+          const stopGate = await this.evaluateStopHook(sessionId!, roundCount + 1, {
+            reason: "pre_step_reject",
+            lastAssistant: lastAssistantContent,
+          });
+          if (stopGate.prevented) {
+            for (const ev of this.injectHookContinue(
+              sessionId!,
+              roundCount + 1,
+              "before_agent_start",
+              stopGate.inject,
+            )) {
+              yield ev;
+            }
+            try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+            await this.hooks?.agentStop(roundCount + 1);
+            roundCount++;
+            continue;
+          }
+          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          await this.hooks?.agentStop(roundCount + 1);
+          break;
+        }
+      }
       await this.hooks?.agentStart(roundCount + 1);
 
       // ── 3a-pre. 注入后台终端完成/超时通知 ──
@@ -2563,6 +2829,16 @@ export class AgentRuntime {
           ctx_recover: ctxOverflowRecoveries,
         });
         try {
+          const reqGate = await this.hooks?.agentRequest({
+            round: currentRound,
+            sessionId,
+            model: preset.model,
+          });
+          if (reqGate && (!reqGate.allowed || reqGate.cancel)) {
+            result = this.errorCallResult(
+              reqGate.blockReason ?? "agent/request 拦截了本次模型调用",
+            );
+          } else {
           const callGen = this.callModelFn({
             preset,
             messages: finalMessages,
@@ -2611,6 +2887,7 @@ export class AgentRuntime {
             iterResult = await callGen.next();
           }
           result = iterResult.value;
+          }
         } catch (err) {
           this.log("warning", `[RUN] model call failed: ${err}`);
           result = this.errorCallResult(String(err));
@@ -2950,6 +3227,33 @@ export class AgentRuntime {
           retryable: parsed.retryable,
           code: parsed.code,
         });
+        this.fireErrorHooks({
+          message: result.validationError,
+          round: currentRound,
+          category: parsed.category,
+          retryable: parsed.retryable,
+          code: parsed.code,
+        });
+        const sf = await this.hooks?.stopFailure({
+          message: result.validationError,
+          round: currentRound,
+          category: parsed.category,
+          retryable: parsed.retryable,
+          code: parsed.code,
+        });
+        if (isHookContinue(sf)) {
+          const inject =
+            sf?.blockReason ||
+            takeHookMessage(sf?.message, "") ||
+            result.validationError;
+          for (const ev of this.injectHookContinue(sessionId!, currentRound, "stop_failure", inject)) {
+            yield ev;
+          }
+          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          await this.hooks?.agentStop(currentRound);
+          roundCount++;
+          continue;
+        }
         break; // 退出 agent 循环
       }
 
@@ -3016,6 +3320,29 @@ export class AgentRuntime {
         }
         // 重试次数耗尽，真正退出（但仍会走到 loop 结束推送 loop_report，让 supervisor 知道主 agent 卡住）
         yield this.logEvent("warning", `[RUN] session=${sessionId} 空转重试 ${MAX_EMPTY_RETRIES} 次仍无工具调用，退出循环`);
+        this.fireErrorHooks({
+          message: "空转重试耗尽仍无工具调用",
+          round: currentRound,
+          reason: "empty_retry_exhausted",
+        });
+        const sfEmpty = await this.hooks?.stopFailure({
+          message: "空转重试耗尽仍无工具调用",
+          round: currentRound,
+          reason: "empty_retry_exhausted",
+        });
+        if (isHookContinue(sfEmpty)) {
+          const inject =
+            sfEmpty?.blockReason ||
+            takeHookMessage(sfEmpty?.message, "") ||
+            "空转后请改用工具继续，不要只回复文本。";
+          for (const ev of this.injectHookContinue(sessionId!, currentRound, "stop_failure", inject)) {
+            yield ev;
+          }
+          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          await this.hooks?.agentStop(currentRound);
+          roundCount++;
+          continue;
+        }
         try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
         await this.hooks?.agentStop(currentRound);
         break;
@@ -3031,7 +3358,15 @@ export class AgentRuntime {
         timing: result.timing,
       });
       await this.hooks?.responseEnd(contentToUse);
-      await this.hooks?.postMessage({ role: "assistant", content: contentToUse } as any);
+      await this.hooks?.postMessage({ role: "assistant", content: contentToUse } as never);
+      {
+        const expr = detectExpression(contentToUse);
+        const prev = this.lastExpression.get(sessionId!) ?? "neutral";
+        if (expr !== prev) {
+          await this.hooks?.expressionChange(prev, expr);
+          this.lastExpression.set(sessionId!, expr);
+        }
+      }
 
       // ── 3d/3e. 处理工具调用 ──
       if (result.nativeToolCalls.length > 0 && agentMode) {
@@ -3276,6 +3611,19 @@ export class AgentRuntime {
         }
       }
 
+      const stopGate = await this.evaluateStopHook(sessionId!, currentRound, {
+        reason: "completed",
+        lastAssistant: lastAssistantContent,
+      });
+      if (stopGate.prevented) {
+        for (const ev of this.injectHookContinue(sessionId!, currentRound, "stop", stopGate.inject)) {
+          yield ev;
+        }
+        try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        await this.hooks?.agentStop(currentRound);
+        roundCount++;
+        continue;
+      }
       try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
       await this.hooks?.agentStop(currentRound);
       break;
@@ -3388,6 +3736,11 @@ export class AgentRuntime {
     this.log("info", `[PROFILE]\n${prof.renderText()}`);
     yield this.event("profile", { report });
 
+    await this.hooks?.loopEnd(sessionId!, {
+      rounds: roundCount,
+      retries: totalRetries,
+      totalTokens,
+    });
     await this.hooks?.sessionEnd(sessionId!);
 
     // ── P1-4 生命周期：run 结束 → idle（arm TTL，TTL 后自动 park）──
@@ -3875,6 +4228,12 @@ export class AgentRuntime {
       }
     }
 
+    await this.hooks?.postToolBatch({
+      sessionId,
+      round,
+      tools: executedTools,
+    });
+
     // ③ per-tool loop 控制 + task 表接管 loop 条件（#2）：
     // 优先用模板的 loop.ts 脚本（shouldContinueLoop）自定义判定；无脚本则走内联逻辑：
     // 一轮内若所有被调工具都是 endsLoop（收尾型，如 todo_finish），默认结束 loop；
@@ -4240,6 +4599,14 @@ export class AgentRuntime {
       const emptyMsg = failRes.message;
       const toolError = failRes.error;
       this.log("warn", `[Runtime] 拦截缺参数工具调用: ${toolCall.name} (round=${round}, missing=${missingRequired.join(",")})`);
+      await this.hooks?.postToolUseFailure(tcInfo, {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        output: emptyMsg,
+        success: false,
+        error: toolError?.category ?? "invalid_args",
+        elapsed: 0,
+      } as never);
       return (): StreamEvent[] => {
         const now = () => new Date().toISOString();
         const events: StreamEvent[] = [];
@@ -4277,8 +4644,10 @@ export class AgentRuntime {
       };
     }
 
-    // pre_tool_use / tool_call（async；可 await ui.confirm）
-    const blocked = this.hooks ? !(await this.hooks.preToolUse(tcInfo)) : false;
+    // pre_tool_use / tools/pre-execute（deny / ask）+ fs/*-intent
+    const blocked = this.hooks
+      ? !(await this.gateToolCall(tcInfo, sessionId, round))
+      : false;
 
     let result: Awaited<ReturnType<ToolExecutor["executeSingle"]>> | null = null;
     let execError: unknown = null;
@@ -4305,6 +4674,19 @@ export class AgentRuntime {
     if (execError !== null) {
       const failRes = executeThrownToolResponse(toolCall.name, execError);
       await this.hooks?.toolError(tcInfo, failRes.message);
+      const failOut = await this.hooks?.postToolUseFailure(tcInfo, {
+        toolCallId: toolCall.id,
+        name: toolCall.name,
+        output: failRes.message,
+        success: false,
+        error: failRes.error?.category ?? "thrown",
+        elapsed: toolElapsedMs,
+      } as never);
+      if (failOut?.content !== undefined) {
+        toolResultOverride = typeof failOut.content === "string"
+          ? failOut.content
+          : JSON.stringify(failOut.content);
+      }
     } else if (!blocked && result) {
       const normalizedEarly = ensureToolError(result.result);
       let preview = normalizedEarly.message ?? "";
@@ -4314,14 +4696,17 @@ export class AgentRuntime {
           ? JSON.stringify({ ok: normalizedEarly.ok, payload: fallback })
           : `工具 ${toolCall.name} 执行完成（ok=${normalizedEarly.ok}，无 message）`;
       }
-      const hookOut = await this.hooks?.postToolUse(tcInfo, {
+      const failPayload = {
         toolCallId: toolCall.id,
         name: toolCall.name,
         output: preview,
         success: normalizedEarly.ok,
         error: normalizedEarly.ok ? "" : (normalizedEarly.error?.category ?? ""),
         elapsed: toolElapsedMs,
-      });
+      };
+      const hookOut = normalizedEarly.ok
+        ? await this.hooks?.postToolUse(tcInfo, failPayload as never)
+        : await this.hooks?.postToolUseFailure(tcInfo, failPayload as never);
       if (hookOut?.content !== undefined) {
         toolResultOverride = typeof hookOut.content === "string"
           ? hookOut.content
@@ -4392,7 +4777,7 @@ export class AgentRuntime {
 
       if (execError !== null) {
         const failRes = executeThrownToolResponse(toolCall.name, execError);
-        const errorMsg = failRes.message;
+        const errorMsg = toolResultOverride ?? failRes.message;
         const toolError = failRes.error;
         this.sessions.appendRawEntry(sessionId, {
           type: "tool_result", round, created_at: now(),
@@ -4654,6 +5039,8 @@ export class AgentRuntime {
     taskBlocks?: string[];
     emergencyTrimmed?: boolean;
     dropped?: number;
+    /** 工作集或发出去的 messages 是否真变矮（没变则超窗不得重试） */
+    surfaceChanged?: boolean;
   }> {
     const {
       sessionId,
@@ -4841,9 +5228,13 @@ export class AgentRuntime {
       }
     }
 
-    const ok = estimatedTokens <= Math.floor(contextLimit * 0.95);
+    const beforeTok = estimateMessagesTokens(opts.finalMessages);
+    const surfaceChanged =
+      emergencyTrimmed ||
+      (stage != null && stage !== "activeStage") ||
+      estimatedTokens < beforeTok;
     return {
-      ok: ok || emergencyTrimmed || estimatedTokens < estimateMessagesTokens(opts.finalMessages),
+      ok: surfaceChanged,
       finalMessages,
       compressedHistory,
       estimatedTokens,
@@ -4853,6 +5244,7 @@ export class AgentRuntime {
       taskBlocks,
       emergencyTrimmed,
       dropped,
+      surfaceChanged,
     };
   }
 

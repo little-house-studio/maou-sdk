@@ -53,5 +53,7 @@ export function shouldBlockDocExtractTool(toolName: string): boolean { ... }
 
 ## 事件名（若自写脚本 hook）
 
-文件名约定事件：`on_user_message`、`pre_compact`、`cache_rebuild_point`、`loop_end`、`pre_tool_use` 等。  
-当前 coding 产品以 **进程内 Hooks API** 为准（`pre_tool_use` 返回 `false` 或 **原因 string** 可拦截）。
+文件名约定事件：`on_user_message`、`tools_pre_execute`、`agent_pre_step`、`stop`、`permission_request`、`terminal_pre_run` 等。  
+当前 coding 产品以 **进程内 Hooks API** 为准。终端专用闸门见 SDK 模板 `core/agent/templates/agent/hook/README.md`。
+
+**dsh = DeepSeek Harness** 的原生闸门是 Cordis 事件（`tools/pre-execute`、`agent/pre-step`、`agent/request`、`agent/turn-stopping`、`approval/request`），不是 Claude Code 那 30 个名字。完整对照见 `core/agent/templates/agent/hook/README.md`。

@@ -56,32 +56,60 @@ function expandPath(p: string): string {
   return resolve(p);
 }
 
-function printStreamEvent(ev: StreamEvent, out: NodeJS.WritableStream): void {
-  if (ev.type === "assistant_delta") {
-    const d = ev.delta ?? ev.content ?? "";
-    if (d) out.write(String(d));
-    return;
-  }
-  if (ev.type === "assistant") {
-    const c = ev.content ?? "";
-    if (c) out.write(String(c).endsWith("\n") ? String(c) : `${c}\n`);
-    return;
-  }
-  if (ev.type === "tool_call") {
-    const tool = ev.tool as { name?: string; parameters?: { command?: string; description?: string } } | undefined;
-    const name = tool?.name ?? "tool";
-    const hint =
-      tool?.parameters?.description ||
-      (typeof tool?.parameters?.command === "string"
-        ? tool.parameters.command.slice(0, 80)
-        : "");
-    process.stderr.write(`→ ${name}${hint ? ` ${hint}` : ""}\n`);
-    return;
-  }
-  if (ev.type === "error") {
-    const msg = ev.message ?? ev.content ?? "error";
-    process.stderr.write(`${msg}\n`);
-  }
+/**
+ * 把 runtime 流式事件打到 stdout。
+ *
+ * `AgentRuntime.run({ stream: true })` 会先 yield 若干 `assistant_delta`，
+ * 再 yield 一条带完整正文的 `assistant`。两头都写就会把同一段回复打两遍
+ *（`aiinstall` / `maou aiinstall` / `doctor --agent` 都走这里）。
+ * 已经打过 delta 时跳过完整 `assistant`；没有 delta 的路径（指令命中、
+ * 非流式）仍打印 `assistant`。
+ */
+export function createStreamEventPrinter(
+  out: NodeJS.WritableStream,
+  err: NodeJS.WritableStream = process.stderr,
+): (ev: StreamEvent) => void {
+  let wroteAssistantDelta = false;
+  let streamedEndsWithNewline = false;
+  return (ev: StreamEvent) => {
+    if (ev.type === "assistant_delta") {
+      const d = ev.delta ?? ev.content ?? "";
+      if (d) {
+        out.write(String(d));
+        wroteAssistantDelta = true;
+        streamedEndsWithNewline = String(d).endsWith("\n");
+      }
+      return;
+    }
+    if (ev.type === "assistant") {
+      if (wroteAssistantDelta) {
+        wroteAssistantDelta = false;
+        if (!streamedEndsWithNewline) out.write("\n");
+        streamedEndsWithNewline = false;
+        return;
+      }
+      const c = ev.content ?? "";
+      if (c) out.write(String(c).endsWith("\n") ? String(c) : `${c}\n`);
+      return;
+    }
+    if (ev.type === "tool_call") {
+      const tool = ev.tool as
+        | { name?: string; parameters?: { command?: string; description?: string } }
+        | undefined;
+      const name = tool?.name ?? "tool";
+      const hint =
+        tool?.parameters?.description ||
+        (typeof tool?.parameters?.command === "string"
+          ? tool.parameters.command.slice(0, 80)
+          : "");
+      err.write(`→ ${name}${hint ? ` ${hint}` : ""}\n`);
+      return;
+    }
+    if (ev.type === "error") {
+      const msg = ev.message ?? ev.content ?? "error";
+      err.write(`${msg}\n`);
+    }
+  };
 }
 
 async function askInstallDir(defaultDir: string): Promise<string> {
@@ -191,6 +219,7 @@ export async function runAiinstallMain(opts: RunAiinstallOptions = {}): Promise<
 
   const runTurn = async (text: string): Promise<void> => {
     output.write("\n");
+    const printEvent = createStreamEventPrinter(output);
     await runAgentCli(text, {
       runtime: handle.runtime,
       sessionId,
@@ -198,7 +227,7 @@ export async function runAiinstallMain(opts: RunAiinstallOptions = {}): Promise<
       sandboxMode: "auto",
       initAgentName: DEFAULT_INSTALL_AGENT_NAME,
       source: "aiinstall",
-      onEvent: (ev) => printStreamEvent(ev, output),
+      onEvent: printEvent,
     });
     output.write("\n");
   };

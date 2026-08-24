@@ -40,6 +40,7 @@ import {
   applyDockDragMove,
   easeCloseHeight,
   easeCloseProgress,
+  easeOpenHeight,
   boardHeightForPanel,
   boardPlacementFromSlot,
   boardTiltDeg,
@@ -513,9 +514,10 @@ export function BottomInfoBar({
     // Keep the preview strip while the pointer is down but the board
     // has not become live yet — otherwise width shrinks then grows.
     const holdHover =
+      reorderId == null &&
       (pressing || dragging) &&
-      liveIdForHover == null &&
-      reorderId == null;
+      floatPos == null &&
+      !popping;
     const wantId = holdHover ? null : frozen ? null : hoverId;
     const reduceMotion =
       typeof matchMedia === "function" &&
@@ -592,6 +594,8 @@ export function BottomInfoBar({
     pressing,
     reorderId,
     liveIdForHover,
+    floatPos,
+    popping,
     readMagnetSlots,
   ]);
 
@@ -753,6 +757,36 @@ export function BottomInfoBar({
         stowFromRef.current = null;
         captureSlotAnchor(id);
         placeBoardOnSlot(id, panelHRef.current || target * 0.15);
+        const reduceMotion =
+          typeof matchMedia === "function" &&
+          matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (reduceMotion) {
+          const fromH = panelHRef.current;
+          const t0 = performance.now();
+          const tick = (now: number) => {
+            const p = easeCloseProgress((now - t0) / 1000, STOW_EASE_S);
+            const x = easeOpenHeight(fromH, target, p);
+            springRef.current = { x, v: 0 };
+            setPanel(x);
+            if (id && slotAnchoredRef.current) placeBoardOnSlot(id, x);
+            if (p >= 1) {
+              setPanel(target);
+              springRef.current = { x: target, v: 0 };
+              setPopping(false);
+              rafRef.current = 0;
+              setBoardTilt(0);
+              setOpen(id);
+              setPullingId(null);
+              if (slotAnchoredRef.current) placeBoardOnSlot(id, target);
+              onTabChange?.(id);
+              onExpand?.();
+              return;
+            }
+            rafRef.current = requestAnimationFrame(tick);
+          };
+          rafRef.current = requestAnimationFrame(tick);
+          return;
+        }
         springRef.current = {
           x: panelHRef.current,
           v: springRef.current.v,
@@ -988,6 +1022,11 @@ export function BottomInfoBar({
     setPressing(true);
     setHoverId(null);
     setBoardTilt(0);
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    } catch {
+      /* capture is optional */
+    }
 
     const isLive =
       (openIdRef.current === id && panelHRef.current > 2) ||
@@ -1121,26 +1160,18 @@ export function BottomInfoBar({
               x: out.height,
               v: out.session.vel * 1000,
             };
-            if (out.height > 2) {
-              setSlotAnchored(true);
-              slotAnchoredRef.current = true;
-              placeBoardOnSlot(d.id, out.height);
-            }
+            magnetRef.current = {};
+            setMagnetById({});
           }
           if (d.kind === "open" && out.provisionalOpen) {
             setPullingId(d.id);
             setOpen(d.id);
           }
+          // Stay in-flow until breakaway — floating mid-pull collapses the rack.
           if (out.breakaway && !out.freezeHeight) {
             liveSnapRef.current = true;
             setPullingId(null);
             setOpen(d.id);
-            setSlotAnchored(true);
-            slotAnchoredRef.current = true;
-            captureSlotAnchor(d.id);
-            placeBoardOnSlot(d.id, out.height);
-            onTabChange?.(d.id);
-            onExpand?.();
             springRef.current = { x: out.height, v: OPEN_KICK_V };
             runSpringTo(openHFor(d.id), d.id);
           }
@@ -1298,8 +1329,9 @@ export function BottomInfoBar({
           const lifting = isLive && slotAnchored;
           const textOp = isLive ? 1 : geo.textOpacity;
 
-          // Live board: layout-driven width (path + CSS must match)
-          const liveW = isLive ? boardWFor(card.id, panelH) : geo.cssW;
+          // Saved board width only after the card leaves the rack.
+          const liveW =
+            isLive && floatPos ? boardWFor(card.id, panelH) : geo.cssW;
           const liveGeo =
             isLive && liveW !== geo.cssW
               ? (() => {
@@ -1523,6 +1555,7 @@ export function BottomInfoBar({
                 isHovering ? "is-raised is-preview" : "",
                 isPeeking ? "is-peeking" : "",
                 isLive ? "is-raised is-live" : "",
+                isLive && !floatPos ? "is-slot-pull" : "",
                 isReordering ? "is-reorder" : "",
                 pressing && dragRef.current?.id === card.id ? "is-press" : "",
               ]

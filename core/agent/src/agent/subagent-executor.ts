@@ -25,7 +25,7 @@
  */
 
 import type { StreamEvent, SubagentExecutorLike, SubagentResultLike, ForkOptions, AgentProgress, McpToolDescriptor, McpToolInvoker } from "@little-house-studio/types";
-import { SUBAGENT_EVENT_BUS } from "./event-bus.js";
+import { SUBAGENT_EVENT_BUS, type LifecycleEvent } from "./event-bus.js";
 import { AgentLifecycleManager } from "./agent-lifecycle.js";
 import { MessageBus } from "./message-bus.js";
 import type { Tool } from "@little-house-studio/tools";
@@ -160,6 +160,8 @@ export interface SubagentExecutorOptions {
    * 注入自定义实例便于测试 mock 或共享 worktree 目录配置。
    */
   isolationRunner?: IsolationRunner;
+  /** fork_start / fork_end 等；Runtime 用来打 subagent_* hook */
+  onLifecycle?: (ev: LifecycleEvent) => void;
   /**
    * per-session yield 回调注册函数（P2-1）。
    *
@@ -216,6 +218,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
   /** 自动 materialize 目录 */
   private _maouRoot?: string;
   private _parentAgentName?: string;
+  private _onLifecycle?: (ev: LifecycleEvent) => void;
   /** 当前 parentSessionId（harness 注入；fork 时若未传 parentSessionId 用此值） */
   parentSessionId: string = "";
   /**
@@ -295,6 +298,16 @@ export class SubagentExecutor implements SubagentExecutorLike {
     this._resolveHelperPreset = opts.resolveHelperPreset;
     this._maouRoot = opts.maouRoot;
     this._parentAgentName = opts.parentAgentName;
+    this._onLifecycle = opts.onLifecycle;
+  }
+
+  private publishLifecycle(ev: LifecycleEvent): void {
+    SUBAGENT_EVENT_BUS.publishLifecycle(ev);
+    try {
+      this._onLifecycle?.(ev);
+    } catch {
+      /* hook 失败不打断 fork */
+    }
   }
 
   /** 动态注入 AuxModelCaller（runtime-facade 装配后可补） */
@@ -529,7 +542,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
     const maxDepth = options?.maxRecursionDepth ?? this._defaultMaxRecursionDepth;
     if (currentDepth >= maxDepth) {
       this._log("warning", `[FORK] task=${taskId} 递归深度上限到达: depth=${currentDepth} max=${maxDepth}，拒绝 fork`);
-      SUBAGENT_EVENT_BUS.publishLifecycle({
+      this.publishLifecycle({
         kind: "depth_limit",
         taskId,
         currentDepth,
@@ -663,7 +676,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
       };
     }
 
-    SUBAGENT_EVENT_BUS.publishLifecycle({
+    this.publishLifecycle({
       kind: "fork_start",
       taskId,
       subSessionId,
@@ -702,7 +715,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
         timeoutAborted = true;
         abortController.abort();
         this._log("warning", `[FORK] task=${taskId} wall-clock 超时 ${maxRuntimeMs}ms，abort`);
-        SUBAGENT_EVENT_BUS.publishLifecycle({
+        this.publishLifecycle({
           kind: "timeout",
           taskId,
           elapsedMs: Date.now() - start,
@@ -776,7 +789,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
         if (wrapUpInjected) return;
         wrapUpInjected = true;
         this._log("info", `[FORK] task=${taskId} 到达 soft budget ${softBudget}，注入 wrap-up 提示`);
-        SUBAGENT_EVENT_BUS.publishLifecycle({
+        this.publishLifecycle({
           kind: "budget_exceeded",
           taskId,
           requests,
@@ -1029,7 +1042,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
         yieldStatus,
       };
 
-      SUBAGENT_EVENT_BUS.publishLifecycle({
+      this.publishLifecycle({
         kind: "fork_end",
         taskId,
         subSessionId,
@@ -1058,7 +1071,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
       }
 
       if (aborted) {
-        SUBAGENT_EVENT_BUS.publishLifecycle({
+        this.publishLifecycle({
           kind: "abort",
           taskId,
           subSessionId,
@@ -1146,7 +1159,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this._log("warning", `[FORK] task=${taskId} 后台执行异常: ${msg}`);
-      SUBAGENT_EVENT_BUS.publishLifecycle({
+      this.publishLifecycle({
         kind: "fork_end",
         taskId,
         subSessionId: params.subSessionId,
@@ -1159,7 +1172,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
     // 把最终结果异步上报到 lifecycle channel
     // （fork_end 事件携带 ok + elapsedMs + requests + tokens；完整 output 通过 event channel 已透传）
     if (result) {
-      SUBAGENT_EVENT_BUS.publishLifecycle({
+      this.publishLifecycle({
         kind: "fork_end",
         taskId,
         subSessionId: result.subSessionId,

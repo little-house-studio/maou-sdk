@@ -173,9 +173,10 @@ pub async fn run(
             let timeout = timeout_ms.unwrap_or(120_000);
             let limit = result_limit.unwrap_or(5000) as usize;
 
-            // 轮询等待退出
+            // 轮询等待退出。超时不杀：转后台，完成后再由 runtime 提醒。
             let mut elapsed = 0u64;
             let interval = 100u64;
+            let mut timed_out = false;
             let exit_code = loop {
                 if let Some(entry) = REGISTRY.get_terminal(&terminal_id) {
                     let terminal = entry.lock().unwrap();
@@ -189,9 +190,8 @@ pub async fn run(
                 }
 
                 if elapsed >= timeout as u64 {
-                    // 超时，停止终端
-                    let _ = REGISTRY.stop(&terminal_id, &agent_name);
-                    logger::log_error(&terminal_id, &format!("超时 {}ms", timeout));
+                    timed_out = true;
+                    logger::log_error(&terminal_id, &format!("超时 {}ms，已转后台", timeout));
                     break Ok(None);
                 }
 
@@ -229,13 +229,18 @@ pub async fn run(
                     })
                 }
                 Ok(None) => {
+                    REGISTRY.persist();
                     Ok(RunResult {
-                        ok: false,
+                        ok: timed_out,
                         exit_code: None,
                         output,
                         duration_ms,
                         terminal_id,
-                        error: Some(format!("超时 {}ms", timeout)),
+                        error: Some(if timed_out {
+                            format!("超时 {}ms，已转后台", timeout)
+                        } else {
+                            "终端已消失".to_string()
+                        }),
                     })
                 }
                 Err(e) => {

@@ -88,3 +88,17 @@ export type {
   CommandRiskLevel,
   CommandHumanSummary,
 } from "./command-summary.js";
+
+export {
+  bindPermissionHookHost,
+  consultPermissionHook,
+  notifyPermissionDenied,
+  runPermissionRequest,
+} from "./permission-hook-host.js";
+export type {
+  PermissionDecision,
+  PermissionRequestPayload,
+  PermissionHookResult,
+  PermissionHookHost,
+  PermissionConsult,
+} from "./permission-hook-host.js";

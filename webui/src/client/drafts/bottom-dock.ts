@@ -616,6 +616,15 @@ export function easeCloseHeight(startH: number, progress: number): number {
   return Math.max(0, startH * (1 - p));
 }
 
+export function easeOpenHeight(
+  startH: number,
+  targetH: number,
+  progress: number,
+): number {
+  const p = Math.max(0, Math.min(1, progress));
+  return startH + (targetH - startH) * p;
+}
+
 export function clampPullHeight(h: number): number {
   return Math.max(0, Math.min(DOCK_EXPAND_H_MAX + 100, h));
 }

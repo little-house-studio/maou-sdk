@@ -1,7 +1,7 @@
 /**
  * ContextEngine —— 编排 assignTaskIds + compress + persist + toLLMHistory。
  *
- * 把 HarnessSessionStore / TaskSessionStore / compressMaou 接成闭环：
+ * 把 HarnessSessionStore / TaskSessionStore / 上下文模块 接成闭环：
  *   seedWorkingSet(session) → （可选）compress → persist → toLLMHistory
  *   restoreTask(taskId)  → 从 TaskSessionStore 恢复原文
  *   getBySeqId(seqId)    → 从 HarnessSessionStore 回溯
@@ -20,15 +20,20 @@ import {
   type HarnessWorkingSetMeta,
 } from "./harness-session-store.js";
 import type { TaskSessionStore, MaouTaskBlock } from "./task-session-store.js";
-import { compressMaou, assignTaskIds } from "./compressor.js";
-import type { Summarizer, CompressMaouResult } from "./compressor.js";
+import { assignTaskIds } from "./compressor.js";
+import type { Summarizer } from "./compressor.js";
 import type { CompressionStage } from "./types/compression.js";
+import { resolveContextModule, type ContextModule } from "./modules/index.js";
 
 export interface ContextEngineOptions {
   sessionId: string;
   harnessStore: HarnessSessionStore;
   taskStore: TaskSessionStore;
   summarizer?: Summarizer;
+  /** 压缩模块或 id，默认 staged */
+  module?: ContextModule | string;
+  /** 传给模块的配置；staged 默认一次压到占用对应阶段 */
+  moduleConfig?: unknown;
 }
 
 export interface CompressReport {
@@ -54,6 +59,8 @@ export class ContextEngine {
   private harnessStore: HarnessSessionStore;
   private taskStore: TaskSessionStore;
   private summarizer?: Summarizer;
+  private module: ContextModule;
+  private moduleConfig: unknown;
   private history: MaouMessage[] = [];
   private nextSeqId = 0;
   private lastCompressReport: CompressReport | null = null;
@@ -68,6 +75,11 @@ export class ContextEngine {
     this.harnessStore = opts.harnessStore;
     this.taskStore = opts.taskStore;
     this.summarizer = opts.summarizer;
+    this.module =
+      typeof opts.module === "object" && opts.module
+        ? opts.module
+        : resolveContextModule(typeof opts.module === "string" ? opts.module : "staged");
+    this.moduleConfig = opts.moduleConfig ?? this.module.defaultConfig ?? {};
   }
 
   /**
@@ -204,9 +216,6 @@ export class ContextEngine {
       sourceSessionMessages?: Array<Record<string, unknown>>;
     },
   ): Promise<CompressReport> {
-    // 1. 备份
-    this.harnessStore.backupBeforeCompress(this.sessionId);
-
     // 1.5 收集当前活跃 todo 关联的 task 块 id（#4：压缩时屏蔽无关 task）
     // 只有未完成 todo 关联的 task 块摘要进压缩区，其他 task 屏蔽归档
     const planBefore = this.taskStore.loadTaskPlan(this.sessionId);
@@ -219,19 +228,21 @@ export class ContextEngine {
       }
     }
 
-    // 2. 压缩（传入 activeTaskIds：只有 active task 摘要进压缩区）
-    const result: CompressMaouResult = await compressMaou(this.history, {
+    const result = await this.module.compress({
+      history: this.history,
       maxTokens,
       summarizer: this.summarizer,
       sessionId: this.sessionId,
-      activeTaskIds: activeTaskIds.length > 0 ? activeTaskIds : undefined,
-      knownTokens: opts?.knownTokens,
+      currentStage: this.lastCompressReport?.stage ?? "activeStage",
       force: opts?.force,
+      knownTokens: opts?.knownTokens,
+      activeTaskIds: activeTaskIds.length > 0 ? activeTaskIds : undefined,
+      config: this.moduleConfig,
     });
 
     // 3. 将被折叠的任务块原文写入 TaskSessionStore
     const newBlockIds: string[] = [];
-    for (const [taskId, originals] of result.perTaskOriginals) {
+    for (const [taskId, originals] of result.perTaskOriginals ?? []) {
       if (taskId === "__no_task__") continue;
       const llmMsgs = originals.map(maouToLLMMessage);
       this.taskStore.createTaskBlock(this.sessionId, taskId, "", []);
@@ -265,17 +276,15 @@ export class ContextEngine {
     if (opts?.sourceSessionMessages) {
       this.markSourceCoverage(opts.sourceSessionMessages);
     }
-    // 真正压缩后（或 force 后）工作集已与 session 分叉，必须落 harness 供下轮复用
-    if (result.stage !== "activeStage" || opts?.force) {
+    if (result.compressed) {
+      this.harnessStore.backupBeforeCompress(this.sessionId);
       this.seededFromHarness = true;
       this.persistWorkingSet();
     } else if (this.seededFromHarness) {
-      // 无实质压缩但仍在 harness 路径：保持对齐
       this.persistWorkingSet();
     }
 
-    // 5. 写 compressedStage
-    if (result.stage !== "activeStage") {
+    if (result.compressed && result.stage !== "activeStage") {
       this.harnessStore.saveCompressedZone(
         this.sessionId,
         result.stage,

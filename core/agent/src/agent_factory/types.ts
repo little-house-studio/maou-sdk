@@ -32,10 +32,18 @@ export const AGENT_EVENT_TYPES = new Set([
   "tool_call",           // 工具调用请求
   "tool_result",         // 工具执行结果
   "tool_error",          // 工具执行异常
+  "pre_tool_use",
+  "post_tool_use",
+  "post_tool_use_failure",
+  "post_tool_batch",
   // Agent 循环
+  "before_agent_start",
   "agent_start",         // Agent 轮次开始
   "agent_stop",          // Agent 轮次结束
   "agent_thinking",      // Agent 正在思考
+  "stop",
+  "stop_failure",
+  "loop_end",
   // 消息相关
   "pre_message",         // 消息发送前
   "post_message",        // 消息发送后
@@ -50,22 +58,39 @@ export const AGENT_EVENT_TYPES = new Set([
   "pre_cache_rebuild",   // 缓存重建点前（可取消重建）
   "cache_rebuild_point", // 缓存重建点
   "post_cache_rebuild",  // 缓存重建点后
+  "prompt_refresh",
   // 设备
   "device_online",       // 设备上线
   "device_offline",      // 设备离线
-  // 会话
+  // 会话 / 子 agent
   "session_start",       // 会话开始
   "session_end",         // 会话结束
   "session_fork",        // 会话分支
+  "subagent_start",
+  "subagent_stop",
+  // 审批 / 通知
+  "permission_request",
+  "permission_denied",
+  "notification",
+  "agent_request",
+  "fs_write_intent",
+  "fs_edit_intent",
+  "terminal_pre_run",
+  "terminal_pre_write",
+  "terminal_pre_stop",
+  "terminal_pre_rm",
+  "terminal_started",
+  "terminal_promoted",
+  "terminal_exit",
+  "terminal_until_hit",
+  "terminal_write",
+  "terminal_stop",
+  "terminal_rm",
   // 配置
   "config_change",       // 配置变更
-  "prompt_refresh",      // 提示词刷新
-  // 安全
-  "pre_tool_use",        // 工具调用前（可拦截）
-  "post_tool_use",       // 工具调用后
-  "abort",               // 用户中断
-  // 错误
-  "error",               // 全局错误
+  // 中断 / 错误
+  "abort",
+  "error",
 ]);
 
 /** Agent 事件类型联合 */

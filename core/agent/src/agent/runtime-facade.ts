@@ -56,6 +56,8 @@ export interface AppRuntimeOptions {
   llmClient: LLMClient;
   maouRoot?: string;
   projectRoot?: string;
+  /** terminals.json 落点根，默认 projectRoot */
+  terminalPersistRoot?: string;
   /** Runtime 日志函数（默认 console.log）。CLI 传 () => {} 静默。 */
   log?: (level: string, message: string) => void;
   /** 是否启用 LLM postLogger（写 raw.jsonl + pino 日志）。CLI 传 false 静默。 */
@@ -168,9 +170,11 @@ export class Runtime {
     this.gitWatcher = new GitWatcher(this.maouRoot, this.projectRoot);
 
     // 终端引擎初始化（幂等）：SDK 独立使用时无 harness server，此处保证引擎可用。
-    // 持久化路径与 harness 一致（<projectRoot>/.maou/terminals.json）。
     try {
-      initTerminalEngine(undefined, resolveTerminalPersistPath(this.projectRoot));
+      initTerminalEngine(
+        undefined,
+        resolveTerminalPersistPath(options.terminalPersistRoot ?? this.projectRoot),
+      );
     } catch { /* 已初始化或引擎不可用，忽略 */ }
 
     // ContextEngine 压缩闭环装配：
@@ -275,6 +279,26 @@ export class Runtime {
   getHooks(): Hooks {
     if (!this.hooks) this.hooks = new Hooks();
     return this.hooks;
+  }
+
+  notifyDeviceOnline(deviceId: string): Promise<void> {
+    return this.getRuntime().notifyDeviceOnline(deviceId);
+  }
+
+  notifyDeviceOffline(deviceId: string): Promise<void> {
+    return this.getRuntime().notifyDeviceOffline(deviceId);
+  }
+
+  notifyConfigChange(payload: Record<string, unknown> = {}): Promise<void> {
+    return this.getRuntime().notifyConfigChange(payload);
+  }
+
+  notifySessionFork(
+    parentSessionId: string,
+    childSessionId: string,
+    extra: Record<string, unknown> = {},
+  ): void {
+    this.getRuntime().notifySessionFork(parentSessionId, childSessionId, extra);
   }
 
   private getRuntime(): AgentRuntime {
@@ -490,6 +514,14 @@ export class Runtime {
         maouRoot: this.maouRoot,
         parentAgentName: this.agentName,
         projectRoot: this.projectRoot,
+        onLifecycle: (ev) => {
+          const hooks = runtimeRef.getHooks();
+          if (ev.kind === "fork_start") {
+            void hooks.subagentStart({ ...ev });
+          } else if (ev.kind === "fork_end") {
+            void hooks.subagentStop({ ...ev });
+          }
+        },
         // Todo 分身：预分配 sessionId
         subSessionIdFactory: (parentSessionId, taskId) => {
           try {

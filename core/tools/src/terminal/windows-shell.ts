@@ -50,11 +50,25 @@ export function windowsAgentInvocation(
   }
 }
 
+const UNIX_PIPEFAIL_STEMS = new Set(["bash", "zsh", "sh"]);
+
+function unixShellStem(program: string): string {
+  const file = program.replace(/\\/g, "/").split("/").pop() ?? program;
+  return file.toLowerCase();
+}
+
+/** bash / zsh / sh：管道退出码跟失败的那一段。 */
+export function wrapUnixPipefail(command: string, shellProgram: string): string {
+  if (!UNIX_PIPEFAIL_STEMS.has(unixShellStem(shellProgram))) return command;
+  if (/(?:^|[;\n])\s*set\s+-o\s+pipefail\b/.test(command)) return command;
+  return `set -o pipefail; ${command}`;
+}
+
 /** Agent 命令：Windows 走上面的解析；Unix 仍 `$SHELL -c`。 */
 export function agentShellInvocation(command: string): { program: string; args: string[] } {
   if (process.platform === "win32") {
     return windowsAgentInvocation(command, resolveWindowsAgentShell());
   }
   const shell = process.env.SHELL?.trim() || "/bin/sh";
-  return { program: shell, args: ["-c", command] };
+  return { program: shell, args: ["-c", wrapUnixPipefail(command, shell)] };
 }

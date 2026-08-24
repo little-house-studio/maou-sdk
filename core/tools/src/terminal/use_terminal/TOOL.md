@@ -2,11 +2,12 @@
 
 - 不指定 id 为临时终端（执行完即销毁），指定 id 为持久终端（可反复操作）。
 - **每次调用必填 `description`（任务简介）**：一句话说明这次在干什么；CLI 折叠标题只显示它。`reason` 是「为什么必须用工具」。
-- **长驻后台**（dev server / watch）：必须 `background=true`，并建议指定 `id`（如 `"vite"`），便于 stop/logs。
+- `background=false`（默认）：阻塞等待命令结束（成功或失败进程即停）。`timeout` 是这次等待的上限（默认 120s）；到点还在跑则转后台并带回当前输出，下一轮会带上结束结果。
+- `background=true`：立刻后台，不阻塞；建议带 `id` 方便 logs/stop。
+- 等某行日志再返回：`return_when=until` + `match`/`expr`。
+- 仍在跑时可用 `manage stop` 打断。
 - 每次 use_terminal 返回末尾会附带 **── 终端状态 ──** 快照（运行中 / 已结束），不必先 manage list。
 - command 中的路径含空格时必须用引号包裹。
-- timeout 默认 120 秒，长任务设 background=true 避免超时。
-- 前台超时会终止进程并返回超时（不会自动转后台）。
 - result_limit 控制返回内容长度，大输出建议设小值（如 2000），避免 token 浪费。
 - manage_action=list 查看全表；logs / stop / rm 操作指定 id。
 - 列表为空时仍会说明原因（临时任务销毁、其它 agent 终端等）。
@@ -14,7 +15,7 @@
 
 ### 条件返回（return_when + Python expr）
 
-挂在 `run` 的命令输出上，不是扫文件。不必等进程结束/硬超时才拿结果；用正则 + 短 Python 表达式。
+挂在 `run` 的命令输出上，不是扫文件。用正则 + 短 Python 表达式，命中即返回。
 
 | 参数 | 含义 |
 |------|------|

@@ -31,6 +31,7 @@ import {
   isPullBreakaway,
   easeCloseProgress,
   easeCloseHeight,
+  easeOpenHeight,
   displayResizeHeight,
   dockCardWidth,
   folderViewBox,
@@ -147,6 +148,9 @@ describe("bottom-dock rubber + spring", () => {
     assert.ok(easeCloseHeight(200, 0.5) > 0 && easeCloseHeight(200, 0.5) < 200);
     assert.equal(easeCloseProgress(0), 0);
     assert.equal(easeCloseProgress(STOW_EASE_S), 1);
+    assert.equal(easeOpenHeight(80, 280, 0), 80);
+    assert.equal(easeOpenHeight(80, 280, 1), 280);
+    assert.ok(easeOpenHeight(80, 280, 0.5) > 80);
   });
 
   it("gesture helpers", () => {

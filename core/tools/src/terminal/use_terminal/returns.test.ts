@@ -117,9 +117,10 @@ describe("use_terminal 消息返回", () => {
     expect(res.payload?.terminal_backend).toBe("mini");
   });
 
-  it("前台超时：exit_code 为空，文案含超时", async () => {
+  it("前台超时：转后台并汇报，进程仍在", async () => {
     const agent = `ret-to-${Date.now()}`;
     setup(agent);
+    const ctx = stubCtx(agent);
     const cmd = process.platform === "win32" ? "ping -n 20 127.0.0.1" : "sleep 20";
     const res = await tool.execute(
       {
@@ -129,11 +130,30 @@ describe("use_terminal 消息返回", () => {
         reason: "unit test",
         timeout: 1,
       },
-      stubCtx(agent),
+      ctx,
     );
-    expect(res.ok).toBe(false);
-    expect(res.message).toMatch(/超时/);
+    expect(res.ok).toBe(true);
+    expect(res.background).toBe(true);
+    expect(res.message).toMatch(/转入后台|转后台/);
+    expect(res.message).not.toMatch(/终止进程/);
     expect(res.payload?.exit_code).toBeNull();
+    expect(res.payload?.promoted_to_background).toBe(true);
+    expect(res.payload?.terminal_id).toBeTruthy();
+
+    const listed = await tool.execute(
+      { action: "manage", manage_action: "list", reason: "unit test" },
+      ctx,
+    );
+    expect(listed.message).toMatch(/running|运行/);
+    await tool.execute(
+      {
+        action: "manage",
+        manage_action: "stop",
+        id: String(res.payload?.terminal_id),
+        reason: "unit test",
+      },
+      ctx,
+    );
   });
 
   it("后台 + logs + stop + rm 的 payload/正文", async () => {

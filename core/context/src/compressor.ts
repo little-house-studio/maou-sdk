@@ -26,7 +26,10 @@ import {
   ACTIVE_WINDOW_MIN_MESSAGES,
   MICRO_OUTSIDE_MIN_CHARS,
   MICRO_TOOL_RESULT_MIN_CHARS,
+  RETAIN_TAIL_RATIO,
 } from "./constants.js";
+import { pruneBodyText, pruneToolResultText } from "./prune-text.js";
+import { snapRetainStartForToolPairs } from "./tool-pairing.js";
 import type { CompressResult } from "./types.js";
 import type {
   CompressionStage,
@@ -66,10 +69,26 @@ export interface CompressOptions {
    */
   knownTokens?: number;
   /**
-   * 强制至少进入 compactStage（/compact、UI 强制压缩）。
-   * 跳过 activeStage 的「未达 70% 不压」早退。
+   * 强制至少尝试微压缩（/compact、UI）。
+   * 跳过 activeStage 的「未达 70% 不压」早退；压完没变矮则仍回 activeStage。
    */
   force?: boolean;
+  /**
+   * 从尾部按 token 留的原文预算。
+   * 未传时：自动压 = maxTokens × RETAIN_TAIL_RATIO；force（/compact、超窗）= 只留最新一条。
+   */
+  retainTokens?: number;
+}
+
+function resolveRetainTokens(opts: {
+  maxTokens: number;
+  retainTokens?: number;
+  force?: boolean;
+}): number {
+  if (opts.retainTokens != null && opts.retainTokens > 0) return opts.retainTokens;
+  if (opts.force) return 1;
+  const threshold = opts.maxTokens > 0 ? opts.maxTokens : 65536;
+  return Math.max(1, Math.floor(threshold * RETAIN_TAIL_RATIO));
 }
 
 export interface CompressMaouResult {
@@ -131,10 +150,13 @@ export async function compressMaou(
 
   // compactStage（微压缩）
   if (maxStageIdx < stageIndex("compactStage")) return noChange();
-  const afterMicro = await microCompactAll(history, opts.summarizer);
+  const retainTokens = resolveRetainTokens(opts);
+  const afterMicro = await microCompactAll(history, opts.summarizer, retainTokens);
   const microHist = estimateTokens(afterMicro);
   const microTokens = effective(microHist);
+  const microChanged = historyVisiblyChanged(history, afterMicro);
   if (microTokens < Math.floor((threshold * SUMMARY_TRIGGER_PERCENT) / 100)) {
+    if (!microChanged) return noChange();
     return {
       history: afterMicro,
       stage: "compactStage",
@@ -148,7 +170,7 @@ export async function compressMaou(
 
   // summaryStage（大压缩）
   if (maxStageIdx < stageIndex("summaryStage")) {
-    // maxStage 限制在 compactStage，到此为止
+    if (!microChanged) return noChange();
     return {
       history: afterMicro,
       stage: "compactStage",
@@ -159,10 +181,28 @@ export async function compressMaou(
       compressedTokens: microTokens,
     };
   }
-  const afterSummary = await summaryCompressHarness(afterMicro, opts.summarizer, opts.activeTaskIds);
+  const afterSummary = await summaryCompressHarness(
+    afterMicro,
+    opts.summarizer,
+    opts.activeTaskIds,
+    retainTokens,
+  );
   const summaryHist = estimateTokens(afterSummary.messages);
   const summaryTokens = effective(summaryHist);
+  const summaryChanged = historyVisiblyChanged(afterMicro, afterSummary.messages);
   if (summaryTokens < Math.floor((threshold * ARCHIVE_TRIGGER_PERCENT) / 100)) {
+    if (!summaryChanged) {
+      if (!microChanged) return noChange();
+      return {
+        history: afterMicro,
+        stage: "compactStage",
+        droppedSummary: "",
+        taskBlocks: [],
+        perTaskOriginals: new Map(),
+        originalTokens,
+        compressedTokens: microTokens,
+      };
+    }
     return {
       history: afterSummary.messages,
       stage: "summaryStage",
@@ -221,15 +261,28 @@ export function maybeCompress(
     return { messages, compressed: false, droppedSummary: "", stage: "activeStage", originalTokens, compressedTokens: historyTokens };
   }
 
-  const afterMicro = microCompactAllSync(maou);
+  const retainTokens = resolveRetainTokens({
+    maxTokens: threshold,
+    force: opts?.force,
+  });
+  const afterMicro = microCompactAllSync(maou, retainTokens);
   const microTokens = estimateTokens(afterMicro);
   if (microTokens < Math.floor((threshold * SUMMARY_TRIGGER_PERCENT) / 100)) {
+    if (!historyVisiblyChanged(maou, afterMicro)) {
+      return { messages, compressed: false, droppedSummary: "", stage: "activeStage", originalTokens, compressedTokens: historyTokens };
+    }
     return buildLegacyResult(afterMicro, originalTokens, "compactStage");
   }
 
-  const afterSummary = summaryCompressSync(afterMicro);
+  const afterSummary = summaryCompressSync(afterMicro, retainTokens);
   const summaryTokens = estimateTokens(afterSummary.messages);
   if (summaryTokens < Math.floor((threshold * ARCHIVE_TRIGGER_PERCENT) / 100)) {
+    if (!historyVisiblyChanged(afterMicro, afterSummary.messages)) {
+      if (!historyVisiblyChanged(maou, afterMicro)) {
+        return { messages, compressed: false, droppedSummary: "", stage: "activeStage", originalTokens, compressedTokens: historyTokens };
+      }
+      return buildLegacyResult(afterMicro, originalTokens, "compactStage");
+    }
     return buildLegacyResult(afterSummary.messages, originalTokens, "summaryStage", afterSummary.summary, afterSummary.taskBlocks);
   }
 
@@ -240,8 +293,7 @@ export function maybeCompress(
 // ─── active / 原始上下文区（DESIGN：微压缩与大压缩共用） ────────────────────
 
 /**
- * 计算 active 原文区边界（下标 `boundary..end-1` 为最新原文，不得被大压缩吞掉）。
- * 与微压缩保留区同一公式：max(MIN, floor(n * ACTIVE_WINDOW_PERCENT/100))。
+ * 条数窗口（旧）。新路径用 {@link retainTailBoundary}。
  */
 export function activeWindowBoundary(messageCount: number): number {
   if (messageCount <= 0) return 0;
@@ -253,12 +305,58 @@ export function activeWindowBoundary(messageCount: number): number {
   return Math.max(0, messageCount - keep);
 }
 
+/**
+ * 从尾部按 token 预算留原文，切点再咬合 tool 对。
+ * 最新一条即使单独超过预算也整条留下。
+ */
+export function retainTailBoundary(
+  messages: MaouMessage[],
+  retainTokens: number,
+): number {
+  if (messages.length === 0) return 0;
+  const budget = Math.max(1, retainTokens);
+  let acc = 0;
+  let i = messages.length - 1;
+  while (i >= 0) {
+    const t = Math.max(1, estimateTokens([messages[i]!]));
+    if (acc > 0 && acc + t > budget) break;
+    acc += t;
+    i -= 1;
+  }
+  return snapRetainStartForToolPairs(messages, i + 1);
+}
+
 /** active 区消息的 seqId 集合 */
-export function activeWindowSeqIds(messages: MaouMessage[]): Set<number> {
-  const b = activeWindowBoundary(messages.length);
+export function activeWindowSeqIds(
+  messages: MaouMessage[],
+  retainTokens?: number,
+): Set<number> {
+  const b =
+    retainTokens != null && retainTokens > 0
+      ? retainTailBoundary(messages, retainTokens)
+      : activeWindowBoundary(messages.length);
   const s = new Set<number>();
   for (let i = b; i < messages.length; i++) s.add(messages[i]!.seqId);
   return s;
+}
+
+export function historyVisiblyChanged(
+  before: MaouMessage[],
+  after: MaouMessage[],
+): boolean {
+  if (before.length !== after.length) return true;
+  if (estimateTokens(after) < estimateTokens(before)) return true;
+  for (let i = 0; i < after.length; i++) {
+    const a = after[i]!;
+    const b = before[i]!;
+    if (a.seqId !== b.seqId) return true;
+    const as = a.contents[0]?.microCompact?.summary ?? "";
+    const bs = b.contents[0]?.microCompact?.summary ?? "";
+    const ae = a.contents[0]?.microCompact?.enabled === true;
+    const be = b.contents[0]?.microCompact?.enabled === true;
+    if (ae !== be || as !== bs) return true;
+  }
+  return false;
 }
 
 // ─── 微压缩（滑动窗口：从最新往前保留 active 区，旧侧压缩） ────────────────
@@ -266,21 +364,27 @@ export function activeWindowSeqIds(messages: MaouMessage[]): Set<number> {
 /**
  * 微压缩 = 滑动窗口，不需要 LLM。
  *
- * DESIGN：
- *   1. 最新 active 区（ACTIVE_WINDOW_PERCENT）整段原文
- *   2. 旧侧：标注 microCompact、超长、工具大结果 → 规则摘要
- *   3. system/pinned/keepAfterCompress 永不压
+ * 最新原文区按 token 预算留下（切边咬合 tool 对）；旧侧头尾剪。
  */
-async function microCompactAll(messages: MaouMessage[], _summarizer?: Summarizer): Promise<MaouMessage[]> {
+async function microCompactAll(
+  messages: MaouMessage[],
+  _summarizer?: Summarizer,
+  retainTokens?: number,
+): Promise<MaouMessage[]> {
   void _summarizer;
-  return microCompactAllSync(messages);
+  return microCompactAllSync(messages, retainTokens);
 }
 
-function microCompactAllSync(messages: MaouMessage[]): MaouMessage[] {
-  const boundary = activeWindowBoundary(messages.length);
+function microCompactAllSync(
+  messages: MaouMessage[],
+  retainTokens?: number,
+): MaouMessage[] {
+  const boundary =
+    retainTokens != null && retainTokens > 0
+      ? retainTailBoundary(messages, retainTokens)
+      : activeWindowBoundary(messages.length);
 
   return messages.map((m, i) => {
-    // active 原文区：不压
     if (i >= boundary) return m;
     if (shouldSkipCompress(m)) return m;
     const hasSummary = m.contents.some((c) => c.microCompact?.enabled && c.microCompact.summary);
@@ -288,7 +392,6 @@ function microCompactAllSync(messages: MaouMessage[]): MaouMessage[] {
 
     const fullText = m.contents.map((c) => c.text).join("\n");
     const hasMetaCompact = m.meta?.microCompact?.enabled === true;
-    // 旧侧强化：工具结果 / 中等长度正文也压（不再只认 800 字）
     const shouldAutoCompact =
       hasMetaCompact ||
       fullText.length > MICRO_SINGLE_MSG_CHARS ||
@@ -297,6 +400,7 @@ function microCompactAllSync(messages: MaouMessage[]): MaouMessage[] {
     if (!shouldAutoCompact) return m;
 
     const summary = compactByCategory(m);
+    if (!summary || summary === fullText) return m;
     const newContents = [...m.contents];
     if (newContents.length > 0) {
       newContents[0] = { ...newContents[0]!, microCompact: { enabled: true, summary } };
@@ -312,18 +416,21 @@ function shouldSkipCompress(m: MaouMessage): boolean {
 }
 
 function compactByCategory(m: MaouMessage): string {
-  const text = m.contents.map(c => c.text).join('\n');
-  switch (m.category) {
-    case "user": return `[用户] ${truncate(text, MICRO_SUMMARY_MAX_CHARS)}`;
-    case "assistant": {
-      const firstLine = text.split("\n").find(l => l.trim() && !l.trim().startsWith("#")) || text.split("\n")[0] || "";
-      return `[助手] ${truncate(firstLine, MICRO_SUMMARY_MAX_CHARS)}`;
-    }
-    case "tool_call": return `[工具调用] ${truncate(text, 50)}`;
-    case "tool_result": return `[工具结果] ${truncate(text, 50)}`;
-    case "injected": return `[注入] ${truncate(text, 50)}`;
-    default: return truncate(text, MICRO_SUMMARY_MAX_CHARS);
+  const text = m.contents.map((c) => c.text).join("\n");
+  if (m.category === "tool_result") {
+    return pruneToolResultText(text) ?? text;
   }
+  if (m.category === "tool_call") {
+    return pruneBodyText(text, 240) ?? text;
+  }
+  const pruned = pruneBodyText(text, MICRO_SUMMARY_MAX_CHARS);
+  if (pruned) return pruned;
+  if (text.length > MICRO_SUMMARY_MAX_CHARS) {
+    const label =
+      m.category === "user" ? "用户" : m.category === "assistant" ? "助手" : m.category;
+    return `[${label}] ${truncate(text, MICRO_SUMMARY_MAX_CHARS)}`;
+  }
+  return text;
 }
 
 // ─── 大压缩 ──────────────────────────────────────────────────────────────────
@@ -339,15 +446,19 @@ interface SummaryCompressResult {
   activeRawMsgs: MaouMessage[];
 }
 
-async function summaryCompressHarness(messages: MaouMessage[], summarizer?: Summarizer, activeTaskIds?: string[]): Promise<SummaryCompressResult> {
-  // DESIGN：大压缩只动 active 以外；active 与 micro 保留区同一边界
+async function summaryCompressHarness(
+  messages: MaouMessage[],
+  summarizer?: Summarizer,
+  activeTaskIds?: string[],
+  retainTokens?: number,
+): Promise<SummaryCompressResult> {
   const {
     systemMsgs,
     pinnedOrCritical,
     compressible,
     recentToolMsgs,
     activeRawMsgs,
-  } = partitionMessages(messages, { protectActiveWindow: true });
+  } = partitionMessages(messages, { protectActiveWindow: true, retainTokens });
   const groups = groupByTask(compressible);
   const taskBlocks: string[] = [];
   const summaryLines: string[] = [];
@@ -405,14 +516,17 @@ async function summaryCompressHarness(messages: MaouMessage[], summarizer?: Summ
   };
 }
 
-function summaryCompressSync(messages: MaouMessage[]): SummaryCompressResult {
+function summaryCompressSync(
+  messages: MaouMessage[],
+  retainTokens?: number,
+): SummaryCompressResult {
   const {
     systemMsgs,
     pinnedOrCritical,
     recentToolMsgs,
     compressible,
     activeRawMsgs,
-  } = partitionMessages(messages, { protectActiveWindow: true });
+  } = partitionMessages(messages, { protectActiveWindow: true, retainTokens });
   const groups = groupByTask(compressible);
   const taskBlocks: string[] = [];
   const summaryLines: string[] = [];
@@ -456,14 +570,16 @@ function summaryCompressSync(messages: MaouMessage[]): SummaryCompressResult {
  */
 function partitionMessages(
   messages: MaouMessage[],
-  opts?: { protectActiveWindow?: boolean },
+  opts?: { protectActiveWindow?: boolean; retainTokens?: number },
 ) {
   const systemMsgs: MaouMessage[] = [];
   const pinnedOrCritical: MaouMessage[] = [];
   const compressible: MaouMessage[] = [];
   const activeRawMsgs: MaouMessage[] = [];
   const protect = opts?.protectActiveWindow !== false;
-  const activeSeq = protect ? activeWindowSeqIds(messages) : new Set<number>();
+  const activeSeq = protect
+    ? activeWindowSeqIds(messages, opts?.retainTokens)
+    : new Set<number>();
 
   const protectedToolCallIds = new Set<string>();
   for (const m of messages) {

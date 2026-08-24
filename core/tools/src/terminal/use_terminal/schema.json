@@ -1,6 +1,6 @@
 {
   "name": "use_terminal",
-  "description": "执行 shell 命令或管理常驻终端。不指定 id 为临时终端（执行完即销毁）；指定 id 为持久终端（可反复操作）。action=run 运行命令；action=manage 管理终端；action=write 键盘输入；return_when=filter|until + match/expr 对命令输出做条件返回。",
+  "description": "执行 shell 命令或管理常驻终端。不指定 id 为临时终端（执行完即销毁）；指定 id 为持久终端（可反复操作）。action=run 运行命令；action=manage 管理终端；action=write 键盘输入；return_when=filter|until + match/expr 对命令输出做条件返回。background=false（默认）阻塞等待；到 timeout 仍在跑则转后台并汇报。命令成功或失败后进程即停。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -15,7 +15,7 @@
       },
       "id": {
         "type": "string",
-        "description": "终端名称。后台/until 时复用已有 id；前台不填为临时终端，结束后销毁。"
+        "description": "终端名称。后台/until/前台超时转后台时复用或保留此 id；前台正常结束后未指定 id 则销毁。"
       },
       "command": {
         "type": "string",
@@ -27,11 +27,11 @@
       },
       "background": {
         "type": "boolean",
-        "description": "是否后台运行（run 无 return_when 时可选，默认 false）。"
+        "description": "false（默认）=阻塞等待命令结束。true=立刻后台，不阻塞。"
       },
       "timeout": {
         "type": "number",
-        "description": "超时秒数。前台默认 120；until 默认 3600；后台默认 0。"
+        "description": "前台阻塞等待秒数，默认 120。到点仍在跑则转后台并汇报当前输出。until 默认 3600。后台忽略。"
       },
       "result_limit": {
         "type": "integer",

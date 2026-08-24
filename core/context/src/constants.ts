@@ -17,12 +17,15 @@ export const ARCHIVE_TRIGGER_PERCENT = 90;
 export const MICRO_SINGLE_MSG_CHARS = 800;
 
 /**
- * active / 原始上下文区：从最新往回保留的消息条数占比（与 DESIGN activeStage 对齐）。
- * 微压缩与大压缩共用同一边界——大压缩不得吞掉该区原文。
+ * 最近原文区：按路由窗口 token 占比从尾部往回留（对齐 DSH retainRatio）。
+ * 微压缩与大压缩共用同一边界。
  */
+export const RETAIN_TAIL_RATIO = 0.16;
+
+/** @deprecated 条数窗口已改为 RETAIN_TAIL_RATIO；仅兼容旧调用 */
 export const ACTIVE_WINDOW_PERCENT = 40;
 
-/** active 区至少保留的消息条数（会话很短时避免「全压没」） */
+/** @deprecated 改为至少留最新一条不可拆单元 */
 export const ACTIVE_WINDOW_MIN_MESSAGES = 6;
 
 /**

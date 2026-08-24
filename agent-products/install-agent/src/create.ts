@@ -91,6 +91,7 @@ export function createInstallAgent(opts: InstallAgentOptions): InstallAgent {
     llmClient: opts.llmClient,
     maouRoot,
     projectRoot: destRoot,
+    terminalPersistRoot: dataRoot,
     agentName: name,
     agentScope: "global",
     harnessStore: new HarnessSessionStore({ maouRoot: dataRoot }),

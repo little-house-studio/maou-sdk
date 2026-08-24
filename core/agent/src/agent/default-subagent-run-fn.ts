@@ -25,6 +25,11 @@ export interface SubagentRuntimeLike {
   ): AsyncGenerator<StreamEvent, any, any>;
   registerMcpProxyTools?(tools: unknown[]): void;
   setSessionPathGuard?(sessionId: string, guard: unknown | null): void;
+  notifySessionFork?(
+    parentSessionId: string,
+    childSessionId: string,
+    extra?: Record<string, unknown>,
+  ): void;
 }
 
 export interface CreateDefaultSubagentRunFnOpts {
@@ -60,6 +65,10 @@ export function createDefaultSubagentRunFn(
             `fork: ${taskId}`,
             subSessionId,
           );
+          runtime.notifySessionFork?.(options.parentSessionId, subSessionId, {
+            taskId,
+            agentName: options?.agentName,
+          });
         }
       } catch (err) {
         _log(
