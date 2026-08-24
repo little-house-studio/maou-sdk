@@ -100,4 +100,42 @@ describe("ConfigStore preserves extended preset fields", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("keeps oauth / oauthProvider on a preset", () => {
+    const dir = mkdtempSync(join(tmpdir(), "maou-cfg-oauth-"));
+    const configPath = join(dir, "config.json");
+    const prev = process.env.MAOU_LLM_CONFIG;
+    try {
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          api: {
+            defaultPreset: 0,
+            presets: [
+              {
+                name: "sub",
+                url: "https://api.anthropic.com",
+                key: "",
+                protocol: "anthropic",
+                oauth: true,
+                oauthProvider: "anthropic",
+                models: [{ id: "claude-sonnet-4-5" }],
+              },
+            ],
+          },
+        }),
+        "utf-8",
+      );
+      process.env.MAOU_LLM_CONFIG = configPath;
+      const store = new ConfigStore(dir, dir);
+      const preset = store.getPreset() as Record<string, unknown>;
+      expect(preset.oauth).toBe(true);
+      expect(preset.oauthProvider).toBe("anthropic");
+      expect(preset.key).toBe("");
+    } finally {
+      if (prev === undefined) delete process.env.MAOU_LLM_CONFIG;
+      else process.env.MAOU_LLM_CONFIG = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

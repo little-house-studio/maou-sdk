@@ -1,6 +1,5 @@
 /**
  * LLM HTTP 客户端 —— 使用 Node.js 内置 fetch 进行 API 调用
- * 对应 Python: core/llm/client.py
  */
 
 import type {
@@ -186,7 +185,6 @@ export interface ResponseHookContext {
 
 /**
  * LLM HTTP 客户端
- * 对应 Python: OpenAICompatibleClient
  */
 export class LLMClient {
   private _gateway = new ProtocolGateway();
@@ -288,7 +286,11 @@ export class LLMClient {
     nativeToolCalling?: boolean;
   }): Promise<{ url: string; headers: Record<string, string>; body: string; rawPayload: Record<string, unknown> }> {
     // 规范化：采样 → extraBody、pricing 嵌套、reasoning 双写
-    const preset = normalizeApiPreset(params.preset);
+    let preset = normalizeApiPreset(params.preset);
+    if (preset.oauth) {
+      const { resolveOAuthPreset } = await import("./oauth/index.js");
+      preset = normalizeApiPreset(await resolveOAuthPreset(preset));
+    }
     const { messages, stream, jsonSettings, toolSchemas, nativeToolCalling } = params;
     const protocol = this._protocol(preset);
     const adapter = this._adapterFor(preset);
@@ -437,12 +439,9 @@ export class LLMClient {
 
   /**
    * 流式调用 —— POST 请求，返回异步迭代器产出 ModelDelta
-   * 对应 Python: chat_stream
    *
    * 每次调用自动触发 logger（如果已配置），包括错误情况。
-   */
-  /**
-   * 流式调用（带 preset.maxConcurrent 闸）
+   * 受 preset.maxConcurrent 约束。
    */
   async *chatStream(params: {
     preset: APIPreset;
@@ -781,7 +780,6 @@ export class LLMClient {
 
   /**
    * 非流式调用 —— POST 请求，返回完整响应
-   * 对应 Python: chat
    *
    * 每次调用自动触发 logger（如果已配置），包括错误情况。
    * 受 preset.maxConcurrent 约束。

@@ -1,0 +1,14 @@
+{
+  "name": "web_fetch",
+  "description": "抓取 http(s) URL 正文。本地文件用 read_file，交互网页用 use_browser。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "url": { "type": "string", "description": "http(s) URL" },
+      "path": { "type": "string", "description": "与 url 同义" },
+      "description": { "type": "string", "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。" }
+    },
+    "required": ["description"],
+    "additionalProperties": false
+  }
+}

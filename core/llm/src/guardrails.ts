@@ -1,5 +1,5 @@
 /**
- * 防傻瓜能力校验（Guardrails）
+ * 发送前能力校验（Guardrails）
  *
  * 在 ChatSession.send/sendStream 入口处调用，发送前校验请求与模型能力是否匹配。
  * 目标：让 SDK 用户少踩坑，遇到"模型不支持图片但发了图片"这类情况时，

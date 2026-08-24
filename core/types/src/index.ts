@@ -13,6 +13,10 @@
  * 依赖：jsonc-parser、zod（ConfigStore 用）。本包是基础层，不依赖其它 @little-house-studio 包。
  */
 
+import type { SessionLedgerPort } from './session-ledger.js'
+import type { SessionGoalPort } from './session-goal.js'
+import type { SessionPlanPort } from './session-plan.js'
+
 // ─── 领域类型（Session/Message/Tool/StreamEvent）────────────────────────────
 export interface Session {
   id: string
@@ -105,7 +109,7 @@ export interface ToolRuntimePorts {
   isSupervisorSession?: boolean
   /** 监督绑定管理器 */
   supervisorManager?: SupervisorManagerLike
-  /** 辅助模型调用器（llm_judge 等） */
+  /** 辅助模型调用器（压缩、loop 判定、终端审核等） */
   auxModelCaller?: AuxModelCallerLike
   /** 当前 run 主模型 preset */
   mainPreset?: unknown
@@ -117,6 +121,17 @@ export interface ToolRuntimePorts {
   yieldResult?: (result: string, summary?: string) => void
   /** Agent 间消息总线 */
   messageBus?: MessageBusLike
+  /**
+   * 会话事件源账本（登记即入库 / 可查 / 可选进模型）。
+   * 实现由 context.bindSessionLedgerPort 注入；缺省则执行器不写模型面账本查询口。
+   */
+  sessionLedger?: SessionLedgerPort
+  /** /goal 端口；缺省则 get/create/update_goal 不可用 */
+  sessionGoal?: SessionGoalPort
+  /** 宿主编排的 /ultragoal 已打开（未完成），goal 工具应拒绝新建 */
+  hostVerifiedGoalOpen?: boolean
+  /** 会话计划端口；缺省则 submit_plan 不可用 */
+  sessionPlan?: SessionPlanPort
 }
 
 /**
@@ -136,6 +151,10 @@ export function resolveToolRuntimePorts(ctx: ToolContext): ToolRuntimePorts {
     runtimeAgentName: p?.runtimeAgentName ?? ctx.runtimeAgentName,
     yieldResult: p?.yieldResult ?? ctx.yieldResult,
     messageBus: p?.messageBus ?? ctx.messageBus,
+    sessionLedger: p?.sessionLedger ?? ctx.sessionLedger,
+    sessionGoal: p?.sessionGoal ?? ctx.sessionGoal,
+    hostVerifiedGoalOpen: p?.hostVerifiedGoalOpen ?? ctx.hostVerifiedGoalOpen,
+    sessionPlan: p?.sessionPlan ?? ctx.sessionPlan,
   }
 }
 
@@ -226,14 +245,23 @@ export interface ToolContext {
    * @deprecated 使用 `runtimePorts.messageBus` 或 `resolveToolRuntimePorts(ctx)`
    */
   messageBus?: MessageBusLike
+  /**
+   * @deprecated 使用 `runtimePorts.sessionLedger` 或 `resolveToolRuntimePorts(ctx)`
+   */
+  sessionLedger?: SessionLedgerPort
+  sessionGoal?: SessionGoalPort
+  hostVerifiedGoalOpen?: boolean
+  sessionPlan?: SessionPlanPort
+  /** 会话计划文件绝对路径；计划模式下写工具只允许这个文件 */
+  planFile?: string
 }
 
 /**
  * AuxModelCaller 的最小契约（types 包不依赖 llm 包）。
  * 真实实现见 @little-house-studio/llm 的 AuxModelCaller。
  *
- * llm_judge 工具通过此接口调用辅助模型做判断；runtime 负责把真实的
- * AuxModelCaller 实例注入到 ToolContext.auxModelCaller。
+ * runtime 把真实 AuxModelCaller 注入 ToolContext.auxModelCaller，
+ * 供压缩、loop 判定、终端审核、非持久 helper 等辅助通道使用。
  */
 export interface AuxModelCallerLike {
   callText(params: {
@@ -803,6 +831,9 @@ export interface LLMPreset {
   vendor?: string
   urlParams?: string
   customRequestJson?: string
+  /** 此槽走订阅登录；令牌在 ~/.maou/oauth/<oauthProvider>.json */
+  oauth?: boolean
+  oauthProvider?: "anthropic" | "openai-codex" | "github-copilot" | "google" | "xai"
   [key: string]: unknown
 }
 /** @deprecated 用 @little-house-studio/llm 的 LLMUsage */
@@ -880,7 +911,7 @@ export interface ApiModelRoles {
   /** 多模态看图 */
   vision?: string | number
   /**
-   * 辅助（loop 检测、llm_judge 等）。
+   * 辅助（loop 检测、压缩、终端审核等）。
    * 全局链：roles.helper → helperPreset(legacy) → roles.fast → main；
    * agent.json helperModel 覆盖见 resolveHelperPreset。
    */
@@ -968,6 +999,8 @@ export {
   resolveUserProjectsPath,
   resolveUserOpsRoot,
   resolveUserOpsSessionsDir,
+  resolveUserInstallRoot,
+  resolveUserInstallSessionsDir,
   resolveProjectMaouRoot,
   resolveProjectSessionsDir,
 } from './maou-paths.js'
@@ -1040,3 +1073,64 @@ export type {
   WebhookRequest,
   WebhookResponse,
 } from './webhook.js'
+export type {
+  SessionLedgerSurface,
+  SessionLedgerEvent,
+  SessionLedgerCatalogEntry,
+  SessionLedgerQuery,
+  SessionLedgerAppendOpts,
+  SessionLedgerPort,
+} from './session-ledger.js'
+export {
+  GOAL_CHANGE_VERSION,
+  DEFAULT_MAX_GOAL_ROUNDS,
+  BLOCKED_AFTER_CONSECUTIVE_ROUNDS,
+  GoalError,
+} from './session-goal.js'
+export type {
+  GoalPhase,
+  GoalActivation,
+  GoalOperation,
+  GoalErrorCode,
+  GoalRef,
+  GoalBlockReason,
+  GoalSnapshot,
+  GoalView,
+  GoalMessageSource,
+  GoalToolAuthority,
+  CreateGoalRequest,
+  EditGoalRequest,
+  SessionGoalPort,
+} from './session-goal.js'
+export {
+  GOAL_DONE_PERCENT,
+  GOAL_MAX_KICKBACKS,
+  parseTaskCompletion,
+  stripTaskCompletionMarkup,
+  isGoalTaskFinished,
+  decideGoalSettle,
+  goalRoundPromptKind,
+} from './task-completion.js'
+export type { TaskCompletionReport, GoalClosePending } from './task-completion.js'
+export {
+  GOAL_HARNESS_STALL_THRESHOLD,
+  GOAL_HARNESS_BLOCKED_STREAK,
+  GOAL_HARNESS_CLASSIFIER_MAX,
+  GOAL_HARNESS_STRATEGIST_EVERY,
+  GOAL_HARNESS_REVERIFY_AFTER,
+  goalHarnessIsOpen,
+  goalHarnessIsPaused,
+  pauseReasonToStatus,
+} from './goal-harness.js'
+export type {
+  GoalHarnessStatus,
+  GoalHarnessPhase,
+  GoalHarnessPauseReason,
+  GoalHarnessSnapshot,
+} from './goal-harness.js'
+export type {
+  SessionPlanStatus,
+  SessionPlanSnapshot,
+  SessionPlanPort,
+} from './session-plan.js'
+export { sessionPlanIsOpen } from './session-plan.js'

@@ -1,6 +1,6 @@
 /**
  * reducer 单测 —— 验证 27 个 StreamEvent type 的处理 + 陷阱①-⑤。
- * 纯函数测试，不依赖 React/Ink。
+ * 纯函数测试，不依赖。
  */
 
 import { describe, it, expect } from "vitest";

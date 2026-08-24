@@ -10,6 +10,7 @@
  */
 
 import type { StreamEvent } from "@little-house-studio/types";
+import { stripTaskCompletionMarkup } from "@little-house-studio/types";
 import type { UIState, ChatMessage, ToolCardState, RoundUsage, SystemEvent } from "./types.js";
 import { TOAST_TEXT_MAX } from "../config/ui-constants.js";
 import {
@@ -224,10 +225,11 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
     if (content && (ev.type === "assistant" || ev.type === "assistant_delta")) {
       const last = state.supervisorMessages[state.supervisorMessages.length - 1];
       if (ev.type === "assistant_delta" && last?.streaming) {
+        const raw = (last.contentRaw ?? last.content) + content;
         supervisorMirror = {
           supervisorMessages: [
             ...state.supervisorMessages.slice(0, -1),
-            { ...last, content: last.content + content },
+            { ...last, content: stripTaskCompletionMarkup(raw), contentRaw: raw },
           ],
         };
       } else {
@@ -237,7 +239,8 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
             {
               id: `s${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
               role: "assistant",
-              content,
+              content: stripTaskCompletionMarkup(content),
+              contentRaw: content,
               ts: Date.now(),
               streaming: ev.type === "assistant_delta",
             },
@@ -405,15 +408,26 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
           );
         }
         currentAssistantId = uid();
-        messages = [...messages, { id: currentAssistantId, role: "assistant", content: delta, streaming: true, ts: nowTs, thinkingBlocks: [], round: state.round + 1 }];
+        messages = [...messages, {
+          id: currentAssistantId,
+          role: "assistant",
+          content: stripTaskCompletionMarkup(delta),
+          contentRaw: delta,
+          streaming: true,
+          ts: nowTs,
+          thinkingBlocks: [],
+          round: state.round + 1,
+        }];
       } else {
         // 同一条消息：正文开始 → 立刻 seal thinking（收成一行标识）
         messages = messages.map((m) => {
           if (m.id !== currentAssistantId) return m;
           const sealed = sealThinkingBlocks(m.thinkingBlocks, nowTs);
+          const raw = (m.contentRaw ?? m.content) + delta;
           return {
             ...m,
-            content: m.content + delta,
+            content: stripTaskCompletionMarkup(raw),
+            contentRaw: raw,
             streaming: true,
             thinkingBlocks: sealed,
           };
@@ -447,10 +461,12 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const nowTs = Date.now();
       let slotId = id;
 
+      const visible = stripTaskCompletionMarkup(content);
       if (canUpdate && id) {
         messages = messages.map(m => m.id === id ? {
           ...m,
-          content: content || m.content,
+          content: visible || m.content,
+          contentRaw: content || m.contentRaw,
           // 后面还有工具 → 保持 LIVE；否则本轮文案结束
           streaming: hasFollowOnTools ? true : false,
           usage: { input: usage.input, output: usage.output, maxContext },
@@ -463,8 +479,8 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
         const lastAsst = [...messages].reverse().find((m) => m.role === "assistant");
         if (
           lastAsst &&
-          content &&
-          lastAsst.content === content &&
+          visible &&
+          lastAsst.content === visible &&
           !lastAsst.toolCalls?.length
         ) {
           messages = messages.map((m) =>
@@ -483,7 +499,8 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
           messages = [...messages, {
             id: slotId,
             role: "assistant",
-            content,
+            content: visible,
+            contentRaw: content,
             streaming: hasFollowOnTools ? true : false,
             ts: nowTs,
             usage: { input: usage.input, output: usage.output, maxContext },

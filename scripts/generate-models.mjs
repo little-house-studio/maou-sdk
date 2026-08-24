@@ -2,7 +2,7 @@
 /**
  * generate-models.mjs —— 从 models.dev 拉取真实模型数据，生成 catalog
  *
- * 对标 pi-ai 的 generate-models.ts。models.dev 每 24h 由 GitHub Action 从各厂商刷新，
+ * 从 models.dev 拉取。models.dev 每 24h 由 GitHub Action 从各厂商刷新，
  * 覆盖 144+ 厂商、全量模型 + 实时定价 + 能力。
  *
  * 用法（需联网）:
@@ -90,7 +90,7 @@ async function main() {
   const catalog = target.map((p) => {
     const meta = PROVIDER_META[p.id];
     const models = Object.entries(p.models)
-      .filter(([, m]) => m.tool_call !== false) // 只保留支持工具调用的（对标 pi）
+      .filter(([, m]) => m.tool_call !== false) // 只保留支持工具调用的
       .map(([mid, m]) => convertModel(p.id, mid, m, meta));
     return {
       id: p.id,

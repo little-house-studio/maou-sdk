@@ -737,7 +737,7 @@ export const SCENARIO_CATALOG: readonly DraftScenario[] = [
     sessions: [
       {
         id: "s-normal-1",
-        title: "搭建 Codex 风格外壳",
+        title: "搭建对话工作台外壳",
         agent: "coding",
         timeLabel: "2 分钟前",
       },

@@ -34,6 +34,7 @@ import type {
   WebhookAgentMessage,
   WebhookSendMode,
 } from "@little-house-studio/types";
+import { stripTaskCompletionMarkup } from "@little-house-studio/types";
 import { createCodingAgent } from "@little-house-studio/coding-agent";
 import { type SessionStore } from "@little-house-studio/context";
 import {
@@ -715,10 +716,11 @@ export class AgentHub implements WebhookHost {
         ? (m.images as Message["images"])
         : undefined;
       const source = typeof m.source === "string" ? m.source : undefined;
+      const role = String(m.role ?? "assistant");
       return {
         id: `${id}-${i}`,
-        role: String(m.role ?? "assistant"),
-        content,
+        role,
+        content: role === "assistant" ? stripTaskCompletionMarkup(content) : content,
         ts: String(m.createdAt ?? m.created_at ?? ""),
         ...(toolName ? { toolName } : {}),
         ...(toolCallId ? { toolCallId } : {}),

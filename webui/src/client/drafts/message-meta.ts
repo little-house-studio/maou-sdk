@@ -5,7 +5,7 @@
 
 import type { DraftMessage, MessageRole } from "./types";
 
-/** Ink compact — local copy to avoid cycle with tool-card */
+/** compact — local copy to avoid cycle with tool-card */
 function compactCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
@@ -35,7 +35,7 @@ export function durationStr(ms: number | undefined | null): string {
   return `${h}h${String(m).padStart(2, "0")}m${String(s).padStart(2, "0")}s`;
 }
 
-/** Ink shortId: strip leading m/u then first 6 chars */
+/** shortId: strip leading m/u then first 6 chars */
 export function shortId(id: string): string {
   let s = id;
   if (s.startsWith("m")) s = s.slice(1);
@@ -45,7 +45,7 @@ export function shortId(id: string): string {
   return last.slice(0, 6);
 }
 
-/** Ink loopMark → ↺N */
+/** loopMark → ↺N */
 export function loopMark(round: number | undefined | null): string {
   if (round == null || round <= 0) return "";
   return `↺${round}`;

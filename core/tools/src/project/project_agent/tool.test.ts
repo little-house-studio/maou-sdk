@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getProjectsList } from "@little-house-studio/types";
@@ -47,22 +47,36 @@ describe("project_agent", () => {
     expect(response.message).toMatch(/绝对路径/);
   });
 
-  it("repairs missing project marker and coding agent", async () => {
+  it("lists a broken project with a create hint", async () => {
     const { maouRoot, project } = fixture();
     const tool = new ProjectAgentTool();
     const ctx = { maouRoot, projectRoot: maouRoot, agentName: "ops" } as ToolContext;
-    // 只注册路径、不写 marker 的场景：先 create 再删 marker
     await tool.execute({ action: "create", path: project }, ctx);
     rmSync(join(project, ".maou", "project.json"), { force: true });
-    expect(getProjectsList(maouRoot)[0]?.isActive).toBe(false);
 
-    const response = await tool.execute(
-      { action: "repair", path: project, description: "修复标记" },
-      ctx,
-    );
-    expect(response.ok).toBe(true);
+    const listed = await tool.execute({ action: "list" }, ctx);
+    expect(listed.ok).toBe(true);
+    expect(listed.message).toMatch(/找不到 \.maou\/project\.json/);
+    expect(listed.message).toMatch(/create path=/);
+
+    const rebound = await tool.execute({ action: "create", path: project }, ctx);
+    expect(rebound.ok).toBe(true);
     expect(existsSync(join(project, ".maou", "project.json"))).toBe(true);
     expect(getProjectsList(maouRoot)[0]?.isActive).toBe(true);
+  });
+
+  it("binds an existing .maou directory without rewriting the marker", async () => {
+    const { maouRoot, project } = fixture();
+    const marker = join(project, ".maou", "project.json");
+    mkdirSync(join(project, ".maou"), { recursive: true });
+    writeFileSync(marker, JSON.stringify({ version: 1, cwd: project, keep: true }, null, 2));
+
+    const tool = new ProjectAgentTool();
+    const ctx = { maouRoot, projectRoot: maouRoot, agentName: "ops" } as ToolContext;
+    const response = await tool.execute({ action: "create", path: project }, ctx);
+    expect(response.ok).toBe(true);
+    expect(response.message).toMatch(/未初始化/);
+    expect(JSON.parse(readFileSync(marker, "utf-8"))).toMatchObject({ keep: true });
   });
 
   it("sends work through the target project's coding agent", async () => {
@@ -98,5 +112,26 @@ describe("project_agent", () => {
         toolPreset: "coding_scoped",
       }),
     );
+  });
+
+  it("tells send to rebind with create when the project marker is gone", async () => {
+    const { maouRoot, project } = fixture();
+    const tool = new ProjectAgentTool();
+    const ctx = {
+      maouRoot,
+      projectRoot: maouRoot,
+      agentName: "ops",
+      runtimePorts: { subagentExecutor: { fork: vi.fn() } },
+    } as unknown as ToolContext;
+    await tool.execute({ action: "create", path: project }, ctx);
+    rmSync(join(project, ".maou", "project.json"), { force: true });
+
+    const response = await tool.execute({
+      action: "send",
+      project,
+      task: "inspect and fix",
+    }, ctx);
+    expect(response.ok).toBe(false);
+    expect(response.message).toMatch(/create path=/);
   });
 });

@@ -1,6 +1,5 @@
 /**
  * Hub 模块 — 多设备通信中心
- * 对齐 Python: core/server/hub/
  */
 
 export { EventBus } from './event-bus.js'

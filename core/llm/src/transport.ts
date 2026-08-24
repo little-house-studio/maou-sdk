@@ -1,7 +1,6 @@
 /**
  * WebSocket 传输
  *
- * 对标 pi-ai 的 transport: websocket / websocket-cached。
  * 实现方式：把一个 WebSocket 适配成"返回 SSE 响应的 fetch"，从而无需改动 LLMClient
  * 既有的 SSE 解析逻辑——直接通过 `new LLMClient({ fetchImpl: createWebSocketFetch(...) })`
  * 注入即可。

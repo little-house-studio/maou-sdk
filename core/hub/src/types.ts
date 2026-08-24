@@ -1,6 +1,5 @@
 /**
  * Hub 核心类型定义
- * 对齐 Python: core/server/hub/core/types.py, core/server/hub/config.py
  */
 
 // ─── 设备状态 ────────────────────────────────────────────────────────────────

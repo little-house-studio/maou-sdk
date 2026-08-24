@@ -9,13 +9,14 @@
         "enum": [
           "list",
           "create",
+          "dispatch",
           "stop",
           "message",
           "interrupt",
           "insert",
           "remove"
         ],
-        "description": "list | create | stop | message | interrupt | insert | remove"
+        "description": "list | create | dispatch | stop | message | interrupt | insert | remove"
       },
       "reason": {
         "type": "string",
@@ -28,6 +29,10 @@
       "content": {
         "type": "string",
         "description": "消息内容。"
+      },
+      "task": {
+        "type": "string",
+        "description": "dispatch 时派给队友的任务描述。"
       },
       "name": {
         "type": "string",

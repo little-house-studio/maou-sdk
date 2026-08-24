@@ -1,0 +1,23 @@
+{
+  "name": "submit_plan",
+  "description": "Submit a complete markdown implementation plan for user review while plan mode is active. The plan must start with a # heading and be decision-complete. Do not use this to start implementation. The user will /plan approve or /plan revise.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "plan": {
+        "type": "string",
+        "description": "Full markdown plan starting with a # heading."
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复？"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么。"
+      }
+    },
+    "required": ["description", "reason", "plan"],
+    "additionalProperties": false
+  }
+}

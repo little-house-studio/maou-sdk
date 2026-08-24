@@ -1,6 +1,5 @@
 /**
  * SDK 技能系统 — Markdown 提示模板
- * 对齐 Python: sdk/skill.py
  *
  * 技能 = Markdown 文件 + YAML frontmatter 元数据。
  * 可被 Agent Runtime 动态加载，注入到 system prompt 中。

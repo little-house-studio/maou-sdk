@@ -6,8 +6,6 @@
  *   1 stdout — inherit TTY（绘制；Rust 侧也可走 /dev/tty）
  *   2 stderr — pipe（TUI → Node JSONL + 日志）
  *   3 fd3   — pipe（Node → TUI JSONL 协议，env MAOU_TUI_IPC_FD=3）
- *
- * Ink 路径不经过此文件。
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
@@ -77,7 +75,7 @@ export function spawnRatatui(
 
   process.stderr.write(`[maou] tui=ratatui binary=${bin}\n`);
 
-  // Logo 版本号：与 Ink maou-logo / package.json 对齐
+  // Logo 版本号： maou-logo / package.json 对齐
   let cliVersion = process.env.MAOU_CLI_VERSION || process.env.npm_package_version || "";
   if (!cliVersion) {
     try {

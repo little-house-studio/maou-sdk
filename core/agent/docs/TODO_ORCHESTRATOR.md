@@ -240,7 +240,7 @@ onNodeFinished(node, status, summary, report?):
 ### 5.3 模型侧 fork 工具
 
 - 生产路径：**Scheduler → SubagentExecutor.fork**。  
-- `agent_message fork_layer`：保留兼容/调试；文档标明非 todo 主路径。
+- 并行层只由 Todo Orchestrator / harness 调度；`agent_message` 不再暴露 `fork_layer`。
 
 ---
 

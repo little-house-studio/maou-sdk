@@ -19,7 +19,7 @@ pub struct SelController {
     clicks: ClickTracker,
     /// sticky line cache (Shift-style survival across clears of thin sels)
     sticky: HashMap<i64, String>,
-    /// Last chat selection anchor for Shift+click extend (Ink sticky)
+    /// Last chat selection anchor for Shift+click extend 
     pub last_chat_anchor: Option<(i64, u16)>,
     /// Last global selection anchor for Shift+click extend
     pub last_global_anchor: Option<CellPos>,
@@ -80,7 +80,7 @@ impl SelController {
     }
 
     /// Mouse up after meaningful selection: flash → settled, return text to copy.
-    /// `lite`: skip flash, settle immediately (Ink isLiteNoSelFx).
+    /// `lite`: skip flash, settle immediately .
     pub fn release_and_extract(
         &mut self,
         scroll_plain: &[String],
@@ -108,7 +108,7 @@ impl SelController {
         vram: &crate::vram::Vram,
         lite: bool,
     ) -> String {
-        // Remember anchors for next Shift+click (Ink sticky)
+        // Remember anchors for next Shift+click 
         match &self.active {
             Some(ActiveSel::Chat(c)) => {
                 self.last_chat_anchor = Some((c.a_y, c.a_col));
@@ -161,7 +161,7 @@ impl SelController {
         self.start_chat_opts(abs_y, col, scroll_plain, false);
     }
 
-    /// `extend`: Ink Shift+click — keep previous anchor (active or last_chat_anchor).
+    /// `extend`: Shift+click — keep previous anchor (active or last_chat_anchor).
     pub fn start_chat_opts(
         &mut self,
         abs_y: i64,
@@ -285,7 +285,7 @@ impl SelController {
         match &self.active {
             // ① 上下文内容：lineCache / scroll_plain（内容锚定）
             Some(ActiveSel::Chat(c)) => extract_chat(c, scroll_plain),
-            // ② 显存：从无关处开始 → 读帧缓冲格子（Ink lastGrid）
+            // ② 显存：从无关处开始 → 读帧缓冲格子
             Some(ActiveSel::Global(g)) => {
                 let (a, b) = normalize_cell(g.a, g.b);
                 vram.extract_region(a.row, a.col, b.row, b.col)
@@ -349,7 +349,7 @@ impl SelController {
     }
 
     /// Paint selection onto ratatui buffer — same 0-based screen coords as crossterm mouse.
-    /// `input_view_start` is the first logical line index shown in the input viewport (Ink TextArea).
+    /// `input_view_start` is the first logical line index shown in the input viewport .
     pub fn apply_overlay(
         &self,
         buf: &mut ratatui::buffer::Buffer,
@@ -473,7 +473,7 @@ impl SelController {
         }
     }
 
-    /// True when a non-empty input draft selection is active (Ink hasTextSel).
+    /// True when a non-empty input draft selection is active .
     /// Chat or global selection present (for Cmd+C / Ctrl+Shift+C).
     pub fn has_chat_or_global_sel(&self) -> bool {
         matches!(

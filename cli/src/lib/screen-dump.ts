@@ -1,7 +1,7 @@
 /**
  * 整屏截图 → 剪贴板。
  *
- * Ink 显存路径已删除。Ratatui 选区/复制由子进程处理；
+ * Ratatui 选区/复制由子进程处理；
  * 此处保留快捷键识别 + 明确提示（避免 silent no-op）。
  */
 
@@ -20,7 +20,7 @@ export function copyScreenDump(): ScreenDumpResult {
     ok: false,
     reason: "unsupported",
     message:
-      "整屏截图已随 Ink 移除；请用鼠标选区 / 终端复制，或后续 Ratatui 导出",
+      "请用鼠标选区或终端复制",
   };
 }
 

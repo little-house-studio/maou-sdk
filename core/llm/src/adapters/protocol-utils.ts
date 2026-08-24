@@ -3,15 +3,12 @@
  *
  * 从 adapters/types.ts 拆出：types.ts 只保留纯类型/接口定义，业务逻辑放这里。
  * types.ts 末尾 re-export 这两个函数，保证现有 import 路径（from "./types.js"）零改动。
- *
- * 对应 Python: core/llm/adapters/adapter.py normalize_api_protocol / complete_api_url
  */
 
 import type { APIProtocol } from "./types.js";
 
 /**
  * 标准化 API 协议名称
- * 对应 Python: core/llm/adapters/adapter.py normalize_api_protocol
  */
 export function normalizeApiProtocol(value: unknown): APIProtocol {
   const normalized = String(value ?? "").trim().toLowerCase();
@@ -55,7 +52,6 @@ export function normalizeApiProtocol(value: unknown): APIProtocol {
 
 /**
  * 补全 API URL 路径
- * 对应 Python: core/llm/adapters/adapter.py complete_api_url
  */
 export function completeApiUrl(url: string, protocol: APIProtocol = "openai"): string {
   let base = url.trim();

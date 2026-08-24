@@ -1,6 +1,5 @@
 /**
  * TUI 后端 —— 仅 Ratatui。
- * Ink 已删除；MAOU_TUI=ink 由 launchAgent 拒绝。
  */
 
 export type TuiBackend = "ratatui";

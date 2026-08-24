@@ -1,5 +1,5 @@
 /**
- * Format Ink-equivalent PerfHud lines for Ratatui chrome.
+ * PerfHud 行（Ratatui 顶栏）。
  * Reuses process-stats sampling (CPU/mem/load/verdict).
  */
 
@@ -20,7 +20,7 @@ import {
 } from "../hooks/process-stats.js";
 import { isLiteMode, LITE_HISTORY_BASE } from "../config/lite-mode.js";
 
-/** 阶段短标签：ink 是「UI 提交」计数桶名，不是 TUI 后端（Ratatui 下也会有 ui/pnt） */
+/** 阶段短标签 */
 const PHASE_LABEL: Record<UiPhase, string> = {
   ink: "ui",
   paint: "pnt",
@@ -32,7 +32,7 @@ const PHASE_LABEL: Record<UiPhase, string> = {
 
 const VERDICT_TAG: Record<PerfVerdict, string> = {
   idle: "IDLE",
-  "cli-ink": "CLI·INK",
+  "cli-ink": "CLI·UI",
   "cli-paint": "CLI·PNT",
   "cli-scroll": "CLI·SCR",
   "cli-stream": "CLI·STR",
@@ -73,9 +73,9 @@ export function buildPerfHudPayload(
   const liteTag = isLiteMode() ? ` ·LITE≤${LITE_HISTORY_BASE}` : "";
   const nativeTag = s.native ? " ·rs" : " ·js";
 
-  // inkFps = noteInkFrame（仅 Ink 路径）；Ratatui 下通常为 0，勿显示以免误以为在跑 Ink
+  // ui 提交计数；为 0 时不显示
   const inkPart =
-    s.inkFps > 0 ? `/${formatFps(s.inkFps)}ink` : "";
+    s.inkFps > 0 ? `/${formatFps(s.inkFps)}ui` : "";
   const line1 =
     `⚡ ${formatFps(s.fps)}fps` +
     inkPart +
@@ -90,9 +90,9 @@ export function buildPerfHudPayload(
   const line2 =
     a.samples > 0
       ? `  ~${rollSec}s avg cpu${formatCpu(a.cpuPct)} fps${formatFps(a.fps)}` +
-        (a.inkFps > 0 ? `/${formatFps(a.inkFps)}ink` : "") +
+        (a.inkFps > 0 ? `/${formatFps(a.inkFps)}ui` : "") +
         ` · peak cpu${formatCpu(a.maxCpuPct)} fps${formatFps(a.maxFps)}` +
-        (a.maxInkFps > 0 ? ` ink${formatFps(a.maxInkFps)}` : "") +
+        (a.maxInkFps > 0 ? ` ui${formatFps(a.maxInkFps)}` : "") +
         (a.maxLoopLagMs > 0 ? ` lag${a.maxLoopLagMs}` : "")
       : `  ~${rollSec}s …采样中`;
 

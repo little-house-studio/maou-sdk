@@ -36,7 +36,7 @@ describe("session-tree", () => {
     expect(isLlmVisible({ visibility: "ui" })).toBe(false);
   });
 
-  it("prefixThrough cuts at boundary for DSH-style fork", () => {
+  it("prefixThrough cuts at boundary for fork", () => {
     const msgs = ensureEntryIds([
       { id: "a", parentId: null },
       { id: "b", parentId: "a" },

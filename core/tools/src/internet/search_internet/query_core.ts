@@ -396,7 +396,7 @@ export function isHeadTokenCollapsed<T extends { title: string; url: string; sni
   return bad / results.length >= 0.7;
 }
 
-/** 为中文主体生成带引号/切分的精确检索变体（逼引擎别只搜头字） */
+/** 为中文主体生成带引号/切分的精确检索变体（避免引擎只搜头字） */
 export function phraseQueryVariants(query: string): string[] {
   const core = extractQueryCore(query);
   const cjk = core.replace(/[^\u4e00-\u9fff]/g, "");

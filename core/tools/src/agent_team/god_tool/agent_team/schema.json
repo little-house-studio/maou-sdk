@@ -1,22 +1,27 @@
 {
   "name": "agent_team",
-  "description": "团队管理集成统一入口（上帝工具，占位）",
+  "description": "团队领域统一入口。fork/create_subagent 转 agent_message；其余转 agent_manage。派活/插话/中断/停止可用 agent_send。",
   "parameters": {
     "type": "object",
     "properties": {
-      "reason": {
+      "action": {
         "type": "string",
-        "description": "为什么必须调用此工具？"
+        "enum": [
+          "fork",
+          "create_subagent",
+          "list",
+          "create",
+          "dispatch",
+          "stop",
+          "message",
+          "interrupt",
+          "insert",
+          "remove"
+        ]
       },
-      "description": {
-        "type": "string",
-        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
-      }
+      "description": { "type": "string", "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。" }
     },
-    "required": [
-      "description",
-      "reason"
-    ],
-    "additionalProperties": false
+    "required": ["description", "action"],
+    "additionalProperties": true
   }
 }

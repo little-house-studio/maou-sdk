@@ -144,11 +144,18 @@ export function resolveToolPath(
     workingDir?: string;
     projectRoot: string;
     pathGuard?: PathGuard;
+    planFile?: string;
   },
   userPath: string,
 ): ResolvedToolPath {
   const base = resolvePath(ctx.workingDir || ctx.projectRoot || process.cwd());
   const guard = ctx.pathGuard;
+  const candidateEarly = isAbsolute(userPath)
+    ? resolvePath(userPath)
+    : resolvePath(base, userPath);
+  if (ctx.planFile && candidateEarly === resolvePath(ctx.planFile)) {
+    return { path: candidateEarly, needsAudit: false, matchedRoot: base };
+  }
 
   // open：机器级管家 — 任意绝对路径；相对路径仍相对 base
   if (guard?.mode === "open") {

@@ -1,5 +1,5 @@
 /**
- * defineSchedule — 定时任务定义 API（对标 Vercel Eve）
+ * defineSchedule — 定时任务定义 API
  *
  * 用法：在 agent/schedules/ 目录下创建 .ts 文件，导出 defineSchedule() 的返回值。
  * 文件名即任务名（如 monday-summary.ts → 任务名 "monday-summary"）。

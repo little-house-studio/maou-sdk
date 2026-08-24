@@ -133,7 +133,7 @@ export interface CreateAgentOptions {
 
 /**
  * 项目级 Agent 模板 —— ensureProjectAgent() 用来物化到 <projectRoot>/.maou/agents/<name>/
- * 当项目级 agent 不存在时，按此模板创建一份 Eve 风格的可编辑骨架。
+ * 当项目级 agent 不存在时，按此模板创建一份可编辑骨架。
  */
 export interface ProjectAgentTemplate {
   /** 系统提示词正文（写入 ROLE/SYSTEM.md） */
@@ -216,7 +216,7 @@ function stripJsoncComments(text: string): string {
 }
 
 /**
- * 内置默认项目级 Agent 模板（coding 风格）。
+ * 内置默认项目级 Agent 模板（coding）。
  * 当全局同名 agent 不完整（无 prompt 内容）时，用此模板物化到项目级目录。
  * 内容参考 ~/.maou/agents/coding/ 的 coding agent 配置。
  */
@@ -255,6 +255,7 @@ const DEFAULT_PROJECT_AGENT_TEMPLATE: ProjectAgentTemplate = {
 - 文本检索用 grep；按文件名找路径用 glob；读内容用 reader。
 - 跑命令用 use_terminal。破坏性或对外操作（删除、覆盖、推送）先确认，除非已被明确授权。
 - 多步骤复杂需求先用 todo_manage 建清单；每完成一项调用 todo_finish；全部完成后回复用户。
+- 要核对本会话记录：看项目 \`.maou/sessions/\`（jsonl / ledger.jsonl / meta.json），用 reader/grep 读。
 
 ## 输出
 - 用简洁中文说明你做了什么、为什么、验证结果。引用代码用 file_path:line 形式。
@@ -910,16 +911,16 @@ export class AgentRegistry {
     }
   }
 
-  // ── 项目级 Agent 自动物化（Eve 风格）──
+  // ── 项目级 Agent 自动物化 ──
 
   /**
-   * 确保项目级 agent 存在；不存在则物化一份 Eve 风格骨架到
+   * 确保项目级 agent 存在；不存在则物化一份骨架到
    * `<projectRoot>/.maou/agents/<name>/`（agent.json + prompt/system/system.md + PERMISSION.jsonc）。
    *
    * 幂等：已存在（agent.json 在）则跳过，绝不覆盖用户已编辑的内容。
    *
    * 物化策略（优先级从高到低，引用模式）：
-   * 1. 调用方传入 `template` 参数 → 用 _writeProjectAgent 写 eve 骨架（独立实例，无 ref）
+   * 1. 调用方传入 `template` 参数 → 用 _writeProjectAgent 写骨架（独立实例，无 ref）
    * 2. 全局 `~/.maou/agents/<name>/` 存在 → 写 .agent.ref 引用全局模板
    * 3. 全局 `<name>` 不存在但 `main` 存在 → 写 .agent.ref 引用 main 模板
    * 4. 都没有 → 用内置 DEFAULT_PROJECT_AGENT_TEMPLATE 写最小骨架
@@ -1003,10 +1004,10 @@ export class AgentRegistry {
   }
 
   /**
-   * 物化项目级 agent 到指定目录（Eve 风格骨架）。
+   * 物化项目级 agent 到指定目录。
    * 写入文件：
    * - agent.json               元数据 + 工具白名单 + round_limit + working_dir
-   * - prompt/system/system.md  系统提示词（PromotCompiler eve 结构入口）
+   * - prompt/system/system.md  系统提示词（promptRoot=prompt/，entrypoint=system/system.md）
    * - PERMISSION.jsonc         工具白名单（强制）
    */
   private _writeProjectAgent(projectDir: string, name: string, template: ProjectAgentTemplate): void {
@@ -1040,7 +1041,7 @@ export class AgentRegistry {
     };
     writeFileSync(join(projectDir, AGENT_FILE), JSON.stringify(agentEntry, null, 2), "utf-8");
 
-    // prompt/system/system.md —— PromotCompiler eve 结构入口（promptRoot=prompt/，entrypoint=system/system.md）
+    // prompt/system/system.md —— PromptCompiler 入口（promptRoot=prompt/，entrypoint=system/system.md）
     writeFileSync(join(promptSystemDir, "system.md"), template.systemPrompt, "utf-8");
 
     // PERMISSION.jsonc —— 工具白名单（强制）

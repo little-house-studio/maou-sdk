@@ -1,0 +1,17 @@
+{
+  "name": "read_file",
+  "description": "读取本地 UTF-8 文本文件（带行号）。网页用 web_fetch，图片用 read_image。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "path": { "type": "string", "description": "本地文件路径" },
+      "start_line": { "type": "integer", "description": "起始行号（从 1 开始）" },
+      "end_line": { "type": "integer", "description": "结束行号（包含）" },
+      "max_chars": { "type": "integer", "description": "最大返回字符数" },
+      "mode": { "type": "string", "enum": ["full", "signatures"], "description": "full 或 signatures" },
+      "description": { "type": "string", "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。" }
+    },
+    "required": ["description", "path"],
+    "additionalProperties": false
+  }
+}

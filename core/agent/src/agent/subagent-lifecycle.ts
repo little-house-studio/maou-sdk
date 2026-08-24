@@ -102,7 +102,7 @@ export function materializeSubagent(
   const agentJson = defined.toAgentJson();
   writeFileSync(join(dir, "agent.json"), JSON.stringify(agentJson, null, 2), "utf-8");
 
-  // 提示词：eve 结构 prompt/system/system.md 或 ROLE/SYSTEM.md
+  // 提示词：prompt/system/system.md 或 ROLE/SYSTEM.md
   const prompt =
     r.systemPrompt?.trim() ||
     defaultSystemPrompt(defined.kind, defined.name, r.path);

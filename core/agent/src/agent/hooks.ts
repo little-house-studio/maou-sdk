@@ -1,5 +1,5 @@
 /**
- * SDK 钩子系统 — 对齐 Pi：async、可拦截、可改写结果、可取消压缩。
+ * SDK 钩子系统 — async、可拦截、可改写结果、可取消压缩。
  *
  * 旧用法仍可用：pre_tool_use 返回 false / 原因字符串。
  * 新用法：返回 `{ block, reason }` / `{ cancel }` / 改写后的 tool result；
@@ -149,7 +149,7 @@ export class Hooks {
     }
   }
 
-  /** 对齐 Pi `pi.on` */
+  /** 订阅钩子 */
   on(hookName: string, handler: HookHandler): () => void {
     return this.register(hookName, handler);
   }

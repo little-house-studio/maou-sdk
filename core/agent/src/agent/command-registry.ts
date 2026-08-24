@@ -11,6 +11,10 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveAndRunAgentCommand } from "./command-runner.js";
+import { executeEasyGoalCommand } from "./goal/command.js";
+import { executeHarnessGoalCommand, HARNESS_GOAL_USAGE } from "./goal/harness-command.js";
+import { executePlanCommand, PLAN_USAGE } from "./plan/command.js";
+import { goalHarness } from "@little-house-studio/context";
 
 // ── 类型 ────────────────────────────────────────────────────────────────
 
@@ -65,10 +69,13 @@ export interface CommandRuntimeRef {
   clearTaskState: (sessionId: string) => void;
   /** 清理消息队列 */
   clearMessageQueue: (sessionId: string) => void;
+  /** 会话目录（/ultragoal sidecar 用） */
+  sessionDir?: string;
+  /** /goal 端口 */
+  sessionGoal?: import("@little-house-studio/types").SessionGoalPort;
   /**
-   * 启动监督模式（/goal 指令调用）：
+   * 监督模式（独立能力，不由 /ultragoal 或 /goal 启动）：
    * 创建监督 Agent session + 绑定到主 session。
-   * 返回监督 Agent 的 sessionId，前端据此切换聊天对象。
    */
   startSupervisorMode?: (mainSessionId: string, agentName: string, chatKey?: string) => string;
   /**
@@ -95,7 +102,7 @@ export interface CommandRuntimeRef {
     total: number;
     rounds: number;
   } | null;
-  /** /usage 完整报告（对标 Claude Code） */
+  /** /usage 完整报告 */
   getUsageReport?: (sessionId: string) => {
     text: string;
     meta?: Record<string, unknown>;
@@ -367,7 +374,7 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
     },
   }));
 
-  // /usage：对标 Claude Code — Session 块（费用/时长/改动）+ token + 上下文 + 今日
+  // /usage：Session 块（费用/时长/改动）+ token + 上下文 + 今日
   const usageHandler = (ctx: CommandContext) => {
     const report = (ctx.runtime as CommandRuntimeRef).getUsageReport?.(ctx.sessionId);
     if (report?.text) {
@@ -398,7 +405,7 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
 
   registry.register(defineCommand({
     name: "usage",
-    description: "会话用量：费用估算、时长、token、上下文（对标 Claude Code /usage）",
+    description: "会话用量：费用估算、时长、token、上下文",
     execute: usageHandler,
   }));
 
@@ -437,39 +444,47 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
     },
   }));
 
-  // /goal：启动监督模式 —— fork 监督 Agent 监督主 Agent 完成任务
+  const runGoalCommand = (ctx: CommandContext) => {
+    const harnessOpen = Boolean(
+      ctx.runtime.sessionDir && goalHarness.isOpen(ctx.runtime.sessionDir, ctx.sessionId),
+    );
+    return executeEasyGoalCommand(ctx.args ?? "", ctx.runtime.sessionGoal, { harnessOpen });
+  };
+
   registry.register(defineCommand({
     name: "goal",
-    usage: "[任务描述]",
-    description: "启动监督模式：fork 监督 Agent 跟你确认任务，监督主 Agent 干活到完成",
-    execute: (ctx) => {
-      const args = ctx.args?.trim() ?? "";
-      if (!ctx.runtime.startSupervisorMode) {
-        return {
-          content: "❌ 监督模式未启用（harness 未注入 startSupervisorMode 函数）。",
-        };
-      }
-      // 创建监督 Agent session（agentName="supervisor"）+ 绑定到主 session
-      const supervisorSessionId = ctx.runtime.startSupervisorMode(
+    usage: "[<objective>|clear|edit <objective>|pause|resume]",
+    description: "same-session goal mode; host continues until task_completion says so",
+    execute: runGoalCommand,
+  }));
+
+  registry.register(defineCommand({
+    name: "easygoal",
+    usage: "[<objective>|clear|edit <objective>|pause|resume]",
+    description: "alias of /goal",
+    execute: runGoalCommand,
+  }));
+
+  registry.register(defineCommand({
+    name: "ultragoal",
+    usage: "[<objective> [--budget <tokens>] | status | pause | resume | clear]",
+    description: "host-verified multi-agent long goal: plan, review, and continue in-turn",
+    execute: (ctx) =>
+      executeHarnessGoalCommand(
+        ctx.args ?? "",
+        ctx.runtime.sessionDir,
         ctx.sessionId,
-        "supervisor",
-        undefined, // chatKey 由前端注入（飞书层在监听 session 切换事件时回填）
-      );
-      // 首条消息：如果有 args，作为任务描述传给监督 Agent；否则让监督 Agent 主动询问
-      // 明确引导 supervisor 用 submit_plan 工具提交计划（而非直接输出文本），避免 LLM 跳过工具调用
-      const initialMessage = args
-        ? `用户启动了监督模式，任务描述：\n\n${args}\n\n请整理出完整的任务计划 MD（含任务要求、细节、验收标准），然后调用 supervisor_task_control 工具（action=submit_plan，plan=计划MD）提交给用户确认。不要直接把计划输出为文本，必须通过 submit_plan 工具提交。`
-        : `用户启动了监督模式。请向用户询问任务目标、细节、验收标准等关键问题，整理出完整的任务计划 MD，然后调用 supervisor_task_control 工具（action=submit_plan，plan=计划MD）提交给用户确认。必须通过 submit_plan 工具提交，不要直接输出文本。`;
-      return {
-        content: `🎯 监督模式已启动。\n\n聊天对象已切换为监督 Agent。请跟监督 Agent 对话确认任务计划。\n\n${args ? `任务描述：${args}` : "请描述你要完成的任务。"}`,
-        meta: {
-          sessionId: supervisorSessionId,
-          newSession: true,
-          supervisorMode: true,
-          mainSessionId: ctx.sessionId,
-          initialMessage, // 监督 Agent 的首条消息（harness 据此启动监督 Agent run）
-        },
-      };
-    },
+        ctx.runtime.sessionGoal,
+      ) ?? { content: HARNESS_GOAL_USAGE },
+  }));
+
+  registry.register(defineCommand({
+    name: "plan",
+    usage: "[<objective>|off|status|view|approve|revise <notes>|clear]",
+    description: "investigate and write a plan; implement only after approve",
+    execute: (ctx) =>
+      executePlanCommand(ctx.args ?? "", ctx.runtime.sessionDir, ctx.sessionId) ?? {
+        content: PLAN_USAGE,
+      },
   }));
 }

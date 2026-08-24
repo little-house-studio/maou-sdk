@@ -1,7 +1,6 @@
 /**
  * MessageBus — 进程内全局消息总线（IRC 式 agent 间通信）。
  *
- * 设计要点（参考 oh-my-pi IrcBus，但简化为纯 mailbox 语义）：
  *   - 进程全局单例（`MessageBus.global()`），所有 agent 共享。
  *   - `send(to, body)` 非阻塞：消息直接入目标 agent 的 mailbox，
  *     若目标 agent 正在 `wait` 则直接交付给等待者。
@@ -10,9 +9,7 @@
  *   - `broadcast(body)` 给所有已注册 mailbox 的 agent 广播（不含发送者自己，
  *     发送者通过广播回执感知；若需送达自己可显式 send）。
  *
- * 不照搬 oh-my-pi 的「唤醒 parked agent / 注入 session aside」机制——
- * 那依赖 AgentRegistry + AgentLifecycleManager 的强耦合，本总线只做 mailbox，
- * 上层（runtime/lifecycle）可在收到消息后自行决定是否唤醒 agent。
+ * 本总线只做 mailbox；上层（runtime/lifecycle）可在收到消息后自行决定是否唤醒 agent。
  *
  * 线程模型：单进程 Node 事件循环，无锁；waiter 通过 Promise.withResolvers 实现。
  */

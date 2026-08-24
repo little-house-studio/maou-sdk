@@ -57,6 +57,10 @@ export const CODING_TOOL_WHITELIST = [
   // subagent：创建/fork、团队管理、委派（subagent_* 由 runtime 扫描 subagents/ 动态注册）
   "agent_message",
   "agent_manage",
+  "get_goal",
+  "create_goal",
+  "update_goal",
+  "submit_plan",
   "yield",
 ] as const;
 

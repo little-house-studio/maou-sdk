@@ -142,7 +142,7 @@ pub fn center_block_lines_inner(lines: &[String], cols: usize) -> Vec<String> {
     center_block_lines(&aligned, cols)
 }
 
-/// 画廊 ASCII 显示宽（█/框线按 1，CJK 按 2）—— 对齐 Ink `galleryDisplayWidth`。
+/// 画廊 ASCII 显示宽（█/框线按 1，CJK 按 2）。
 pub fn gallery_display_width(s: &str) -> usize {
     let mut w = 0usize;
     for ch in s.chars() {
@@ -176,7 +176,7 @@ pub fn center_gallery_line(text: &str, cols: usize) -> String {
     format!("{}{text}", " ".repeat(pad))
 }
 
-/// 博物馆挂画垂直留白（Ink `galleryVerticalPads`）：上紧下松。
+/// 博物馆挂画垂直留白：上紧下松。
 pub fn gallery_vertical_pads(available: usize, content: usize) -> (usize, usize) {
     let free = available.saturating_sub(content);
     if free == 0 {

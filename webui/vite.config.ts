@@ -43,7 +43,7 @@ export default defineConfig({
       output: {
         /**
          * Only pure node_modules — never app source. Putting SourceEditor /
-         * TerminalPanel here previously sucked react into those chunks, so
+         * TerminalPanel here previously pulled react into those chunks, so
          * main statically imported ./codemirror-*.js just to get react.
          */
         manualChunks(id) {

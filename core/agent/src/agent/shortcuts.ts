@@ -1,5 +1,5 @@
 /**
- * 扩展快捷键注册表（对齐 Pi `registerShortcut`）。
+ * 扩展快捷键注册表。
  * TUI 把未占用的组合键发给 Node 后，先查这里再查内置 slash/UI 热键。
  */
 

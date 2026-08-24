@@ -1,5 +1,5 @@
 /**
- * defineConnection — 外部连接定义 API（对标 Vercel Eve）
+ * defineConnection — 外部连接定义 API
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";

@@ -3,7 +3,7 @@
  *
  * 逻辑切割：
  *   - todo_*：当前会话内的 checklist（本模块）
- *   - agent_message / supervisor_task_control / project_manage：子 Agent / 监督 / 项目级「任务」
+ *   - agent_message / project_manage / 监督模式：子 Agent / 项目 / 监督「任务」
  *   - 飞书 lark-task 等：外部系统任务
  *
  * 内部仍用 TaskManager / task_plan.json 持久化字段名，避免破坏既有 session 数据。

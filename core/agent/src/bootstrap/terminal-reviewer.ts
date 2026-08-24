@@ -42,6 +42,8 @@ const REVIEWER_SYSTEM =
   "特别注意：awk 的 printf 里 `%%` 是合法转义（输出单个 %），`%5s`/`%6.0f` 等也是合法格式符，" +
   "绝不能当成「命令格式严重语法错误」而拒绝。不要做 shell 语法检查员，那不是你的职责。\n" +
   "若 agent 为 ops / 机器管家，放行范围应更宽：系统信息、进程、用户家目录只读查看均为安全。\n" +
+  "若当前 agent 是安装员（install）：放行 git clone、包管理器安装、目标目录内写文件与改配置；" +
+  "仍拒绝 curl|sh、毁盘、大范围删除、泄露密钥。\n" +
   '只输出一行 JSON：{"approve": true/false, "reason": "简短中文理由"}，不要任何额外文字。';
 
 export interface InstallTerminalReviewerOptions {

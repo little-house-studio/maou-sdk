@@ -1,6 +1,5 @@
 /**
  * OpenAI Chat 适配器
- * 对应 Python: core/llm/adapters/openai_chat_adapter.py
  *
  * 使用 openai SDK 的类型定义增强类型安全性，
  * 使用 partial-json 库解析流式工具调用参数。
@@ -69,7 +68,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
   /**
    * 规范化 reasoning_params，按 compat.thinkingFormat 映射到各厂商字段。
    * 规范形：thinking = { type: 'enabled'|'disabled', budget_tokens }
-   * 各 format 的输出（对标 pi 的 10 种 thinkingFormat）：
+   * 各 format 的输出：
    *   openai          → reasoning_effort: minimal/low/medium/high
    *   openrouter      → reasoning: { effort }
    *   deepseek/together→ 走 reasoning_content（请求侧无需字段，模型自带；这里不注入）
@@ -115,7 +114,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter {
             effort = clamped;
             if (effort === "none") continue; // clamp 后变成 none，等同关闭
           }
-          // 其次使用 budget_tokens 数字（Anthropic 风格）
+          // 其次使用 budget_tokens 数字
           const budgetTokens = thinking.budget_tokens as number | undefined;
           this._injectByFormat(result, format, effort, budgetTokens, compat);
           continue;

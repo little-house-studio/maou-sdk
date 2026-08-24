@@ -1,4 +1,4 @@
-//! maou-tui-ratatui — Ink-parity view shell (business logic stays in Node).
+//! maou-tui-ratatui — 视图壳（业务逻辑在 Node）。
 
 mod app;
 mod layout;
@@ -65,7 +65,7 @@ fn open_tty_writer() -> anyhow::Result<std::fs::File> {
                 return Ok(f);
             }
         }
-        anyhow::bail!("no CONOUT$ and stdout is not a TTY (use MAOU_TUI=ink on Windows if this fails)");
+        anyhow::bail!("no CONOUT$ and stdout is not a TTY");
     }
 }
 

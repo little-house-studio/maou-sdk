@@ -1,6 +1,5 @@
 /**
  * 流式 JSON 扫描器 —— 在不完整 JSON 文本上进行字段级扫描，支持工具调用提前检测。
- * 对应 Python: core/protocol/json_scanner.py
  *
  * 底层使用 partial-json 库进行不完整 JSON 解析，比手写扫描器更健壮。
  * 保留原有接口签名不变，上层调用者无感知。
@@ -118,7 +117,6 @@ function _isValueComplete(text: string): boolean {
 
 /**
  * 从部分 JSON 中检测工具调用
- * 对应 Python: detect_tool_call_from_partial_json
  */
 export function detectToolCallFromPartialJson(
   response: string,
@@ -205,7 +203,6 @@ function jsonStackBalance(text: string): [string[], boolean] {
 
 /**
  * 推断缺失的闭合符
- * 对应 Python: _infer_single_missing_closer
  *
  * 支持：
  * - 缺 1 个闭合符：{"a": 1 → {"a": 1}

@@ -1,10 +1,5 @@
 ## 使用指引
 
-- **list**：本机 `projects.json` 注册的 Coding 项目（● 可用 / ○ 标记失效）。
-- **create**：绝对路径注册项目 + 写 `.maou/project.json` + 驻扎 coding agent。
-- **send**：向项目 coding agent 派任务（path 须 isActive）。
-- **repair**：路径存在但标记失效时重建 `project.json`、补 agent、刷新注册。
-- **rebind**：`project/name=旧项` + `path=新绝对路径`，更新注册并 repair 新路径。
-
-失效示例：list 显示「路径或 .maou 标记失效」→ `repair path="/abs/project"`。  
-搬家：`rebind project=旧名 path="/new/abs/path"`。
+- **list**：本机已绑定的 Coding 项目。失效项会写明路径找不到还是缺 `.maou`，并提示用 create 重新绑定。
+- **create**：绑定已有绝对路径（不新建文件夹）。目录里已有 `.maou` 时只重新挂上，不初始化。没有标记才写入 `.maou` 并驻扎 coding。同名已绑到别的路径时，改绑到这个路径。
+- **send**：向该项目 coding 派任务。项目失效时不要另找工具，按返回提示对现路径 create。

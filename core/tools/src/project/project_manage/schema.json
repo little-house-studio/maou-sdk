@@ -11,10 +11,9 @@
           "create",
           "disband",
           "members",
-          "add-agent",
           "message"
         ],
-        "description": "list: 查看 | create: 新增 | disband: 删除 | members: 成员 | add-agent: 创建项目 Agent | message: 沟通"
+        "description": "list: 查看 | create: 绑定 | disband: 删除 | members: 成员 | message: 沟通"
       },
       "reason": {
         "type": "string",

@@ -88,7 +88,7 @@ import {
 | 模板 | subagent_kind | tool_preset | permission |
 |------|---------------|-------------|------------|
 | explore | task | explore | readonly |
-| reviewer | task | explore | readonly（+ llm_judge） |
+| reviewer | task | explore | readonly |
 | tester | task | coding_scoped | scoped_write |
 
 `team-factory` 物化时会 `ensureSubagentKindFields`，旧目录缺字段也会补齐。

@@ -14,14 +14,13 @@
 
 ### 条件返回（return_when + Python expr）
 
-不必等进程结束/硬超时才拿结果；用**行业常见**的正则 + 短 Python 表达式。
+挂在 `run` 的命令输出上，不是扫文件。不必等进程结束/硬超时才拿结果；用正则 + 短 Python 表达式。
 
 | 参数 | 含义 |
 |------|------|
 | `return_when` | `filter` 筛出所有命中行；`until` 第一次命中即返回 |
 | `match` | 可选正则；命中时 `m` 为 Match，否则 `None` |
 | `expr` | 受限 Python 表达式，可用 `line` / `n` / `re` / `m` |
-| `path` | `action=scan` 扫文件；或 filter 只扫文件不跑命令 |
 | `keep_running` | until 命中后是否保留进程（默认 true） |
 | `timeout` | until 默认 3600s 上限；filter 跑命令默认 120s |
 | `context_lines` / `max_hits` | 上下文行数 / filter 条数上限 |
@@ -36,10 +35,7 @@
 示例：
 
 ```json
-// 文件：a= 且 2<值<5
-{"action":"scan","path":"data.txt","return_when":"filter","match":"a\\s*=\\s*(\\d+)","expr":"m is not None and 2 < int(m.group(1)) < 5","reason":"筛数据"}
-
-// 终端：等到 A= 非 0
+// 等到 A= 非 0
 {"action":"run","command":"python debug.py","return_when":"until","match":"A\\s*=\\s*(\\d+)","expr":"m is not None and int(m.group(1)) > 0","timeout":3600,"reason":"等信号"}
 ```
 

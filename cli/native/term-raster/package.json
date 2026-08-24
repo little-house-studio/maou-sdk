@@ -1,7 +1,7 @@
 {
   "name": "@little-house-studio/term-raster",
   "version": "0.1.0",
-  "description": "Native terminal frame encoder for maou CLI (optional, Ink-compatible)",
+  "description": "Native terminal frame encoder for maou CLI",
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {

@@ -1,6 +1,5 @@
 /**
  * 协议适配器路由 — ProtocolGateway
- * 对齐 Python: core/llm/adapters/router.py
  *
  * 根据协议名称返回对应的适配器实例。
  * 路由:
@@ -67,7 +66,6 @@ export function getAdapter(protocol: string): ProtocolAdapter {
 /**
  * 协议网关 — 管理和路由协议适配器
  *
- * 对应 Python: core/llm/adapters/router.py ProtocolGateway
  *
  * 用法:
  * ```ts

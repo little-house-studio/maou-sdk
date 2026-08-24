@@ -96,7 +96,7 @@ fn overlay_windowed_index_math() {
     assert_eq!(from + rel, 4);
 }
 
-/// scrubInput: CSI / mouse SGR must not land in draft (E02 / Ink InputBar).
+/// scrubInput: CSI / mouse SGR must not land in draft .
 #[test]
 fn insert_str_scrubs_control_sequences() {
     let mut app = test_app();

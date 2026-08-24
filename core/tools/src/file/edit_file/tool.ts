@@ -1,6 +1,5 @@
 /**
  * 编辑文件工具 — 查找并替换文件中的文本
- * 对应 Python: core/tools/impls/edit_file_tool.py
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -10,10 +9,11 @@ import { createToolResponse, toolFail } from "../../base.js";
 import { toolFailFromThrown } from "../../errors.js";
 import { errToString } from "../../util/common.js";
 import { resolveToolPath } from "../../path-guard.js";
-import { verifyAfterWrite } from "../../code/lsp_verify.js";
+import { verifyAfterWrite } from "../../lsp/lsp_verify.js";
 import { atomicWrite } from "../atomic-write.js";
 import { wasRead, isStaleSinceRead, markRead, refreshRead } from "../read-registry.js";
 import { record as recordEdit, wasEditedInSession } from "../file-edit-history.js";
+import { denyNonPlanWrite } from "../../plan-gate.js";
 
 /** 统计 needle 在 haystack 中的出现次数（非重叠）。 */
 function countOccurrences(haystack: string, needle: string): number {
@@ -59,7 +59,7 @@ export class EditFileTool extends Tool {
       required: ["path", "old_text", "new_text"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   async execute(
@@ -97,6 +97,9 @@ export class EditFileTool extends Tool {
     } catch (err: unknown) {
       return toolFailFromThrown(err, { fallbackCategory: "sandbox_denied" });
     }
+
+    const planDenied = denyNonPlanWrite(ctx, fullPath);
+    if (planDenied) return planDenied;
 
     if (!existsSync(fullPath)) {
       return toolFail(
@@ -188,13 +191,7 @@ ${hint}`, {
         updated = content.slice(0, index) + newText + content.slice(index + oldText.length);
         replacedCount = 1;
       }
-      // 登记编辑历史（diff 标记）—— 在 atomicWrite 之前，存下 before 内容供 undo
-      if (ctx.sessionId) {
-        recordEdit(ctx.sessionId, fullPath, content, updated, {
-          toolName: "edit_file",
-          action: "edit",
-        });
-      }
+      if (ctx.sessionId) recordEdit(ctx.sessionId, fullPath);
       atomicWrite(fullPath, updated);
       if (ctx.sessionId) refreshRead(ctx.sessionId, fullPath); // 写后即视为已读最新
 

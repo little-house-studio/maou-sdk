@@ -1,8 +1,8 @@
 /**
  * 模型注册表类型定义
  *
- * 对标 pi-ai 的内置模型目录：把"模型有哪些能力、走哪个协议、什么端点、多少钱"
- * 沉淀为静态数据，配合 getModel/getModels/getProviders 提供 IDE 自动补全，
+ * 把"模型有哪些能力、走哪个协议、什么端点、多少钱"沉淀为静态数据，
+ * 配合 getModel/getModels/getProviders 提供 IDE 自动补全，
  * 并能一键转成 APIPreset 交给 LLMClient。
  */
 

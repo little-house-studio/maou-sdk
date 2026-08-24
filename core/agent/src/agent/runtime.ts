@@ -84,6 +84,10 @@ import {
   findSameRoundResourceConflicts,
 } from "./runtime-recovery.js";
 import { SUPERVISOR_MANAGER } from "./supervisor-manager.js";
+import {
+  SUPERVISOR_HARNESS_TOOL_NAMES,
+  registerSupervisorHarnessTools,
+} from "./supervisor/register.js";
 import { SubagentRegistry } from "./subagent-registry.js";
 import { AgentLifecycleManager } from "./agent-lifecycle.js";
 import { MessageBus } from "./message-bus.js";
@@ -123,10 +127,23 @@ import {
 } from "./runtime-todo.js";
 import {
   appendSessionEvent,
+  appendLedgerEvent,
+  bindSessionLedgerPort,
+  bindSessionGoalPort,
+  sessionGoals,
+  goalHarness,
+  sessionPlan,
+  sessionPlanFile,
+  bindSessionPlanPort,
+  renderPlanPolicy,
+  renderGoalRoundPrompt,
   authorHuman,
   authorAgent,
   authorSystem,
 } from "@little-house-studio/context";
+import type { GoalClosePending, GoalMessageSource } from "@little-house-studio/types";
+import { decideGoalSettle, goalRoundPromptKind, parseTaskCompletion } from "@little-house-studio/types";
+import { planHarnessGoal, decideHarnessRound } from "./goal/harness-loop.js";
 import type { AgentSkillOptions } from "../bootstrap/skills.js";
 import { createAgentSkillManager, applyAgentSkillOptions } from "../bootstrap/skills.js";
 import type { SubagentExecutorLike } from "@little-house-studio/types";
@@ -219,7 +236,7 @@ export interface RuntimeOptions {
    *   - return 主 Agent 的最终输出文本
    *
    * AgentRuntime 在 processToolCalls 中根据当前 sessionId 查 SUPERVISOR_MANAGER 拿到
-   * mainSessionId，再调此函数 —— 这样多用户同时 /goal 不会串台。
+   * mainSessionId，再调此函数 —— 这样多用户同时开监督不会串台。
    *
    * 缺省（undefined）→ supervisor_chat_main 工具返回错误。
    */
@@ -295,6 +312,10 @@ export interface RunOptions {
   userAudio?: Array<{ mimeType: string; data: string }>;
   /** 用户消息 source（缺省 human） */
   userMessageSource?: string;
+  /** 内部：跳过 goal-round driver 外壳（driver 自己调 run 时打开） */
+  skipGoalDriver?: boolean;
+  /** 内部：本轮是已承认的 goal round */
+  goalRound?: GoalMessageSource;
   /** 中断信号——收到中断时停止 agent 循环 */
   abortSignal?: AbortSignal;
   /** 平台上下文注入 —— 由插件（如飞书）提供，追加在 system prompt 之后 */
@@ -384,6 +405,8 @@ export class AgentRuntime {
   /** 已注册的子 Agent delegate 工具名（subagent_<name>），用于下次 run 前清理，
    * 避免上一次 run 注册的 subagent_<name> 在子 Agent 目录变更后残留。 */
   private _registeredSubagentTools: Set<string> = new Set();
+  /** 监督工具，只在监督 session 挂上，下次 run 先卸。 */
+  private _registeredSupervisorTools: Set<string> = new Set();
   /**
    * MCP 连接管理器（可选）。
    * Runtime 门面或 harness 注入后，run() 会在工具初始化阶段 ensureLoaded + sync 工具表，
@@ -638,6 +661,12 @@ export class AgentRuntime {
           this.sessionManager.saveState();
         }
         this.onCompress?.(sessionId, report.stage, report.droppedSummary, report.taskBlocks ?? []);
+        this.noteLedger(sessionId, "compact/end", {
+          stage: report.stage,
+          source: "manual",
+          originalTokens: report.originalTokens,
+          compressedTokens: report.compressedTokens,
+        });
       }
       await this.hooks?.postCompact(report.compressedTokens ?? 0);
       await this.afterCompressMaybeRebuild({
@@ -790,7 +819,7 @@ export class AgentRuntime {
   }
 
   /**
-   * Claude Code 风格 /usage 报告：
+   * /usage 报告：
    * Session: cost · API duration · wall duration · code changes
    * Tokens + Context + Today (TokenTracker)
    */
@@ -843,7 +872,7 @@ export class AgentRuntime {
       const hasPricing = ip > 0 || op > 0 || cp > 0;
       if (!hasPricing) sessionCost = 0;
 
-      // code changes: git diff --numstat（对标 Claude Code Total code changes）
+      // code changes: git diff --numstat
       let added = 0;
       let removed = 0;
       try {
@@ -978,6 +1007,138 @@ export class AgentRuntime {
     }
   }
 
+  private isGoalDriverExempt(sessionId: string): boolean {
+    if (SUPERVISOR_MANAGER.isSupervisorSession(sessionId)) return true;
+    const session = this.sessions.load(sessionId);
+    return Boolean(session?.parentSessionId);
+  }
+
+  private shouldContinueGoal(sessionId: string): boolean {
+    const goal = sessionGoals.get(this.sessions.sessionDir, sessionId);
+    return Boolean(goal && goal.phase === "active" && goal.activation === "armed");
+  }
+
+  private reserveGoalRound(sessionId: string): { prompt: string; source: GoalMessageSource } | undefined {
+    const goal = sessionGoals.get(this.sessions.sessionDir, sessionId);
+    if (!goal || goal.phase !== "active" || goal.activation !== "armed") return undefined;
+    if (goal.roundsStarted >= goal.maxGoalRounds) {
+      try {
+        sessionGoals.block(this.sessions.sessionDir, sessionId, { id: goal.id, revision: goal.revision }, {
+          code: "round-limit",
+          message: `Goal reached its configured limit of ${goal.maxGoalRounds} rounds.`,
+        });
+      } catch { /* already transitioned */ }
+      return undefined;
+    }
+    const state = this.goalDriverState(sessionId, goal.id);
+    const round = goal.roundsStarted + 1;
+    const last = parseTaskCompletion(this.lastAssistantText(sessionId));
+    const progressPercent = last.kind === "percent" ? last.percent : undefined;
+    return {
+      prompt: renderGoalRoundPrompt(goal, round, {
+        progressPercent,
+        kind: goalRoundPromptKind(state.closePending),
+      }),
+      source: { kind: "goal", goalId: goal.id, revision: goal.revision, round },
+    };
+  }
+
+  private lastAssistantText(sessionId: string): string {
+    const msgs = this.sessions.getLlmHistoryMessages(sessionId);
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m?.role === "assistant") return String(m.content ?? "");
+    }
+    return "";
+  }
+
+  private goalDriver = new Map<string, {
+    goalId: string;
+    kickbacks: number;
+    closePending?: GoalClosePending;
+  }>();
+
+  private goalDriverState(sessionId: string, goalId: string) {
+    const current = this.goalDriver.get(sessionId);
+    if (!current || current.goalId !== goalId) {
+      const next = { goalId, kickbacks: 0 };
+      this.goalDriver.set(sessionId, next);
+      return next;
+    }
+    return current;
+  }
+
+  private clearGoalDriver(sessionId: string): void {
+    this.goalDriver.delete(sessionId);
+  }
+
+  private settleGoalFromLastAssistant(sessionId: string, extras?: { countKickback?: boolean }): void {
+    const goal = sessionGoals.get(this.sessions.sessionDir, sessionId);
+    if (!goal || goal.phase !== "active") {
+      this.clearGoalDriver(sessionId);
+      return;
+    }
+    const state = this.goalDriverState(sessionId, goal.id);
+    const decided = decideGoalSettle({
+      pending: state.closePending,
+      report: parseTaskCompletion(this.lastAssistantText(sessionId)),
+      kickbacks: state.kickbacks,
+      countKickback: extras?.countKickback === true,
+    });
+    state.kickbacks = decided.kickbacks;
+    state.closePending = decided.pending;
+    if (!decided.apply) return;
+    this.clearGoalDriver(sessionId);
+    try {
+      if (decided.apply.outcome === "failed") {
+        sessionGoals.block(
+          this.sessions.sessionDir,
+          sessionId,
+          { id: goal.id, revision: goal.revision },
+          { code: "failed", message: "The working agent reported the goal as failed." },
+        );
+      } else {
+        sessionGoals.complete(this.sessions.sessionDir, sessionId, {
+          id: goal.id,
+          revision: goal.revision,
+        });
+      }
+    } catch {
+      /* already transitioned */
+    }
+  }
+
+  private pauseArmedGoal(sessionId: string): void {
+    const goal = sessionGoals.get(this.sessions.sessionDir, sessionId);
+    if (!goal || goal.phase !== "active" || goal.activation !== "armed") return;
+    this.clearGoalDriver(sessionId);
+    try {
+      sessionGoals.pause(this.sessions.sessionDir, sessionId, { id: goal.id, revision: goal.revision });
+    } catch { /* ignore */ }
+  }
+
+  private pauseActiveHarness(sessionId: string): void {
+    if (!goalHarness.isActive(this.sessions.sessionDir, sessionId)) return;
+    try {
+      goalHarness.pause(this.sessions.sessionDir, sessionId, "user");
+    } catch { /* ignore */ }
+  }
+
+  private runGoalRound = new Map<string, GoalMessageSource>();
+
+  private bindGoalPort(sessionId: string) {
+    const session = this.sessions.load(sessionId);
+    const isRoot = !SUPERVISOR_MANAGER.isSupervisorSession(sessionId) && !session?.parentSessionId;
+    const goalRound = this.runGoalRound.get(sessionId);
+    const authority = goalRound
+      ? { kind: "goal-round" as const, source: goalRound }
+      : { kind: "direct-human" as const };
+    return bindSessionGoalPort(this.sessions.sessionDir, sessionId, {
+      isRootAgent: isRoot,
+      authority,
+    });
+  }
+
   /**
    * 核心运行循环 —— 异步生成器，yield 流式事件。
    */
@@ -986,6 +1147,31 @@ export class AgentRuntime {
     userMessage: string,
     options: RunOptions,
   ): AsyncGenerator<StreamEvent> {
+    if (!options.skipGoalDriver) {
+      const boot = this.sessions.ensure(sessionId ?? undefined, options.initAgentName);
+      yield* this.run(boot.id, userMessage, { ...options, skipGoalDriver: true });
+      if (this.isGoalDriverExempt(boot.id)) return;
+      this.settleGoalFromLastAssistant(boot.id, { countKickback: false });
+      while (this.shouldContinueGoal(boot.id) && !options.abortSignal?.aborted) {
+        if (this.messageQueue.size(boot.id) > 0) break;
+        const admitted = this.reserveGoalRound(boot.id);
+        if (!admitted) break;
+        yield* this.run(boot.id, admitted.prompt, {
+          ...options,
+          skipGoalDriver: true,
+          userMessageSource: "goal",
+          goalRound: admitted.source,
+        });
+        this.settleGoalFromLastAssistant(boot.id, { countKickback: true });
+        if (options.abortSignal?.aborted) {
+          this.pauseArmedGoal(boot.id);
+          this.pauseActiveHarness(boot.id);
+          break;
+        }
+      }
+      return;
+    }
+
     // task 指令可改写消息；用局部可变变量承接
     let activeUserMessage = userMessage;
     // ── 性能埋点：本次 run 的 profiler（常驻、低开销，定位各阶段耗时）──
@@ -994,6 +1180,8 @@ export class AgentRuntime {
     // ── 1. 确保 session 存在（新会话首条消息即绑定到 initAgentName，如 coding）──
     const session = prof.sync("ensure_session", () => this.sessions.ensure(sessionId ?? undefined, options.initAgentName));
     sessionId = session.id;
+    if (options.goalRound) this.runGoalRound.set(sessionId, options.goalRound);
+    else this.runGoalRound.delete(sessionId);
     // 新一轮用户消息：允许「todo 全部完成后」再要一轮收尾
     this._todoFinalReplyGranted.delete(sessionId);
     this.log("info", `[RUN] start session=${sessionId} msg_len=${activeUserMessage.length}`);
@@ -1057,7 +1245,9 @@ export class AgentRuntime {
         getUsageStats: (sid: string) => this.getUsageStatsForSession(sid),
         getUsageReport: (sid: string) => this.getUsageReportForSession(sid),
         getContextSnapshot: (sid: string) => this.getContextSnapshotForSession(sid),
-        // /goal 指令：创建监督 Agent session + 绑定到主 session
+        sessionDir: this.sessions.sessionDir,
+        sessionGoal: this.bindGoalPort(sessionId!),
+        // 监督模式（独立能力，不由 /ultragoal 或 /goal 启动）
         startSupervisorMode: (mainSessionId: string, agentName: string, chatKey?: string): string => {
           const supervisorSession = this.sessions.create(undefined, agentName);
           // 取主 session 的 agentName 用于 MessageBus 双向寻址
@@ -1088,12 +1278,14 @@ export class AgentRuntime {
         abortSignal: options.abortSignal,
       },
     };
+    let harnessKickoff = false;
     const cmdResult = await this.commandRegistry.tryExecute(commandInput, cmdCtx);
     if (cmdResult) {
       const meta = cmdResult.meta ?? {};
-      // task 模式（如 /init）：把指令正文当作用户任务注入，继续走正常 AI 流程
+      // task 模式（如 /init、/goal create|resume）：把指令正文当作用户任务注入，继续走正常 AI 流程
       if (meta.asUserTask && typeof meta.taskPrompt === "string" && meta.taskPrompt.trim()) {
         activeUserMessage = String(meta.taskPrompt);
+        harnessKickoff = meta.harnessArmed === true;
         this.log(
           "info",
           `[RUN] 指令任务注入 → ${String(meta.command ?? "").trim() || "task"}（继续 AI）`,
@@ -1210,7 +1402,7 @@ export class AgentRuntime {
       effectiveWorkingDir = agentWorkingDir.trim();
     }
     this.effectiveWorkingDir = effectiveWorkingDir;
-    // promptRoot：必须存在 eve 结构，否则抛错
+    // promptRoot：必须存在 prompt/system/system.md，否则抛错
     try {
       agentPromptRoot = registry.getPromptRoot(agentName);
       agentEntrypoint = registry.getPromptEntrypoint(agentName);
@@ -1256,7 +1448,7 @@ export class AgentRuntime {
     yield this.event("status", { text: "编译 Prompt..." });
     yield this.logEvent("info", "开始编译 Prompt");
 
-    // eve 结构：每个 agent 必须自带 prompt/system/system.md（getPromptRoot 已校验）。
+    // 每个 agent 必须自带 prompt/system/system.md（getPromptRoot 已校验）。
     // 每个 run 创建独立 PromptCompiler，杜绝并发竞态。
     let systemPrompt: string;
     let runCompiler: PromptCompiler | null = null;
@@ -1275,7 +1467,7 @@ export class AgentRuntime {
     }
     yield this.logEvent("info", `Prompt 编译完成，长度=${systemPrompt.length}`);
 
-    // ── 2a. 编译 before_user（eve 结构 before_user/before_user.md）──
+    // ── 2a. 编译 before_user（before_user/before_user.md）──
     let beforeUserContent = "";
     const endBeforeUser = prof.start("compile_before_user");
     try {
@@ -1387,7 +1579,7 @@ export class AgentRuntime {
       yield this.logEvent("info", "output_format=none：已禁用结构化 JSON 输出，使用原生 tool calling");
     } else {
       try {
-        // eve 结构：OUTPUT.jsonc 只在 agent 根目录下查找
+        // OUTPUT.jsonc 只在 agent 根目录下查找
         const outputPaths = [
           join(maouRoot, "agents", agentName, "OUTPUT.jsonc"),
         ];
@@ -1444,6 +1636,19 @@ export class AgentRuntime {
         this.tools.unregister(oldName);
       }
       this._registeredMcpProxyTools.clear();
+
+      for (const oldName of this._registeredSupervisorTools) {
+        this.tools.unregister(oldName);
+      }
+      this._registeredSupervisorTools.clear();
+      if (SUPERVISOR_MANAGER.isSupervisorSession(sessionId!)) {
+        registerSupervisorHarnessTools(this.tools);
+        for (const name of SUPERVISOR_HARNESS_TOOL_NAMES) {
+          this._registeredSupervisorTools.add(name);
+        }
+        this.log("info", `[SUPERVISOR] 已注册 harness 工具: ${SUPERVISOR_HARNESS_TOOL_NAMES.join(", ")}`);
+        yield this.logEvent("info", "已注册监督工具（仅本 session）");
+      }
 
       const subReg = new SubagentRegistry(maouRoot);
       const count = subReg.loadForAgent(agentName);
@@ -1571,7 +1776,7 @@ export class AgentRuntime {
     }
 
     // 合并白名单：PERMISSION.jsonc ∩ agent.json tools
-    // eve 结构：PERMISSION.jsonc 只在 agent 根目录下
+    // PERMISSION.jsonc 只在 agent 根目录下
     let toolWhitelist: Set<string> | undefined;
     try {
       const permPaths = [
@@ -1622,6 +1827,16 @@ export class AgentRuntime {
         toolWhitelist.add(name);
       }
     }
+    if (toolWhitelist && !this.isGoalDriverExempt(sessionId!)) {
+      for (const name of ["get_goal", "create_goal", "update_goal", "submit_plan"] as const) {
+        toolWhitelist.add(name);
+      }
+    }
+    if (toolWhitelist && this._registeredSupervisorTools.size > 0) {
+      for (const name of this._registeredSupervisorTools) {
+        toolWhitelist.add(name);
+      }
+    }
 
     // ── 子 Agent kind 工具白名单覆盖（SubagentExecutor → runFn → 此处）──
     // helper 单轮：override=[] → 强制无 tool schemas
@@ -1664,10 +1879,21 @@ export class AgentRuntime {
       }
     }
 
+    const planActive = sessionPlan.isActive(this.sessions.sessionDir, sessionId!);
+    const planFile = sessionPlanFile(this.sessions.sessionDir, sessionId!);
     // 空白名单 → 传空数组 schemas（无 tool），而非 null（null 表示全量）
-    const toolSchemas = stripAllTools
+    let toolSchemas = stripAllTools
       ? []
       : (this.tools.nativeToolSchemas?.(toolWhitelist) ?? null);
+    if (planActive && toolSchemas) {
+      toolSchemas = toolSchemas.filter((schema) => {
+        const name = String((schema as { name?: string }).name ?? "");
+        const tool = this.tools.get(name);
+        if (!tool) return false;
+        const allowed = tool.definition.allowedModes;
+        return allowed === null || allowed.includes("plan");
+      });
+    }
     // nativeToolCalling 在循环内按当前 preset 每轮重算（支持 switchPreset 切换模型后
     // 不同 tool-calling 能力）。toolSchemas 固定不变（白名单决定）。
 
@@ -1695,6 +1921,11 @@ export class AgentRuntime {
     } catch (err) {
       this.log("warning", `[TOOL_PROMPT] 注入失败: ${err}`);
     }
+    if (planActive) {
+      const planSnap = sessionPlan.get(this.sessions.sessionDir, sessionId!);
+      systemPrompt = `${systemPrompt}\n\n${renderPlanPolicy(planFile, planSnap?.objective)}`;
+      yield this.logEvent("info", "已注入计划模式指引");
+    }
     endToolSetup();
 
     // ── /todo：清洗指令词 + 靠后追加 plan_required notice（不改 system，保 cache）──
@@ -1707,13 +1938,47 @@ export class AgentRuntime {
       yield this.logEvent("info", "[todo] /todo 已注入 plan_required system_notice");
     }
 
+    if (goalHarness.isActive(this.sessions.sessionDir, sessionId!)) {
+      const snap = goalHarness.get(this.sessions.sessionDir, sessionId!);
+      if (harnessKickoff || !snap?.planReady) {
+        yield this.event("status", { text: "规划目标合同..." });
+        const helper =
+          this.resolveHelperPresetFn?.(agentName, this.currentPreset ?? initialPreset)
+          ?? this.currentPreset
+          ?? initialPreset;
+        const planned = await planHarnessGoal({
+          sessionDir: this.sessions.sessionDir,
+          sessionId: sessionId!,
+          aux: this.auxModelCaller,
+          preset: helper,
+          fallbackPreset: this.currentPreset ?? initialPreset,
+          abortSignal: effectiveAbortSignal,
+        });
+        if (!planned.ok) {
+          yield this.event("assistant", { content: planned.message, round: 0 });
+          yield this.event("done", { sessionId, rounds: 0 });
+          this.abortControllers.delete(sessionId);
+          this.currentPreset = null;
+          this.clearYieldHandler(sessionId);
+          return;
+        }
+        if (harnessKickoff) {
+          activeUserMessage = planned.prompt;
+          effectiveUserMessage = planned.prompt;
+        }
+      }
+    }
+
     // ── 将用户消息写入 session（kind=human_user, author=human）──
     appendSessionEvent(this.sessions, sessionId!, {
       kind: "human_user",
       content: effectiveUserMessage,
       source: options.userMessageSource ?? "human",
-      author: authorHuman("user", options.userName ?? "user"),
+      author: options.goalRound
+        ? authorSystem("goal", "goal")
+        : authorHuman("user", options.userName ?? "user"),
       meta: {
+        ...(options.goalRound ? { goalSource: options.goalRound } : {}),
         ...(todoPre.requirePlan ? { had_todo_slash: true } : {}),
         ...(options.userImages?.length ? { images: options.userImages } : {}),
         ...(options.userVideo?.length ? { video: options.userVideo } : {}),
@@ -1735,6 +2000,7 @@ export class AgentRuntime {
     // #16 可观测：本次 run 的累计重试次数与 token
     let totalRetries = 0;
     let totalTokens = 0;
+    let harnessTokensSeen = 0;
     // 最近一轮的 assistant 文本（loop 结束后供监督模式推送用）
     let lastAssistantContent = "";
     // 空响应重试：LLM 偶尔返回 content="" + 无 tool_calls（如 deepseek 长上下文下 completion_tokens=1）。
@@ -1837,6 +2103,8 @@ export class AgentRuntime {
           continue;
         }
         this.log("info", `[RUN] session=${sessionId} 收到中断信号（${reason}），停止循环`);
+        this.pauseActiveHarness(sessionId!);
+        this.pauseArmedGoal(sessionId!);
         await this.hooks?.abort("用户中断");
         yield this.event("info", { message: "已中断" });
         break;
@@ -2040,6 +2308,12 @@ export class AgentRuntime {
                     this.onCompress(sessionId!, report.stage, report.droppedSummary, report.taskBlocks ?? []);
                   } catch { /* 落盘失败不影响主流程 */ }
                 }
+                this.noteLedger(sessionId!, "compact/end", {
+                  stage: report.stage,
+                  source: "auto",
+                  originalTokens: report.originalTokens,
+                  compressedTokens: report.compressedTokens,
+                });
                 // 仅大压缩 / 归档提醒一次；微压缩（compactStage）永不刷 UI
                 if (
                   report.stage === "summaryStage" ||
@@ -2170,6 +2444,12 @@ export class AgentRuntime {
               // 落盘失败不影响主流程
             }
           }
+          this.noteLedger(sessionId!, "compact/end", {
+            stage: compressResult.stage,
+            source: "legacy",
+            originalTokens: compressResult.originalTokens,
+            compressedTokens: compressResult.compressedTokens,
+          });
 
           // 仅大压缩 / 归档提醒；微压缩静默
           if (
@@ -2937,9 +3217,67 @@ export class AgentRuntime {
         continue;
       }
 
-      // 无队列消息 → 退出循环
+      // 无队列消息 → 宿主编排 /ultragoal 同回合续跑，否则退出
+      if (
+        goalHarness.isActive(this.sessions.sessionDir, sessionId!) &&
+        !effectiveAbortSignal.aborted
+      ) {
+        const helper =
+          this.resolveHelperPresetFn?.(agentName, this.currentPreset ?? initialPreset)
+          ?? this.currentPreset
+          ?? initialPreset;
+        const tokensDelta = Math.max(0, totalTokens - harnessTokensSeen);
+        harnessTokensSeen = totalTokens;
+        const decision = await decideHarnessRound({
+          sessionDir: this.sessions.sessionDir,
+          sessionId: sessionId!,
+          lastAssistant: lastAssistantContent,
+          tokensDelta,
+          cwd: effectiveWorkingDir || this.projectRoot,
+          aux: this.auxModelCaller,
+          preset: helper,
+          fallbackPreset: this.currentPreset ?? initialPreset,
+          abortSignal: effectiveAbortSignal,
+          queuedUser: this.messageQueue.size(sessionId!) > 0,
+        });
+        if (decision.action === "continue") {
+          appendSessionEvent(this.sessions, sessionId!, {
+            kind: "runtime_control",
+            content: decision.directive,
+            source: "goal",
+            author: authorSystem("goal", "goal"),
+            meta: { round: currentRound },
+          });
+          yield this.event("session_inject", {
+            kind: "runtime_control",
+            source: "goal",
+            content: "goal continue",
+            round: currentRound,
+            author: { type: "system", id: "goal", displayName: "goal" },
+          });
+          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          await this.hooks?.agentStop(currentRound);
+          roundCount++;
+          continue;
+        }
+        if (decision.action === "complete" || decision.action === "pause") {
+          const spoken = decision.action === "complete" ? decision.summary : decision.message;
+          this.sessions.appendMessage(sessionId!, "assistant", spoken, {
+            kind: "assistant_turn",
+            source: "assistant",
+            author: authorAgent(runAgentName || agentName || "assistant", runAgentName || agentName || "ai"),
+            agentName: runAgentName || agentName,
+            round: currentRound,
+          });
+          yield this.event("assistant", { content: spoken, round: currentRound });
+          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          await this.hooks?.agentStop(currentRound);
+          break;
+        }
+      }
+
       try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
-        await this.hooks?.agentStop(currentRound);
+      await this.hooks?.agentStop(currentRound);
       break;
     }
 
@@ -3069,6 +3407,13 @@ export class AgentRuntime {
     });
     this.log("info", `[STATS] rounds=${roundCount} retries=${totalRetries} tokens=${totalTokens}`);
     this.log("info", `[RUN] main loop finished, rounds=${roundCount}`);
+
+    if (
+      effectiveAbortSignal.aborted &&
+      String(internalController.signal.reason ?? "") !== "interrupt_immediately"
+    ) {
+      this.pauseActiveHarness(sessionId!);
+    }
 
     // ── 6. 清理内部 AbortController（已退出主循环，不再需要 interrupt 能力）──
     this.abortControllers.delete(sessionId);
@@ -3320,6 +3665,20 @@ export class AgentRuntime {
         ? (this.resolveHelperPresetFn as (agentName: string, mainPreset: unknown) => unknown)
         : undefined,
       yieldResult: this.getYieldHandler(sessionId ?? ""),
+      sessionLedger: sessionId
+        ? bindSessionLedgerPort(this.sessions.sessionDir, sessionId)
+        : undefined,
+      sessionGoal: sessionId ? this.bindGoalPort(sessionId) : undefined,
+      hostVerifiedGoalOpen: sessionId
+        ? goalHarness.isOpen(this.sessions.sessionDir, sessionId)
+        : false,
+      sessionPlan: sessionId
+        ? bindSessionPlanPort(this.sessions.sessionDir, sessionId)
+        : undefined,
+      planFile: sessionId ? sessionPlanFile(this.sessions.sessionDir, sessionId) : undefined,
+      agentMode: sessionId && sessionPlan.isActive(this.sessions.sessionDir, sessionId)
+        ? "plan"
+        : "execute",
     });
 
     // ── 同轮资源冲突：多写同一 path / 相同破坏性终端命令 → 后者不执行 ──
@@ -3918,7 +4277,7 @@ export class AgentRuntime {
       };
     }
 
-    // pre_tool_use / tool_call（async，对齐 Pi；可 await ui.confirm）
+    // pre_tool_use / tool_call（async；可 await ui.confirm）
     const blocked = this.hooks ? !(await this.hooks.preToolUse(tcInfo)) : false;
 
     let result: Awaited<ReturnType<ToolExecutor["executeSingle"]>> | null = null;
@@ -4236,6 +4595,19 @@ export class AgentRuntime {
     this.logFn(level, message);
   }
 
+  /** 领域事件入统一账本；新功能应 register + 调此，不必再写查询 */
+  private noteLedger(
+    sessionId: string,
+    type: string,
+    data: Record<string, unknown>,
+  ): void {
+    try {
+      appendLedgerEvent(this.sessions.sessionDir, sessionId, type, data);
+    } catch {
+      /* 账本不得打断主流程 */
+    }
+  }
+
   private errorCallResult(error: string): ModelCallResult {
     return ModelCaller.createErrorResult(error);
   }
@@ -4385,6 +4757,14 @@ export class AgentRuntime {
           try {
             this.onCompress(sessionId, report.stage, report.droppedSummary, taskBlocks);
           } catch { /* ignore */ }
+        }
+        if (report.stage !== "activeStage") {
+          this.noteLedger(sessionId, "compact/end", {
+            stage: report.stage,
+            source: "overflow",
+            originalTokens: report.originalTokens,
+            compressedTokens: report.compressedTokens,
+          });
         }
         await this.hooks?.postCompact(report.compressedTokens ?? 0);
         await this.afterCompressMaybeRebuild({

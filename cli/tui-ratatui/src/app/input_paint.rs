@@ -1,4 +1,4 @@
-//! Ink InputBar multi-line paint + height/viewport math.
+//! InputBar multi-line paint + height/viewport math.
 //! Long logical lines soft-wrap to `body_width` display columns (no hard `\n` insert).
 
 use crate::mouse;
@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// Visible rows of the input draft (Ink viewportLines=5).
+/// Visible rows of the input draft .
 pub const INPUT_VIEWPORT_LINES: usize = 5;
 
 /// One painted row after soft-wrap (may be a slice of a logical `\n` line).
@@ -254,10 +254,10 @@ pub fn input_view_start_with_offset(
     start.min(max_start)
 }
 
-/// Ink computer-blue for known `/command` tokens in the field.
+/// computer-blue for known `/command` tokens in the field.
 const SLASH_CMD_FG: Color = Color::Rgb(0x21, 0x21, 0xFF);
 
-/// Whether a token looks like a slash command label (Ink buildCommandLabels-ish).
+/// Whether a token looks like a slash command label .
 fn is_slash_token(tok: &str) -> bool {
     let t = tok.trim();
     if !t.starts_with('/') || t.len() < 2 {
@@ -440,7 +440,7 @@ pub fn paint_input_lines_ink_offset(
     out
 }
 
-/// Line-level MD style for FSE (Ink FullScreenEditor MD_LABELS — markers only, no block layout).
+/// Line-level MD style for FSE .
 fn md_line_base_style(line: &str, fg: Color, bg: Color) -> Style {
     let t = line.trim_start();
     if t.starts_with('#') {
@@ -458,7 +458,7 @@ fn md_line_base_style(line: &str, fg: Color, bg: Color) -> Style {
     Style::default().fg(fg).bg(bg)
 }
 
-/// Inline MD spans: `code`, **bold**, *italic* (simplified Ink labels).
+/// Inline MD spans: `code`, **bold**, *italic* .
 fn paint_md_inline(
     line_text: &str,
     line_start: usize,
@@ -588,7 +588,7 @@ fn paint_md_inline(
     spans
 }
 
-/// Full-screen editor paint with software caret + light MD coloring (Ink FSE).
+/// Full-screen editor paint with software caret + light MD coloring .
 pub fn paint_full_editor_lines(
     text: &str,
     cursor: usize,

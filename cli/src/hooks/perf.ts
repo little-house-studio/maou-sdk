@@ -6,7 +6,7 @@
  *
  * 指标：
  *  - paintFull / paintSel：vram 全量 / 脏行绘制次数
- *  - inkRender：Ink onRender 回调次数
+ *  - uiRender：UI 提交次数
  *  - streamFlush：流式 delta 批处理次数
  *  - hoverSet：hoverId 变更次数
  *  - animTick：全局动画时钟 tick

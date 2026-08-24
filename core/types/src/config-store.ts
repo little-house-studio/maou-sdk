@@ -113,6 +113,10 @@ const LLMPresetSchema = z
     vendor: z.string().optional(),
     urlParams: z.string().optional(),
     customRequestJson: z.string().optional(),
+    oauth: z.boolean().optional(),
+    oauthProvider: z
+      .enum(["anthropic", "openai-codex", "github-copilot", "google", "xai"])
+      .optional(),
   })
   .passthrough()
 

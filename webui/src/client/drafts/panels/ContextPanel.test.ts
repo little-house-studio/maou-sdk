@@ -193,7 +193,7 @@ describe("ContextPanel semantic structure", () => {
     assert.match(html, /wire-tool-card/);
     assert.match(html, /wire-tool-name/);
     assert.match(html, /data-session-tree="crumbs"/);
-    assert.match(html, /搭建 Codex 风格外壳/);
+    assert.match(html, /搭建对话工作台外壳/);
     assert.match(html, /调研 JS NPC 方法全貌/);
   });
 });

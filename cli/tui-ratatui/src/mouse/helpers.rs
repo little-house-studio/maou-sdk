@@ -14,7 +14,7 @@ pub fn sel_style_colors(phase: SelPhase) -> (Color, Color) {
     }
 }
 
-/// 选择区单元格样式（对齐 Ink sel-fx）：
+/// 选择区单元格样式：
 /// Live/Settled = 纯色计算机蓝 #2121FF + 浅字；Flash 保持闪白。
 pub fn sel_cell_style(phase: SelPhase) -> Style {
     use ratatui::style::Modifier;
@@ -28,7 +28,7 @@ pub fn sel_cell_style(phase: SelPhase) -> Style {
     }
 }
 
-/// Ink: insert caret vs selection are mutually exclusive.
+/// insert caret vs selection are mutually exclusive.
 /// When input has non-empty text sel, do **not** paint ▌ insert mark.
 pub fn should_paint_insert_caret(input_sel: Option<(usize, usize)>) -> bool {
     match input_sel {
@@ -37,7 +37,7 @@ pub fn should_paint_insert_caret(input_sel: Option<(usize, usize)>) -> bool {
     }
 }
 
-/// Ink InputBar prompt `" ❯ "` display columns.
+/// InputBar prompt `" ❯ "` display columns.
 /// Prompt without leading pad (format: `❯ 输入…` flush with chrome content).
 pub const PROMPT_STR: &str = "❯ ";
 pub fn prompt_cols() -> u16 {
@@ -69,7 +69,7 @@ pub fn extract_chat(c: &ChatSel, scroll_plain: &[String]) -> String {
             .cloned()
             .or_else(|| scroll_plain.get(y as usize).cloned())
             .unwrap_or_default();
-        // strip logo indent for copy? Ink copies screen cells as-is.
+        // strip logo indent for copy? copies screen cells as-is.
         // We store full painted plain lines — OK.
         let line_cols = UnicodeWidthStr::width(t.as_str());
         let (cs, ce) = if y1 == y2 {
@@ -223,7 +223,7 @@ pub fn content_top_y(scroll_len: usize, max_scroll: usize, from_bottom: usize) -
     );
     let _ = start;
     // actual: content_top = start of visible = end - body_h
-    // contentTopY in Ink = maxScroll - offset, where offset=fromBottom
+    // contentTopY in = maxScroll - offset, where offset=fromBottom
     // When offset=0, contentTopY=maxScroll, bottom of content at viewport bottom.
     // Our scroll_plain[0] is top of content (oldest). Visible starts at:
     // start = len - from_bottom - body_h ... handled by caller with start index.
@@ -247,7 +247,7 @@ pub fn extract_chat_public(c: &ChatSel, scroll_plain: &[String]) -> String {
     extract_chat(c, scroll_plain)
 }
 
-/// Ink `resolveMode`: input → chat → global by press start point.
+/// input → chat → global by press start point.
 pub fn resolve_sel_mode(
     col: u16,
     row: u16,
@@ -278,7 +278,7 @@ pub fn plain_line_visual_cols(text: &str) -> (u16, u16) {
     if w == 0 {
         return (0, 0);
     }
-    // trim trailing spaces for end (Ink findLineBoundaries trims)
+    // trim trailing spaces for end 
     let trimmed = text.trim_end();
     let end = UnicodeWidthStr::width(trimmed).saturating_sub(1) as u16;
     // 前导空白字节数：trim_start 在 char 边界；再 snap 更稳
@@ -301,7 +301,7 @@ pub(crate) fn char_class(ch: char) -> u8 {
     }
 }
 
-/// Ink findWordAt on VRAM row (0-based screen coords, inclusive end col).
+/// findWordAt on VRAM row (0-based screen coords, inclusive end col).
 pub fn vram_word_bounds(vram: &crate::vram::Vram, row: u16, col: u16) -> (u16, u16) {
     if vram.cols == 0 || vram.rows == 0 || row >= vram.rows {
         return (col, col);
@@ -352,7 +352,7 @@ pub fn vram_word_bounds(vram: &crate::vram::Vram, row: u16, col: u16) -> (u16, u
     (start, end)
 }
 
-/// Ink findLineBoundaries on VRAM row (trim spaces; inclusive end).
+/// findLineBoundaries on VRAM row (trim spaces; inclusive end).
 pub fn vram_line_bounds(vram: &crate::vram::Vram, row: u16) -> (u16, u16) {
     if vram.cols == 0 || row >= vram.rows {
         return (0, 0);
@@ -385,7 +385,7 @@ pub fn vram_line_bounds(vram: &crate::vram::Vram, row: u16) -> (u16, u16) {
     (start, end.max(start))
 }
 
-/// Ink toastCopy wording builder (no side effects). Empty/whitespace → None.
+/// toastCopy wording builder (no side effects). Empty/whitespace → None.
 pub fn format_copy_toast(text: &str) -> Option<String> {
     if text.trim().is_empty() {
         return None;
@@ -406,7 +406,7 @@ pub fn format_copy_toast(text: &str) -> Option<String> {
     })
 }
 
-/// Ink copyScreenDump / store screenshot toast:
+/// copyScreenDump / store screenshot toast
 /// `已复制整屏 ${chars} 字（${lines} 行）· 可粘贴发给 AI`
 pub fn format_screen_dump_toast(text: &str) -> Option<String> {
     if text.trim().is_empty() {
@@ -419,7 +419,7 @@ pub fn format_screen_dump_toast(text: &str) -> Option<String> {
     ))
 }
 
-/// Ink wheel routing priority (non-drag).
+/// wheel routing priority (non-drag).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WheelTarget {
     FullEditor,
@@ -430,7 +430,7 @@ pub enum WheelTarget {
     Chat,
 }
 
-/// Pure wheel target resolve (Ink useMouseInput order without drag).
+/// Pure wheel target resolve .
 pub fn resolve_wheel_target(
     full_editor: bool,
     has_overlay: bool,
@@ -456,7 +456,7 @@ pub fn resolve_wheel_target(
     WheelTarget::Chat
 }
 
-/// Ink: `fullEditorInitial !== null` preempts overlay hit rects for all mouse routing.
+/// `fullEditorInitial !== null` preempts overlay hit rects for all mouse routing.
 /// Stale `overlay_rect` from a previous frame must not steal wheel/click while full editor is open.
 pub fn mouse_preempts_overlay(full_editor: bool) -> bool {
     full_editor
@@ -482,7 +482,7 @@ pub fn safe_str_slice(s: &str, a: usize, b: usize) -> &str {
     &s[a..b]
 }
 
-/// Byte offset within `line` for the `col_cp`-th Unicode scalar (Ink TextArea code-point col).
+/// Byte offset within `line` for the `col_cp`-th Unicode scalar .
 /// Clamps past end of line to `line.len()`. Always a char boundary.
 pub fn byte_at_codepoint_col(line: &str, col_cp: usize) -> usize {
     let mut n = 0usize;
@@ -495,7 +495,7 @@ pub fn byte_at_codepoint_col(line: &str, col_cp: usize) -> usize {
     line.len()
 }
 
-/// Shift byte cursor by ±1 line preserving **code-point column** (Ink `indexToCursorPos` /
+/// Shift byte cursor by ±1 line preserving **code-point column** ( `indexToCursorPos` /
 /// TextArea), never landing mid-UTF-8. Used by full-editor wheel and multi-line draft ↑↓.
 pub fn shift_cursor_line(text: &str, cursor: usize, dir_up: bool) -> usize {
     let cursor = snap_char_boundary(text, cursor);
@@ -503,7 +503,7 @@ pub fn shift_cursor_line(text: &str, cursor: usize, dir_up: bool) -> usize {
         return 0;
     }
     let line_start = text[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    // Ink: col = [...line.slice(0, cursor)].length  (code points, not bytes / display width)
+    // col = [...line.slice(0, cursor)].length (code points, not bytes / display width)
     let col_cp = text[line_start..cursor].chars().count();
     if dir_up {
         if line_start == 0 {

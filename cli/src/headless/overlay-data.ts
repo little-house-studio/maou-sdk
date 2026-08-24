@@ -1,5 +1,5 @@
 /**
- * 为 Ratatui 准备 overlay 列表数据（与 Ink overlay 组件同源逻辑）。
+ * 为 Ratatui 准备 overlay 列表数据。
  */
 
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";

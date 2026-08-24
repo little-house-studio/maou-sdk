@@ -21,6 +21,15 @@ describe("products registry", () => {
     expect(p?.productId).toBe("coding-agent");
   });
 
+  it("resolves headless install product", () => {
+    const p = resolveProduct("aiinstall");
+    expect(p?.name).toBe("aiinstall");
+    expect(p?.productId).toBe("install-agent");
+    expect(p?.scope).toBe("global");
+    expect(p?.ui).toBe("headless");
+    expect(resolveProduct("install")?.name).toBe("aiinstall");
+  });
+
   it("aliases agent → coding", () => {
     expect(PRODUCT_ALIASES.agent).toBe("coding");
     expect(resolveProduct("agent")?.name).toBe("coding");
@@ -43,6 +52,7 @@ describe("products registry", () => {
     expect(resolveCliToken("ops").kind).toBe("product");
     expect(resolveCliToken("coding").kind).toBe("product");
     expect(resolveCliToken("agent").kind).toBe("product");
+    expect(resolveCliToken("aiinstall").kind).toBe("product");
     expect(resolveCliToken("./my.ts").kind).toBe("config");
     expect(resolveCliToken("unknown-xyz").kind).toBe("unknown");
   });

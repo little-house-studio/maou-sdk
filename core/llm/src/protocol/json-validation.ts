@@ -1,6 +1,5 @@
 /**
  * JSON 校验管道 —— 对模型输出执行完整验证 + 构建诊断信息。
- * 对应 Python: core/protocol/json_validation.py
  */
 
 import { extractJsonCandidate, findFirstJsonObjectBounds } from "./json-extract.js";
@@ -72,7 +71,6 @@ export interface BuildDiagnosticOptions {
 
 /**
  * 构建验证诊断信息
- * 对应 Python: build_validation_diagnostic
  */
 export function buildValidationDiagnostic(
   response: string,
@@ -138,7 +136,6 @@ export function buildValidationDiagnostic(
 
 /**
  * 验证模型输出并格式化 JSON
- * 对应 Python: validate_and_format_json
  *
  * @param response 模型原始输出文本
  * @param settings json_settings（可选，将被规范化）

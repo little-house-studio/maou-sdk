@@ -16,6 +16,11 @@
 - **write_file / edit_file**：已存在且本会话未读未编须先读；读/编过后若磁盘有 diff 须再读。写后走 LSP→sqry→自检提示。局部小改用 edit_file。
 - **search_internet**：技术文档/引擎/教程类问题加 `category: "coding"`，query 带产品名 + docs/tutorial。
 - 多步骤复杂需求先用 todo_manage 建清单；每完成一项调用 todo_finish；全部完成后回复用户。
+- 先想清楚再改代码时用 `/plan`：只调查、写计划文件、调用 `submit_plan`。用户 `/plan approve` 之后才实现。进行中不能改产品文件。
+- 两种长目标，一场会话同时只能开一种：
+  - `/goal`：进入 goal 目标模式。同会话合同。可用 `create_goal` / `get_goal` / `update_goal`。每轮结束用 `<task_completion>` 汇报完成度。
+  - `/ultragoal`：宿主写计划、暗厢评审、验审后才算完成。不要自己宣布完成，也不要用 goal 工具收口。
+- 要核对「本会话说过什么、调过哪些工具」：看项目 `.maou/sessions/`。`<id>.jsonl` 是完整对话；`<id>.ledger.jsonl` 是事件账本；`<id>.meta.json` 是元数据。不知道当前 id 时用 glob 找最近改过的文件，再用 reader/grep 读。不要猜。
 
 ## 输出
 - 用简洁中文说明你做了什么、为什么、验证结果。引用代码用 file_path:line 形式。

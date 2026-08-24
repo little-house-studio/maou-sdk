@@ -1,7 +1,6 @@
 /**
  * JSON 修复管道 —— 修复不完整或缺失字段的 JSON 对象。
  * 包含注释剥离、尾逗号移除、闭合符推断、Schema 默认值推导、缺失字段填充。
- * 对应 Python: core/protocol/json_repair.py + core/tools/utils.py
  */
 
 // ── 工具函数 ──
@@ -13,7 +12,6 @@ export function cloneJsonValue<T>(value: T): T {
 
 /**
  * 移除 JSON/JSONC 中的注释
- * 对应 Python: core/tools/utils.py strip_json_comments
  */
 export function stripJsonComments(text: string): string {
   const result: string[] = [];
@@ -83,7 +81,6 @@ export function stripJsonComments(text: string): string {
 
 /**
  * 移除 JSON 中的尾逗号
- * 对应 Python: core/tools/utils.py strip_trailing_commas
  */
 export function stripTrailingCommas(text: string): string {
   const result: string[] = [];
@@ -135,7 +132,6 @@ export function stripTrailingCommas(text: string): string {
 
 /**
  * 检查值是否为 JSON Schema 对象定义
- * 对应 Python: core/tools/utils.py is_json_schema_object
  */
 export function isJsonObjectSchema(value: unknown): boolean {
   return (
@@ -149,7 +145,6 @@ export function isJsonObjectSchema(value: unknown): boolean {
 
 /**
  * 剥离 Markdown 围栏
- * 对应 Python: core/tools/utils.py strip_markdown_fence
  */
 export function stripMarkdownFence(text: string): string {
   const raw = (text ?? "").trim();
@@ -254,7 +249,6 @@ function fallbackDefaultForField(field: string, normalizedSettings: Record<strin
 
 /**
  * 修复缺失字段
- * 对应 Python: _repair_missing_fields
  */
 export function repairMissingFields(
   data: Record<string, unknown>,
@@ -284,7 +278,6 @@ export function repairMissingFields(
 
 /**
  * 修复 predict 字段
- * 对应 Python: _repair_predict_field
  */
 export function repairPredictField(
   data: Record<string, unknown>,

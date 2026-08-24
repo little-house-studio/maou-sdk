@@ -33,6 +33,12 @@ export interface BuildToolContextInput {
   resolveHelperPresetFn?: (agentName: string, mainPreset: unknown) => unknown;
   yieldResult?: ToolRuntimePorts["yieldResult"];
   currentPreset?: APIPreset;
+  sessionLedger?: ToolRuntimePorts["sessionLedger"];
+  sessionGoal?: ToolRuntimePorts["sessionGoal"];
+  hostVerifiedGoalOpen?: boolean;
+  sessionPlan?: ToolRuntimePorts["sessionPlan"];
+  planFile?: string;
+  agentMode?: string;
 }
 
 /**
@@ -62,6 +68,7 @@ export function buildToolContext(input: BuildToolContextInput): ToolContext {
   const resolveHelperPreset = input.resolveHelperPresetFn;
   const runtimeAgentName = agentName;
   const yieldResult = input.yieldResult;
+  const sessionLedger = input.sessionLedger;
 
   const runtimePorts: ToolRuntimePorts = {
     subagentExecutor,
@@ -74,6 +81,10 @@ export function buildToolContext(input: BuildToolContextInput): ToolContext {
     runtimeAgentName,
     yieldResult,
     messageBus,
+    sessionLedger,
+    sessionGoal: input.sessionGoal,
+    hostVerifiedGoalOpen: input.hostVerifiedGoalOpen,
+    sessionPlan: input.sessionPlan,
   };
 
   return {
@@ -83,7 +94,7 @@ export function buildToolContext(input: BuildToolContextInput): ToolContext {
     sandboxRoot: join(input.maouRoot, "sandbox", sessionId),
     sandboxMode: input.sandboxMode,
     agentName,
-    agentMode: "execute",
+    agentMode: input.agentMode ?? "execute",
     pluginSettings: {},
     workingDir: input.workingDir ?? input.projectRoot,
     pathGuard: input.pathGuard,
@@ -103,5 +114,10 @@ export function buildToolContext(input: BuildToolContextInput): ToolContext {
     runtimeAgentName,
     yieldResult,
     messageBus,
+    sessionLedger,
+    sessionGoal: input.sessionGoal,
+    hostVerifiedGoalOpen: input.hostVerifiedGoalOpen,
+    sessionPlan: input.sessionPlan,
+    planFile: input.planFile,
   };
 }

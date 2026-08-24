@@ -806,7 +806,7 @@ impl App {
         self.screen_cols = area.width;
         self.screen_rows = area.height;
 
-        // ── Shell metrics (Ink Layout.tsx heights) → integer flex tree ──
+        // ── Shell metrics → integer flex tree ──
         self.purge_toast();
         let has_approval = self.terminal_approval.is_some();
         let has_toast = self.local_toast.is_some() || self.chrome.toast.is_some();
@@ -1012,7 +1012,7 @@ impl App {
         let body_h = self.chat_inner.height.max(1) as usize;
         let mut lines =
             self.build_scroll_lines(self.chat_inner.width.max(1) as usize, body_h);
-        // Grok follow pad: empty rows under content so last user message can sit at
+        // follow pad: empty rows under content so last user message can sit at
         // the top of the viewport (from_bottom=0). Pad shrinks as AI tail grows.
         // Empty gallery splash: no pad (would scroll logo off-screen).
         let tail_pad = if self.messages.is_empty() {
@@ -1048,7 +1048,7 @@ impl App {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
             .collect();
         let max_scroll = lines.len().saturating_sub(body_h.max(1));
-        // ── Scroll follow (Ink autoFollow / pin-content) ────────────────────
+        // ── Scroll follow ────────────────────
         // auto_follow / from_bottom==0 → pin to latest (stream grows underfoot).
         // else → pin absolute content: from_bottom += Δmax so stream growth at
         // the tail does not drag the viewport toward latest.
@@ -1391,7 +1391,7 @@ impl App {
             );
         }
 
-        // Ink BackToBottomSlot: always consume 1 row
+        // always consume 1 row
         self.back_to_bottom_y = None;
         if let Some(r) = solved.get(Slot::BackToBottom) {
             if show_back {
@@ -1425,7 +1425,7 @@ impl App {
                 Some(r) => r,
                 None => Rect::default(),
             };
-            // 对齐 Ink ToastBar：整行色底居中 + ✓/⚠/✕ 前缀
+            // Toast：整行色底居中 + ✓/⚠/✕ 前缀
             let (text, kind) = if let Some(lt) = &self.local_toast {
                 (lt.text.clone(), lt.kind.clone())
             } else if let Some(t) = &self.chrome.toast {
@@ -1462,7 +1462,7 @@ impl App {
                     .empty_hint
                     .clone()
                     .unwrap_or_else(|| "输入消息开始对话 · Ctrl+K 命令 · Ctrl+C 退出".into());
-                // Ink EmptySessionHint: blank row + centered line
+                // blank row + centered line
                 let lines = vec![
                     Line::from(""),
                     Line::from(Span::styled(
@@ -1474,7 +1474,7 @@ impl App {
             }
         }
 
-        // Completion menu ABOVE input (Ink InputBar); hide Event when open
+        // Completion menu ABOVE input ; hide Event when open
         self.completion_rect = None;
         // 与 show_comp 解耦：completions 可能在布局后清空，禁止 unwrap
         if let Some(c) = self.completions.as_ref().filter(|c| !c.items.is_empty()) {
@@ -1483,7 +1483,7 @@ impl App {
                 None => Rect::default(),
             };
             self.completion_rect = Some(r);
-            // Ink: computer-blue panel, ▸ selected, accent yellow selected row
+            // computer-blue panel, ▸ selected, accent yellow selected row
             let comp_bg = th.info; // #2121FF
             let mut lines: Vec<Line> = Vec::new();
             for (i, it) in c.items.iter().take(5).enumerate() {
@@ -1523,7 +1523,7 @@ impl App {
             );
         }
 
-        // EventBlock — Ink shortStatus OR expanded supervisor log (12 lines)
+        // EventBlock — shortStatus OR expanded supervisor log (12 lines)
         self.event_rect = None;
         if event_h > 0 {
             let ev = match solved.get(Slot::Event) {
@@ -1698,7 +1698,7 @@ impl App {
             .clone()
             .unwrap_or_else(|| "输入文字…（/ 命令 · Ctrl+E 全屏）".into());
         let field_bg = th.input_field_bg;
-        // Ink hasTextSel ⇒ focus off insert caret (mutual exclusion with selection box)
+        // hasTextSel ⇒ focus off insert caret (mutual exclusion with selection box)
         self.tick_caret_blink();
         let show_caret = self.should_show_insert_caret();
         let body_w = self.input_body_width();
@@ -1751,7 +1751,7 @@ impl App {
                 body_w,
             )
         };
-        // 无顶部分割线（对齐 Ink：EventBlock 与输入直接相接）。
+        // 无顶部分割线（EventBlock 与输入直接相接）。
         // 超长单行按 body_w 软折行（paint 与 hit-test 共用 display rows）。
         // 每行 pad 到 inp.width，避免 caret 闪烁时右侧 ghost / placeholder 半格抖
         let field_pad = Style::default().bg(field_bg);
@@ -1801,7 +1801,7 @@ impl App {
             }
         }
 
-        // InfoBar (hidden when completion open — Ink Layout showComp)
+        // InfoBar 
         if !show_comp {
             let info = solved.get(Slot::Info).unwrap_or(Rect::default());
             let used = self.chrome.used_tokens.unwrap_or(0);
@@ -1838,7 +1838,7 @@ impl App {
                 self.chrome.provider.as_deref().unwrap_or(""),
                 self.model
             );
-            // Ink: ` 0/200.0k ░░░░░░░░ c— ` …… model right · black ink on footerBg
+            // ` 0/200.0k ░░░░░░░░ c— ` …… model right · black ink on footerBg
             let left_txt = format!(
                 " {}/{} ",
                 messages::compact(used),
@@ -1850,7 +1850,7 @@ impl App {
                 + bar_w
                 + UnicodeWidthStr::width(cache.as_str())
                 + right_w;
-            // Ink justifyContent space-between: all free space in the middle gap
+            // justifyContent space-between: all free space in the middle gap
             let gap_n = (info.width as usize).saturating_sub(mid_w);
             let gap = " ".repeat(gap_n);
             let cache_fg = if self.chrome.cache_eligible {
@@ -1910,7 +1910,7 @@ impl App {
             self.model_hit = None;
         }
 
-        // NavBar — Ink: equal cells (base+rem), label centered in each cell's own Rect
+        // NavBar — : equal cells (base+rem), label centered in each cell's own Rect
         // (do NOT stitch spans into one Paragraph — width/bg drift breaks visual center)
         let nav = solved.get(Slot::Nav).unwrap_or(Rect::default());
         self.nav_rect = nav;
@@ -2030,7 +2030,7 @@ impl App {
                     body.push(agent_page_row(it, selected || hovered, pulse, &th));
                 }
             } else {
-                // Ink SelectList: windowed + ❯ pointer + hover highlight
+                // windowed + ❯ pointer + hover highlight
                 let n = o.items.len();
                 let inner_h = h.saturating_sub(3) as usize; // borders + footer
                 let vis = inner_h.min(n).max(1).min(12);
@@ -2102,7 +2102,7 @@ impl App {
 
     pub(crate) fn build_scroll_lines(&mut self, width: usize, body_h: usize) -> Vec<Line<'static>> {
         let th = self.theme.clone();
-        // Ink GallerySplash: logo 左上贴顶 + 画/铭牌水平居中 + 光学垂直留白
+        // logo 左上贴顶 + 画/铭牌水平居中 + 光学垂直留白
         if self.messages.is_empty() {
             self.scroll_render_cache = None;
             return self.build_gallery_splash(width.max(8), body_h.max(1), &th);
@@ -2157,7 +2157,6 @@ impl App {
         lines
     }
 
-    /// Ink `GallerySplash`：
     /// ① logo 左上（marginLeft=1，accent，不参与垂直居中）
     /// ② 光学上留白（top+2）
     /// ③ 画框 / 铭牌水平居中
@@ -2232,7 +2231,7 @@ impl App {
             // Keep as art if looks like frame; else leave as-is
         }
 
-        // 铭牌前 1 行呼吸（Ink）
+        // 铭牌前 1 行呼吸
         let plaque_h = if plaque.is_empty() {
             0
         } else {
@@ -2240,7 +2239,7 @@ impl App {
         };
         let hang_h = art.len() + plaque_h;
         let (pad_top, pad_bot) = gallery_vertical_pads(hang_area, hang_h);
-        // Ink: 画作起点再下移 2 格（光学 top+2）
+        // 画作起点再下移 2 格（光学 top+2）
         let free = pad_top + pad_bot;
         let above = if free == 0 {
             0

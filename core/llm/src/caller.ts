@@ -1,6 +1,5 @@
 /**
  * 模型调用管道 —— 封装流式/非流式调用 + JSON 校验与自动重试。
- * 对应 Python: core/llm/caller.py
  */
 
 import type {
@@ -115,7 +114,6 @@ class LoopDetector {
 
 /**
  * 模型调用管道
- * 对应 Python: ModelCaller
  */
 export class ModelCaller {
   private client: LLMClient;
@@ -165,7 +163,6 @@ export class ModelCaller {
 
   /**
    * 流式调用模型
-   * 对应 Python: call_stream
    * yields CallerStreamEvent, returns ModelCallResult
    */
   async *callStream(params: {

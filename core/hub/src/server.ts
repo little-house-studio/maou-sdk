@@ -1,6 +1,5 @@
 /**
  * HubServer — 多设备通信 Hub HTTP 服务
- * 对齐 Python: core/server/hub/server.py
  *
  * 运行在独立端口 (默认 8098)，提供：
  *   POST /api/hub/send       — 发送消息到设备

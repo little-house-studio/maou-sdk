@@ -1,16 +1,15 @@
 /**
  * OpenAI 兼容厂商的 compat 标志矩阵
  *
- * 对标 pi-ai 的 OpenAICompletionsCompat —— 把各家 OpenAI 兼容厂商的差异
- * （字段名/角色/思考格式/路由/缓存）抽成声明式标志，避免在每个 adapter 里硬编码 if/else。
+ * 把各家 OpenAI 兼容厂商的差异（字段名/角色/思考格式/路由/缓存）抽成声明式标志，
+ * 避免在每个 adapter 里硬编码 if/else。
  *
  * 用法：在 preset 上设 preset.compat = { ... }（或 preset.compatFormat = "deepseek"），
  * OpenAI adapter 据此调整 payload。也可由 baseUrl 自动检测（detectCompat）。
- *
- * 比 pi-ai 更完善：新增 structuredOutputCompat（我们的结构化输出层在各家的兼容差异）。
+ * structuredOutputCompat 描述结构化输出层在各家的兼容差异。
  */
 
-/** 思考格式（对标 pi 的 10 种 thinkingFormat） */
+/** 思考格式 */
 export type ThinkingFormat =
   | "openai" // reasoning_effort（标准 OpenAI/o-系列）
   | "openrouter" // reasoning: { effort }
@@ -23,7 +22,7 @@ export type ThinkingFormat =
   | "string-thinking" // 旧式 <think> 标签
   | "ant-ling"; // 蚂蚁 Ling 的格式
 
-/** 思考级别（对标 OMP 的 effort 级别） */
+/** 思考级别 */
 export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh";
 
 /** 结构化输出兼容（我们的扩展：pi 没有这个维度） */
@@ -79,7 +78,7 @@ export interface OpenAICompat {
   /** 结构化输出兼容（我们的扩展） */
   structuredOutput?: StructuredOutputCompat;
   /**
-   * Effort 级别映射（对标 OMP 的 reasoningEffortMap）
+   * Effort 级别映射
    * 将我们的标准级别映射到厂商实际接受的值。
    * 例如 DeepSeek V4：{ high: "high", xhigh: "max" }
    * 例如 OpenAI：{ low: "low", medium: "medium", high: "high" }（默认）
@@ -92,7 +91,7 @@ export interface OpenAICompat {
   thinkingMaxLevel?: EffortLevel;
 }
 
-/** Anthropic 兼容标志（对标 pi 的 AnthropicMessagesCompat） */
+/** Anthropic 兼容标志 */
 export interface AnthropicCompat {
   /** 支持工具输入的即时流式（部分代理不支持） */
   supportsEagerToolInputStreaming?: boolean;
@@ -114,7 +113,7 @@ export interface AnthropicCompat {
   thinkingMaxLevel?: EffortLevel;
 }
 
-// ─── 按 baseUrl 自动检测默认 compat（对标 pi 的回退检测）─────────────────────
+// ─── 按 baseUrl 自动检测默认 compat─────────────────────
 
 /** 已知的 OpenAI 兼容厂商默认 compat（按 baseUrl 关键词匹配） */
 const VENDOR_DEFAULTS: Array<{ match: RegExp; compat: OpenAICompat }> = [

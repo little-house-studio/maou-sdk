@@ -1,5 +1,5 @@
 /**
- * 新增 LLM 能力的回归测试（对标 pi-ai 补齐的能力）。
+ * 新增 LLM 能力的回归测试。
  * 全程使用 faux 短路，无需联网。
  */
 import { describe, it, expect, beforeEach } from "vitest";

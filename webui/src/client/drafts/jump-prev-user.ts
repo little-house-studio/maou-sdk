@@ -58,7 +58,7 @@ export function scrollTopToAlignMessage(
 }
 
 /**
- * Ink older bar label: `↑ ` + preview of previous user body.
+ * older bar label: `↑ ` + preview of previous user body.
  * Falls back to 「↑ 上一条 user（点击）」 when no preview.
  */
 export function buildPrevUserJumpLabel(

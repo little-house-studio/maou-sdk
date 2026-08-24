@@ -1,6 +1,5 @@
 /**
  * Prompt 编译器 —— 递归解析 {{file.md}} 包含指令，剥离 <description> 块。
- * 对应 Python: core/agent/prompt/compiler/compiler.py
  */
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -300,7 +299,6 @@ export class PromptCompiler {
 
   /**
    * 解析相对路径。
-   * 对应 Python: _resolve_relative_path
    */
   private resolveRelativePath(currentDir: string, relativePath: string): string {
     // 以 "/" 开头 → 相对 prompt root

@@ -5,7 +5,7 @@
  * 预设响应；LLMClient 在 protocol === "faux" 时会短路调用 takeFauxResponse 取回
  * 预设响应，按 chunk 模拟流式吐出。
  *
- * 对标 pi-ai：registerFauxProvider / fauxAssistantMessage / fauxText / fauxThinking /
+ * 提供 registerFauxProvider / fauxAssistantMessage / fauxText / fauxThinking /
  * fauxToolCall。
  *
  * @example

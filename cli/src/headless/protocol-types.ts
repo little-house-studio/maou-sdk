@@ -35,7 +35,7 @@ export interface ProtoMessage {
   round?: number;
   kind?: string;
   author_label?: string;
-  /** Per-message usage (Ink MessageRow ↑/↓ compact). */
+  /** Per-message usage . */
   usage_input?: number;
   usage_output?: number;
 }
@@ -207,7 +207,7 @@ export interface ProtoChrome {
   max_context?: number;
   used_tokens?: number;
   cache_label?: string;
-  /** 0–100 when cache eligible (Ink InfoBar thresholds) */
+  /** 0–100 when cache eligible */
   cache_pct?: number;
   cache_eligible?: boolean;
   session_id?: string | null;
@@ -220,14 +220,14 @@ export interface ProtoChrome {
   lite?: boolean;
   history_base?: number;
   perf_hud?: boolean;
-  /** Ink PerfHud multi-line text (right-top); empty = hide */
+  /** PerfHud multi-line text (right-top); empty = hide */
   perf_lines?: string[];
   /** hot | warm | ok */
   perf_heat?: string;
   supervisor?: ProtoSupervisor | null;
-  /** Ink eventBlockExpanded */
+  /** eventBlockExpanded */
   event_block_expanded?: boolean;
-  /** Ink supervisorMessages contents for expanded EventBlock (12-line view) */
+  /** supervisorMessages contents for expanded EventBlock (12-line view) */
   supervisor_messages?: string[];
 }
 

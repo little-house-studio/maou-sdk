@@ -1,5 +1,5 @@
 /**
- * Ratatui 后端：与 Ink 共用 CliSession + store；推送全量语义 UI。
+ * Ratatui 后端： 共用 CliSession + store；推送全量语义 UI。
  */
 
 import { spawnRatatui, type RatatuiSession } from "./launch.js";
@@ -177,7 +177,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   refreshSupervisor();
   registerAbortStream(() => cli.abort());
 
-  // 展开状态（工具卡 / thinking / 长消息）—— 与 Ink 本地 useState 对等
+  // 展开状态（工具卡 / thinking / 长消息）—— 本地 useState 对等
   const expandedTools = new Set<string>();
   const expandedThinking = new Set<string>();
   /** 历史轮：用户点开全文 */
@@ -191,7 +191,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   // 输入草稿由 Rust 持有；补全在 Node 算
   let lastInput = "";
   let lastCursor = 0;
-  /** 历史浏览前暂存的草稿（Ink savedInputRef） */
+  /** 历史浏览前暂存的草稿 */
   let historyDraft: string | null = null;
   /** 模型二级菜单：当前 provider；null=provider 列表 */
   let modelProvider: string | null = null;
@@ -206,11 +206,11 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
 
   function galleryLines(seed: string): string[] {
     try {
-      // Logo 由 Ratatui 左上自绘（Ink GallerySplash ①）；此处只送画 + 铭牌
+      // Logo 由 Ratatui 左上自绘；此处只送画 + 铭牌
       const work = pickGalleryWork(seed);
       const cols = Math.max(40, process.stdout.columns || 100);
       const termRows = Math.max(16, process.stdout.rows || 30);
-      // 与 Ink contentRows 接近：底栏 ≈8；logo 固定 5 行不进 hang
+      // contentRows 接近：底栏 ≈8；logo 固定 5 行不进 hang
       const contentRows = Math.max(0, termRows - 8);
       const logoH = 5;
       const hangArea = Math.max(0, contentRows - logoH);
@@ -333,7 +333,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     ].join("|");
     if (!force && !epochBump && sig === lastSig) return;
     lastSig = sig;
-    // Approx paint ticks for process-stats fps (Ink notes real paint frames)
+    // Approx paint ticks for process-stats fps 
     notePaintFrame();
     session?.send(msg);
   };
@@ -451,7 +451,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         return;
       }
       if (type === "quit") {
-        // Ink: requestExit + process.exit — 仅 kill 子进程会卡在 wait/finally 后仍挂着
+        // requestExit + process.exit — 仅 kill 子进程会卡在 wait/finally 后仍挂着
         try {
           useStore.getState().requestExit();
           useStore.getState().toastMsg("正在退出…", "ok");
@@ -480,7 +480,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
           pushState(undefined, true);
           return;
         }
-        // 与 Ink 同一套 Esc 分层栈（escape-cancel.ts）
+        // 同一套 Esc 分层栈（escape-cancel.ts）
         const r = handleEscapeCancel();
         if (r.handled) {
           if (r.action === "abort_stream") {
@@ -574,7 +574,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         // 打字 / 光标移动：上层已 onUserInteraction
         const nextText = String(msg.text ?? "");
         const nextCursor = Number(msg.cursor ?? nextText.length) || 0;
-        // 浏览历史时：仅文本相对历史条目真正变化才退出；光标移动不 reset（对齐 Ink applyingHistory）
+        // 浏览历史时：仅文本相对历史条目真正变化才退出；光标移动不 reset
         const stHist = useStore.getState();
         if (stHist.historyIndex >= 0) {
           const histEntry = stHist.inputHistory[stHist.historyIndex];
@@ -586,7 +586,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         lastInput = nextText;
         lastCursor = nextCursor;
         useStore.getState().setInputDraft(lastInput);
-        // Ink InputBar: report multi-line height for hit-test (M04)
+        // report multi-line height for hit-test (M04)
         useStore.getState().setInputLineCount(
           Math.max(1, Math.min(4, lastInput.split("\n").length)),
         );
@@ -665,7 +665,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         }
         const h = useStore.getState().navigateHistory(dir);
         if (h != null) {
-          // 下键超出历史末尾 → 恢复草稿（Ink savedInputRef）
+          // 下键超出历史末尾 → 恢复草稿
           if (h === "" && dir === "down") {
             lastInput = historyDraft ?? "";
             historyDraft = null;
@@ -679,7 +679,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         return;
       }
       if (type === "command") {
-        // Nav / palette: open local overlay or run slash (Ink NavBar + runCommand)
+        // Nav / palette: open local overlay or run slash 
         const id = String(msg.id ?? msg.action ?? "");
         const args = msg.args != null ? String(msg.args) : undefined;
         if (!id) return;
@@ -811,7 +811,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         return;
       }
       if (type === "screen_dump") {
-        // Rust VRAM path: already_copied ⇒ 勿二次 OSC52/toast（对齐 Ink 单路径）
+        // Rust VRAM path: already_copied ⇒ 勿二次 OSC52/toast
         const already = !!(msg as { already_copied?: boolean }).already_copied;
         const text = String(msg.text ?? "");
         if (already) {
@@ -1363,7 +1363,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     uninstallCliTerminalApprover();
     cli.dispose();
   }
-  // 子进程结束后确保 CLI 退出（与 Ink requestExit 后 process.exit 一致）
+  // 子进程结束后确保 CLI 退出
   if (useStore.getState().exitRequested) {
     process.exit(0);
   }

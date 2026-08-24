@@ -64,7 +64,7 @@ export function centerBlock(lines: string[], contentCols: number): string[] {
   if (!lines.length) return lines;
   const maxW = Math.max(...lines.map((l) => galleryDisplayWidth(l)));
   if (maxW >= contentCols) {
-    // 过宽：不瞎截 █ 框；尽量原样（Ink 会裁），避免左偏
+    // 过宽：不瞎截 █ 框；尽量原样，避免左偏
     return lines;
   }
   const pad = Math.floor((contentCols - maxW) / 2);

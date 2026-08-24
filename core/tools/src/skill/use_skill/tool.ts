@@ -65,7 +65,7 @@ export class LoadSkillTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "use_skill",
-    aliases: ["load_skill", "skill"],
+    aliases: ["load_skill"],
     description:
       "Load specialized knowledge by skill name. " +
       "Use this before tackling unfamiliar topics. " +

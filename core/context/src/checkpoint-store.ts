@@ -62,6 +62,7 @@ export class CheckpointStore {
     const cpDir = this.checkpointDir(sessionId);
     const metaFile = join(cpDir, `${cpId}.meta.json`);
     const dataFile = join(cpDir, `${cpId}.jsonl`);
+    const ledgerFile = join(cpDir, `${cpId}.ledger.jsonl`);
 
     // 元信息
     const meta: CheckpointMeta = {
@@ -84,6 +85,11 @@ export class CheckpointStore {
     } else {
       // 如果没有 JSONL（空会话），创建空文件
       writeFileSync(dataFile, "", "utf-8");
+    }
+
+    const ledgerPath = this.sessionStore.ledgerPath(sessionId);
+    if (existsSync(ledgerPath)) {
+      copyFileSync(ledgerPath, ledgerFile);
     }
 
     // 自动快照：只保留最近 N 个，避免每 tool 全量拷导致数百 MB
@@ -112,9 +118,14 @@ export class CheckpointStore {
       throw new Error(`快照不存在: ${checkpointId}`);
     }
 
-    // 恢复 JSONL
+    // 恢复 JSONL + 账本 sidecar
     const targetJsonl = this.sessionStore.jsonlPath(sessionId);
     copyFileSync(dataFile, targetJsonl);
+    const ledgerSrc = join(cpDir, `${checkpointId}.ledger.jsonl`);
+    const ledgerDst = this.sessionStore.ledgerPath(sessionId);
+    if (existsSync(ledgerSrc)) {
+      copyFileSync(ledgerSrc, ledgerDst);
+    }
 
     // 更新 meta 的 updated_at
     const sessionMeta = this.sessionStore.load(sessionId);
@@ -174,11 +185,13 @@ export class CheckpointStore {
     const cpDir = this.checkpointDir(sessionId);
     const metaFile = join(cpDir, `${checkpointId}.meta.json`);
     const dataFile = join(cpDir, `${checkpointId}.jsonl`);
+    const ledgerFile = join(cpDir, `${checkpointId}.ledger.jsonl`);
 
     if (!existsSync(metaFile)) return false;
 
     unlinkSync(metaFile);
     if (existsSync(dataFile)) unlinkSync(dataFile);
+    if (existsSync(ledgerFile)) unlinkSync(ledgerFile);
     return true;
   }
 

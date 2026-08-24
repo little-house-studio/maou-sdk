@@ -2,6 +2,7 @@
  * UIState → Ratatui 全量语义快照。
  */
 
+import { stripTaskCompletionMarkup } from "@little-house-studio/types";
 import type { ChatMessage, SystemEvent, UIState, MessageAuthor } from "../state/types.js";
 import { APPROVAL_LABELS } from "../state/types.js";
 import { formatCacheLabel } from "../lib/prompt-cache.js";
@@ -26,7 +27,7 @@ import { uncachedInputTokens } from "@little-house-studio/agent";
 import { previewCurrentSystemPrompt } from "../lib/preview-system.js";
 import { buildPerfHudPayload } from "./perf-hud-lines.js";
 
-/** Cache system prompt text for idle ↑ estimate (Ink EventBlock useMemo on agentName). */
+/** Cache system prompt text for idle ↑ estimate . */
 let cachedSystemPromptAgent = "";
 let cachedSystemPromptText = "";
 function systemPromptForAgent(agentName: string | undefined): string {
@@ -153,7 +154,7 @@ export function toProtoMessage(
   return {
     id: m.id,
     role: m.role,
-    content: m.content,
+    content: stripTaskCompletionMarkup(m.content),
     ts: m.ts,
     streaming: m.streaming,
     tools: toolCards.map((t) => t.name),
@@ -254,7 +255,7 @@ export function toProtoChrome(s: UIState): ProtoChrome {
       token_budget: s.maxContext && s.maxContext > 0 ? s.maxContext : undefined,
     };
   }
-  // Ink EventBlock: busy = uncachedInputTokens(usage); idle = estimateContextTokens + draft − cache
+  // busy = uncachedInputTokens(usage); idle = estimateContextTokens + draft − cache
   const draft = (s as UIState & { inputDraft?: string }).inputDraft ?? "";
   let up = s.eventBlock.upTokens ?? s.currentRoundUsage?.input ?? 0;
   const liveMode = s.eventBlock.mode ?? "idle";
@@ -279,7 +280,7 @@ export function toProtoChrome(s: UIState): ProtoChrome {
       return { content: parts.join("\n") };
     });
     if (draft.trim()) historyMsgs.push({ content: draft });
-    // Ink EventBlock: system + session messages + draft − last cache_read
+    // system + session messages + draft − last cache_read
     const sys = systemPromptForAgent(s.agentName);
     const totalEst = estimateContextTokens({
       systemPrompt: sys || undefined,
@@ -291,7 +292,7 @@ export function toProtoChrome(s: UIState): ProtoChrome {
     if (lastCache > 0 && totalEst > 0) {
       up = Math.max(draftTok, totalEst - lastCache);
     } else {
-      // first round / no cache: whole package is new input (Ink: totalEst, may be 0)
+      // first round / no cache: whole package is new input 
       up = totalEst > 0 ? totalEst : draftTok;
     }
     // 无 API usage 时：窗口占用用 idle 整包估（仍禁止 Σ 历史各轮）
@@ -332,7 +333,7 @@ export function toProtoChrome(s: UIState): ProtoChrome {
     max_context: s.maxContext,
     used_tokens: ctxTokens,
     cache_label: cacheLabel,
-    // Ink InfoBar: color cache by hit rate when eligible + sample present
+    // color cache by hit rate when eligible + sample present
     cache_pct: cacheEligible && cachePct != null ? cachePct : undefined,
     cache_eligible: cacheEligible && cachePct != null,
     session_id: s.sessionId,
@@ -371,7 +372,7 @@ export function toProtoChrome(s: UIState): ProtoChrome {
     })(),
     supervisor,
     event_block_expanded: s.eventBlockExpanded,
-    // Ink EventBlockExpanded body
+    // EventBlockExpanded body
     supervisor_messages: (s.supervisorMessages ?? [])
       .map((m) => m.content ?? "")
       .filter((c) => c.length > 0)

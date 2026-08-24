@@ -1,5 +1,5 @@
 /**
- * 第三批新增能力测试（Wave D：browser/Bun env、stealth、WebSocket 传输、session 清理、proxy）。
+ * browser/Bun env、stealth、WebSocket 传输、session 清理、proxy。
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import {
@@ -33,8 +33,8 @@ describe("跨运行时 env (#22/#9)", () => {
   });
 });
 
-describe("Stealth 工具名伪装 (#19)", () => {
-  it("forward 映射到 Claude Code 名并可逆", () => {
+describe("Stealth 工具名别名", () => {
+  it("forward 映射到别名并可逆", () => {
     const m = createStealthMapper();
     expect(m.forwardName("use_terminal")).toBe("Bash");
     expect(m.forwardName("reader")).toBe("Read");
@@ -54,16 +54,16 @@ describe("Stealth 工具名伪装 (#19)", () => {
   });
 });
 
-describe("agentLoop stealth 模式 (#19)", () => {
+describe("agentLoop stealth 模式", () => {
   beforeEach(() => clearFauxProviders());
-  it("以 Claude 名发出、还原本项目工具执行", async () => {
+  it("以别名发出、还原本项目工具执行", async () => {
     const term = defineTool({
       name: "use_terminal",
       description: "执行命令",
       parameters: Type.Object({ cmd: Type.String() }),
       execute: ({ cmd }) => `ran:${cmd}`,
     });
-    // 模型按伪装后的名字 "Bash" 回传调用
+    // 模型按别名 "Bash" 回传调用
     registerFauxProvider({
       model: "faux-model",
       responses: [fauxAssistantMessage(fauxToolCall("Bash", { cmd: "ls" })), fauxAssistantMessage("done")],
@@ -81,7 +81,7 @@ describe("agentLoop stealth 模式 (#19)", () => {
   });
 });
 
-describe("WebSocket 传输 (#17)", () => {
+describe("WebSocket 传输", () => {
   it("createWebSocketFetch 适配为 SSE，LLMClient 正常解析", async () => {
     // mock WebSocket：open 后收到 send，回放两条 openai chunk + [DONE]
     class MockWS {
@@ -120,7 +120,7 @@ describe("Session 资源清理 (#23)", () => {
   });
 });
 
-describe("HTTP 代理 (#18)", () => {
+describe("HTTP 代理", () => {
   it("createProxyFetch 返回 fetch；getProxyDispatcher 返回 dispatcher", () => {
     expect(typeof createProxyFetch()).toBe("function");
     expect(getProxyDispatcher({ uri: "http://127.0.0.1:7890" })).toBeTruthy();

@@ -1,7 +1,7 @@
 /**
  * agentLoop —— LLM 层内置的极简 agent 循环
  *
- * 对标 pi-ai 的 agentLoop：定义工具 + 执行器 → 调用模型 → 执行工具调用 → 把结果喂回 →
+ * 定义工具 + 执行器 → 调用模型 → 执行工具调用 → 把结果喂回 →
  * 重复，直到模型不再调用工具或达到 maxSteps。完全自包含（基于 LLMClient + ModelCaller），
  * 与 harness/AgentRuntime 那套"提示树驱动"的重型 agent 解耦，适合 SDK 用户快速搭建。
  *
@@ -58,7 +58,7 @@ export interface AgentLoopParams {
   abortSignal?: AbortSignal;
   /** 工具执行/校验出错时，把错误文本作为 tool 结果继续（默认 true）；false 则抛出 */
   continueOnToolError?: boolean;
-  /** 伪装为 Claude Code 工具名（Bash/Read/Edit…）发送；收到调用后自动还原查执行器 */
+  /** 发送时使用常见 agent 工具名（Bash/Read/Edit…）；收到调用后还原再查执行器 */
   stealth?: boolean;
   /**
    * 循环钩子 —— 让 agentLoop 既"极简"（不传 = 默认行为）又"灵活"（传了完全可控）。
@@ -214,7 +214,7 @@ export async function* agentLoop(
   const continueOnToolError = params.continueOnToolError ?? true;
   const toolMap = normalizeTools(params.tools);
   const stealth: StealthMapper | null = params.stealth ? createStealthMapper() : null;
-  // 伪装：把对外暴露的工具 schema 名改成 Claude Code 规范名
+  // 发送前把工具 schema 名换成常见别名
   const toolSchemas = [...toolMap.values()].map((t) => t.schema).map((s) =>
     stealth ? { ...s, name: stealth.forwardName(s.name) } : s,
   );
@@ -357,7 +357,7 @@ export async function* agentLoop(
       toolCallCount += 1;
       ctx.toolCallCount = toolCallCount;
 
-      // 伪装模式下模型回传的是 Claude Code 名，还原回本项目名再查执行器
+      // 别名模式下模型回传的是别名，还原回本项目名再查执行器
       const lookupName = stealth ? stealth.restoreName(call.name) : call.name;
       const tool = toolMap.get(lookupName);
       let resultText = "";

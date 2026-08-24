@@ -76,6 +76,16 @@ export function resetDcgBinaryCache(): void {
   cachedBinary = undefined;
 }
 
+/** 测试：钉死已解析路径（含 `null` = 本机没有二进制）。 */
+export function setDcgBinaryCacheForTest(value: string | null): void {
+  cachedBinary = value;
+}
+
+/** `MAOU_DCG_OPTIONAL=1`：没有二进制时跳过 DCG，不 fail-closed。 */
+export function isDcgOptional(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.MAOU_DCG_OPTIONAL === "1";
+}
+
 function binName(): string {
   return platform() === "win32" ? "dcg.exe" : "dcg";
 }
@@ -221,12 +231,13 @@ export async function evaluateWithDcg(
   }
 
   const required = opts.required !== false;
+  const optional = isDcgOptional() || !required;
   let binary = resolveDcgBinary(opts.binaryPath);
-  if (!binary) {
+  if (!binary && !optional) {
     binary = ensureDcgInstalled();
   }
   if (!binary) {
-    if (!required) {
+    if (optional) {
       return {
         decision: "allow",
         command,

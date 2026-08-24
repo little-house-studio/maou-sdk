@@ -1,6 +1,6 @@
 /**
  * ScrollHistory 纯函数：测量 / 找上一条 / 跳转 offset。
- * 与 Ink 解耦，便于单元测试。
+ * 纯函数，便于单元测试。
  */
 
 export interface LayoutItem {

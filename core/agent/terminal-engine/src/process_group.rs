@@ -1,5 +1,5 @@
 /**
- * process_group.rs — 跨平台进程树 teardown（对齐 Grok xai-tty-utils::ProcessGroup）
+ * process_group.rs — 跨平台进程树 teardown
  *
  * - Unix: 子进程 process_group(0) 后，用 killpg(SIGTERM/SIGKILL) 收整组
  * - Windows: Job Object + JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE，TerminateJobObject

@@ -146,7 +146,7 @@ pub(crate) fn max_line_visual_width(s: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// 0-based screen (col, row) for hidden hardware cursor pin (Ink pinHardwareCursorForIme).
+/// 0-based screen (col, row) for hidden hardware cursor pin .
 /// `text_origin_x` = first column of text body (after prompt for input bar; rect.x for FSE).
 /// `body_width` = soft-wrap width for input bar; pass `usize::MAX/4` for hard-lines-only (FSE).
 /// Returns None if rect invalid.
@@ -220,7 +220,7 @@ pub(crate) fn caret_screen_pos(
     Some((col, row))
 }
 
-/// Whether raw caret col (before clamp) exceeds screen — Ink overflowLatch signal.
+/// Whether raw caret col (before clamp) exceeds screen — overflowLatch signal.
 pub(crate) fn caret_raw_col_overflows(
     text: &str,
     cursor: usize,
@@ -243,7 +243,7 @@ pub(crate) fn caret_raw_col_overflows(
     raw >= screen_cols as usize || max_line_visual_width(text) + text_origin_x as usize > screen_cols as usize
 }
 
-/// Ink `InputBar.scrubInput`: strip mouse/CSI/SS3 garbage and C0 controls
+/// strip mouse/CSI/SS3 garbage and C0 controls
 /// before they land in the draft. Keeps `\t` / `\n` (and `\r` until paste
 /// normalizes CRLF). Complements crossterm event filtering when sequences
 /// leak via paste or multi-char insert.

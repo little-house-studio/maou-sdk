@@ -134,7 +134,7 @@ export function helpKeyRows(): [string, string][] {
         !c.hidden &&
         (c.scope === "local" ||
           c.scope === "both" ||
-          ["compact", "usage", "context", "goal"].includes(c.name)),
+          ["compact", "usage", "context", "goal", "ultragoal", "plan"].includes(c.name)),
     )
     .slice(0, 12)
     .map((c) => {

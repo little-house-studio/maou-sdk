@@ -107,7 +107,7 @@ export class ToolRegistry {
    * 在新 session 启动前清理上一次 session 的工具侧状态：
    * 1. 调用每个工具的 onSessionStart 钩子（工具自身的 session-scoped 状态）
    * 2. 清空 read-registry（避免读到旧 session 的「文件已读」假标记，让下次 reader 工具重新读盘）
-   * 3. 清空 file-edit-history（避免 undo 误把上一个 session 的编辑回退掉）
+   * 3. 清空 file-edit-history（避免下一 session 误判本会话已编辑过该文件）
    *
    * 注意：sessionId 在 maou 里通常是唯一 UUID，理论上不会撞——但 task recovery / 复用同名 session
    * 时仍可能命中旧 state。冗余清理无副作用，所以这里都调一遍。
@@ -150,14 +150,8 @@ export class ToolRegistry {
       seen.add(id);
 
       const name = tool.definition.name;
-      // 白名单过滤
-      if (effectiveWhitelist && !effectiveWhitelist.has(name)) {
-        const aliases: string[] = tool.definition.aliases ?? [];
-        const allowAlias = aliases.some(a => effectiveWhitelist!.has(a));
-        const allowCanon = [...effectiveWhitelist].some((w) => toMaouToolName(w) === name);
-        if (!allowAlias && !allowCanon) {
-          continue;
-        }
+      if (effectiveWhitelist && !this._nameAllowed(name, tool.definition.aliases ?? [], effectiveWhitelist)) {
+        continue;
       }
 
       const prompt = this._readToolPromptCached(tool);
@@ -272,11 +266,8 @@ export class ToolRegistry {
       for (const schema of tool.nativeToolSchemas()) {
         const name = String((schema as any).name ?? "").trim();
         if (!name || seenNames.has(name)) continue;
-        if (effectiveWhitelist && !effectiveWhitelist.has(name)) {
-          const aliases: string[] = tool.definition.aliases ?? [];
-          const allowAlias = aliases.some(a => effectiveWhitelist!.has(a));
-          const allowCanon = [...effectiveWhitelist].some((w) => toMaouToolName(w) === name);
-          if (!allowAlias && !allowCanon) continue;
+        if (effectiveWhitelist && !this._nameAllowed(name, tool.definition.aliases ?? [], effectiveWhitelist)) {
+          continue;
         }
         seenNames.add(name);
         schemas.push(schema);
@@ -290,6 +281,20 @@ export class ToolRegistry {
    * Check if a schema matches the whitelist
    * Matches by: path pattern (e.g. "terminal/use_terminal") or tool name
    */
+  private _nameAllowed(name: string, aliases: string[], whitelist: Set<string>): boolean {
+    if (whitelist.has(name)) return true;
+    if (aliases.some((alias) => whitelist.has(alias))) return true;
+    if ([...whitelist].some((item) => toMaouToolName(item) === name)) return true;
+    return [...whitelist].some((pattern) => this._wildcardName(pattern, name));
+  }
+
+  private _wildcardName(pattern: string, name: string): boolean {
+    if (!pattern.endsWith("/*")) return false;
+    const prefix = pattern.slice(0, -2);
+    if (!prefix) return false;
+    return name === prefix || name.startsWith(`${prefix}_`) || name.startsWith(`${prefix}/`);
+  }
+
   private _matchesWhitelist(path: string, name: string, whitelist: Set<string>): boolean {
     // Direct path match
     if (whitelist.has(path)) return true;
@@ -298,6 +303,7 @@ export class ToolRegistry {
     if ([...whitelist].some((w) => toMaouToolName(w) === name || toMaouToolName(w) === toMaouToolName(name))) {
       return true;
     }
+    if (this._nameAllowed(name, [], whitelist)) return true;
     // Prefix match: "terminal/*" matches all terminal tools
     for (const pattern of whitelist) {
       if (pattern.endsWith("/*") && path.startsWith(pattern.slice(0, -2))) return true;

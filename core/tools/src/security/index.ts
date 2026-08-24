@@ -45,6 +45,8 @@ export {
   formatDcgDenyMessage,
   setDcgEvaluatorForTest,
   resetDcgBinaryCache,
+  setDcgBinaryCacheForTest,
+  isDcgOptional,
 } from "./dcg/client.js";
 export type { DcgEvalResult, DcgGuardOptions, DcgDecision, DcgEvaluator } from "./dcg/client.js";
 

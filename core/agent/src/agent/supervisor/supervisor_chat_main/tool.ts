@@ -1,15 +1,13 @@
 /**
  * supervisor_chat_main —— 监督 Agent → 主 Agent 沟通工具。
  *
- * 监督 Agent 专用，仅在 /goal 模式下可用。
+ * 监督 Agent 专用，仅在监督 session 可用。
  * 监督 Agent 通过此工具把指令派给主 Agent，主 Agent 执行一轮 loop 后汇报。
  * 工具返回主 Agent 的最终输出文本（监督 Agent 据此判断是否继续）。
  */
 
-import { Tool } from "../../base.js";
-import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
-import { resolveToolRuntimePorts } from "../../base.js";
-import { createToolResponse } from "../../base.js";
+import { Tool, createToolResponse, resolveToolRuntimePorts } from "@little-house-studio/tools";
+import type { ToolContext, ToolResponse, ToolDefinition } from "@little-house-studio/tools";
 
 export class SupervisorChatMainTool extends Tool {
   readonly definition: ToolDefinition = {
@@ -17,7 +15,7 @@ export class SupervisorChatMainTool extends Tool {
     aliases: ["supervisor-chat", "chat-main"],
     allowedModes: null,
     description:
-      "监督 Agent 跟主 Agent 沟通（仅 /goal 监督模式下可用）。" +
+      "监督 Agent 跟主 Agent 沟通（仅监督模式下可用）。" +
       "把指令派给主 Agent，主 Agent 执行一轮 loop 后汇报。" +
       "工具返回主 Agent 的最终输出文本。" +
       "监督 Agent 据此判断任务是否完成，未完成可继续调用此工具派发后续指令。",
@@ -49,7 +47,7 @@ export class SupervisorChatMainTool extends Tool {
     if (!ports.isSupervisorSession) {
       return createToolResponse(
         false,
-        "此工具仅在 /goal 监督模式下可用。用 /goal 指令启动监督模式。",
+        "此工具仅在监督 session 可用，不是本会话目标模式。",
       );
     }
 

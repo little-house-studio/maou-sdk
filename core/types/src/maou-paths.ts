@@ -77,6 +77,16 @@ export function resolveUserOpsSessionsDir(userRoot?: string): string {
   return join(resolveUserOpsRoot(userRoot), MAOU_DIR_NAME, "sessions");
 }
 
+/** 安装员固定数据根；会话与自身状态在此，不写进被装仓库。 */
+export function resolveUserInstallRoot(userRoot?: string): string {
+  return join(userRoot ? resolve(userRoot) : resolveUserMaouRoot(), "aiinstall");
+}
+
+/** 安装员会话目录：`$MAOU_HOME/aiinstall/.maou/sessions` */
+export function resolveUserInstallSessionsDir(userRoot?: string): string {
+  return join(resolveUserInstallRoot(userRoot), MAOU_DIR_NAME, "sessions");
+}
+
 /** 项目态 maou 根：仅会话 / 项目 agents，不含全局 API */
 export function resolveProjectMaouRoot(projectRoot: string = process.cwd()): string {
   return join(projectRoot, MAOU_DIR_NAME);

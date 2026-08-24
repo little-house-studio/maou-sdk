@@ -9,6 +9,7 @@
 
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { stripTaskCompletionMarkup } from "@little-house-studio/types";
 import type { ChatMessage, ToolCardState, SessionEventKind, MessageAuthor } from "./types.js";
 import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
 import { projectSessionFile, projectSessionsDir } from "../config/paths.js";
@@ -267,7 +268,7 @@ export function loadSessionMessages(sessionId: string, cwd = process.cwd()): Loa
         const msg: ChatMessage = {
           id: `load_${ts}_${Math.random().toString(36).slice(2, 6)}`,
           role: "assistant",
-          content: String(ev.content ?? "").replace(/^\n+/, ""),
+          content: stripTaskCompletionMarkup(String(ev.content ?? "").replace(/^\n+/, "")),
           ts,
           streaming: false,
           round,

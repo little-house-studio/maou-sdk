@@ -1,5 +1,5 @@
 /**
- * 会话树：Pi（id + parentId + leaf）与 DSH（按 boundary fork）的投影。
+ * 会话树：id + parentId + leaf，以及按 boundary fork 的投影。
  * 旧线性 jsonl 没有 id 时，按数组顺序当一条链表。
  */
 
@@ -72,7 +72,7 @@ export function filterLlmVisible<T extends TreeFields>(messages: T[]): T[] {
   return messages.filter(isLlmVisible);
 }
 
-/** 从根到指定条目的前缀（含该条），供 DSH 式 fork(boundary)。 */
+/** 从根到指定条目的前缀（含该条），供按 boundary fork。 */
 export function prefixThrough<T extends TreeFields>(messages: T[], entryId: string): T[] {
   const branch = selectBranch(messages, entryId);
   const idx = branch.findIndex((m) => m.id === entryId);

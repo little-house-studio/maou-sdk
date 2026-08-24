@@ -1,6 +1,5 @@
 /**
  * SDK 客户端 — 协议抽象层
- * 对齐 Python: sdk/client.py
  *
  * 提供 ClientBase 抽象接口 + HttpClient 实现。
  * 插件通过此模块与 Hub 通信，不直接依赖 HTTP 细节。
@@ -48,8 +47,6 @@ export abstract class ClientBase {
 
 /**
  * HTTP 客户端 — 通过 HTTP API 与 Hub 通信
- *
- * 对应 Python: sdk/client.py HttpClient
  */
 export class HttpClient extends ClientBase {
   private _baseUrl: string;

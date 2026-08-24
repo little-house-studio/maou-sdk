@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>朱红公证处 · DeepSeek /goal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/shared.css" />
+  <link rel="stylesheet" href="css/deepseek.css" />
+</head>
+<body>
+  <a class="skip" href="#stage">跳到沙盘</a>
+  <div class="exhibit">
+    <header class="topbar">
+      <a class="brand" href="index.html">
+        <span class="kicker">第二展厅</span>
+        <strong>朱红公证处 · DeepSeek</strong>
+      </a>
+      <nav class="nav-halls" aria-label="展厅">
+        <a href="codex.html">Codex</a>
+        <a href="deepseek.html" aria-current="page">DeepSeek</a>
+        <a href="grok.html">Grok</a>
+      </nav>
+    </header>
+
+    <div class="stage-wrap">
+      <div id="stage" class="stage stage-dsh" data-scene="intro">
+        <div class="office">
+          <div class="counter">
+            <div class="window"></div>
+            <div class="person clerk">
+              <div class="head"></div>
+              <div class="torso"></div>
+              <div class="legs"></div>
+            </div>
+            <div class="counter-top"></div>
+            <div class="ledger">
+              会话账本 · 唯一真相<br>
+              goal/change v1<br>
+              没有独立数据库
+            </div>
+            <div class="seal">REV<br>01</div>
+            <div class="switch-box">
+              <span class="on">ARMED</span>
+              <div class="knife"></div>
+              <span class="off">DISARMED</span>
+            </div>
+            <div class="phase-lamp">
+              <span class="p-active">active</span>
+              <span class="p-paused">paused</span>
+              <span class="p-done">complete</span>
+            </div>
+          </div>
+          <div class="room">
+            <div class="printer"></div>
+            <div class="ticket">GOAL ROUND<br>1 / 256<br>source = goal</div>
+            <div class="badge">来源：goal</div>
+            <div class="wrapup">&lt;goal_complete&gt;<br>对用户说收尾的话。<br>本轮不许再调工具。</div>
+            <div class="person model">
+              <div class="head"></div>
+              <div class="torso"></div>
+              <div class="legs"></div>
+            </div>
+            <div class="person human">
+              <div class="head"></div>
+              <div class="torso"></div>
+              <div class="legs"></div>
+            </div>
+            <div class="bench"></div>
+          </div>
+          <span class="label" style="left:10%;bottom:8%">柜台 · 斜杠不进模型</span>
+          <span class="label" style="left:40%;top:10%">武装闸刀</span>
+          <span class="label" style="right:18%;bottom:8%">同一间工作室</span>
+        </div>
+        <div class="grain"></div>
+      </div>
+    </div>
+
+    <aside class="legend" id="legend">
+      <h2>沙盘图例</h2>
+      <ul>
+        <li data-lit="clerk">柜台书记 · /goal 命令</li>
+        <li data-lit="ledger">账本 · 会话日志</li>
+        <li data-lit="seal">蜡印 · revision 锁</li>
+        <li data-lit="switch">闸刀 · 续行许可不落盘</li>
+        <li data-lit="ticket">号票 · Goal Round</li>
+        <li data-lit="room">工作室 · 不新开 agent</li>
+        <li data-lit="human">来人 · 自动票让行</li>
+        <li data-lit="wrap">收尾信 · 停转前说一句</li>
+      </ul>
+    </aside>
+
+    <section class="caption-dock">
+      <div class="caption-meta">
+        <h1 id="scene-title">开场</h1>
+        <span id="scene-index">01 / 10</span>
+      </div>
+      <p id="scene-sub"></p>
+      <div class="progress" aria-hidden="true"><span id="progress-bar"></span></div>
+    </section>
+
+    <div class="controls">
+      <div class="transport">
+        <button class="icon-btn" id="btn-prev" type="button" aria-label="上一幕">◀</button>
+        <button class="icon-btn primary" id="btn-play" type="button" aria-label="暂停" data-state="playing">
+          <span class="play-icon" hidden>▶</span>
+          <span class="pause-icon">❚❚</span>
+        </button>
+        <button class="icon-btn" id="btn-next" type="button" aria-label="下一幕">▶</button>
+      </div>
+      <div class="dots" id="dots"></div>
+      <p class="hint">空格播放 · ← → 换幕</p>
+    </div>
+  </div>
+
+  <script src="js/player.js"></script>
+  <script>
+    createScenePlayer([
+      {
+        id: "intro",
+        duration: 7500,
+        title: "左边柜台，右边工作室",
+        subtitle: "DeepSeek 把 Codex 那套体验拆成公证处：斜杠在柜台盖印，模型在隔壁干活。中间那本账本是唯一权威，没有另一张 goal 表。",
+        lit: ["clerk", "ledger", "room"]
+      },
+      {
+        id: "counter",
+        duration: 8000,
+        title: "斜杠是办事，不是对模型说话",
+        subtitle: "你打 /goal 做完登录。书记写入 command/run，盖账，command/done。这句话不进模型请求。只有整段恰好是 pause / resume / clear 才当动词。",
+        lit: ["clerk", "ledger"]
+      },
+      {
+        id: "seal",
+        duration: 7500,
+        title: "第一枚蜡印：revision 1",
+        subtitle: "create 落下 phase=active、revision=1 的快照。以后改任何东西都要带这枚印。印对不上，柜台拒收。这就是 GoalRef 比较并设置。",
+        lit: ["seal", "ledger"]
+      },
+      {
+        id: "arm",
+        duration: 8000,
+        title: "闸刀合上，才允许自动出票",
+        subtitle: "activation=armed 是墙上的闸刀，不写进账本。phase 说目标还在，闸刀说现在能不能转。两件事拆开，是这套设计的心脏。",
+        lit: ["switch"]
+      },
+      {
+        id: "ticket",
+        duration: 8500,
+        title: "同一间房，吐出第 1 / 256 号票",
+        subtitle: "agent 空闲、仍 armed、还有余量，才打印 &lt;goal_round&gt;。票的来源是 goal，不是 user。人类聊天不占号。不新开 agent，不复制前缀。",
+        lit: ["ticket", "room"]
+      },
+      {
+        id: "yield",
+        duration: 8000,
+        title: "人进门，自动票让行",
+        subtitle: "人话和自动票不能混在同一批次。人一进 inbox，预留作废，号不消耗。公证处认人，不跟机器抢窗口。",
+        lit: ["human", "ticket"]
+      },
+      {
+        id: "cas",
+        duration: 8000,
+        title: "改状态必须抄当前印号",
+        subtitle: "模型先 get_goal，原样抄 id 和 revision。complete / blocked 还要证明：这是人类轮，或恰好是当前这一张 goal 票。blocked 未满三轮，柜台直接拒。",
+        lit: ["seal", "ticket"]
+      },
+      {
+        id: "wake",
+        duration: 8500,
+        title: "醒来时账本还在，闸刀强制断开",
+        subtitle: "会话恢复或 fork：目标、phase、已用轮次都在。但闸刀一定是断开的。打开旧会话，公证处不会自己开工。这是故意的。",
+        lit: ["ledger", "switch"]
+      },
+      {
+        id: "resume",
+        duration: 7500,
+        title: "必须有人重新合闸",
+        subtitle: "你说继续，或模型在人类轮里 update_goal resume。闸刀合上，空闲后再出下一张票。flush 失败、报错、拆插件：只断闸，不改账本。",
+        lit: ["switch"]
+      },
+      {
+        id: "done",
+        duration: 8500,
+        title: "停转前先写一封收尾信",
+        subtitle: "模型宣告 complete / blocked 后，注入收尾块，让它对你说一句再停。取消已出的票会暂停，防止取消后自动重启。油钱时间不管，只数 Round。",
+        lit: ["wrap", "ticket"]
+      }
+    ]);
+  </script>
+</body>
+</html>

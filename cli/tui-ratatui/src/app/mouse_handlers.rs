@@ -1,4 +1,4 @@
-//! Mouse / wheel / hover handlers (Ink useMouseInput parity).
+//! Mouse / wheel / hover handlers .
 
 use super::App;
 use super::input_paint::{
@@ -150,7 +150,7 @@ impl App {
             }
         }
 
-        // Ink: fullEditorInitial first — never let stale overlay_rect steal wheel/click
+        // fullEditorInitial first — never let stale overlay_rect steal wheel/click
         if mouse::mouse_preempts_overlay(self.full_editor) {
             match m.kind {
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -347,7 +347,7 @@ impl App {
                         return;
                     }
                     MouseEventKind::Moved => {
-                        // Ink SelectList: hover recolors only; do not change selected
+                        // hover recolors only; do not change selected
                         set_pointer_shape("pointer");
                         return;
                     }
@@ -406,7 +406,7 @@ impl App {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let up = matches!(m.kind, MouseEventKind::ScrollUp);
                 let dir_s = if up { "up" } else { "down" };
-                // drag chat: scroll + keep content-anchored sel (Ink dragging branch)
+                // drag chat: scroll + keep content-anchored sel 
                 if self
                     .sel
                     .drag
@@ -432,7 +432,7 @@ impl App {
                     }
                     return;
                 }
-                // Ink: non-drag wheel clears chat blue selection
+                // non-drag wheel clears chat blue selection
                 if self.sel.drag.is_none() {
                     if let Some(mouse::ActiveSel::Chat(_)) = &self.sel.active {
                         self.sel.clear();
@@ -488,7 +488,7 @@ impl App {
                         }
                     }
                     mouse::WheelTarget::EventBlockExpanded => {
-                        // Ink: over EventBlock → scroll expanded supervisor log locally
+                        // over EventBlock → scroll expanded supervisor log locally
                         let over_ev = self
                             .event_rect
                             .map(|r| point_in_rect(col, row, r))
@@ -501,7 +501,7 @@ impl App {
                                 self.event_expand_scroll =
                                     self.event_expand_scroll.saturating_add(1);
                             }
-                            // also notify Node for Ink-parity store cmd (no-op paint there)
+                            // 同步通知 Node 的 store（那边不重绘）
                             emit(&OutMsg::SupervisorScroll {
                                 dir: dir_s.into(),
                             });
@@ -547,7 +547,7 @@ impl App {
                         return;
                     }
                 }
-                // EventBlock click → toggle expand (Ink toggleEventBlockExpanded)
+                // EventBlock click → toggle expand 
                 if let Some(er) = self.event_rect {
                     if point_in_rect(col, row, er) {
                         self.chrome.event_block_expanded = !self.chrome.event_block_expanded;
@@ -641,7 +641,7 @@ impl App {
                 }
                 if let Some(cr) = self.completion_rect {
                     if point_in_rect(col, row, cr) {
-                        // Ink: click row → select that item then accept
+                        // click row → select that item then accept
                         let items = self
                             .completions
                             .as_ref()
@@ -690,7 +690,7 @@ impl App {
                                 return;
                             }
                         }
-                        // Ink SystemEventRow: 点击展开详情；可重试事件在已展开时再点 → 重试
+                        // 点击展开详情；可重试事件在已展开时再点 → 重试
                         for se in &self.system_event_hits {
                             if se.line_idx == line_idx {
                                 let id = se.event_id.clone();
@@ -718,7 +718,7 @@ impl App {
                                 return;
                             }
                         }
-                        // Ink DiffCollapsible: toggle full tool result
+                        // toggle full tool result
                         for tr in &self.tool_result_hits {
                             if tr.line_idx == line_idx {
                                 let id = tr.tool_id.clone();
@@ -733,13 +733,13 @@ impl App {
                     }
                 }
 
-                // Ink resolveMode: input → chat → global by press origin
+                // input → chat → global by press origin
                 let mode = resolve_sel_mode(col, row, self.chat_inner, self.input_rect);
                 let n = self.sel.register_click(col, row);
                 let plain = self.scroll_plain.clone();
                 let shift = m.modifiers.contains(KeyModifiers::SHIFT);
 
-                // Ink Shift+click: extend chat/global from sticky/active anchor
+                // Shift+click: extend chat/global from sticky/active anchor
                 if shift && n == 1 && (mode == SelMode::Chat || mode == SelMode::Global) {
                     match mode {
                         SelMode::Chat => {
@@ -873,7 +873,7 @@ impl App {
                                 &self.vram,
                             );
                         } else {
-                            // Ink: no blue until drag threshold
+                            // no blue until drag threshold
                             self.sel.start_input(byte);
                             self.sel.drag = Some(DragState {
                                 mode: SelMode::Input,
@@ -1044,7 +1044,7 @@ impl App {
                             .chat_inner
                             .y
                             .saturating_add(self.chat_inner.height.saturating_sub(1));
-                        // Ink EDGE_ZONE: pin + auto-scroll when at/past viewport edges
+                        // pin + auto-scroll when at/past viewport edges
                         let edge = if row <= top.saturating_add(mouse::EDGE_ZONE) || row < top {
                             Some(-1i8)
                         } else if row >= bot.saturating_sub(mouse::EDGE_ZONE) || row > bot {
@@ -1107,7 +1107,7 @@ impl App {
                         if !d.moved {
                             return;
                         }
-                        // Ink: clamp drag to input rect
+                        // clamp drag to input rect
                         let ir = self.input_rect;
                         let text_x0 = self.input_text_x0();
                         let clamp_row = row.clamp(
@@ -1162,11 +1162,11 @@ impl App {
                             osc52_copy(&t);
                             self.toast_copy(&t);
                         } else {
-                            // Ink: empty extract clears selection
+                            // empty extract clears selection
                             self.sel.clear();
                         }
                     } else {
-                        // pure click without move: drop zero-width sel (Ink-like)
+                        // pure click without move: drop zero-width sel 
                         self.sel.clear();
                     }
                 }
@@ -1239,7 +1239,7 @@ impl App {
         } else if point_in_rect(col, row, self.input_rect) {
             set_pointer_shape("text");
         } else if point_in_rect(col, row, self.nav_rect) {
-            // Ink NavBar: hoverId = segment id for recolor
+            // hoverId = segment id for recolor
             for (x0, x1, nid, _ak, _av) in &self.nav_segs {
                 if col >= *x0 && col < *x1 {
                     id = Some(format!("nav:{nid}"));

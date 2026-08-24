@@ -395,7 +395,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
    * @param taskDesc 任务描述（自然语言，子 Agent 的输入）
    * @param options fork 选项（forkMode/agentName/configOverrides/递归深度/预算/超时/进度回调）
    */
-  /** 取缓存的 fork 结果（agent_message action=output） */
+  /** 取缓存的 fork 结果（harness / 调试用，不再作为模型工具 action） */
   getResult(taskId: string): SubagentResultLike | null {
     return this._resultCache.get(taskId) ?? null;
   }

@@ -221,7 +221,7 @@ export class ChatSession {
   // ── 发送消息（非流式）──
 
   async send(text: string, options?: { attachments?: Attachment[] }): Promise<ChatResponse> {
-    // 0. 防傻瓜校验
+    // 0. 发送前能力校验
     const guard = validateRequest({
       preset: this.preset,
       text,
@@ -330,7 +330,7 @@ export class ChatSession {
   // ── 发送消息（流式）──
 
   async *sendStream(text: string, options?: { attachments?: Attachment[] }): AsyncGenerator<ChatDelta> {
-    // 0. 防傻瓜校验
+    // 0. 发送前能力校验
     const guard = validateRequest({
       preset: this.preset,
       text,

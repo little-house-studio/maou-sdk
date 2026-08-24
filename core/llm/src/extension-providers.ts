@@ -1,5 +1,5 @@
 /**
- * 扩展注册供应商 / 登录（对齐 Pi `registerProvider` + oauth）。
+ * 扩展注册供应商 / 登录。
  * 运行时写入模型目录；可选持久化到 ~/.maou/extension-providers.json。
  */
 
@@ -58,7 +58,7 @@ export interface ExtensionProviderInput {
 
 const oauthLogins = new Map<string, ExtensionOAuthConfig>();
 
-/** Pi / 常见别名 → Maou APIProtocol */
+/** 常见协议别名 → Maou APIProtocol */
 export function mapPiApiToProtocol(api?: string, fallback?: APIProtocol): APIProtocol {
   const a = (api ?? "").trim().toLowerCase();
   if (a === "anthropic-messages" || a === "anthropic") return "anthropic";

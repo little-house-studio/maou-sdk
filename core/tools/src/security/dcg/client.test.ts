@@ -4,6 +4,7 @@ import {
   formatDcgDenyMessage,
   resetDcgBinaryCache,
   resolveDcgBinary,
+  setDcgBinaryCacheForTest,
   setDcgEvaluatorForTest,
 } from "./client.js";
 import { checkMaouHardDeny } from "../hard-deny.js";
@@ -49,6 +50,21 @@ describe("dcg-guard virtual (injected evaluator)", () => {
     }));
     const r = await evaluateWithDcg("echo hello");
     expect(r.decision).toBe("allow");
+  });
+
+  it("MAOU_DCG_OPTIONAL allows when binary is missing", async () => {
+    const prev = process.env.MAOU_DCG_OPTIONAL;
+    process.env.MAOU_DCG_OPTIONAL = "1";
+    setDcgEvaluatorForTest(null);
+    setDcgBinaryCacheForTest(null);
+    try {
+      const r = await evaluateWithDcg("npm install");
+      expect(r.decision).toBe("allow");
+      expect(r.error).toMatch(/optional/);
+    } finally {
+      if (prev === undefined) delete process.env.MAOU_DCG_OPTIONAL;
+      else process.env.MAOU_DCG_OPTIONAL = prev;
+    }
   });
 
   it("MAOU_DCG_BYPASS short-circuits before evaluator", async () => {

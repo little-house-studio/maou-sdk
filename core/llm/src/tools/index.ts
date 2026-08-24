@@ -1,7 +1,7 @@
 /**
  * 类型安全工具定义 SDK（基于 TypeBox）
  *
- * 对标 pi-ai：用 TypeBox schema 定义工具参数，获得编译期类型推断（Static）+ 运行期
+ * 用 TypeBox schema 定义工具参数，获得编译期类型推断（Static）+ 运行期
  * 校验（validateToolCall）。生成的 parameters 本身就是合法 JSON Schema，可直接交给
  * ChatSession.setTools / 各协议适配器。
  *

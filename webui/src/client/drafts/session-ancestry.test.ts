@@ -24,7 +24,7 @@ const sib = {
   parentSessionId: "s-root",
 };
 
-describe("session-ancestry (DSH deriveAncestry)", () => {
+describe("session-ancestry", () => {
   it("infers parent from ::fork:: when meta is missing", () => {
     assert.equal(inferParentSessionId("p::fork::task::ts"), "p");
     assert.equal(

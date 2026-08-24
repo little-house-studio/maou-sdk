@@ -33,44 +33,53 @@
 
 ## 工具列表
 
+双入口：上帝工具保留，同时按动词拆出独立工具（同一份实现）。
+
 - `agent_team/` — Agent 团队
-    - `agent_manage` ⚠️ — 团队管理（禁用）
-    - `agent_message` ⚠️ — 子Agent管理（禁用）
-    - `god_tool/agent_team` 🚧 — 统一入口（占位）
+    - `god_tool/agent_team` ✅ — 领域统一入口
+    - `agent_manage` ✅ — 团队管理上帝工具
+    - `agent_message` ✅ — 子 Agent fork 上帝工具
+    - `agent_send` ✅ — 派活 / 插话 / 中断 / 停止
 - `browser/` — 浏览器
-    - `god_tool/use_browser` ✅ — 控制真实浏览器，30+ 操作
-- `code/` — 代码分析
-    - `find_code` ✅ — 代码结构搜索（函数/类/调用关系）
+    - `god_tool/use_browser` ✅ — 控制真实浏览器
+    - `browser_*` ✅ — 按 action 拆出的独立入口
+- `sqry/` — 代码结构（sqry）
+    - `find_code` ✅ — 结构搜索上帝工具
+    - `find_*` ✅ — 按 action 拆出
+- `lsp/` — 语言服务器
+    - `lsp` ✅ — 语义分析上帝工具
+    - `lsp_*` ✅ — 按 action 拆出
 - `file/` — 文件操作
     - `write_file` ✅ — 创建或覆写文件
     - `edit_file` ✅ — 精确文本替换
-- `info/` — 状态存储
-    - `board` ✅ — 共享状态看板（键值对，三作用域）
+- `board/` — 共享状态看板
+    - `board` ✅ — 看板上帝工具
+    - `board_*` ✅ — 按 action 拆出
 - `internet/` — 网络搜索
-    - `search_internet` ✅ — 搜索互联网（四层降级）
+    - `search_internet` ✅ — 搜索互联网
 - `project/` — 项目管理
-    - `project_manage` ⚠️ — 项目管理（禁用）
-    - `project_message` 🚧 — 发送消息给项目agent（占位）
-    - `god_tool/project` 🚧 — 统一入口（占位）
+    - `god_tool/project` ✅ — 领域统一入口
+    - `project_manage` ✅ — 项目管理上帝工具
+    - `project_agent` ✅ — 项目代理上帝工具
+    - `project_send` ✅ — 只派任务
 - `reader/` — 读取
-    - `god_tool/reader` ✅ — 读取文件/网页/图片
-    - `read_file` 🚧 — 读取文件（占位，已被reader覆盖）
-    - `read_web` 🚧 — 读取网页（占位，已被reader覆盖）
+    - `god_tool/reader` ✅ — 读文件/网页/图片
+    - `read_file` ✅ — 只读本地文本
+    - `read_image` ✅ — 只读本地图片
+    - `web_fetch` ✅ — 只读 http(s)
 - `search/` — 文件搜索
-    - `grep` ✅ — 正则搜索文件内容
-    - `glob` ✅ — 按文件名模式查找
+    - `grep` ✅
+    - `glob` ✅
 - `skill/` — 技能
-    - `use_skill` ✅ — 加载 SKILL.md 技能
-    - `add_skill` 🚧 — 创建/添加技能（占位）
-    - `god_tool/skill` 🚧 — 统一入口（占位）
-- `task/` — 任务调度
-    - `todo_manage` ✅ — 会话级 todo 清单（依赖链自动推进；别名 task_manage）
-    - `todo_finish` ✅ — 汇报单条 todo 完成（别名 task_finish）
-    - **编排目标态**（全自动 fork / 动态链合并 / notice 注入 / 调试页）：见 [`../agent/docs/TODO_ORCHESTRATOR.md`](../agent/docs/TODO_ORCHESTRATOR.md)
-    - `god_tool/task` 🚧 — 统一入口（占位）
+    - `god_tool/skill` ✅ — 领域统一入口
+    - `use_skill` ✅
+    - `search_skill` / `install_skill` ✅
+    - `create_skill` ✅
+- `todo/` — 会话待办
+    - `todo_manage` ✅
+    - `todo_create` / `todo_replace` / `todo_delete` / `todo_list` ✅
+    - `todo_finish` ✅
 - `terminal/` — 终端
-    - `use_terminal` ✅ — 执行 shell 命令 / 管理常驻终端
-
-> ✅ 可用 13 | ⚠️ 禁用 3 | 🚧 占位 8
-
+    - `use_terminal` ✅ — 上帝工具
+    - `terminal_write` / `terminal_list` / `terminal_stop` / `terminal_logs` / `terminal_rm` ✅
 

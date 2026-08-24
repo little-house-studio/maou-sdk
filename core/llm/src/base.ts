@@ -1,7 +1,6 @@
 /**
  * @little-house-studio/llm/base —— 按需注册入口（tree-shake 友好）
  *
- * 对标 pi-ai 的 @earendil-works/pi-ai/base：
  * 主入口（index.ts）会在 import 时自动注册全部内置 adapter；
  * 而 base 入口只导出能力，不自动注册——调用方按需 import 各 provider 子入口
  * 并 register()，让 bundler 能 tree-shake 掉没用到的 adapter。

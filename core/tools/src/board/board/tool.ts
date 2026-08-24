@@ -1,6 +1,5 @@
 /**
  * Board 工具 — 共享状态看板
- * 对应 Python: core/tools/impls/board_tool.py
  *
  * 存储需要持久追踪的键值参数（角色属性、进度、计数器、标记等）。
  * list/get/add/replace/edit/del，值最长100字。

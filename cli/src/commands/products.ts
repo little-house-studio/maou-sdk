@@ -14,6 +14,8 @@ import type { AgentCliConfig } from "../types.js";
 
 export type ProductScope = "global" | "project";
 
+export type ProductUi = "tui" | "headless";
+
 export interface MaouProduct {
   /** CLI 子命令名，如 coding */
   name: string;
@@ -21,6 +23,8 @@ export interface MaouProduct {
   productId: string;
   /** global 产品不触发 cwd 项目门禁。 */
   scope: ProductScope;
+  /** 缺省 tui；headless 不进 Ratatui。 */
+  ui?: ProductUi;
   /** 产品缺省主题；显式 --theme 优先。 */
   defaultTheme?: string;
   description: string;
@@ -56,11 +60,23 @@ export const BUILTIN_PRODUCTS: Record<string, MaouProduct> = {
       return (mod.default ?? mod) as AgentCliConfig;
     },
   },
+  aiinstall: {
+    name: "aiinstall",
+    productId: "install-agent",
+    scope: "global",
+    ui: "headless",
+    description: "安装员 —— 无 TUI，把托管仓库装到本机",
+    loadConfig: async () => {
+      const mod = await import("@little-house-studio/install-agent/cli-config");
+      return (mod.default ?? mod) as AgentCliConfig;
+    },
+  },
 };
 
 /** 兼容旧命令 / 简称 → 正式产品名 */
 export const PRODUCT_ALIASES: Record<string, string> = {
   agent: "coding",
+  install: "aiinstall",
 };
 
 /** 系统子命令（非产品） */

@@ -31,7 +31,6 @@ import {
   describeCommandForApproval,
 } from "../../security/index.js";
 import {
-  evalConditionOnFile,
   evalConditionOnText,
   formatConditionHits,
   resolveExpr,
@@ -89,17 +88,16 @@ export class TerminalTool extends Tool {
       "执行 shell 命令或管理常驻终端。" +
       " action=run 运行命令（前台/后台）；" +
       " action=manage（list/rm/stop/logs）；" +
-      " action=write 键盘输入；" +
-      " action=scan 扫文件（path + return_when=filter）。" +
-      " 【条件返回】return_when=filter|until + match(正则可选) + expr(受限 Python 表达式)。" +
+      " action=write 键盘输入。" +
+      " 【条件返回】run 时 return_when=filter|until + match(正则可选) + expr(受限 Python 表达式)，盯命令输出。" +
       " 表达式可用 line/n/re/m；例: match='a\\\\s*=\\\\s*(\\\\d+)' expr='m is not None and 2 < int(m.group(1)) < 5'。" +
-      " until=第一次命中即返回（可 keep_running）；filter=筛出所有命中行。",
+      " until=第一次命中即返回（可 keep_running）；filter=命令结束后筛出所有命中行。",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["run", "manage", "write", "scan"],
+          enum: ["run", "manage", "write"],
           description: "操作类型，默认 run",
         },
         id: {
@@ -109,7 +107,7 @@ export class TerminalTool extends Tool {
         },
         command: {
           type: "string",
-          description: "要执行的 shell 命令（run 时必填；scan 不需要）",
+          description: "要执行的 shell 命令（run 时必填）",
         },
         description: {
           type: "string",
@@ -143,10 +141,6 @@ export class TerminalTool extends Tool {
           type: "string",
           description:
             "受限 Python 表达式，可用 line/n/re/m。例: m is not None and 2 < int(m.group(1)) < 5",
-        },
-        path: {
-          type: "string",
-          description: "scan 时文件路径；或 run+filter 时从该文件筛（不跑命令）",
         },
         keep_running: {
           type: "boolean",
@@ -208,9 +202,8 @@ export class TerminalTool extends Tool {
     if (action === "run") res = await this._actionRun(params, ctx);
     else if (action === "manage") res = await this._actionManage(params, ctx);
     else if (action === "write") res = await this._actionWrite(params, ctx);
-    else if (action === "scan") res = await this._actionScan(params, ctx);
     else {
-      return toolFail("invalid_args", `未知 action: ${action}，可选: run, manage, write, scan`, {
+      return toolFail("invalid_args", `未知 action: ${action}，可选: run, manage, write`, {
         code: "unknown_action",
       });
     }
@@ -322,18 +315,12 @@ export class TerminalTool extends Tool {
     ctx: ToolContext,
   ): Promise<ToolResponse> {
     const returnWhen = String(params.return_when ?? "").trim() as ReturnWhen | "";
-    const pathOnly = String(params.path ?? "").trim();
-
-    // run + path + filter 且无 command → 当文件扫描
-    if (returnWhen === "filter" && pathOnly && !String(params.command ?? "").trim()) {
-      return this._actionScan(params, ctx);
-    }
 
     const command = String(params.command ?? "").trim();
     if (!command) return createToolResponse(false,
       "❌ run 操作必须提供 command 参数。\n" +
       "正确用法示例：{\"action\":\"run\",\"command\":\"git status\",\"reason\":\"查看仓库状态\"}\n" +
-      "条件扫文件用 action=scan 或 run+return_when=filter+path。",
+      "等输出命中再返回：加 return_when=until 和 match/expr。",
     );
 
     // ── 终端审批策略（normal / auto / yolo + 黑白名单 + 重复放行）──
@@ -425,54 +412,6 @@ export class TerminalTool extends Tool {
       return this._runBackground(id, command, description, cwd, ctx, timeoutSec, resultLimit);
     }
     return this._runForeground(id, command, description, cwd, ctx, timeoutSec, resultLimit);
-  }
-
-  /** 扫文件：action=scan 或 run+path+filter */
-  private async _actionScan(
-    params: Record<string, unknown>,
-    ctx: ToolContext,
-  ): Promise<ToolResponse> {
-    const path = String(params.path ?? "").trim();
-    if (!path) {
-      return createToolResponse(
-        false,
-        "scan 需要 path。例: {\"action\":\"scan\",\"path\":\"data.txt\",\"return_when\":\"filter\",\"match\":\"a\\\\s*=\\\\s*(\\\\d+)\",\"expr\":\"m is not None and 2 < int(m.group(1)) < 5\",\"reason\":\"…\"}",
-      );
-    }
-    const returnWhen = (String(params.return_when ?? "filter").trim() || "filter") as ReturnWhen;
-    if (returnWhen !== "filter" && returnWhen !== "until") {
-      return createToolResponse(false, "scan 的 return_when 须为 filter 或 until");
-    }
-    const verr = validateConditionParams({
-      returnWhen,
-      expr: params.expr != null ? String(params.expr) : undefined,
-      match: params.match != null ? String(params.match) : undefined,
-    });
-    if (verr) return createToolResponse(false, verr);
-
-    const expr = resolveExpr(
-      params.expr != null ? String(params.expr) : undefined,
-      params.match != null ? String(params.match) : undefined,
-    );
-    const match = params.match != null ? String(params.match) : undefined;
-    const result = await evalConditionOnFile(path, {
-      expr,
-      match,
-      mode: returnWhen,
-      maxHits: params.max_hits != null ? Number(params.max_hits) : 100,
-      contextLines: params.context_lines != null ? Number(params.context_lines) : 3,
-    });
-    const body = formatConditionHits(result);
-    const ok = result.ok && (returnWhen === "filter" || (result.matched ?? 0) > 0);
-    return createToolResponse(ok, body, {
-      payload: {
-        path,
-        return_when: returnWhen,
-        matched: result.matched ?? 0,
-        hits: result.hits ?? [],
-        error: result.error,
-      },
-    });
   }
 
   /** until：后台跑命令，轮询 logs，第一次 expr 真即返回 */
@@ -1047,7 +986,7 @@ export class TerminalTool extends Tool {
         terminal_id: result.terminalId,
         duration_ms: Math.round(result.durationMs),
       });
-      // 摄入层压缩：测试输出只留失败+摘要、通用输出去噪去重超长截断（对标 RTK）。短输出不动。
+      // 摄入层压缩：测试输出只留失败+摘要、通用输出去噪去重超长截断。短输出不动。
       // 级别由 ctx.compressionLevel（agent.json tool_compression）控制，off 时原样。
       const compressed = result.output
         ? compressTerminalOutput(command, result.output, ctx.compressionLevel ?? "normal")

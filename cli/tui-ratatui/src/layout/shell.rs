@@ -1,4 +1,4 @@
-//! Shell layout tree — Ink `Layout.tsx` structure as integer flex.
+//! Shell layout tree — `Layout.tsx` structure as integer flex.
 
 use super::solve::{place_absolute_center, Solved};
 use super::tree::{Edges, Length, Measure, Slot, Style, Tree};
@@ -61,7 +61,7 @@ impl Measure for ShellMeasure<'_> {
     }
 }
 
-/// Build Ink-aligned shell tree.
+/// Build -aligned shell tree.
 pub fn build_shell_tree(m: &ShellMetrics) -> Tree {
     let mut t = Tree::new();
 
@@ -148,7 +148,7 @@ pub fn build_shell_tree(m: &ShellMetrics) -> Tree {
             .height(Length::Fixed(3))
             .visible_if(m.has_approval),
     );
-    // Always 1 row (Ink BackToBottomSlot)
+    // Always 1 row 
     t.child(
         root,
         Some(Slot::BackToBottom),

@@ -1,6 +1,5 @@
 /**
  * SDK 自有类型定义 — 不依赖 hub 模块
- * 对齐 Python: sdk/types.py
  *
  * 所有 SDK 插件和扩展都应使用此模块的类型。
  * Hub 端通过适配层将 hub.types ↔ sdk.types 互转。

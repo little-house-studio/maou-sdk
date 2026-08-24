@@ -10,7 +10,7 @@
  *   6. PATH
  *
  * Windows：优先 .exe；mac/Linux 无后缀。
- * 无二进制且本机有 cargo 时，可 tryBuild 一次（不改变 Windows 默认 Ink 策略）。
+ * 无二进制且本机有 cargo 时，可 tryBuild 一次。
  */
 
 import {

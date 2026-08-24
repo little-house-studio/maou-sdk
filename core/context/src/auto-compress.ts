@@ -1,7 +1,7 @@
 /**
  * 自动压缩 —— 两种模式 + 配置 + 会话封装
  *
- * 模式一：传统模式（Claude Code 风格）
+ * 模式一：传统模式
  *   超过阈值 → 保留最近 X 轮原始内容 → 剩下的用 LLM 生成摘要替换
  *   特点：简单粗暴，一次到位
  *
@@ -47,7 +47,7 @@ export interface SummaryModelConfig {
 
 // ─── 传统模式配置 ──────────────────────────────────────────────────────────
 
-/** 传统压缩模式配置（Claude Code 风格） */
+/** 传统压缩模式配置 */
 export interface LegacyCompressConfig {
   /** 触发阈值：token 占 maxTokens 的百分比（默认 80） */
   triggerPercent: number;

@@ -1,7 +1,7 @@
 /**
  * 统一思考强度（Reasoning Level）
  *
- * 对标 pi-ai 的 5 级精细控制：minimal / low / medium / high / xhigh（外加 off）。
+ * 5 级精细控制：minimal / low / medium / high / xhigh（外加 off）。
  * 以 Anthropic 风格的 thinking budget 为「规范形」(canonical)——各协议适配器都已能消费它
  * （OpenAI→reasoning_effort、Gemini/Vertex→thinkingConfig、Responses/Codex→reasoning.effort）。
  * 也提供到 OpenAI reasoning_effort 的直接映射，供需要时使用。

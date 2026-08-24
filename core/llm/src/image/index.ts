@@ -1,7 +1,7 @@
 /**
  * 图片生成 SDK
  *
- * 对标 pi-ai：getImageProviders / getImageModels / getImageModel / generateImages。
+ * getImageProviders / getImageModels / getImageModel / generateImages。
  * 支持 OpenAI Images API（gpt-image-1 / dall-e-3 / dall-e-2）及任意 OpenAI 兼容
  * images/generations 端点。
  *

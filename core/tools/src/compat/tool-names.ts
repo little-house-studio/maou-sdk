@@ -1,10 +1,10 @@
 /**
- * Pi / DSH 工具名 ↔ Maou 主名。
+ * 外部工具别名 ↔ Maou 主名。
  * 主名不改（模型 schema 仍用 reader / write_file / …）；
  * 别名与 canonicalize 给执行解析和钩子拦截用。
  */
 
-/** Pi 内置名 → Maou 主名 */
+/** 别名 → Maou 主名 */
 export const PI_TO_MAOU_TOOL: Readonly<Record<string, string>> = {
   read: "reader",
   write: "write_file",
@@ -15,7 +15,7 @@ export const PI_TO_MAOU_TOOL: Readonly<Record<string, string>> = {
   grep: "grep",
 };
 
-/** Maou 主名 → Pi 内置名（一对多时取最常用的那个） */
+/** Maou 主名 → 常用别名（一对多时取最常用的那个） */
 export const MAOU_TO_PI_TOOL: Readonly<Record<string, string>> = {
   reader: "read",
   write_file: "write",
@@ -40,7 +40,7 @@ const ALIAS_TO_CANONICAL: Record<string, string> = {
   terminal_manage: "use_terminal",
 };
 
-/** 任意别名 / Pi 名 / 主名 → Maou 主名；认不出则原样返回 */
+/** 任意别名 / 主名 → Maou 主名；认不出则原样返回 */
 export function toMaouToolName(name: string): string {
   const key = String(name ?? "").trim();
   if (!key) return key;

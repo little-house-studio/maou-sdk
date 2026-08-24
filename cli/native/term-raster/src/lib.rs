@@ -1,7 +1,6 @@
-//! maou-term-raster —— Ink 兼容的终端帧编码（N-API）
+//! maou-term-raster —— 终端帧编码（N-API）
 //!
-//! 不替代 React/Ink 组件树；只加速 vram-layer 的 encode + 行 diff + ANSI 组装。
-//! JS 仍负责 Yoga layout 与 lastGrid 采集。
+//! 加速 vram-layer 的 encode + 行 diff + ANSI 组装。
 
 #![deny(clippy::all)]
 

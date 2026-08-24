@@ -5,7 +5,8 @@
   "type": "module",
   "license": "MIT",
   "bin": {
-    "maou": "./dist/index.js"
+    "maou": "./dist/index.js",
+    "aiinstall": "./dist/aiinstall.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -46,6 +47,7 @@
     "@little-house-studio/coding-agent": "workspace:*",
     "@little-house-studio/context": "workspace:*",
     "@little-house-studio/llm": "workspace:*",
+    "@little-house-studio/install-agent": "workspace:*",
     "@little-house-studio/ops-agent": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/types": "workspace:*",

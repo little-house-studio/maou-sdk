@@ -134,7 +134,7 @@ export function normalizeCommand(cmd: string): string {
 
 /**
  * 提取命令的"放行前缀"——用于"Yes且不再问"按命令类放行（而非完整命令串）。
- * 规则（模仿 Claude Code 的 Bash(prefix:*) 语义）：
+ * 规则（Bash(prefix:*) 语义）：
  *   - 取命令第一个 token 作命令名（如 `curl -s "https://..."` → `curl`）
  *   - 返回 `命令名 *` 形式，匹配时按命令名前缀放行同类命令
  *   - 这样同意一次 curl，所有 curl 命令都放行（用户显式同意该命令类）

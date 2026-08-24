@@ -3,7 +3,7 @@ name = "maou-term-raster"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Native terminal frame encoder for maou CLI (Ink-compatible paint path)"
+description = "Native terminal frame encoder for maou CLI"
 
 [lib]
 crate-type = ["cdylib"]

@@ -1,5 +1,5 @@
 /**
- * defineAgent — 文件即 Agent 定义 API（对标 Vercel Eve）
+ * defineAgent — 文件即 Agent 定义 API
  *
  * 用法：在 agent/agent.ts 中导出 defineAgent() 的返回值。
  *

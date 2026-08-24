@@ -1,6 +1,5 @@
 /**
  * 会话存储 —— 基于 JSONL 的会话持久化。
- * 对应 Python: core/agent/prompt/session/session_store.py
  */
 
 import {
@@ -13,6 +12,7 @@ import {
   statSync,
   appendFileSync,
   renameSync,
+  copyFileSync,
 } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import type { MaouMessage } from "./types/message.js";
@@ -28,6 +28,12 @@ import {
   type SessionVisibility,
 } from "./session-tree.js";
 import { patchPendingToolInterrupts } from "./tool-result.js";
+import {
+  appendLedgerEvent,
+  ledgerPath as ledgerFilePath,
+  mirrorMessageToLedger,
+  mirrorTraceToLedger,
+} from "./session-ledger.js";
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -44,7 +50,7 @@ export interface SessionMeta {
   last_prompt: string;
   last_raw_response: string;
   parent_session_id?: string;
-  /** 当前分支头（Pi leaf） */
+  /** 当前分支头 */
   leaf_id?: string;
   [key: string]: unknown;
 }
@@ -92,7 +98,7 @@ export interface SessionMessage {
    * `<thinking>` 注入 LLM 历史。
    */
   reasoningContent?: string;
-  /** 稳定条目 ID（Pi / DSH 树） */
+  /** 稳定条目 ID（会话树） */
   id?: string;
   parentId?: string | null;
   /** ui = 只给人看，不进模型 */
@@ -161,6 +167,11 @@ export class SessionStore {
 
   jsonlPath(sessionId: string): string {
     return join(this.sessionDir, `${sessionId}.jsonl`);
+  }
+
+  /** 事件源账本 sidecar，与主 jsonl 并列；save() 不会重写它 */
+  ledgerPath(sessionId: string): string {
+    return ledgerFilePath(this.sessionDir, sessionId);
   }
 
   metaPath(sessionId: string): string {
@@ -233,6 +244,15 @@ export class SessionStore {
     };
     atomicWriteJson(this.metaPath(sessionId), meta);
     writeFileSync(this.jsonlPath(sessionId), "", "utf-8");
+    try {
+      appendLedgerEvent(this.sessionDir, sessionId, "session/created", {
+        title: meta.title,
+        agentName: meta.agent_name,
+        parentSessionId: parentSessionId ?? null,
+      });
+    } catch {
+      /* 账本失败不影响建会话 */
+    }
     return this.reconstructSession(meta, [], []);
   }
 
@@ -464,6 +484,8 @@ export class SessionStore {
       atomicWriteJson(this.metaPath(newSession.id), meta);
     }
 
+    this.copyOrRebuildLedger(sourceSessionId, newSession.id, source.messages);
+
     return this.load(newSession.id) ?? newSession;
   }
 
@@ -476,8 +498,9 @@ export class SessionStore {
       throw new Error(`会话不存在: ${sessionId}`);
     }
 
-    // 清空 JSONL 文件
+    // 清空 JSONL 文件 + 账本 sidecar
     writeFileSync(this.jsonlPath(sessionId), "", "utf-8");
+    writeFileSync(this.ledgerPath(sessionId), "", "utf-8");
 
     // 更新元数据
     meta.updated_at = nowIso();
@@ -497,6 +520,7 @@ export class SessionStore {
       this.metaPath(sessionId),
       this.legacyPath(sessionId),
       this.rawPath(sessionId),
+      this.ledgerPath(sessionId),
     ]) {
       if (existsSync(path)) {
         unlinkSync(path);
@@ -536,6 +560,7 @@ export class SessionStore {
       ...metadata,
     });
     this.appendLine(sessionId, item);
+    mirrorMessageToLedger(this.sessionDir, sessionId, item);
 
     if (role === "user") {
       this.maybeUpdateTitle(sessionId, content);
@@ -563,6 +588,7 @@ export class SessionStore {
       data: item,
       created_at: nowIso(),
     });
+    mirrorTraceToLedger(this.sessionDir, sessionId, item);
   }
 
   /**
@@ -1007,7 +1033,7 @@ export class SessionStore {
       : branch;
   }
 
-  /** 改当前 leaf（Pi `/tree` / navigateTree） */
+  /** 改当前 leaf */
   branchTo(sessionId: string, entryId: string): boolean {
     const all = this.readAllMessages(sessionId);
     const hit = all.some((m) => m.id === entryId);
@@ -1039,7 +1065,7 @@ export class SessionStore {
   }
 
   /**
-   * 从某条消息（含）复制前缀到新会话。对齐 DSH `fork(boundary)` / Pi `/fork`。
+   * 从某条消息（含）复制前缀到新会话。
    */
   forkFromEntry(
     sourceSessionId: string,
@@ -1071,7 +1097,31 @@ export class SessionStore {
       meta.updated_at = nowIso();
       atomicWriteJson(this.metaPath(created.id), meta);
     }
+    for (const msg of prefix) {
+      mirrorMessageToLedger(this.sessionDir, created.id, msg as Record<string, unknown>);
+    }
     return this.load(created.id) ?? created;
+  }
+
+  /** 全量 fork：有 sidecar 就拷；旧会话没有则按消息重建 */
+  private copyOrRebuildLedger(
+    sourceId: string,
+    destId: string,
+    messages: SessionMessage[],
+  ): void {
+    const src = this.ledgerPath(sourceId);
+    const dst = this.ledgerPath(destId);
+    if (existsSync(src)) {
+      try {
+        copyFileSync(src, dst);
+        return;
+      } catch {
+        /* 回退重建 */
+      }
+    }
+    for (const msg of messages) {
+      mirrorMessageToLedger(this.sessionDir, destId, msg as Record<string, unknown>);
+    }
   }
 
   private appendLine(sessionId: string, item: Record<string, unknown>): void {

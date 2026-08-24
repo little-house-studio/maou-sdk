@@ -1,7 +1,6 @@
 /**
  * JSON 提取 —— 从模型原始输出文本中提取 JSON 候选内容。
  * 处理 Markdown 围栏、注释、尾逗号、缺失闭合符等噪声。
- * 对应 Python: core/protocol/json_extraction.py
  */
 
 import { stripTrailingCommas, stripJsonComments } from "./json-repair.js";
@@ -171,7 +170,6 @@ export interface JsonExtractionResult {
 
 /**
  * 提取 JSON 候选文本
- * 对应 Python: _extract_json_candidate
  */
 export function extractJsonCandidate(
   response: string,
@@ -259,7 +257,6 @@ export function extractJsonCandidate(
 
 /**
  * 简化版 JSON 文本提取
- * 对应 Python: _extract_json_text
  */
 export function extractJsonText(response: string): string {
   const result = extractJsonCandidate(response, {});

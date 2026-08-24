@@ -1,0 +1,148 @@
+.lobby-body {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 48px 20px 32px;
+}
+
+.lobby-hero {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.lobby-hero .kicker {
+  margin: 0 0 10px;
+  letter-spacing: 0.28em;
+  font-size: 12px;
+  color: var(--brass);
+}
+
+.lobby-hero h1 {
+  margin: 0 auto 16px;
+  max-width: 18em;
+  font-family: Fraunces, "Noto Serif SC", serif;
+  font-size: clamp(28px, 5vw, 48px);
+  line-height: 1.25;
+  font-weight: 600;
+}
+
+.lobby-hero em {
+  font-style: normal;
+  color: #f0d48a;
+}
+
+.lede {
+  margin: 0 auto;
+  max-width: 46em;
+  color: var(--muted);
+  line-height: 1.75;
+  font-size: 16px;
+}
+
+.halls {
+  display: grid;
+  gap: 18px;
+}
+
+@media (min-width: 860px) {
+  .halls { grid-template-columns: repeat(3, 1fr); }
+}
+
+.door {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 420px;
+  padding: 22px 20px 20px;
+  text-decoration: none;
+  border-radius: 8px 8px 4px 4px;
+  overflow: hidden;
+  transform: perspective(900px) rotateX(1.5deg);
+  transition: transform 220ms ease, box-shadow 220ms ease;
+}
+
+.door:hover,
+.door:focus-visible {
+  transform: perspective(900px) rotateX(0deg) translateY(-4px);
+}
+
+.door-plate {
+  align-self: flex-start;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  padding: 4px 8px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  opacity: 0.8;
+}
+
+.door strong {
+  margin: 18px 0 2px;
+  font-family: "Noto Serif SC", Fraunces, serif;
+  font-size: 30px;
+}
+
+.door em {
+  font-style: normal;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  opacity: 0.75;
+}
+
+.door p {
+  margin: 16px 0 auto;
+  line-height: 1.7;
+  font-size: 15px;
+}
+
+.enter {
+  margin-top: 20px;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+
+.door-codex {
+  color: #f6e7c8;
+  background:
+    linear-gradient(180deg, rgba(0,0,0,.08), rgba(0,0,0,.35)),
+    repeating-linear-gradient(90deg, #6b4224 0 14px, #5a361c 14px 16px, #7a4c2a 16px 28px);
+  box-shadow:
+    inset 0 0 0 10px #3d2414,
+    inset 0 0 0 12px #c9a45a,
+    0 18px 40px rgba(0,0,0,.4);
+}
+
+.door-dsh {
+  color: #ffe9c8;
+  background:
+    linear-gradient(180deg, rgba(80,0,0,.15), rgba(0,0,0,.4)),
+    repeating-linear-gradient(180deg, #7a1c1c 0 18px, #611414 18px 20px);
+  box-shadow:
+    inset 0 0 0 10px #4a0e10,
+    inset 0 0 0 13px #d4af55,
+    0 18px 40px rgba(0,0,0,.4);
+}
+
+.door-grok {
+  color: #f4efe6;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.08), rgba(0,0,0,.4)),
+    repeating-linear-gradient(90deg, #d8cfc2 0 20px, #c9c0b2 20px 22px);
+  color: #2b241c;
+  box-shadow:
+    inset 0 0 0 10px #8b8174,
+    inset 0 0 0 12px #eeeae2,
+    0 18px 40px rgba(0,0,0,.4);
+}
+
+.door-grok .door-plate,
+.door-grok em,
+.door-grok p,
+.door-grok .enter { color: #3a3228; }
+
+.lobby-foot {
+  margin-top: 36px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}

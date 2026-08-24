@@ -1,13 +1,12 @@
 /**
- * stream / complete —— 无状态的核心 LLM API（对标 pi-ai 的 stream/complete）
+ * stream / complete —— 无状态的核心 LLM API
  *
  * 形态：stream(model, context, options) → 事件流；complete(...) → AssistantMessage。
  * Context = { systemPrompt, messages, tools } 扁平、JSON 可序列化，是跨模型交接/持久化的基础。
  *
- * 比 pi-ai 更完善的地方：
- * - options.structuredOutput：复用我们的结构化 JSON 输出协议层（pi 没有）
+ * - options.structuredOutput：结构化 JSON 输出协议
  * - options.thinking：统一 5 级，映射到各厂商（见 reasoning.ts）
- * - 底层自带重试 + 429 退避（pi 无内置重试）
+ * - 底层自带重试 + 429 退避
  * - abort 不抛错（见 stopReason），部分内容保留可续传
  *
  * @example
@@ -27,7 +26,7 @@ import { computeCost } from "./compute-cost.js";
 import { resolvePricingFromPreset } from "./preset-normalize.js";
 import { normalizeStopReason } from "./stop-reason.js";
 
-// ─── Context / Message 类型（pi-ai 核心数据结构，我们更规整）──────────────────
+// ─── Context / Message 类型 ──────────────────────────────────────────────────
 
 /** 文本内容块 */
 export interface TextContent {
@@ -143,11 +142,6 @@ export type StopReason =
 // ─── Model 类型（stream 的第一参）────────────────────────────────────────────
 
 /**
- * stream/complete 接受的"模型"。
- * 可以是 getModel() 返回的 ModelSpec，也可以是 LLMConfig.toAPIPreset() 的 APIPreset，
- * 还可以是手写的 { model, url, protocol, key } 字面量（对标 pi 的 custom Model）。
- */
-/**
  * stream/complete 接受的"模型"配置。
  * 可以是：
  * - APIPreset（完整的预设配置）
@@ -194,7 +188,7 @@ export interface StreamOptions {
   client?: LLMClient;
 }
 
-// ─── stream 事件（对标 pi 的 AssistantMessageEvent，命名更直观）──────────────
+// ─── stream 事件 ────────────────────────────────────────────────────────────
 
 export type StreamEvent =
   | { type: "text"; delta: string; content: string }
@@ -284,7 +278,7 @@ function computeUsage(raw: LLMUsage | null, preset: APIPreset): Usage {
       pricing,
     );
     if (c) {
-      // Anthropic 1h 长缓存写入按 2x 计费（pi-ai 同款建模）
+      // Anthropic 1h 长缓存写入按 2x 计费
       const longWriteCost = cacheWrite1h > 0 ? (cacheWrite1h / 1e6) * pricing.inputPrice * 2 : 0;
       cost = {
         input: c.inputCost, output: c.outputCost, cacheRead: c.cacheSavings >= 0 ? -c.cacheSavings : 0,
@@ -414,7 +408,7 @@ export async function complete(model: StreamModel, context: Context, options: St
   return stream(model, context, options).result();
 }
 
-// ─── StreamResult：事件流 + .result() Promise（对标 pi 的 EventStream）──────
+// ─── StreamResult：事件流 + .result() Promise ──────────────────────────────
 
 /**
  * 包装 async generator，额外提供：

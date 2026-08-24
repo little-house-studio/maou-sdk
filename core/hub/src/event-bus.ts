@@ -1,6 +1,5 @@
 /**
  * 内存事件总线 (pub/sub 模式)
- * 对齐 Python: core/server/hub/core/event_bus.py
  *
  * 支持通配符订阅：订阅 "device.*" 可收到所有 device 开头的事件。
  */

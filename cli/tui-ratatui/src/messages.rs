@@ -1,4 +1,4 @@
-//! Message rendering aligned with Ink MessageRow / MsgLayout / ToolCard dumps.
+//! Message rendering aligned with MessageRow / MsgLayout / ToolCard dumps.
 
 use crate::markdown::{render_markdown, wrap_str};
 use crate::protocol::{ProtoSystemEvent, ProtoToolCard, UiMessage};
@@ -58,7 +58,7 @@ fn timecode(ts_ms: Option<u64>) -> String {
     format!("{h:02}:{m:02}:{s:02}")
 }
 
-/// Ink compact(): 200000 → 200.0k
+/// compact: 200000 → 200.0k
 pub fn compact(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
@@ -139,7 +139,7 @@ fn duration_str(ms: Option<u64>) -> String {
     format!("{h}h{m:02}m{s:02}s")
 }
 
-/// Ink `shortId`: `/^m?u?/` then first 6 chars
+/// `/^m?u?/` then first 6 chars
 fn short_id(id: &str) -> String {
     let mut s = id;
     if let Some(rest) = s.strip_prefix('m') {
@@ -151,7 +151,7 @@ fn short_id(id: &str) -> String {
     s.chars().take(6).collect()
 }
 
-/// Ink `loopMark(round, 0)` → ↺N
+/// → ↺N
 fn loop_mark(round: u32) -> String {
     format!("↺{round}")
 }
@@ -172,21 +172,21 @@ pub struct ExpandHit {
     pub hover_paint: bool,
 }
 
-/// Click thinking header → ThinkingToggle (Ink ThinkingBlock useClickTarget).
+/// Click thinking header → ThinkingToggle .
 #[derive(Clone)]
 pub struct ThinkingHit {
     pub line_idx: usize,
     pub thinking_id: String,
 }
 
-/// Click system event banner → toggle local detail (Ink SystemEventRow open state).
+/// Click system event banner → toggle local detail .
 #[derive(Clone)]
 pub struct SystemEventHit {
     pub line_idx: usize,
     pub event_id: String,
 }
 
-/// Click tool result fold line → toggle full result (Ink DiffCollapsible).
+/// Click tool result fold line → toggle full result .
 #[derive(Clone)]
 pub struct ToolResultHit {
     pub line_idx: usize,
@@ -251,8 +251,8 @@ fn is_diff_result(s: &str) -> bool {
     })
 }
 
-/// Render messages → lines + hit targets (Ink dump layout).
-/// Ink `systemEventSymbol` (decorators.ts)
+/// Render messages → lines + hit targets .
+/// (decorators.ts)
 pub fn system_event_symbol(kind: &str) -> &'static str {
     match kind {
         "compress" => "🗜",
@@ -274,7 +274,7 @@ fn system_event_is_retryable(ev: &ProtoSystemEvent) -> bool {
         || matches!(ev.kind.as_str(), "env_error" | "retry_fail")
 }
 
-/// Ink SystemEventRow KIND_COLOR → theme tokens
+/// SystemEventRow KIND_COLOR → theme tokens
 fn system_event_color(kind: &str, theme: &Theme) -> Color {
     match kind {
         "compress" | "retry_fail" | "runtime_control" => theme.warn,
@@ -285,7 +285,7 @@ fn system_event_color(kind: &str, theme: &Theme) -> Color {
     }
 }
 
-/// Ink SystemEventRow: `>>>>[sym content | ts]<<<<` full-width banner
+/// `>>>>[sym content | ts]<<<<` full-width banner
 pub fn render_system_event_line(
     kind: &str,
     content: &str,
@@ -321,9 +321,9 @@ pub fn render_messages(
     theme: &Theme,
     history_base: usize,
     spinner_frame: u64,
-    // Event ids with detail expanded (Ink SystemEventRow `open` local state).
+    // Event ids with detail expanded .
     expanded_system_events: &std::collections::HashSet<String>,
-    // Tool ids with full result/diff expanded (Ink DiffCollapsible).
+    // Tool ids with full result/diff expanded .
     expanded_tool_results: &std::collections::HashSet<String>,
 ) -> (Vec<Line<'static>>, RenderHits) {
     let w = width.max(20);
@@ -336,7 +336,7 @@ pub fn render_messages(
         tool_results: vec![],
     };
 
-    // Ink SystemEventRow: >>>>[sym content | ts]<<<< ; detail only when open
+    // >>>>[sym content | ts]<<<< ; detail only when open
     for ev in system_events {
         let has_detail = ev
             .detail
@@ -359,7 +359,7 @@ pub fn render_messages(
             if let Some(detail) = &ev.detail {
                 let total = detail.lines().count();
                 for chunk in wrap_str(detail, w.saturating_sub(LOGO_W + 1)) {
-                    // detail lines also toggle (Ink whole-row click target)
+                    // detail lines also toggle 
                     hits.system_events.push(SystemEventHit {
                         line_idx: out.len(),
                         event_id: ev.id.clone(),
@@ -449,7 +449,7 @@ pub fn render_messages(
         match m.role.as_str() {
             "user" => {
                 let kind = m.kind.as_deref().unwrap_or("human_user");
-                // Ink: non-human user kinds render as system notice (▣)
+                // non-human user kinds render as system notice (▣)
                 let notice = matches!(
                     kind.split('|').next().unwrap_or(kind),
                     "system_notice" | "runtime_control" | "agent_message" | "compact" | "unknown"
@@ -469,7 +469,7 @@ pub fn render_messages(
                     continue;
                 }
 
-                // Ink UserBubble: shortId | who | ts | ↑tok [| queued]
+                // shortId | who | ts | ↑tok [| queued]
                 let sid = short_id(&m.id);
                 let mut head = format!("{sid} | {label} | {tc}");
                 if let Some(up) = m.usage_input {
@@ -482,7 +482,7 @@ pub fn render_messages(
                 }
                 out.push(user_bar_line(
                     &format!(" {head}"),
-                    theme.muted, // Ink headFg = t.muted
+                    theme.muted,
                     theme.user_bg,
                     theme.accent,
                     theme.muted, // screw
@@ -518,7 +518,7 @@ pub fn render_messages(
                     ));
                 }
                 if total > limit {
-                    // Ink: expand vs collapse affordance
+                    // expand vs collapse affordance
                     let fold = if expanded {
                         format!(" ▲ 收起全文（{total} 行 · 再点收起）")
                     } else {
@@ -557,7 +557,7 @@ pub fn render_messages(
                 out.push(Line::from(""));
             }
             "assistant" => {
-                // Ink: ◈ ↺N | agent:coding | HH:MM:SS | (dur) | ↓tok · LIVE
+                // ◈ ↺N | agent:coding | HH:MM:SS | (dur) | ↓tok · LIVE
                 let logo = if m.streaming {
                     spinner_char(spinner_frame)
                 } else {
@@ -588,7 +588,7 @@ pub fn render_messages(
                     theme.dim
                 };
                 if m.streaming {
-                    // Ink LiveBadge: accent bold LIVE suffix
+                    // accent bold LIVE suffix
                     let mut spans = head_line(logo, &head, head_color, true).spans;
                     spans.push(Span::styled(
                         " · ".to_string(),
@@ -607,7 +607,7 @@ pub fn render_messages(
 
                 for th in &m.thinking_blocks {
                     let chars = th.content.chars().count();
-                    // Ink ThinkingBlock: fixed-width dots + spinner so header never reflows height
+                    // fixed-width dots + spinner so header never reflows height
                     let tlabel: String = if th.streaming {
                         let dots = match (spinner_frame / 2) % 3 {
                             0 => ".  ",
@@ -963,7 +963,7 @@ fn render_tool_card(
         message_id: m.id.clone(),
         tool_id: t.id.clone(),
     });
-    // Ink: logo empty + " name " yellow + " summary ▶"
+    // logo empty + " name " yellow + " summary ▶"
     out.push(tool_title_line(&t.name, &meta, mark, t.is_error, theme));
 
     if t.expanded {
@@ -981,7 +981,7 @@ fn render_tool_card(
                 "▸ 输出"
             };
             out.push(pipe_body(label, theme.dim, theme, false));
-            // Ink ResultSection: toolResult (cyan) / err
+            // toolResult (cyan) / err
             let color = if t.is_error {
                 theme.err
             } else {
@@ -990,7 +990,7 @@ fn render_tool_card(
             let lines: Vec<&str> = res.lines().collect();
             let need_fold = lines.len() > 12;
             let full = expanded_tool_results.contains(&t.id);
-            // Ink DiffCollapsible: collapsed preview 8 lines; open = full + ▲ 收起
+            // collapsed preview 8 lines; open = full + ▲ 收起
             let preview_n = if is_diff_result(res) || is_write_tool(&t.name) {
                 8
             } else {
@@ -1106,10 +1106,10 @@ fn trunc(s: &str, w: usize) -> String {
     out
 }
 
-/// EventBlock: Ink dump style
+/// EventBlock: dump style
 /// `◤○ IDLE  ↑~57.2k …… NORMAL · 询问 …… 0↑ 0↓ ◥`
 /// 审批模式 → (芯片底色, 英文标题, 兜底中文提示)。EventBlock / 顶部横幅同源。
-/// Ink approvalStyle: NORMAL uses inputFieldBg (#B0B0B0); AUTO warn; YOLO err.
+/// NORMAL uses inputFieldBg (#B0B0B0); AUTO warn; YOLO err.
 pub fn approval_chip(mode: &str, theme: &Theme) -> (Color, &'static str, &'static str) {
     match mode {
         "auto" => (theme.warn, "AUTO", "自动"),
@@ -1132,7 +1132,7 @@ pub fn render_event_block(
     render_event_block_framed(width, theme, mode, aborting, approval_mode, up, down, detail, pending, 0)
 }
 
-/// Same as `render_event_block` with spinner frame for busy modes (Ink useAnimFrame).
+/// Same as `render_event_block` with spinner frame for busy modes .
 pub fn render_event_block_framed(
     width: u16,
     theme: &Theme,
@@ -1146,7 +1146,7 @@ pub fn render_event_block_framed(
     spinner_frame: u64,
 ) -> Line<'static> {
     let (icon, en, color) = short_status(mode, aborting, detail, theme);
-    // Ink: busy modes replace static icon with braille spinner
+    // busy modes replace static icon with braille spinner
     let icon = if !aborting && matches!(mode, "thinking" | "generating" | "tool_pending" | "retrying")
     {
         spinner_char(spinner_frame)
@@ -1156,7 +1156,7 @@ pub fn render_event_block_framed(
     // 审批模式只在顶栏展示，底部 EventBlock 中间不再画 AUTO/NORMAL 芯片
     let _ = approval_mode;
 
-    // compact up like Ink ↑~57.2k when large
+    // compact up like ↑~57.2k when large
     let up_s = if up >= 1000 {
         format!("↑~{}", compact(up))
     } else {

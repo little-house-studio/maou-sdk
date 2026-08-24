@@ -1,22 +1,21 @@
 {
   "name": "skill",
-  "description": "技能集成统一入口（上帝工具，占位）",
+  "description": "技能领域统一入口。use=加载；search/find=检索；install=安装；create=新建。也可直接调用对应独立工具。",
   "parameters": {
     "type": "object",
     "properties": {
-      "reason": {
+      "action": {
         "type": "string",
-        "description": "为什么必须调用此工具？"
+        "enum": ["use", "search", "find", "install", "create"],
+        "description": "use=加载 | search/find=检索 | install=安装 | create=新建"
       },
-      "description": {
-        "type": "string",
-        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
-      }
+      "name": { "type": "string", "description": "skill 名称（use/create）" },
+      "query": { "type": "string", "description": "搜索词或安装源（search/install）" },
+      "skill_description": { "type": "string", "description": "create 时写入 SKILL.md 的短描述" },
+      "requirements": { "type": "string", "description": "create 的详细需求" },
+      "description": { "type": "string", "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。" }
     },
-    "required": [
-      "description",
-      "reason"
-    ],
-    "additionalProperties": false
+    "required": ["description", "action"],
+    "additionalProperties": true
   }
 }

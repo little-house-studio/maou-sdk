@@ -1,5 +1,5 @@
 /**
- * 工具输出压缩器 —— 在工具结果进入 LLM 上下文之前做"摄入层"压缩（对标 RTK）。
+ * 工具输出压缩器 —— 在工具结果进入 LLM 上下文之前做"摄入层"压缩。
  *
  * 设计原则：保守、保信号。
  * - 短输出原样返回（不动）。
@@ -48,7 +48,7 @@ export function stripNoise(s: string): string {
 }
 
 /**
- * Never-worse 守卫（对标 RTK v0.42）：压缩后若不比原短，回退原样。
+ * Never-worse 守卫：压缩后若不比原短，回退原样。
  * 绝不让摄入层压缩反向膨胀上下文。几乎所有正常路径都不会触发，
  * 只在边缘情况（如未来新增的有损策略参数退化）兜底。
  */
@@ -155,7 +155,7 @@ export function compressTerminalOutput(command: string, output: string, level: C
   return compressOutput(output, { level });
 }
 
-// ─── 代码签名抽取（reader 签名模式，对标 RTK -l aggressive）──────────────────
+// ─── 代码签名抽取（reader 签名模式）──────────────────────────────────────────
 
 function signaturePatterns(ext: string): RegExp[] {
   switch (ext) {

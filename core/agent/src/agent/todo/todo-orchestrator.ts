@@ -752,7 +752,7 @@ export class TodoOrchestrator {
     // 使用 TASK_MANAGER 内部：先 delete 再 manage create 路径会 auto in_progress——我们直接 set via restore + 手动
     TASK_MANAGER.manage(rootSessionId, "delete", null);
     // manage create 会 selectLayer；我们需要全部 pending。改用 restore + persist
-    // 直接调用私有状态：通过 manage with a hack — 更好扩展 TaskManager.setTasks
+    // 全量覆盖：delete 后再 replaceTasks，避免 create 路径把任务自动标成 in_progress
 
     TASK_MANAGER.replaceTasks(rootSessionId, validated);
 

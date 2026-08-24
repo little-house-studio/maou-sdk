@@ -1,0 +1,19 @@
+{
+  "name": "get_goal",
+  "description": "Read the current /goal contract, including its exact id/revision, objective, phase, completed continuation rounds, round limit, blocker reason when present, and whether another continuation is armed. Call this before updating a /goal. This is not the host-verified /ultragoal.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复？"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么。"
+      }
+    },
+    "required": ["description", "reason"],
+    "additionalProperties": false
+  }
+}

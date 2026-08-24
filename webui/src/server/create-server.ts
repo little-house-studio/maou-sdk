@@ -491,7 +491,7 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
               "/approval normal|auto|yolo — 终端审批",
               "/export — 复制 transcript",
               "/usage · /cost · /analyze — 会话用量 / 诊断",
-              "/compact · /context · /init · /goal — 经 chat 走 Runtime",
+              "/compact · /context · /init · /plan · /goal · /ultragoal — 经 chat 走 Runtime",
               "/help — 本帮助",
             ],
           });

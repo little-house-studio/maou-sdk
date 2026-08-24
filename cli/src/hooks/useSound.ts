@@ -1,5 +1,5 @@
 /**
- * 音效管理器 —— Ink CLI 版（无 Pi TUI 依赖）。
+ * 音效管理器。
  *
  * 职责：
  *   - 平台检测：macOS→afplay，Linux→paplay/aplay，Windows→SoundPlayer，无播放器→BEL 回退
@@ -8,7 +8,7 @@
  *   - 配置：SoundConfig + ~/.maou/config.json ui.sounds + 环境变量覆盖
  *
  * 音频播放用 child_process.spawn + unref()（fire-and-forget，不阻塞事件循环）。
- * 不做桌面通知（Ink CLI 用备用屏，OSC 通知不适用）。
+ * 不做桌面通知。
  *
  * 音效文件：src/sounds/*.wav（dev 经 tsx 直读）/ dist/sounds/*.wav（build 后拷贝）。
  */

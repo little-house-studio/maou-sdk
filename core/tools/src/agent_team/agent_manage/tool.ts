@@ -27,7 +27,9 @@ export class TeamManageTool extends Tool {
     description:
       "团队管理工具。查看团队状态、创建队友、派发任务、与运行中的 subagent/队友通信、停止任务、清除队友。" +
       "主 Agent 用 scope=system 创建系统全局队友，Coding Agent 用 scope=project 创建项目专属队友。" +
-      "与运行中 subagent 通信：action=message|interrupt|insert + to=名称 + content=内容 → MessageBus；" +
+      "与运行中 subagent 再说话优先用 agent_send（message/insert/interrupt/stop）。" +
+      "本工具仍接受 action=message|interrupt|insert|stop。" +
+      "通信：to=名称 + content=内容 → MessageBus；" +
       "目标 agent 每轮 loop 会 poll inbox 并注入为 user 消息（标注 [来自 …]）。" +
       "list 可看状态与未读；dispatch 后台执行（detached fork）；stop 停止当前任务。" +
       "专业子 agent 模板（explore/research/tester/browser 等）也可由 subagent_<name> 或 agent_message 启动。",

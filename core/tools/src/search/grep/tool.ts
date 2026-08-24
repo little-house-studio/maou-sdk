@@ -1,7 +1,6 @@
 /**
  * Grep 工具 — 搜索文件内容
- * 优先使用 ripgrep (rg)，降级到 Node.js 原生实现
- * 设计参考 Claude Code 的 Grep 工具，透传 rg 参数
+ * 优先使用 ripgrep (rg)，降级到 Node.js 原生实现；透传 rg 参数
  */
 
 import { execFile, spawnSync } from "node:child_process";

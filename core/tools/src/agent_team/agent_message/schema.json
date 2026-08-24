@@ -1,6 +1,6 @@
 {
   "name": "agent_message",
-  "description": "fork 子 Agent 真并行执行独立任务。默认同步返回输出（── 输出 ──）；detached=true 后台跑。不要用 output 动作——结果在 fork 返回值里。",
+  "description": "fork 子 Agent 执行独立任务。默认同步返回输出（── 输出 ──）；detached=true 后台跑。todo 并行层由 harness 自动调度。再说话/停止用 agent_send。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -10,8 +10,8 @@
       },
       "action": {
         "type": "string",
-        "enum": ["fork", "create", "fork_layer", "list", "status", "output"],
-        "description": "fork/create: 执行子任务（默认同步返回完整输出）| fork_layer: 并发当前 todo 层 | list/status/output: 读本进程结果缓存（可选，优先用 fork 返回值）"
+        "enum": ["fork", "create"],
+        "description": "fork/create: 执行子任务（同义；默认同步返回完整输出）"
       },
       "reason": {
         "type": "string",

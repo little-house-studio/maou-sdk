@@ -91,7 +91,7 @@ export type {
 export {
   shutdownLspEngine,
   cleanupWorkspaceLsp,
-} from './code/lsp/tool.js'
+} from './lsp/lsp/tool.js'
 
 // 操作安全（三层门禁 + DCG + 审批策略）— 统一从 security/ 导出
 export {
@@ -116,9 +116,6 @@ export {
 } from './security/index.js'
 export type { HardCheckResult, HardCheckOptions } from './security/index.js'
 
-// /goal plan 分阶段解析
-export { parsePlanStages, formatStageStatus } from './agent_team/plan-stages.js'
-export type { PlanStage, ParsedPlanMeta } from './agent_team/plan-stages.js'
 export type {
   TerminalMode,
   TerminalReviewer,
@@ -160,7 +157,7 @@ export {
 export { DynamicToolLoader } from './dynamic-tool-loader.js'
 export type { DynamicToolLoadResult } from './dynamic-tool-loader.js'
 
-// ── 工具输出压缩器（摄入层 token 压缩，对标 RTK）──
+// ── 工具输出压缩器（摄入层 token 压缩）──
 export {
   compressOutput,
   compressTerminalOutput,
@@ -177,16 +174,16 @@ export type { CompressOptions, CompressLevel } from './compress/output-compresso
 // 编排实现（TodoOrchestrator 类）在 @little-house-studio/agent；
 // tools 仅导出工具 + 宿主桥（bind / TODO_ORCHESTRATOR 代理）。
 // TaskManager 通过 setPersistCallback 解耦持久化；调度见 core/agent/docs/TODO_ORCHESTRATOR.md
-export { TASK_MANAGER, TODO_MANAGER, TaskManager, TaskScheduler, TodoManageTool, TaskManageTool } from './task/task_manage/tool.js'
-export type { Task, TodoItem } from './task/task_manage/tool.js'
-export { TodoFinishTool, TaskFinishTool } from './task/task_finish/tool.js'
+export { TASK_MANAGER, TODO_MANAGER, TaskManager, TaskScheduler, TodoManageTool, TaskManageTool } from './todo/task_manage/tool.js'
+export type { Task, TodoItem } from './todo/task_manage/tool.js'
+export { TodoFinishTool, TaskFinishTool } from './todo/task_finish/tool.js'
 export {
   TODO_ORCHESTRATOR,
   bindTodoOrchestratorHost,
   getTodoOrchestrator,
   setTodoOrchestratorFallbackFactory,
-} from './task/todo-orchestrator-host.js'
-export type { TodoForkRunner, TodoOrchestratorHost } from './task/todo-orchestrator-host.js'
+} from './todo/todo-orchestrator-host.js'
+export type { TodoForkRunner, TodoOrchestratorHost } from './todo/todo-orchestrator-host.js'
 export type {
   TodoEvent,
   TodoEventType,
@@ -198,24 +195,19 @@ export type {
   TodoNodeStatus,
   LaneKind,
   LaneStatus,
-} from './task/todo-types.js'
+} from './todo/todo-types.js'
 export {
   formatTodoNoticeMessage,
   preprocessTodoSlash,
   buildPlanRequiredNotice,
-} from './task/todo-notice.js'
+} from './todo/todo-notice.js'
 
-// ── 文件编辑历史 + 回退（diff 标记，支撑「被影响文件的回退机制」）──
+// ── 本 session 已编辑路径（给 write/edit 的先读后写豁免）──
 export {
   record as recordFileEdit,
-  undo as undoFileEdit,
-  undoByToolCallId as undoFileEditByToolCallId,
-  lastEdit as lastFileEdit,
-  listEdits as listFileEdits,
+  wasEditedInSession,
   clearHistory as clearFileEditHistory,
-  readBefore as readFileBefore,
 } from './file/file-edit-history.js'
-export type { FileEditRecord } from './file/file-edit-history.js'
 
 // ── 子 Agent 委托工具（文件即子 Agent 约定）──
 // 不进 registerBuiltins：真正的工具实例由 AgentRuntime 在 run() 工具初始化阶段

@@ -1,6 +1,5 @@
 /**
  * Git Watcher — 项目 diff 监控与版本备份
- * 对应 Python: core/diff/git_watcher.py
  *
  * 设计：
  * - 每次 agent 对话发送前，检测是否有文件变更

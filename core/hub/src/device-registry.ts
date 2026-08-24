@@ -1,6 +1,5 @@
 /**
  * 设备注册表
- * 对齐 Python: core/server/hub/device/registry.py
  *
  * 管理设备信息，支持持久化到文件。
  */

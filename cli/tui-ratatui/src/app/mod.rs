@@ -54,7 +54,7 @@ pub struct App {
     pub(crate) overlay_list_from: usize,
     /// Number of item rows currently painted in the overlay window.
     pub(crate) overlay_list_count: usize,
-    /// Mouse hover row in overlay list (highlight only; Ink SelectList).
+    /// Mouse hover row in overlay list .
     pub(crate) overlay_hover: Option<usize>,
     /// Scroll offset for lines-only overlays (help / prompt dump).
     pub(crate) overlay_scroll: usize,
@@ -66,16 +66,15 @@ pub struct App {
     /// Manual first-visible line of multi-line input (wheel / drag-scroll); None = pin to caret.
     pub(crate) input_view_offset: Option<usize>,
     pub scroll_from_bottom: u16,
-    /// Ink `autoFollow`: pin to latest while true; leave on scroll-up, re-enter at bottom.
+    /// pin to latest while true; leave on scroll-up, re-enter at bottom.
     /// When false, stream growth uses pin-content (from_bottom += Δ) so the view is not sucked down.
     pub(crate) auto_follow: bool,
-    /// After send while following: keep a larger tail pad until stream settles
-    /// (Ink BOTTOM_PAD + room for AI growth; Grok follow-at-bottom).
+    /// After send while following: keep a larger tail pad until stream settles.
     pub(crate) follow_tail_boost: bool,
-    /// Recent wheel burst count（Grok 式步长 1/2/4 用）。
+    /// Recent wheel burst count（步长 1/2/4）。
     pub(crate) wheel_burst: u8,
     pub(crate) wheel_last_at: Instant,
-    /// 触控板分数累加（不足 1 行先攒，对齐 Grok trackpad accumulation）
+    /// 触控板分数累加（不足 1 行先攒）
     pub(crate) wheel_frac: f32,
     pub should_quit: bool,
     pub fps: f32,
@@ -91,14 +90,14 @@ pub struct App {
     pub(crate) last_input_emit: Instant,
     /// 用户在场活动节流（停 Node 侧卡住长铃），避免 mousemove 刷爆 IPC
     pub(crate) last_user_activity_emit: Instant,
-    /// Software caret blink phase (Ink notifyCursorActivity / isCursorBlinkVisible)
+    /// Software caret blink phase 
     pub(crate) caret_blink_on: bool,
     pub(crate) caret_blink_at: Instant,
     pub(crate) tool_hits: Vec<messages::ToolHit>,
     pub(crate) msg_expand_hits: Vec<messages::ExpandHit>,
     pub(crate) thinking_hits: Vec<messages::ThinkingHit>,
     pub(crate) system_event_hits: Vec<messages::SystemEventHit>,
-    /// Ink SystemEventRow local `open` set (detail expand).
+    /// SystemEventRow local `open` set (detail expand).
     pub(crate) expanded_system_events: HashSet<String>,
     pub(crate) spinner_frame: u64,
     pub(crate) back_to_bottom_y: Option<u16>,
@@ -132,15 +131,15 @@ pub struct App {
     pub(crate) overlay_rect: Option<Rect>,
     /// Terminal approval bar rect for mouse hit (Y/A/N/B).
     pub(crate) approval_rect: Option<Rect>,
-    /// Hovered approval chip: "y"|"a"|"n"|"b" (Ink TerminalApprovalBar hover).
+    /// Hovered approval chip: "y"|"a"|"n"|"b" .
     pub(crate) approval_hover: Option<String>,
     /// Paint-time chip hit boxes: (x0, x1 exclusive, choice) on approval row 0.
     pub(crate) approval_chips: Vec<(u16, u16, String)>,
     /// (x0, x1, id, action_kind, action_value)
     pub(crate) nav_segs: Vec<(u16, u16, String, String, String)>,
-    /// Ink EventBlockExpanded vertical scroll (0 = top of supervisor log).
+    /// EventBlockExpanded vertical scroll (0 = top of supervisor log).
     pub(crate) event_expand_scroll: u16,
-    /// Tool result/diff fully expanded (Ink DiffCollapsible open).
+    /// Tool result/diff fully expanded .
     pub(crate) expanded_tool_results: HashSet<String>,
     pub(crate) tool_result_hits: Vec<messages::ToolResultHit>,
     pub(crate) chat_line_cache: Vec<(u16, String, u16)>,
@@ -162,7 +161,7 @@ pub struct App {
     pub vram: Vram,
     pub(crate) local_toast: Option<LocalToast>,
     pub(crate) rx: Receiver<InMsg>,
-    /// Ink terminal-viewport overflowLatch (IME lateral scroll).
+    /// terminal-viewport overflowLatch (IME lateral scroll).
     pub(crate) viewport_overflow_latch: bool,
     /// Set when latch clears → main loop restores viewport once.
     pub(crate) need_viewport_restore: bool,
@@ -403,7 +402,7 @@ impl App {
         }
     }
 
-    /// Take one-shot viewport restore request (Ink restoreTerminalViewport).
+    /// Take one-shot viewport restore request .
     pub fn take_viewport_restore(&mut self) -> bool {
         if self.need_viewport_restore {
             self.need_viewport_restore = false;

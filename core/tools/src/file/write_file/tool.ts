@@ -10,7 +10,7 @@ import { createToolResponse, toolFail } from "../../base.js";
 import { toolFailFromThrown } from "../../errors.js";
 import { errToString } from "../../util/common.js";
 import { resolveToolPath } from "../../path-guard.js";
-import { verifyAfterWrite } from "../../code/lsp_verify.js";
+import { verifyAfterWrite } from "../../lsp/lsp_verify.js";
 import { atomicWrite } from "../atomic-write.js";
 import {
   wasRead,
@@ -18,11 +18,8 @@ import {
   markRead,
   refreshRead,
 } from "../read-registry.js";
-import {
-  record as recordEdit,
-  readBefore,
-  wasEditedInSession,
-} from "../file-edit-history.js";
+import { record as recordEdit, wasEditedInSession } from "../file-edit-history.js";
+import { denyNonPlanWrite, isSessionPlanFile } from "../../plan-gate.js";
 
 /**
  * 先读后写策略：
@@ -80,7 +77,7 @@ export class WriteFileTool extends Tool {
       required: ["path", "content"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   async execute(
@@ -110,10 +107,15 @@ export class WriteFileTool extends Tool {
       return toolFailFromThrown(err, { fallbackCategory: "sandbox_denied" });
     }
 
+    const planDenied = denyNonPlanWrite(ctx, fullPath);
+    if (planDenied) return planDenied;
+
     try {
       const isNew = !existsSync(fullPath);
       const sid = ctx.sessionId;
-      const gate = needReadBeforeWrite(sid, fullPath, isNew);
+      const gate = isSessionPlanFile(ctx, fullPath)
+        ? { block: false as const }
+        : needReadBeforeWrite(sid, fullPath, isNew);
 
       if (gate.block) {
         // force：仅放行「从未读过」的故意整文件替换；stale（读后有 diff）仍须先读
@@ -154,13 +156,7 @@ export class WriteFileTool extends Tool {
       const dir = dirname(fullPath);
       mkdirSync(dir, { recursive: true });
 
-      if (sid) {
-        const beforeContent = isNew ? null : readBefore(fullPath);
-        recordEdit(sid, fullPath, beforeContent, content, {
-          toolName: "write_file",
-          action: isNew ? "create" : "overwrite",
-        });
-      }
+      if (sid) recordEdit(sid, fullPath);
 
       atomicWrite(fullPath, content);
       if (sid) refreshRead(sid, fullPath);

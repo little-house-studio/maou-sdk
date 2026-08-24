@@ -90,16 +90,22 @@ getModel("anthropic", "claude-opus-4-1")?.pricing; // { input: 15, output: 75, .
 ## 订阅 OAuth 登录（免 API key）
 
 ```ts
-import { loginAnthropic, applyOAuthToPreset } from "@little-house-studio/llm/oauth";
+import { loginOAuth, applyOAuthToPreset, listOAuthStatus } from "@little-house-studio/llm/oauth";
 
-const { url, complete } = loginAnthropic();
-console.log("打开并授权：", url);
-await complete(codeFromUser);                 // 保存令牌
-const preset = await applyOAuthToPreset(basePreset, "anthropic"); // 注入 token
+await loginOAuth("anthropic", {
+  openBrowser: true,
+  onAuth: (info) => console.log(info.url ?? info.verificationUri),
+  onPrompt: async ({ message }) => readLine(message),
+});
+const preset = await applyOAuthToPreset({ model: "", url: "" }, "anthropic");
+listOAuthStatus();
 ```
 
-支持 `loginAnthropic`（Claude Pro/Max）、`loginOpenAICodex`（ChatGPT）、
-`loginGitHubCopilot`（设备码）、`loginGeminiCli`（Google）。
+也可用低层 `loginAnthropic()` / `loginOpenAICodex()` / `loginGitHubCopilot()` /
+`loginGeminiCli()` / `loginXai()`（返回 URL 或设备码，再 `complete()`）。
+
+覆盖 anthropic、openai-codex（浏览器或设备码）、github-copilot、google、xai。
+令牌在 `~/.maou/oauth/<provider>.json`。preset 可写 `oauth` / `oauthProvider`；`preset.oauth=true` 时 LLMClient 会自动续票。
 
 ## 图片生成
 

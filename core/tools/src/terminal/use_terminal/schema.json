@@ -1,6 +1,6 @@
 {
   "name": "use_terminal",
-  "description": "执行 shell 命令或管理常驻终端。不指定 id 为临时终端（执行完即销毁）；指定 id 为持久终端（可反复操作）。action=run 运行命令；action=manage 管理终端；action=scan 按条件扫文件；return_when=filter|until + match/expr 做条件返回。",
+  "description": "执行 shell 命令或管理常驻终端。不指定 id 为临时终端（执行完即销毁）；指定 id 为持久终端（可反复操作）。action=run 运行命令；action=manage 管理终端；action=write 键盘输入；return_when=filter|until + match/expr 对命令输出做条件返回。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -9,8 +9,7 @@
         "enum": [
           "run",
           "manage",
-          "write",
-          "scan"
+          "write"
         ],
         "description": "操作类型，默认 run。"
       },
@@ -53,10 +52,6 @@
       "expr": {
         "type": "string",
         "description": "受限 Python 表达式（line/n/re/m）。例: m is not None and 2 < int(m.group(1)) < 5"
-      },
-      "path": {
-        "type": "string",
-        "description": "scan 的文件路径；或 filter 扫文件时用。"
       },
       "keep_running": {
         "type": "boolean",

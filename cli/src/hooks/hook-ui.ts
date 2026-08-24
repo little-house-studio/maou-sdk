@@ -1,5 +1,5 @@
 /**
- * TUI 侧 Hooks.ui（对齐 Pi `ctx.ui.confirm`）。
+ * TUI 侧 Hooks.ui。
  * confirm 打开 Yes/No overlay；无应答或 Esc = 拒绝。
  */
 

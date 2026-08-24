@@ -1,0 +1,210 @@
+.stage-grok {
+  background:
+    linear-gradient(180deg, #d9d2c6 0 28%, #b7b0a4 28% 58%, #6b6258 58% 100%);
+}
+
+.court { position: absolute; inset: 0; color: #2b241c; }
+
+.parchment {
+  position: absolute;
+  left: 4%;
+  top: 8%;
+  width: 210px;
+  min-height: 150px;
+  background:
+    repeating-linear-gradient(#f6ecd4 0 22px, #e8d9b8 22px 23px);
+  padding: 12px 14px 12px 22px;
+  box-shadow: 6px 8px 0 rgba(60,40,20,.25);
+  font-size: 11px;
+  line-height: 1.45;
+  transform: rotate(-2deg);
+}
+
+.parchment::before {
+  content: "";
+  position: absolute;
+  left: 8px; top: 10px; bottom: 10px;
+  width: 2px;
+  background: #b33;
+}
+
+.belt {
+  position: absolute;
+  left: 4%;
+  right: 34%;
+  bottom: 22%;
+  height: 54px;
+  background:
+    repeating-linear-gradient(90deg, #3a342c 0 24px, #2b261f 24px 28px);
+  border-top: 8px solid #8a7a60;
+  border-bottom: 8px solid #8a7a60;
+  overflow: hidden;
+}
+
+.piece {
+  position: absolute;
+  bottom: 10px;
+  width: 46px;
+  height: 28px;
+  background: #e8d4b0;
+  border: 2px solid #2b241c;
+  left: -50px;
+}
+
+.stage-grok.is-running[data-scene="loop"] .piece,
+.stage-grok.is-running[data-scene="eval"] .piece,
+.stage-grok.is-running[data-scene="work"] .piece {
+  animation: belt-move 3.2s linear infinite;
+}
+
+@keyframes belt-move {
+  from { left: -8%; }
+  to { left: 78%; }
+}
+
+.worker { position: absolute; left: 28%; bottom: 34%; }
+.worker .torso { background: #3e5a48; }
+
+.booth {
+  position: absolute;
+  left: 48%;
+  top: 12%;
+  width: 150px;
+  height: 120px;
+  background: #2b241c;
+  border: 6px solid #c9a45a;
+  border-radius: 8px;
+  color: #f3e6cf;
+}
+
+.booth .shade {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(180deg, transparent 0 8px, rgba(0,0,0,.35) 8px 10px);
+}
+
+.judge { position: absolute; left: 48px; top: 28px; }
+.judge .torso { background: #1c1c28; }
+.judge .head { box-shadow: 0 0 16px #f0d48a; }
+
+.verdict {
+  position: absolute;
+  left: 50%;
+  top: 38%;
+  transform: translateX(-20%);
+  padding: 6px 10px;
+  background: #f6ecd4;
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0;
+}
+
+.jury {
+  position: absolute;
+  right: 4%;
+  top: 14%;
+  width: 200px;
+  height: 170px;
+  background: #8b8174;
+  border: 8px solid #eeeae2;
+  display: flex;
+  justify-content: space-around;
+  align-items: flex-end;
+  padding: 10px;
+}
+
+.juror { width: 48px; }
+.juror .torso { background: #4a3d2c; }
+.juror.j0 .torso { background: #6b1c1c; }
+.card {
+  position: absolute;
+  top: -18px;
+  left: -6px;
+  font-size: 10px;
+  background: #f6ecd4;
+  padding: 2px 4px;
+  opacity: 0;
+}
+
+.gavel-box {
+  position: absolute;
+  right: 8%;
+  bottom: 10%;
+  width: 120px;
+  height: 70px;
+}
+
+.gavel {
+  position: absolute;
+  left: 20px;
+  top: 0;
+  width: 80px;
+  height: 16px;
+  background: #3a2416;
+  border-radius: 6px;
+  transform-origin: 70% 50%;
+  transform: rotate(-20deg);
+}
+
+.gavel::after {
+  content: "";
+  position: absolute;
+  right: -8px;
+  top: -10px;
+  width: 28px;
+  height: 36px;
+  background: #2b1a10;
+  border-radius: 4px;
+}
+
+.block {
+  position: absolute;
+  right: 10px;
+  bottom: 0;
+  width: 50px;
+  height: 18px;
+  background: #c9a45a;
+}
+
+.restart-tag {
+  position: absolute;
+  left: 8%;
+  bottom: 8%;
+  padding: 8px 12px;
+  background: #2b241c;
+  color: #f6ecd4;
+  font-size: 12px;
+  opacity: 0;
+}
+
+.stage-grok[data-scene="plan"] .parchment { animation: pulse-glow 1.8s ease-in-out infinite; }
+.stage-grok[data-scene="eval"] .verdict { opacity: 1; animation: ticket-out 400ms ease; }
+.stage-grok[data-scene="panel"] .card { opacity: 1; }
+.stage-grok[data-scene="veto"] .juror.j0 { filter: drop-shadow(0 0 10px #b33); }
+.stage-grok[data-scene="veto"] .juror.j0 .card { opacity: 1; }
+.stage-grok[data-scene="stall"] .piece { filter: grayscale(1); animation: none; left: 40%; }
+.stage-grok[data-scene="host"] .gavel { animation: gavel 0.7s ease-in-out 2; }
+.stage-grok[data-scene="wake"] .restart-tag { opacity: 1; }
+
+.eval-lamp {
+  position: absolute;
+  left: 52%;
+  top: 8%;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: #5a4030;
+}
+
+.same-turn {
+  position: absolute;
+  left: 6%;
+  bottom: 36%;
+  font-size: 11px;
+  background: rgba(43,36,28,.85);
+  color: #f6ecd4;
+  padding: 4px 8px;
+  border-radius: 99px;
+  opacity: 0;
+}
+.stage-grok[data-scene="loop"] .same-turn,
+.stage-grok[data-scene="eval"] .same-turn { opacity: 1; }

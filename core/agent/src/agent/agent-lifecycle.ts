@@ -11,12 +11,8 @@
  *   - `revive(sessionId)`：标记回 idle，外部可挂载 onRevive 回调做实际重建。
  *   - TTL 默认 5 分钟（可配）。
  *
- * 与 oh-my-pi 的区别：
- *   - 不直接持有 / dispose AgentSession 对象（maou-sdk 的 AgentRegistry 是
- *     文件级配置注册表，非运行时实例注册表）。park/revive 的实际副作用通过
- *     注入的回调完成，保持与 runtime 解耦。
- *   - 按 sessionId 索引（而非 agent id），因为 maou-sdk 的 fork 子 agent
- *     唯一标识是 subSessionId。
+ * park/revive 的实际副作用通过注入的回调完成，不直接持有 / dispose 运行时实例。
+ * 按 sessionId 索引（fork 子 agent 的唯一标识是 subSessionId）。
  *
  * 线程模型：单进程 Node 事件循环；TTL 定时器 unref，不阻止进程退出。
  */

@@ -37,7 +37,7 @@ export function getNavAction(id: string): NavActionDef | undefined {
   return byId.get(id);
 }
 
-/** 给 Ink NavBar 用的闭包表（兼容旧 NAV_ACTIONS 形状） */
+/** NavBar 用的闭包表（兼容旧 NAV_ACTIONS 形状） */
 export function buildNavActionFns(
   run: (action: NavActionDef) => void,
 ): Record<string, () => void> {

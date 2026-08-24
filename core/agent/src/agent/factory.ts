@@ -109,7 +109,7 @@ export class AgentFactory {
       mkdirSync(agentDir, { recursive: true });
       const filesCreated: string[] = [];
 
-      // ── eve 结构：prompt/system/system.md + before_user + compression ──
+      // ── prompt/system/system.md + before_user + compression ──
 
       // prompt/system/system.md — 系统提示词入口
       const promptSystemDir = join(agentDir, "prompt", "system");

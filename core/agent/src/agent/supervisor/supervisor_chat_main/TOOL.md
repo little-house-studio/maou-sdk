@@ -1,6 +1,6 @@
 # supervisor_chat_main
 
-监督 Agent → 主 Agent 沟通工具（仅 `/goal` 监督模式下可用）。
+监督 Agent → 主 Agent 沟通。这是监督内部工具，只在监督 session 注册，不进业务 builtins。与本会话目标模式不是同一套。
 
 ## 用途
 

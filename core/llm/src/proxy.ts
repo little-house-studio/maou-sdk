@@ -1,7 +1,7 @@
 /**
  * HTTP/HTTPS 代理支持（Node 专用）
  *
- * 对标 pi-ai：读取 http_proxy / https_proxy / no_proxy 环境变量走代理。
+ * 读取 http_proxy / https_proxy / no_proxy 环境变量走代理。
  * Node 的全局 fetch 基于 undici，可通过 `dispatcher` 选项指定代理 Agent。
  *
  * ⚠️ 本模块静态依赖 undici（node-only），不从浏览器安全的主入口 (core/llm) 导出，

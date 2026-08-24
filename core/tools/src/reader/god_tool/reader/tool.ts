@@ -1,6 +1,5 @@
 /**
  * 读文件工具 — 读取本地文件、URL、图片
- * 对应 Python: core/tools/impls/read_tool.py
  */
 
 import { readFileSync, existsSync, statSync } from "node:fs";
@@ -49,7 +48,7 @@ export class ReadTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
   readonly definition: ToolDefinition = {
     name: "reader",
-    aliases: ["read", "read_file"],
+    aliases: ["read"],
     description:
       "读取文件、网页或图片。支持：本地文件（文本）、网页 URL（提取正文）、图片文件（base64）。",
     parameters: {
@@ -144,7 +143,7 @@ export class ReadTool extends Tool {
       const lines = content.split("\n");
       const totalLines = lines.length;
 
-      // 签名模式（对标 RTK -l aggressive）：只给函数/类/接口签名，剥掉函数体，省 token。
+      // 签名模式：只给函数/类/接口签名，剥掉函数体，省 token。
       // 显式 mode/signatures/outline 触发；抽不到签名（非代码）则回退正常读取。
       const sigMode =
         params.mode === "signatures" || params.signatures === true || params.outline === true;

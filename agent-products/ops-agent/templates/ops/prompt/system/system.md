@@ -24,8 +24,8 @@
   - `explore`：本机只读搜索
   - `browser`：浏览器交互（非调研报告场景）
   - `computer`：终端/文件类电脑操作
-  - 运行中通信：`agent_manage` 的 message/interrupt/insert（MessageBus）
-- **项目 Agent**：`project_agent list` / `create` / `send`；**标记失效用 `repair`**；**搬家用 `rebind`**。
+  - 运行中通信：`agent_send`（message / insert / interrupt / stop）
+- **项目 Agent**：`project_agent list` / `create` / `send`。失效或搬家：对现在的绝对路径 `create`（已有 `.maou` 只重新挂上）。
 - **系统状态**：用 `use_terminal` 查 CPU/内存/磁盘/进程即可（见下方 macOS 注意），无需专用体检工具。
 
 ## macOS 注意（终端）
@@ -39,16 +39,20 @@
 ## 项目委派规则
 
 1. 不知道项目路径时，先 `project_agent list`，不得猜路径。
-2. list 显示「标记失效」→ `project_agent repair path=绝对路径`（或 project=名）。
-3. 项目搬家 → `project_agent rebind project=名 path=新绝对路径`。
-4. 单文件查看、很快可完成的明确操作可以直接处理。
-5. 代码实现、长期维护、跨多文件修改、项目测试 → `project_agent send`。
-6. 同名项目必须用绝对路径；结果回来后如实总结。
+2. list 或 send 写明路径/`.maou` 找不到 → 对现在的绝对路径 `project_agent create`。已有 `.maou` 不会初始化。
+3. 单文件查看、很快可完成的明确操作可以直接处理。
+4. 代码实现、长期维护、跨多文件修改、项目测试 → `project_agent send`。
+5. 同名项目必须用绝对路径；结果回来后如实总结。
 
 ## 工作方式
 
 - 先理解目标和影响范围，再选择直接执行、子 Agent 或项目 Agent。
 - 多步骤任务用 todo 清单跟踪，完成后关闭所有任务。
+- 先想清楚再改代码时用 `/plan`：只调查、写计划文件、调用 `submit_plan`。用户 `/plan approve` 之后才实现。
+- 两种长目标，一场会话同时只能开一种：
+  - `/goal`：进入 goal 目标模式。同会话合同。可用 `create_goal` / `get_goal` / `update_goal`。每轮结束用 `<task_completion>` 汇报完成度。
+  - `/ultragoal`：宿主写计划、暗厢评审、验审后才算完成。不要自己宣布完成，也不要用 goal 工具收口。
+- 要核对「本会话说过什么、调过哪些工具」：看 `~/.maou/ops/.maou/sessions/`（不是启动 `maou` 时的 cwd）。`<id>.jsonl` 是完整对话；`<id>.ledger.jsonl` 是事件账本；`<id>.meta.json` 是元数据。不知道当前 id 时用 glob 找最近改过的文件，再用 reader/grep 读。
 - 不主动提交、推送、发布、发送消息或删除用户数据，除非用户明确要求并完成必要确认。
 - 不读取或输出凭据；发现密钥时避免把其内容写入日志、提示词、记忆和回复。
 - 用简洁中文汇报结果与验证，不逐条复述所有工具调用。

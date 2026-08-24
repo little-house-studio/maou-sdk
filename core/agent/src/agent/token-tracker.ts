@@ -1,6 +1,5 @@
 /**
  * Token 消耗追踪器 —— 分钟级精度记录 token 用量与费用。
- * 对应 Python: core/agent/token_tracker.py
  */
 
 import {

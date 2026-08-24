@@ -1,5 +1,5 @@
 /**
- * Subagent 系统 — 文件即子 Agent（对标 Vercel Eve）
+ * Subagent 系统 — 文件即子 Agent
  *
  * 约定：agent/subagents/<name>/ 目录即子 Agent
  * 子 Agent 拥有独立的 prompt/system/system.md、tools/、skills/
@@ -8,7 +8,7 @@
  * @example
  * agent/subagents/investigator/
  * ├── agent.ts            # defineAgent({ description: "调查数据异常" })
- * ├── prompt/system/system.md  # 子 Agent 的系统提示词（eve 结构）
+ * ├── prompt/system/system.md  # 子 Agent 的系统提示词
  * └── tools/              # 子 Agent 专属工具
  */
 
@@ -154,7 +154,7 @@ export class SubagentRegistry {
     const toolsDir = join(dir, "tools");
     const skillsDir = join(dir, "skills");
 
-    // 必须有 agent.ts 或 agent.json（eve 结构）
+    // 必须有 agent.ts 或 agent.json
     const hasAgentTs = existsSync(agentTsPath);
     const hasAgentJson = existsSync(join(dir, "agent.json"));
     if (!hasAgentTs && !hasAgentJson) return null;

@@ -1,4 +1,4 @@
-//! Mouse selection + caret geometry (Ink useMouseInput / sel-fx parity).
+//! Mouse selection + caret geometry .
 
 mod clipboard;
 mod controller;
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn full_editor_preempts_stale_overlay_hits() {
-        // Ink useMouseInput: fullEditorInitial checked before overlay scroll
+        // fullEditorInitial checked before overlay scroll
         assert!(mouse_preempts_overlay(true));
         assert!(!mouse_preempts_overlay(false));
         // even with overlay "active" flags, wheel target is FullEditor

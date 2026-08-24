@@ -8,7 +8,7 @@ import { durationStr } from "./message-meta";
 
 export { durationStr };
 
-/** Ink compact(): 200000 → 200.0k */
+/** compact: 200000 → 200.0k */
 export function compactCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;

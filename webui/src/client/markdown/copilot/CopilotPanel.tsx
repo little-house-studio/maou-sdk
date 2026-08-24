@@ -10,6 +10,7 @@ import {
   newCopilotSession,
   streamCopilotChat,
 } from "../api-copilot";
+import { stripTaskCompletionMarkup } from "../../strip-task-completion";
 
 export type CopilotPanelProps = {
   projectHint?: string;
@@ -30,6 +31,7 @@ type ChatLine = {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
   text: string;
+  raw?: string;
   err?: boolean;
 };
 
@@ -76,11 +78,17 @@ export function CopilotPanel({
       const next = [...prev];
       for (let i = next.length - 1; i >= 0; i--) {
         if (next[i]!.role === "assistant") {
-          next[i] = { ...next[i]!, text: next[i]!.text + delta };
+          const raw = (next[i]!.raw ?? next[i]!.text) + delta;
+          next[i] = { ...next[i]!, raw, text: stripTaskCompletionMarkup(raw) };
           return next;
         }
       }
-      next.push({ id: uid(), role: "assistant", text: delta });
+      next.push({
+        id: uid(),
+        role: "assistant",
+        text: stripTaskCompletionMarkup(delta),
+        raw: delta,
+      });
       return next;
     });
   }, []);
@@ -121,11 +129,17 @@ export function CopilotPanel({
                 if (last?.role === "assistant") {
                   next[next.length - 1] = {
                     ...last,
-                    text: c.startsWith(last.text) ? c : last.text + c,
+                    raw: c,
+                    text: stripTaskCompletionMarkup(c),
                   };
                   return next;
                 }
-                next.push({ id: uid(), role: "assistant", text: c });
+                next.push({
+                  id: uid(),
+                  role: "assistant",
+                  text: stripTaskCompletionMarkup(c),
+                  raw: c,
+                });
                 return next;
               });
             }

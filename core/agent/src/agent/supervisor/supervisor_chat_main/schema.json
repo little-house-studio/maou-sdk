@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "supervisor_chat_main",
-  "description": "监督 Agent → 主 Agent 沟通工具（仅 /goal 监督模式下可用）",
+  "description": "监督 Agent → 主 Agent 沟通工具（仅监督模式下可用）",
   "type": "object",
   "properties": {
     "message": {

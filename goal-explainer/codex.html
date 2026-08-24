@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>黄铜工坊 · Codex /goal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/shared.css" />
+  <link rel="stylesheet" href="css/codex.css" />
+</head>
+<body>
+  <a class="skip" href="#stage">跳到沙盘</a>
+  <div class="exhibit">
+    <header class="topbar">
+      <a class="brand" href="index.html">
+        <span class="kicker">第一展厅</span>
+        <strong>黄铜工坊 · Codex</strong>
+      </a>
+      <nav class="nav-halls" aria-label="展厅">
+        <a href="codex.html" aria-current="page">Codex</a>
+        <a href="deepseek.html">DeepSeek</a>
+        <a href="grok.html">Grok</a>
+      </nav>
+    </header>
+
+    <div class="stage-wrap">
+      <div id="stage" class="stage stage-codex" data-scene="intro">
+        <div class="workshop">
+          <div class="wall"></div>
+          <div class="floor"></div>
+          <div class="lamp" aria-hidden="true"></div>
+          <div class="spool" title="线程"><div class="hub"></div></div>
+          <span class="label" style="left:7%;bottom:8%">线程线轴</span>
+          <div class="thread"></div>
+          <div class="door-frame">
+            <div class="door-leaf"></div>
+          </div>
+          <span class="label" style="left:5%;top:12%">宿主的门</span>
+          <div class="slip">隐藏纸条<br>continuation.md<br>「继续做完整目标」</div>
+          <div class="drawer">
+            <div class="knob"></div>
+            <div class="card-in-drawer">目标：改进基准覆盖<br>不说给工人听</div>
+          </div>
+          <span class="label" style="left:30%;bottom:4%">目标抽屉</span>
+          <div class="queue">用户队列托盘<div class="note-user">普通消息优先</div></div>
+          <div class="person worker">
+            <div class="head"></div>
+            <div class="torso"></div>
+            <div class="arm"></div>
+            <div class="legs"></div>
+          </div>
+          <span class="label" style="right:24%;bottom:8%">模型工人</span>
+          <div class="desk"></div>
+          <div class="bubbles">我只看见工作台和隐藏纸条，看不见 /goal 这句话。</div>
+          <div class="press">
+            <div class="handle"></div>
+            <div class="stamp ok">完成</div>
+            <div class="stamp bad">卡住</div>
+          </div>
+          <span class="label" style="right:4%;bottom:18%">update_goal 印章</span>
+          <div class="gauge"><div class="needle"></div></div>
+          <span class="label" style="right:8%;top:8%">Token 油表</span>
+          <div class="lever"><div class="stick"></div><div class="base"></div></div>
+          <span class="label" style="left:42%;bottom:2%">暂停杆</span>
+          <div class="marks" aria-hidden="true">
+            <div class="mark"></div><div class="mark"></div><div class="mark"></div>
+          </div>
+        </div>
+        <div class="grain"></div>
+      </div>
+    </div>
+
+    <aside class="legend" id="legend">
+      <h2>沙盘图例</h2>
+      <ul>
+        <li data-lit="thread">线程线轴 · 一条会话</li>
+        <li data-lit="drawer">目标抽屉 · 不进对话气泡</li>
+        <li data-lit="slip">门缝纸条 · 隐藏续行</li>
+        <li data-lit="worker">工人 · 模型自己干活</li>
+        <li data-lit="stamp">印章 · 只有模型能完成</li>
+        <li data-lit="gauge">油表 · 预算是终态</li>
+        <li data-lit="lever">暂停杆 · 中断必须先拉</li>
+        <li data-lit="queue">托盘 · 用户消息插队</li>
+      </ul>
+    </aside>
+
+    <section class="caption-dock">
+      <div class="caption-meta">
+        <h1 id="scene-title">开场</h1>
+        <span id="scene-index">01 / 10</span>
+      </div>
+      <p id="scene-sub"></p>
+      <div class="progress" aria-hidden="true"><span id="progress-bar"></span></div>
+    </section>
+
+    <div class="controls">
+      <div class="transport">
+        <button class="icon-btn" id="btn-prev" type="button" aria-label="上一幕">◀</button>
+        <button class="icon-btn primary" id="btn-play" type="button" aria-label="暂停" data-state="playing">
+          <span class="play-icon" hidden>▶</span>
+          <span class="pause-icon">❚❚</span>
+        </button>
+        <button class="icon-btn" id="btn-next" type="button" aria-label="下一幕">▶</button>
+      </div>
+      <div class="dots" id="dots"></div>
+      <p class="hint">空格播放 · ← → 换幕</p>
+    </div>
+  </div>
+
+  <script src="js/player.js"></script>
+  <script>
+    createScenePlayer([
+      {
+        id: "intro",
+        duration: 7500,
+        title: "这是一条线程工坊",
+        subtitle: "Codex 的 /goal 钉在一条已保存的线程上。线轴是会话，工人是模型。临时会话进不了这间工坊。",
+        lit: ["thread", "worker"]
+      },
+      {
+        id: "lock",
+        duration: 8000,
+        title: "目标锁进抽屉，不说出口",
+        subtitle: "你打 /goal 改进基准覆盖。卡片滑进抽屉。工人听不见这句斜杠——屏幕上也不会冒出用户气泡。第一轮活，要等工人闲下来。",
+        lit: ["drawer"]
+      },
+      {
+        id: "whisper",
+        duration: 8500,
+        title: "空闲时，门缝塞进隐藏纸条",
+        subtitle: "线程一闲，宿主从门缝塞进 continuation.md。纸条写着：继续做完整目标，不要缩小成功标准。TUI 不当作用户发言。",
+        lit: ["slip", "worker"]
+      },
+      {
+        id: "work",
+        duration: 7000,
+        title: "工人只对工作台负责",
+        subtitle: "模型看当前仓库，动手改、跑工具。他可以盖章，但宿主不当法官。说完一轮如果没盖章，机器不会认为结束。",
+        lit: ["worker", "stamp"]
+      },
+      {
+        id: "again",
+        duration: 7500,
+        title: "没盖章，就再塞一张",
+        subtitle: "回合结束，目标仍是 Active。宿主再看一眼：还闲着吗？还 Active 吗？是，就再塞一张纸条。工坊靠「空闲」转动，不是同一回合死循环。",
+        lit: ["slip", "thread"]
+      },
+      {
+        id: "queue",
+        duration: 7500,
+        title: "托盘上的人话优先",
+        subtitle: "如果你又打了一句普通消息，队列托盘插队。用户回合先走，仍计入这个目标。跑完若还是 Active，门缝才会再塞纸条。",
+        lit: ["queue"]
+      },
+      {
+        id: "complete",
+        duration: 8000,
+        title: "完成章只在工人手里",
+        subtitle: "update_goal(complete) 是唯一的完成。宿主没有分类器。章盖下去，油表数字要报给你，工坊停转。",
+        lit: ["stamp", "worker"]
+      },
+      {
+        id: "blocked",
+        duration: 8500,
+        title: "卡住要连盖三次同一枚障碍",
+        subtitle: "一次失败不能停。同一挡路条件连续三轮（含你触发的首轮和自动续行）才能盖「卡住」。你 resume 之后，计数清零重算。",
+        lit: ["stamp"]
+      },
+      {
+        id: "budget",
+        duration: 8000,
+        title: "油表见底是终态",
+        subtitle: "Token 用尽，指针打到红区，状态钉成 BudgetLimited。不能用暂停盖住它。宿主会塞一张收尾纸条：总结、别再开新活。",
+        lit: ["gauge"]
+      },
+      {
+        id: "interrupt",
+        duration: 9000,
+        title: "中断必须先拉暂停杆",
+        subtitle: "只按 Esc、不拉杆，闲下来还会再塞纸条。所以界面先把目标打成 Paused，再打断。Review 子代理、Plan 模式、临时线程：这间工坊不对他们开门。",
+        lit: ["lever"]
+      }
+    ]);
+  </script>
+</body>
+</html>

@@ -127,17 +127,15 @@ export class ProjectAgentTool extends Tool {
     name: "project_agent",
     aliases: [],
     description:
-      "Ops Agent 的项目代理工具。list 项目清单；create 注册并驻扎；send 派任务；" +
-      "repair 修复失效标记/agent；rebind 把注册项绑到新路径。",
+      "Ops Agent 的项目代理。list 清单；create 绑定已有路径并驻扎；send 派任务。" +
+      "路径已有 .maou 时 create 只重新挂上，不初始化。失效项目在 list / send 结果里写清怎么用 create 修。",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["list", "create", "send", "repair", "rebind"],
-          description:
-            "list=清单；create=注册路径+驻扎 Agent；send=派任务；" +
-            "repair=修复 .maou 标记与 coding agent；rebind=更新注册路径。",
+          enum: ["list", "create", "send"],
+          description: "list=清单；create=绑定路径+驻扎 Agent；send=派任务。",
         },
         project: {
           type: "string",
@@ -145,7 +143,7 @@ export class ProjectAgentTool extends Tool {
         },
         path: {
           type: "string",
-          description: "create/repair/rebind 的项目绝对路径（rebind 时为新路径）。",
+          description: "create 的项目绝对路径。",
         },
         task: {
           type: "string",
@@ -153,7 +151,7 @@ export class ProjectAgentTool extends Tool {
         },
         name: {
           type: "string",
-          description: "项目显示名；create/rebind 时可选。",
+          description: "项目显示名；create 时可选。同名已注册到别的路径时，改绑到这个路径。",
         },
       },
       required: ["action"],
@@ -167,12 +165,14 @@ export class ProjectAgentTool extends Tool {
     if (action === "list") return this.list(ctx);
     if (action === "create") return this.create(params, ctx);
     if (action === "send") return this.send(params, ctx);
-    if (action === "repair") return this.repair(params, ctx);
-    if (action === "rebind") return this.rebind(params, ctx);
-    return createToolResponse(
-      false,
-      `不支持的 action: ${action}。支持: list / create / send / repair / rebind`,
-    );
+    if (action === "repair" || action === "rebind") {
+      return createToolResponse(
+        false,
+        `${action} 已取消。对现在的绝对路径用 create 绑定即可。` +
+          `目录里若已有 .maou，不会初始化，只重新挂上。先 list 看失效项说明。`,
+      );
+    }
+    return createToolResponse(false, `不支持的 action: ${action}。支持: list / create / send`);
   }
 
   private list(ctx: ToolContext): ToolResponse {
@@ -180,15 +180,23 @@ export class ProjectAgentTool extends Tool {
     if (projects.length === 0) {
       return createToolResponse(
         true,
-        "尚无 Coding 项目。用户在项目目录运行 `maou coding` 后会自动注册。",
+        "尚无 Coding 项目。对已有目录用 create path=绝对路径 绑定；用户在项目目录运行 `maou coding` 也会自动注册。",
         { payload: { projects: [] } },
       );
     }
     const lines = ["Maou Coding 项目", ""];
-    for (const p of projects) {
-      lines.push(`- ${p.isActive ? "●" : "○"} ${p.name}: ${p.path}${p.isActive ? "" : "（路径或 .maou 标记失效）"}`);
+    const diagnosed = projects.map((p) => ({ ...p, ...diagnoseProject(p.path) }));
+    for (const p of diagnosed) {
+      const stamp = p.updated_at ? `  上次更新: ${p.updated_at}` : "";
+      if (p.status === "ok") {
+        lines.push(`- ● ${p.name}: ${p.path}${stamp}`);
+        continue;
+      }
+      lines.push(`- ○ ${p.name}: ${p.path}${stamp}`);
+      lines.push(`  ${p.detail}`);
+      lines.push(`  ${bindHint(p.path)}`);
     }
-    return createToolResponse(true, lines.join("\n"), { payload: { projects } });
+    return createToolResponse(true, lines.join("\n"), { payload: { projects: diagnosed } });
   }
 
   private create(params: Record<string, unknown>, ctx: ToolContext): ToolResponse {
@@ -209,7 +217,8 @@ export class ProjectAgentTool extends Tool {
 
     const projectDir = join(path, ".maou");
     const marker = join(projectDir, "project.json");
-    if (!existsSync(marker)) {
+    const hadMarker = existsSync(marker);
+    if (!hadMarker) {
       mkdirSync(join(projectDir, "sessions"), { recursive: true });
       writeFileSync(marker, JSON.stringify({
         version: 1,
@@ -219,23 +228,34 @@ export class ProjectAgentTool extends Tool {
       }, null, 2), "utf-8");
     }
 
+    const displayName = String(params.name ?? "").trim();
+    if (displayName) {
+      for (const old of getProjectsList(ctx.maouRoot).filter((item) => item.name === displayName)) {
+        if (!pathKeysEqual(old.path, path)) {
+          removeProjectByPath(old.path, ctx.maouRoot);
+        }
+      }
+    }
+
     const agent = ensureProjectCodingAgent(path, ctx.maouRoot);
 
     const entry = registerProject(path, {
-      name: String(params.name ?? "").trim() || basename(path),
+      name: displayName || basename(path),
       product: "coding-agent",
       userRoot: ctx.maouRoot,
     });
     return createToolResponse(
       true,
       [
-        `已创建并注册项目 Agent：${entry.name}`,
+        hadMarker
+          ? `已绑定项目（未初始化 .maou）：${entry.name}`
+          : `已绑定并写入 .maou：${entry.name}`,
         entry.path,
         agent.created
           ? `coding agent 已驻扎 → ${agent.dir}（${agent.reason}）`
           : `coding agent 已存在 → ${agent.dir}`,
       ].join("\n"),
-      { payload: { project: entry, agent } },
+      { payload: { project: entry, agent, initialized: !hadMarker } },
     );
   }
 
@@ -253,13 +273,17 @@ export class ProjectAgentTool extends Tool {
           `项目名「${selector}」不唯一，请传绝对路径：\n${resolved.matches.map((p) => `- ${p.path}`).join("\n")}`,
         );
       }
-      return createToolResponse(false, `未找到项目「${selector}」。先运行 project_agent list 或 create。`);
-    }
-    if (!resolved.project.isActive) {
       return createToolResponse(
         false,
-        `项目不可用或缺少 .maou/project.json: ${resolved.project.path}\n` +
-          `可先 project_agent repair path="${resolved.project.path}" 再 send。`,
+        `未找到项目「${selector}」。先 project_agent list，或对已有目录 create path=绝对路径 绑定。`,
+      );
+    }
+    const diagnosed = diagnoseProject(resolved.project.path);
+    if (diagnosed.status !== "ok") {
+      return createToolResponse(
+        false,
+        `项目「${resolved.project.name}」现在不能派任务。\n` +
+          `${diagnosed.detail}\n${bindHint(resolved.project.path)}`,
       );
     }
 
@@ -291,178 +315,30 @@ export class ProjectAgentTool extends Tool {
     }
   }
 
-  /**
-   * 修复失效项目：重建 .maou/project.json、驻扎 coding agent、刷新 registry。
-   */
-  private repair(params: Record<string, unknown>, ctx: ToolContext): ToolResponse {
-    const selector = String(params.path ?? params.project ?? "").trim();
-    if (!selector) {
-      return createToolResponse(
-        false,
-        "repair 需要 path 或 project（绝对路径或已注册项目名）。",
-      );
-    }
+}
 
-    let path: string;
-    const resolved = resolveProject(selector, ctx.maouRoot);
-    if (resolved.project) {
-      path = resolved.project.path;
-    } else if (isAbsolute(selector)) {
-      path = resolve(selector);
-    } else if (resolved.matches && resolved.matches.length > 1) {
-      return createToolResponse(
-        false,
-        `项目名「${selector}」不唯一，请传绝对路径：\n${resolved.matches.map((p) => `- ${p.path}`).join("\n")}`,
-      );
-    } else {
-      return createToolResponse(
-        false,
-        `未找到项目「${selector}」。可用绝对路径 repair，或先 create。`,
-      );
-    }
-
-    if (!existsSync(path)) {
-      return createToolResponse(
-        false,
-        `路径不存在: ${path}\n若项目已搬家，请用 rebind name=… path=/新路径`,
-      );
-    }
-    try {
-      if (!statSync(path).isDirectory()) {
-        return createToolResponse(false, `不是目录: ${path}`);
-      }
-    } catch {
-      return createToolResponse(false, `无法访问: ${path}`);
-    }
-
-    const steps: string[] = [];
-    const projectDir = join(path, ".maou");
-    const marker = join(projectDir, "project.json");
-    if (!existsSync(marker)) {
-      mkdirSync(join(projectDir, "sessions"), { recursive: true });
-      writeFileSync(
-        marker,
-        JSON.stringify(
-          {
-            version: 1,
-            cwd: path,
-            createdAt: new Date().toISOString(),
-            product: "coding-agent",
-            repairedAt: new Date().toISOString(),
-          },
-          null,
-          2,
-        ),
-        "utf-8",
-      );
-      steps.push("已重建 .maou/project.json");
-    } else {
-      steps.push(".maou/project.json 已存在");
-    }
-
-    const agent = ensureProjectCodingAgent(path, ctx.maouRoot);
-    steps.push(
-      agent.created
-        ? `coding agent 已驻扎 → ${agent.dir}（${agent.reason}）`
-        : `coding agent 已存在 → ${agent.dir}`,
-    );
-
-    const name =
-      String(params.name ?? "").trim() ||
-      resolved.project?.name ||
-      basename(path);
-    const entry = registerProject(path, {
-      name,
-      product: "coding-agent",
-      userRoot: ctx.maouRoot,
-    });
-    steps.push(`已注册/刷新: ${entry.name} → ${entry.path}`);
-
-    return createToolResponse(
-      true,
-      [`✅ 项目已修复：${entry.name}`, entry.path, ...steps.map((s) => `- ${s}`)].join(
-        "\n",
-      ),
-      { payload: { project: entry, agent, steps } },
-    );
+function diagnoseProject(path: string): {
+  status: "ok" | "missing_path" | "missing_marker";
+  detail: string;
+} {
+  if (!existsSync(path)) {
+    return { status: "missing_path", detail: "路径不存在（可能已搬家或被删）。" };
   }
-
-  /**
-   * 重新绑定：把已注册项目名指到新绝对路径（目录须存在），并 repair 标记。
-   */
-  private rebind(params: Record<string, unknown>, ctx: ToolContext): ToolResponse {
-    const newPathRaw = String(params.path ?? "").trim();
-    const nameOrOld = String(params.project ?? params.name ?? "").trim();
-    if (!newPathRaw || !isAbsolute(newPathRaw)) {
-      return createToolResponse(
-        false,
-        "rebind 需要 path=新绝对路径，以及 project 或 name=原项目名/旧路径。",
-      );
+  try {
+    if (!statSync(path).isDirectory()) {
+      return { status: "missing_path", detail: "路径不是目录。" };
     }
-    if (!nameOrOld) {
-      return createToolResponse(
-        false,
-        "rebind 需要 project 或 name（要改绑的注册项）。",
-      );
-    }
-
-    const newPath = resolve(newPathRaw);
-    if (!existsSync(newPath) || !statSync(newPath).isDirectory()) {
-      return createToolResponse(false, `新路径无效: ${newPath}`);
-    }
-
-    const resolved = resolveProject(nameOrOld, ctx.maouRoot);
-    const displayName =
-      String(params.name ?? "").trim() ||
-      resolved.project?.name ||
-      basename(newPath);
-    const oldPath = resolved.project?.path;
-
-    if (oldPath && !pathKeysEqual(oldPath, newPath)) {
-      removeProjectByPath(oldPath, ctx.maouRoot);
-    }
-
-    const projectDir = join(newPath, ".maou");
-    const marker = join(projectDir, "project.json");
-    if (!existsSync(marker)) {
-      mkdirSync(join(projectDir, "sessions"), { recursive: true });
-      writeFileSync(
-        marker,
-        JSON.stringify(
-          {
-            version: 1,
-            cwd: newPath,
-            createdAt: new Date().toISOString(),
-            product: "coding-agent",
-            reboundFrom: oldPath ?? null,
-          },
-          null,
-          2,
-        ),
-        "utf-8",
-      );
-    }
-    const agent = ensureProjectCodingAgent(newPath, ctx.maouRoot);
-    const entry = registerProject(newPath, {
-      name: displayName,
-      product: "coding-agent",
-      userRoot: ctx.maouRoot,
-    });
-    return createToolResponse(
-      true,
-      [
-        `✅ 已 rebind：${entry.name}`,
-        oldPath && !pathKeysEqual(oldPath, newPath) ? `旧路径: ${oldPath}` : "",
-        `新路径: ${entry.path}`,
-        agent.created
-          ? `coding agent 已驻扎 → ${agent.dir}`
-          : `coding agent 已存在 → ${agent.dir}`,
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      { payload: { project: entry, oldPath, agent } },
-    );
+  } catch {
+    return { status: "missing_path", detail: "无法访问该路径。" };
   }
+  if (!existsSync(join(path, ".maou", "project.json"))) {
+    return { status: "missing_marker", detail: "找不到 .maou/project.json。" };
+  }
+  return { status: "ok", detail: "" };
+}
+
+function bindHint(path: string): string {
+  return `对该绝对路径调用 create path="${path}"。目录里若已有 .maou，不会初始化，只重新挂上。这条失效名单若不需要了，可 project_manage disband。`;
 }
 
 function pathKeysEqual(a: string, b: string): boolean {

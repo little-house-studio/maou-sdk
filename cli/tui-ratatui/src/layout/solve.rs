@@ -23,7 +23,7 @@ impl Solved {
     }
 }
 
-/// Center a box of size (w,h) inside `parent` (Ink-style absolute overlay).
+/// Center a box of size (w,h) inside `parent` .
 pub fn place_absolute_center(parent: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(parent.width);
     let h = h.min(parent.height);
@@ -132,7 +132,7 @@ fn layout_node(
                 .filter(|(_, g)| **g > 0)
                 .map(|(i, _)| i)
                 .collect();
-            // Equal grow (all grow==1): Ink NavBar style —
+            // Equal grow (all grow==1): NavBar style —
             // base = free/n, first (free%n) items get +1 (NOT dump remainder on last).
             let all_equal = flex_idx.iter().all(|&i| grows[i] == grows[flex_idx[0]]);
             let mut allocated = 0u16;

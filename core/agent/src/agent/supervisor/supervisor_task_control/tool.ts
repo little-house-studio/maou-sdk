@@ -1,7 +1,7 @@
 /**
  * supervisor_task_control —— 监督 Agent 生命周期控制工具。
  *
- * 监督 Agent 专用，仅在 /goal 模式下可用。
+ * 监督 Agent 专用，仅在监督 session 可用。
  * action:
  *   - start: 启动监督（绑定 plan，进入工作状态）
  *   - confirm_end: 向用户发起验收（第一次确认）
@@ -12,11 +12,13 @@
  *   - verify 支持 check_command 硬指标（安全子集，见 hard-check）
  */
 
-import { Tool } from "../../base.js";
-import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
-import { resolveToolRuntimePorts } from "../../base.js";
-import { createToolResponse } from "../../base.js";
-import { runHardCheck } from "../../security/hard-check.js";
+import {
+  Tool,
+  createToolResponse,
+  resolveToolRuntimePorts,
+  runHardCheck,
+} from "@little-house-studio/tools";
+import type { ToolContext, ToolResponse, ToolDefinition } from "@little-house-studio/tools";
 import { parsePlanStages, formatStageStatus } from "../plan-stages.js";
 
 export class SupervisorTaskControlTool extends Tool {
@@ -25,7 +27,7 @@ export class SupervisorTaskControlTool extends Tool {
     aliases: ["supervisor-control", "supervisor_task"],
     allowedModes: null,
     description:
-      "监督 Agent 生命周期控制（仅 /goal 监督模式下可用）。" +
+      "监督 Agent 生命周期控制（仅监督模式下可用）。" +
       "action=submit_plan: 写完任务计划后提交给用户确认（进入 confirming_plan）；" +
       "action=start: 用户确认后启动监督（绑定 plan，进入 started，主 Agent 开始持续干活）；" +
       "action=verify: 主 Agent 每轮 loop 完成后自动验收（硬指标 check_command 优先，再对照 plan；支持分阶段）；" +
@@ -75,7 +77,7 @@ export class SupervisorTaskControlTool extends Tool {
     if (!ports.isSupervisorSession) {
       return createToolResponse(
         false,
-        "此工具仅在 /goal 监督模式下可用。用 /goal 指令启动监督模式。",
+        "此工具仅在监督 session 可用，不是本会话目标模式。",
       );
     }
 

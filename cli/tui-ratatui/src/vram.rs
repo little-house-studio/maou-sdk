@@ -1,4 +1,4 @@
-//! Screen cell buffer (Ink "VRAM" equivalent).
+//! Screen cell buffer .
 //!
 //! Captured each frame from ratatui's Buffer after draw.
 //! Used by **global** selection: start outside chat → copy painted cells.
@@ -26,7 +26,7 @@ impl Vram {
         Self::default()
     }
 
-    /// Snapshot ratatui frame buffer → VRAM (same role as Ink lastGrid).
+    /// Snapshot ratatui frame buffer → VRAM .
     pub fn capture_from_buffer(&mut self, buf: &Buffer) {
         let area = buf.area();
         self.cols = area.width;
@@ -82,7 +82,7 @@ impl Vram {
             .get((y as usize) * (self.cols as usize) + (x as usize))
     }
 
-    /// Extract stream selection like Ink global mode (inclusive screen coords).
+    /// Extract stream selection like global mode (inclusive screen coords).
     pub fn extract_region(&self, r1: u16, c1: u16, r2: u16, c2: u16) -> String {
         if self.cols == 0 || self.rows == 0 {
             return String::new();

@@ -441,7 +441,7 @@ export type {
 export { AgentLifecycleManager } from "./agent-lifecycle.js";
 export type { AgentStatus, AdoptOptions } from "./agent-lifecycle.js";
 
-// ── 监督模式管理器（/goal 模式：主 Agent ↔ 监督 Agent 绑定）─────────────────
+// ── 监督模式管理器（主 Agent ↔ 监督 Agent 绑定；与 /goal 同会话目标分开）────
 
 export {
   SUPERVISOR_MANAGER,
@@ -454,9 +454,12 @@ export type {
   SupervisorStageResult,
   SupervisorUserAckResult,
 } from "./supervisor-manager.js";
-// plan stages 权威在 tools（避免 tools↔agent 循环依赖）；此处再导出便于应用层
-export { parsePlanStages, formatStageStatus } from "@little-house-studio/tools";
-export type { PlanStage, ParsedPlanMeta } from "@little-house-studio/tools";
+export { parsePlanStages, formatStageStatus } from "./supervisor/plan-stages.js";
+export type { PlanStage, ParsedPlanMeta } from "./supervisor/plan-stages.js";
+export {
+  SUPERVISOR_HARNESS_TOOL_NAMES,
+  registerSupervisorHarnessTools,
+} from "./supervisor/register.js";
 
 // ── defineEval API + EvalRunner ─────────────────────────────────────────────
 

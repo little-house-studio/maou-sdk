@@ -1,0 +1,45 @@
+{
+  "name": "@little-house-studio/install-agent",
+  "version": "0.1.0",
+  "description": "Maou SDK 安装员 —— 无 TUI，把托管仓库装到本机，或检修运行时。",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "aiinstall": "./dist/bin.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./cli-config": {
+      "types": "./dist/cli-config.d.ts",
+      "import": "./dist/cli-config.js"
+    }
+  },
+  "files": ["dist", "templates", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "start": "aiinstall"
+  },
+  "dependencies": {
+    "@little-house-studio/types": "workspace:*",
+    "@little-house-studio/llm": "workspace:*",
+    "@little-house-studio/tools": "workspace:*",
+    "@little-house-studio/context": "workspace:*",
+    "@little-house-studio/agent": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

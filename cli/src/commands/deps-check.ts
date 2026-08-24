@@ -664,6 +664,46 @@ export interface DoctorOptions {
    * `maou doctor --check` / MAOU_DOCTOR_NO_INSTALL=1 → 只检查。
    */
   noInstall?: boolean;
+  /** 脚本跑完后把报告交给安装员继续修。 */
+  agent?: boolean;
+}
+
+export function parseDoctorFlags(argv: string[]): DoctorOptions {
+  return {
+    noInstall: argv.includes("--check") || argv.includes("--no-fix"),
+    agent: argv.includes("--agent"),
+  };
+}
+
+export function hasDoctorLeftovers(r: DepCheckResult): boolean {
+  return (
+    !r.tiers.core ||
+    !r.tiers.dcg ||
+    !r.tiers.rg ||
+    !r.tiers.sqry ||
+    !r.tiers.terminal ||
+    r.details.apiConfig.includes("△")
+  );
+}
+
+export function formatDoctorReportForAgent(r: DepCheckResult): string {
+  const lines = [
+    "以下是本机 doctor 诊断，请在能力范围内修好，或给出用户只需执行的一条命令。",
+    `安装形态: ${r.mode}`,
+    `Node: ${r.nodeVersion} ${r.nodeOk ? "ok" : "过低"}`,
+    `Core: ${r.tiers.core ? "ok" : "失败"}`,
+    `Terminal: ${r.tiers.terminal ? "ok" : "缺"} ${r.details.terminalEngine}`,
+    `dcg: ${r.tiers.dcg ? "ok" : "缺"} ${r.details.dcg}`,
+    `rg: ${r.tiers.rg ? "ok" : "缺"}`,
+    `sqry: ${r.tiers.sqry ? "ok" : "缺"}`,
+    `API: ${r.details.apiConfig}`,
+  ];
+  if (r.mode === "bundle") {
+    lines.push("预编译包：不要执行包管理器全量安装或从源码编译。");
+  }
+  if (r.errors.length) lines.push(`错误: ${r.errors.join("; ")}`);
+  if (r.missingCritical.length) lines.push(`缺失核心包: ${r.missingCritical.join(", ")}`);
+  return lines.join("\n");
 }
 
 export interface AutoFixResult {
@@ -1226,6 +1266,19 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<boolean> {
   } else {
     log("❌ Core 未就绪");
   }
+  if (hasDoctorLeftovers(r) && !opts.agent) {
+    log("还可：maou doctor --agent  或  aiinstall --repair");
+  }
+
+  if (opts.agent) {
+    log("── 安装员 ──");
+    const { runAiinstallMain } = await import("@little-house-studio/install-agent");
+    await runAiinstallMain({
+      repair: true,
+      firstMessage: formatDoctorReportForAgent(r),
+    });
+  }
+
   log("");
   return r.tiers.core;
 }

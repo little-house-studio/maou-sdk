@@ -11,7 +11,7 @@
  *   7. 流式生成 / 中断中 → 停止任务
  *   8. 空闲 → 无操作（返回 false）
  *
- * 屏幕选区由 Ratatui 子进程处理，Node 不再持有 Ink 显存选区。
+ * 屏幕选区由 Ratatui 子进程处理，Node 不再持有 显存选区。
  */
 
 import { useStore } from "../state/store.js";

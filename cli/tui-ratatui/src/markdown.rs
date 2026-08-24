@@ -1,7 +1,7 @@
-//! Markdown → styled lines (Ink MarkdownRenderer subset).
+//! Markdown → styled lines .
 //!
 //! Parsing: `pulldown-cmark` (CommonMark + tables / strikethrough / task lists).
-//! Paint: custom — box tables, fence chrome, theme colors (parity with Ink).
+//! Paint: custom — box tables, fence chrome, theme colors .
 
 use crate::theme::Theme;
 use pulldown_cmark::{
@@ -428,7 +428,7 @@ impl<'a> WalkCtx<'a> {
             TagEnd::Strong => self.bold = self.bold.saturating_sub(1),
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
             TagEnd::Link => {
-                // Ink: show dim (href) when it differs from the visible label.
+                // show dim (href) when it differs from the visible label.
                 if let Some(href) = self.link_href.take() {
                     let label: String = self
                         .spans
@@ -517,7 +517,7 @@ impl<'a> WalkCtx<'a> {
     }
 
     fn flush_paragraph(&mut self, out: &mut Vec<Line<'static>>) {
-        // Heuristic: single-line diff add from agents (`+ foo`) — keep Ink-ish coloring
+        // Heuristic: single-line diff add from agents (`+ foo`) — keep -ish coloring
         if self.heading.is_none()
             && self.quote_depth == 0
             && self.list_stack.is_empty()
@@ -648,7 +648,7 @@ fn strip_simple_html(html: &CowStr<'_>) -> String {
     out
 }
 
-// ── paint helpers (custom; Ink visual language) ─────────────────────────────
+// ── paint helpers ─────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Align {
@@ -696,7 +696,7 @@ fn wrap_cell_lines(s: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// Ink MarkdownRenderer box table (┌─┬─┐ / │ │ / └─┴─┘).
+/// MarkdownRenderer box table (┌─┬─┐ / │ │ / └─┴─┘).
 /// 格内自动换行：长文本拆成多终端行，不靠 … 藏字。
 fn render_box_table(
     header: &[String],

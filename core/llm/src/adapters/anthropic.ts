@@ -1,6 +1,5 @@
 /**
  * Anthropic Messages 适配器
- * 对应 Python: core/llm/adapters/anthropic_messages_adapter.py
  *
  * 使用 @anthropic-ai/sdk 的类型定义增强类型安全性，
  * 使用 partial-json 库解析流式工具调用参数。

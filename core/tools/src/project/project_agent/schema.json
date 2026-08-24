@@ -1,6 +1,6 @@
 {
   "name": "project_agent",
-  "description": "Ops 项目代理：list/create/send/repair/rebind。repair 修复失效 .maou 标记；rebind 改绑路径。",
+  "description": "Ops 项目代理：list 清单；create 绑定已有路径；send 派任务。已有 .maou 时 create 只重新挂上。失效项在 list/send 里写清怎么用 create 修。",
   "type": "object",
   "properties": {
     "description": {
@@ -9,8 +9,8 @@
     },
     "action": {
       "type": "string",
-      "enum": ["list", "create", "send", "repair", "rebind"],
-      "description": "list=清单；create=注册+驻扎；send=派任务；repair=修复标记/agent；rebind=绑定新路径。"
+      "enum": ["list", "create", "send"],
+      "description": "list=清单；create=绑定路径+驻扎；send=派任务。"
     },
     "project": {
       "type": "string",
@@ -18,7 +18,7 @@
     },
     "path": {
       "type": "string",
-      "description": "create/repair 的项目路径；rebind 时为新绝对路径。"
+      "description": "create 的项目绝对路径。"
     },
     "task": {
       "type": "string",
@@ -26,7 +26,7 @@
     },
     "name": {
       "type": "string",
-      "description": "项目显示名（create/rebind 可选）。"
+      "description": "项目显示名（create 可选）。同名已注册到别的路径时，改绑到这个路径。"
     }
   },
   "required": ["description", "action"],

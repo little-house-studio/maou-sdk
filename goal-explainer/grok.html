@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>质检法庭 · Grok Build /goal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/shared.css" />
+  <link rel="stylesheet" href="css/grok.css" />
+</head>
+<body>
+  <a class="skip" href="#stage">跳到沙盘</a>
+  <div class="exhibit">
+    <header class="topbar">
+      <a class="brand" href="index.html">
+        <span class="kicker">第三展厅</span>
+        <strong>质检法庭 · Grok Build</strong>
+      </a>
+      <nav class="nav-halls" aria-label="展厅">
+        <a href="codex.html">Codex</a>
+        <a href="deepseek.html">DeepSeek</a>
+        <a href="grok.html" aria-current="page">Grok</a>
+      </nav>
+    </header>
+
+    <div class="stage-wrap">
+      <div id="stage" class="stage stage-grok" data-scene="intro">
+        <div class="court">
+          <div class="parchment">
+            <strong>plan.md 合同</strong><br>
+            写可观察结果，不冻文件名。<br>
+            验收条款 · 验证计划<br>
+            任务清单第一空格 = 下一步
+          </div>
+          <p class="eval-lamp">隐蔽评审席 · 工人看不见</p>
+          <div class="booth">
+            <div class="shade"></div>
+            <div class="person judge">
+              <div class="head"></div>
+              <div class="torso"></div>
+              <div class="legs"></div>
+            </div>
+          </div>
+          <div class="verdict" data-bind="verdict">candidate_complete</div>
+          <div class="jury">
+            <div class="person juror j0">
+              <div class="card">REFUTE</div>
+              <div class="head"></div>
+              <div class="torso"></div>
+              <div class="legs"></div>
+            </div>
+            <div class="person juror">
+              <div class="card">OK</div>
+              <div class="head"></div>
+              <div class="torso"></div>
+              <div class="legs"></div>
+            </div>
+            <div class="person juror">
+              <div class="card">OK</div>
+              <div class="head"></div>
+              <div class="torso"></div>
+              <div class="legs"></div>
+            </div>
+          </div>
+          <div class="person worker">
+            <div class="head"></div>
+            <div class="torso"></div>
+            <div class="legs"></div>
+          </div>
+          <div class="same-turn">同一回合 · 传送带不停车</div>
+          <div class="belt">
+            <div class="piece"></div>
+            <div class="piece" style="animation-delay:1.05s"></div>
+            <div class="piece" style="animation-delay:2.1s"></div>
+          </div>
+          <div class="gavel-box">
+            <div class="gavel"></div>
+            <div class="block"></div>
+          </div>
+          <div class="restart-tag">重启后：Active → UserPaused<br>法庭不会自己开庭</div>
+          <span class="label" style="left:8%;top:2%;background:rgba(43,36,28,.8)">规划师的羊皮纸</span>
+          <span class="label" style="left:26%;bottom:8%;background:rgba(43,36,28,.8)">实现者</span>
+          <span class="label" style="right:8%;top:4%;background:rgba(43,36,28,.8)">三名怀疑论陪审</span>
+          <span class="label" style="right:8%;bottom:2%;background:rgba(43,36,28,.8)">宿主的锤子</span>
+        </div>
+        <div class="grain"></div>
+      </div>
+    </div>
+
+    <aside class="legend" id="legend">
+      <h2>沙盘图例</h2>
+      <ul>
+        <li data-lit="plan">羊皮纸 · 一次写成的合同</li>
+        <li data-lit="belt">传送带 · 同回合续行</li>
+        <li data-lit="worker">工人 · 实现者</li>
+        <li data-lit="booth">暗厢 · 每轮自动评审</li>
+        <li data-lit="jury">陪审 · 对抗验货</li>
+        <li data-lit="j0">0 号 · 一票否决</li>
+        <li data-lit="gavel">锤子 · 完成权在宿主</li>
+        <li data-lit="wake">重启牌 · 永不自驱</li>
+      </ul>
+    </aside>
+
+    <section class="caption-dock">
+      <div class="caption-meta">
+        <h1 id="scene-title">开场</h1>
+        <span id="scene-index">01 / 10</span>
+      </div>
+      <p id="scene-sub"></p>
+      <div class="progress" aria-hidden="true"><span id="progress-bar"></span></div>
+    </section>
+
+    <div class="controls">
+      <div class="transport">
+        <button class="icon-btn" id="btn-prev" type="button" aria-label="上一幕">◀</button>
+        <button class="icon-btn primary" id="btn-play" type="button" aria-label="暂停" data-state="playing">
+          <span class="play-icon" hidden>▶</span>
+          <span class="pause-icon">❚❚</span>
+        </button>
+        <button class="icon-btn" id="btn-next" type="button" aria-label="下一幕">▶</button>
+      </div>
+      <div class="dots" id="dots"></div>
+      <p class="hint">空格播放 · ← → 换幕</p>
+    </div>
+  </div>
+
+  <script src="js/player.js"></script>
+  <script>
+    createScenePlayer([
+      {
+        id: "intro",
+        duration: 8000,
+        title: "这是质检法庭，不是工坊",
+        subtitle: "表面仍是 /goal 和 update_goal。默认开着工作流时，完成权不在工人嘴里。宿主每轮先评，像做完了再送陪审团。锤子在宿主手里。",
+        lit: ["gavel", "booth", "jury"]
+      },
+      {
+        id: "plan",
+        duration: 8500,
+        title: "规划师先写一张不许改弱的合同",
+        subtitle: "fork 出规划师，只写 plan.md。写可观察结果，禁止冻架构和文件名。规划失败就停——没有合同，不许空转。写完复印一份 baseline，防止中途改薄验收。",
+        lit: ["plan"]
+      },
+      {
+        id: "work",
+        duration: 7000,
+        title: "工人按合同做，证据放自己的抽屉",
+        subtitle: "实现者改代码、写测试、把跑测输出放进私有 scratch。提示写明：不要停下来宣布完成。宣布没有用，传送带还要过安检。",
+        lit: ["worker", "plan"]
+      },
+      {
+        id: "loop",
+        duration: 8000,
+        title: "传送带同一回合不停车",
+        subtitle: "和 Codex / DeepSeek 不同：不是闲下来再塞纸条。评完若还要干，同一 turn、同一 prompt 立刻再跑。后台完成消息被压住，免得打断质检。",
+        lit: ["belt", "worker"]
+      },
+      {
+        id: "eval",
+        duration: 8500,
+        title: "暗厢小模型先打三种牌",
+        subtitle: "continue：还有活，纸条写下一步。candidate_complete：才配见陪审。blocked：同一障碍键连三次，法庭暂停等人。工人说做完了，不够。",
+        lit: ["booth"],
+        bind: { verdict: "candidate_complete" }
+      },
+      {
+        id: "panel",
+        duration: 8500,
+        title: "三名怀疑论者来驳，不来帮忙",
+        subtitle: "默认不确定就驳回。他们审计工人已有的证据，不自己补做。假阳性会错停整条线，所以宁可变严。",
+        lit: ["jury"]
+      },
+      {
+        id: "veto",
+        duration: 8500,
+        title: "0 号陪审可以一票否决",
+        subtitle: "多人时，0 号可接着上一轮的记忆，防止每轮换人抬高标准。他高确信驳回，其余人再赞成也不算过。通过要冷席多数决。",
+        lit: ["j0", "jury"]
+      },
+      {
+        id: "stall",
+        duration: 8000,
+        title: "同样的缺口连两次，传送带停",
+        subtitle: "不必烧满十次验证。指纹相同就 NoProgressPaused。次数打满是另一条暂停。策略师可以改打法，但不许改合同。",
+        lit: ["belt", "plan"]
+      },
+      {
+        id: "host",
+        duration: 8000,
+        title: "锤子落下，才叫 Complete",
+        subtitle: "陪审通过，宿主盖完成，再让总结员说话。workflow 路径下，工人甚至不必调 update_goal。关掉工作流才回到「工人自报、回合结束再验」。",
+        lit: ["gavel"]
+      },
+      {
+        id: "wake",
+        duration: 8500,
+        title: "重启后，法庭不会自己开庭",
+        subtitle: "快照里的 Active 会变成 UserPaused。未知状态也当成暂停，绝不复活成自转。子代理活不过重启。这和 DeepSeek 断闸、Codex 仍可续跑，都不一样。",
+        lit: ["wake"]
+      }
+    ]);
+  </script>
+</body>
+</html>

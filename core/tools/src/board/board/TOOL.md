@@ -5,4 +5,4 @@
 - 对话上下文由系统自动管理，不需要用 board 存储。
 - scope 控制生命周期：session（会话结束即清除）、project（项目级持久）、global（全局持久）。
 - 常见用法：记录当前任务阶段（如 phase: "testing"）、记录尝试次数（如 retry_count: 3）。
-- value 最长 100 字符，超出内容考虑用 notebook 替代。
+- value 最长 100 字符。

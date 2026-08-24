@@ -54,6 +54,8 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  /** 流式累积原文；展示用 content 已剥掉 task_completion */
+  contentRaw?: string;
   ts: number;
   streaming?: boolean;
   toolCalls?: ToolCardState[];

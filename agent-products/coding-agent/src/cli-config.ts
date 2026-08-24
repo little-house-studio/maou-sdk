@@ -32,7 +32,7 @@ const codingCliConfig: AgentCliConfig = {
       sessionStore: deps.sessionStore,
       toolRegistry: deps.toolRegistry,
       llmClient: deps.llmClient,
-      log: () => {}, // 静默，避免污染 Ink stdout
+      log: () => {}, // 静默，避免污染 stdout
       enablePostLogger: false,
     });
   },

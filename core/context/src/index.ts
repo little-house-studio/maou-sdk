@@ -123,6 +123,64 @@ export type {
   MessageAuthor,
   MessageAuthorType,
 } from "./session-event.js";
+
+// 会话事件源账本（sidecar；登记即入库 / 可查）
+export {
+  registerLedgerEvent,
+  appendLedgerEvent,
+  queryLedgerEvents,
+  bindSessionLedgerPort,
+  emitSessionLedger,
+  listLedgerCatalog,
+  installCoreLedgerCatalog,
+  resetExtraLedgerCatalogForTests,
+  getLedgerEventSpec,
+  isLedgerEventType,
+  ledgerPath,
+  readLedgerRecords,
+  KIND_TO_LEDGER_TYPE,
+  LEDGER_FILE_SUFFIX,
+  mirrorMessageToLedger,
+} from "./session-ledger.js";
+export type { LedgerEventSpec } from "./session-ledger.js";
+export {
+  SessionGoalService,
+  sessionGoals,
+  bindSessionGoalPort,
+  foldGoal,
+  applyGoalEvent,
+  applyGoalChange,
+  decodeGoalChange,
+  emptyGoalFoldState,
+  renderGoalRoundPrompt,
+  renderGoalWrapup,
+  renderGoalToolGuidance,
+} from "./session-goal.js";
+export type { GoalFoldState, GoalChangeMeta } from "./session-goal.js";
+export {
+  GoalHarnessService,
+  goalHarness,
+  goalHarnessDir,
+  planPath,
+  planBaselinePath,
+  scratchPath,
+  gapFingerprint,
+  firstUncheckedPlanItem,
+  renderPlanMarkdown,
+  renderWorkerRules,
+  renderContinuation,
+} from "./goal-harness.js";
+export {
+  SessionPlanService,
+  sessionPlan,
+  sessionPlanDir,
+  sessionPlanFile,
+  bindSessionPlanPort,
+  renderPlanPolicy,
+  renderPlanKickoff,
+  renderPlanRevise,
+  renderPlanImplement,
+} from "./session-plan.js";
 export {
   appendToolResult,
   patchPendingToolInterrupts,

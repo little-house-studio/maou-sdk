@@ -1,6 +1,5 @@
 /**
  * OpenAI Responses 适配器（新版 OpenAI API 格式）
- * 对应 Python: core/llm/adapters/openai_responses_adapter.py
  *
  * 使用 partial-json 库解析流式工具调用参数。
  */

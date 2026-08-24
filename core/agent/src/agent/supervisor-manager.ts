@@ -1,5 +1,6 @@
 /**
- * SupervisorManager —— 管理 /goal 模式下的「主 Agent ↔ 监督 Agent」绑定。
+ * SupervisorManager —— 管理监督模式下的「主 Agent ↔ 监督 Agent」绑定。
+ * 监督模式是独立能力，不由 /ultragoal 或 /goal 启动。
  *
  * 职责：
  *   - 维护 mainSessionId ↔ supervisorSessionId 双向映射

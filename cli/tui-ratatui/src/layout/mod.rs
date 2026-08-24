@@ -174,13 +174,13 @@ mod tests {
             assert_eq!(r.y, 0);
         }
         assert_eq!(widths.iter().sum::<u16>(), 40);
-        // equal grow → 10 each (Ink base/rem, not leftover-on-last)
+        // equal grow → 10 each 
         assert!(widths.iter().all(|&w| w == 10), "{widths:?}");
     }
 
     #[test]
     fn horizontal_equal_grow_remainder_on_first() {
-        // 43 / 4 → base 10, rem 3 → [11,11,11,10] (Ink NavBar), not [10,10,10,13]
+        // 43 / 4 → base 10, rem 3 → [11,11,11,10] , not [10,10,10,13]
         let mut t = Tree::new();
         let root = t.root(Style::row().height(Length::Fixed(1)));
         for i in 0..4u16 {

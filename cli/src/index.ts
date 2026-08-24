@@ -33,6 +33,9 @@ const HELP = `Maou CLI — 终端 AI agent 多产品入口
   maou --version          显示版本与安装形态
   maou doctor             诊断并自动修复依赖（缺啥补啥）
   maou doctor --check     只诊断，不修复
+  maou doctor --agent     脚本修完后交给安装员继续
+  maou aiinstall [任务]   安装员（无 TUI）
+  aiinstall [任务]        同上（独立命令）
   maou update             更新（预编译包→下载新包；源码树→git pull + 构建）
   maou update --check     只检查有无更新，不应用
   maou update --force     强制重装 / 脏工作区先 stash 再 pull
@@ -110,6 +113,7 @@ async function main(): Promise<void> {
   let productName: string | undefined;
   let configTarget: string | undefined;
   let tuiBackend: string | undefined;
+  const restArgv: string[] = [];
 
   let channel: string | undefined;
 
@@ -156,14 +160,13 @@ async function main(): Promise<void> {
       yes = true;
       continue;
     }
-    if (a.startsWith("-")) {
-      // 未知 flag 忽略，避免打断
+    if (systemCmd || productName || configTarget) {
+      restArgv.push(a);
       continue;
     }
 
-    // 第一个非 flag 词决定路由；后续非 flag 仅在尚未有 configTarget 时作路径
-    if (systemCmd || productName || configTarget) {
-      // 已确定主意图后，多余位置参数暂忽略
+    if (a.startsWith("-")) {
+      // 未知 flag 忽略，避免打断
       continue;
     }
 
@@ -196,11 +199,9 @@ async function main(): Promise<void> {
   }
 
   if (systemCmd === "doctor") {
-    const { runDoctor } = await import("./commands/deps-check.js");
-    // 默认自动修复；--check 只诊断
-    const ok = await runDoctor({
-      noInstall: argv.includes("--check") || argv.includes("--no-fix"),
-    });
+    const { parseDoctorFlags, runDoctor } = await import("./commands/deps-check.js");
+    const flags = parseDoctorFlags(argv);
+    const ok = await runDoctor(flags);
     process.exit(ok ? 0 : 1);
   }
 
@@ -247,6 +248,7 @@ async function main(): Promise<void> {
     themePath,
     yes,
     tui: tuiBackend,
+    extraArgv: restArgv,
   });
   process.exit(0);
 }

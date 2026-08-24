@@ -44,6 +44,8 @@ export interface AgentLaunchOptions {
    * 传入 ink 会报错并提示编译二进制。
    */
   tui?: string;
+  /** 产品名之后的参数（headless 安装员用） */
+  extraArgv?: string[];
 }
 
 async function loadConfigFromPath(target: string): Promise<AgentCliConfig> {
@@ -101,8 +103,26 @@ async function resolveLaunchConfig(
   };
 }
 
-/** 启动产品 TUI（Ratatui） */
+/** 启动产品：headless 走安装员 REPL，其余进 Ratatui。 */
 export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> {
+  const early = await resolveLaunchConfig(opts);
+  if (early.product.ui === "headless") {
+    if (!opts.skipSetup) {
+      const ok = await ensureApiConfigured();
+      if (!ok) {
+        process.stderr.write(
+          "❌ 全局 API 未配置。请运行：maou setup\n" +
+            "   或设置 MAOU_API_KEY / OPENAI_API_KEY 后：maou setup --from-env\n",
+        );
+        process.exit(1);
+      }
+    }
+    const { runAiinstallMain } = await import("@little-house-studio/install-agent");
+    const code = await runAiinstallMain({ argv: opts.extraArgv ?? [] });
+    if (code !== 0) process.exit(code);
+    return;
+  }
+
   // 0) 依赖：Core 必须；缺则自动修复一次再查
   if (!opts.skipDeps && process.env.MAOU_SKIP_DEPS !== "1") {
     const { ensureDependencies, autoFixDependencies } = await import("./deps-check.js");
@@ -145,7 +165,7 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
     }
   }
 
-  const { config, product } = await resolveLaunchConfig(opts);
+  const { config, product } = early;
 
   // 2) 仅项目产品创建 cwd/.maou；全局 Ops 不污染调用路径。
   if (product.scope === "project") {
@@ -192,7 +212,7 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
   const flag = (opts.tui || process.env.MAOU_TUI || "").toLowerCase().trim();
   if (flag === "ink" || flag === "react") {
     process.stderr.write(
-      "❌ Ink TUI 已移除。请使用 Ratatui：\n" +
+      "❌ 请使用 Ratatui TUI：\n" +
         "  cd maou-sdk/cli && npm run build:tui-ratatui\n" +
         "  或 maou doctor\n" +
         "  或 MAOU_TUI_BIN=/path/to/maou-tui-ratatui maou coding\n",
@@ -208,7 +228,7 @@ export async function launchAgent(opts: AgentLaunchOptions = {}): Promise<void> 
   });
   if (!bin) {
     process.stderr.write(
-      "❌ 找不到 maou-tui-ratatui 二进制（Ink 已删除，无法回退）。\n" +
+      "❌ 找不到 maou-tui-ratatui 二进制。\n" +
         "  编译：cd maou-sdk/cli && npm run build:tui-ratatui\n" +
         "  或：maou doctor\n" +
         "  或：MAOU_TUI_BIN=/path/to/maou-tui-ratatui\n",

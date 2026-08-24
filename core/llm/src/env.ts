@@ -1,8 +1,8 @@
 /**
  * 环境变量 API Key 检测
  *
- * 对标 pi-ai 的 getEnvApiKey / findEnvKeys：覆盖 30+ 主流厂商的常见环境变量名，
- * 自动发现已配置的 key，省去手填。读取统一走 runtime-env（兼容 Bun / 浏览器）。
+ * 覆盖 30+ 主流厂商的常见环境变量名，自动发现已配置的 key，省去手填。
+ * 读取统一走 runtime-env（兼容 Bun / 浏览器）。
  */
 
 import { readEnv } from "./runtime-env.js";

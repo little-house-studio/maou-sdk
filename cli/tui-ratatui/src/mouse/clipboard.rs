@@ -36,13 +36,13 @@ pub fn osc52_copy(text: &str) {
     });
 }
 
-/// Ink `osc22Supported`: skip OSC 22 on known-broken TERM_PROGRAM / LITE.
+/// skip OSC 22 on known-broken TERM_PROGRAM / LITE.
 fn osc22_supported() -> bool {
     if std::env::var_os("MAOU_LITE").is_some() {
         return false;
     }
     let prog = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    // Ink OSC22_UNSUPPORTED_PROGRAMS
+    // OSC22_UNSUPPORTED_PROGRAMS
     !matches!(
         prog.as_str(),
         "Apple_Terminal" | "vscode" | "vscode-insiders" | "WezTerm" | "Hyper" | "Windows Terminal"

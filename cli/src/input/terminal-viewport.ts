@@ -194,7 +194,6 @@ export function maxLineVisualWidth(value: string): number {
  * InputBar 外壳高度、鼠标 hit、滚动条都依赖它。
  * 仅按 `\n` 计数会把超长单行当成 1 行 → 外壳 1 行高、右侧被裁切。
  *
- * 规则与 react-ink-textarea 的 buildVisualRows 一致：
  * 空逻辑行占 1 视觉行；非空行 ceil(visualWidth / contentCols)。
  */
 export function countInputVisualLines(value: string, contentCols: number): number {

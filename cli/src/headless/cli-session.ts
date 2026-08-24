@@ -1,7 +1,7 @@
 /**
- * Headless CLI session —— Ink 与 Ratatui 共用的 agent / stream / session 内核。
+ * Headless CLI session —— 与 Ratatui 共用的 agent / stream / session 内核。
  *
- * 状态真相源：zustand `useStore` + `reducer`（与 Ink 完全同一路径）。
+ * 状态真相源：zustand `useStore` + `reducer`。
  * 视图层只订阅 UIState 或通过协议推送快照，禁止自建第二套 stream 逻辑。
  */
 
@@ -48,7 +48,7 @@ export interface CliSessionOpts {
   maouRoot?: string;
   /** 是否启用音效（Ratatui / headless 默认真） */
   sound?: boolean;
-  /** 启动时恢复 last-session（与 Ink app.tsx 对齐） */
+  /** 启动时恢复 last-session */
   restoreLastSession?: boolean;
 }
 

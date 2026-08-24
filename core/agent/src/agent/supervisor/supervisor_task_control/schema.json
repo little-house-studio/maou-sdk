@@ -1,34 +1,35 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "supervisor_task_control",
-  "description": "监督 Agent 生命周期控制工具（仅 /goal 监督模式下可用）",
+  "description": "监督 Agent 生命周期控制（仅监督 session）。",
   "type": "object",
   "properties": {
     "action": {
       "type": "string",
-      "enum": [
-        "start",
-        "confirm_end",
-        "end"
-      ],
-      "description": "start=启动监督 | confirm_end=发起验收 | end=完全结束监督"
+      "enum": ["submit_plan", "start", "verify", "confirm_end", "end"],
+      "description": "submit_plan=提交计划 | start=启动 | verify=验收本轮 | confirm_end=请用户验收 | end=结束监督"
     },
     "plan": {
       "type": "string",
-      "description": "任务计划 MD（action=start 时必填）"
+      "description": "任务计划 MD（submit_plan 必填）"
     },
     "summary": {
       "type": "string",
-      "description": "任务总结（action=confirm_end 时建议填）"
+      "description": "任务总结（confirm_end 建议填）"
+    },
+    "round_report": {
+      "type": "string",
+      "description": "主 Agent 本轮汇报（verify 时填）"
+    },
+    "check_command": {
+      "type": "string",
+      "description": "可选硬指标命令（verify）"
     },
     "description": {
       "type": "string",
       "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
     }
   },
-  "required": [
-    "description",
-    "action"
-  ],
+  "required": ["description", "action"],
   "additionalProperties": false
 }

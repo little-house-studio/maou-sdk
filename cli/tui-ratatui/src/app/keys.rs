@@ -1,4 +1,4 @@
-//! Keyboard handling (Ink keybindings parity).
+//! Keyboard handling .
 
 use super::App;
 use super::LocalToast;
@@ -255,7 +255,7 @@ impl App {
             return;
         }
 
-        // Ink: Cmd+C / meta+c — copy selection only (no quit arm)
+        // Cmd+C / meta+c — copy selection only (no quit arm)
         if (key.modifiers.contains(KeyModifiers::SUPER)
             || key.modifiers.contains(KeyModifiers::META))
             && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
@@ -268,7 +268,7 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
                 KeyCode::Char('c') | KeyCode::Char('C') => {
-                    // Ink: Ctrl+Shift+C → copy any selection (chat/global/input)
+                    // Ctrl+Shift+C → copy any selection (chat/global/input)
                     if key.modifiers.contains(KeyModifiers::SHIFT) {
                         let _ = self.copy_active_selection();
                         return;
@@ -409,7 +409,7 @@ impl App {
             return;
         }
 
-        // completion nav — Ink: Enter/Tab accept, ↑↓ cycle (do NOT submit on Enter)
+        // completion nav — : Enter/Tab accept, ↑↓ cycle (do NOT submit on Enter)
         if self
             .completions
             .as_ref()
@@ -428,7 +428,7 @@ impl App {
                     return;
                 }
                 KeyCode::Tab | KeyCode::Enter => {
-                    // Enter with open menu = accept (Ink doSubmit early return)
+                    // Enter with open menu = accept 
                     if key.code == KeyCode::Enter
                         && key.modifiers.contains(KeyModifiers::ALT)
                     {
@@ -448,7 +448,7 @@ impl App {
         }
 
         match key.code {
-            // Ink useCleanInput: ignore function keys / media (no junk insert)
+            // ignore function keys / media (no junk insert)
             KeyCode::F(_)
             | KeyCode::Null
             | KeyCode::CapsLock
@@ -572,7 +572,7 @@ impl App {
             KeyCode::PageDown => {
                 self.apply_scroll_lines(-8);
             }
-            // Ink: Home/End = current line (not document)
+            // Home/End = current line (not document)
             KeyCode::Home => self.move_home_line(),
             KeyCode::End => self.move_end_line(),
             KeyCode::Char(c) => {

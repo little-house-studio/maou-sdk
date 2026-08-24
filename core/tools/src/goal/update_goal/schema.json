@@ -1,0 +1,44 @@
+{
+  "name": "update_goal",
+  "description": "Update the exact current /goal revision. edit, pause, and resume require a direct top-level human request. During a goal-mode round, report progress with <task_completion> at the end of your message instead of complete/blocked. complete and blocked remain available on a direct human turn. Disabled while a host-verified /ultragoal is open.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "goal_id": {
+        "type": "string",
+        "description": "Exact id returned by get_goal."
+      },
+      "revision": {
+        "type": "number",
+        "description": "Exact positive revision returned by get_goal."
+      },
+      "action": {
+        "type": "string",
+        "enum": ["edit", "pause", "resume", "complete", "blocked"],
+        "description": "edit | pause | resume | complete | blocked"
+      },
+      "objective": {
+        "type": "string",
+        "description": "Replacement objective; valid only with action edit."
+      },
+      "max_goal_rounds": {
+        "type": "number",
+        "description": "Replacement cap; valid only with action edit."
+      },
+      "blocked_reason": {
+        "type": "string",
+        "description": "Concrete blocking condition; required only with action blocked."
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具而不是直接回复？"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么。"
+      }
+    },
+    "required": ["description", "reason", "goal_id", "revision", "action"],
+    "additionalProperties": false
+  }
+}

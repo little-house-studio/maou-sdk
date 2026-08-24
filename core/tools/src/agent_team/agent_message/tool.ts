@@ -1,6 +1,5 @@
 /**
  * Subagent 工具 — 创建克隆子 Agent
- * 对应 Python: core/tools/impls/subagent_creat_tool.py
  *
  * 创建克隆子 Agent 处理独立任务。继承 ROLE 模板，注册为项目专属 Agent。
  */
@@ -8,13 +7,8 @@
 import { Tool, toolDir, resolveToolRuntimePorts } from "../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { createToolResponse } from "../../base.js";
-import { TASK_MANAGER, TaskScheduler } from "../../task/task_manage/tool.js";
 import type { ForkOptions } from "@little-house-studio/types";
 import { loadSubagentKindOptionsFromCtx } from "../subagent-kind-options.js";
-
-const STATUS_EMOJI: Record<string, string> = {
-  idle: "💤", busy: "🔵", working: "🟢", stopped: "🔴", error: "💥",
-};
 
 export class SubagentTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
@@ -22,20 +16,18 @@ export class SubagentTool extends Tool {
     name: "agent_message",
     aliases: ["subagent_creat", "subagent-create", "clone-agent"],
     description:
-      "fork 子 Agent 真并行执行独立任务。子 Agent 是主 Agent 的轻量克隆，或 context_and_config 指向已有 agent/模板。" +
-      "适用：并行拆分、代码探索(explore)、网络调研(research)、测试(tester) 等。" +
-      "偏好专业模板时也可直接调 subagent_explore / subagent_research / subagent_tester（文件即子 Agent）。" +
-      "与运行中子 agent 再通信请用 agent_manage action=message（MessageBus）。" +
-      "与会话 todo 配合：todo_manage create 后 agent_message fork_layer 并发 ready 层。" +
+      "fork 子 Agent 执行独立任务。子 Agent 是主 Agent 的轻量克隆，或 context_and_config 指向已有 agent/模板。" +
+      "适用：代码探索(explore)、网络调研(research)、测试(tester) 等。" +
+      "与运行中子 agent 再通信请用 agent_send（派活/插话/中断/停止）。" +
+      "todo 并行层由 harness 自动调度，不要用本工具开并行层。" +
       "detached=true 后台跑，可用 agent_manage list 查进度。依赖 runtime.setSubagentExecutor()。",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["fork", "create", "fork_layer"],
-          description:
-            'fork/create: fork 单个子 Agent | fork_layer: 并发 fork 当前 todo 清单中 ready 的一层（依赖 todo_manage 已建清单）',
+          enum: ["fork", "create"],
+          description: "fork/create: fork 单个子 Agent（同义）",
         },
         name: { type: "string", description: "子 Agent 唯一名称（fork 时作为 taskId，可省略自动生成）" },
         task: { type: "string", description: "分配给子 Agent 的任务描述（fork 必填）" },
@@ -169,105 +161,20 @@ export class SubagentTool extends Tool {
     if (action === "fork" || action === "create") {
       return this.doFork(name || undefined, task, roleDetail, ctx, forkOptions);
     }
-    if (action === "fork_layer") {
-      return this.doForkLayer(ctx, forkOptions);
-    }
 
-    // 兼容旧 API：优先从 SubagentExecutor 结果缓存取（SDK 内可用）；否则给出明确指引
-    const legacyActions = ["list", "status", "output", "update-task", "stop"];
-    if (legacyActions.includes(action)) {
-      return this.doLegacyResultAction(action, name, ctx);
+    if (action === "fork_layer") {
+      return createToolResponse(
+        false,
+        "fork_layer 不是工具。todo 并行层由 harness 自动调度，不要由模型调用。",
+      );
     }
 
     return createToolResponse(
       false,
-      `不支持的操作: ${action}。支持: fork（fork 单个子 Agent 执行任务）/ fork_layer（并发 fork 当前 ready 的 task 层）` +
-        `\n结果：非 detached 的 fork/create 返回值里已有「── 输出 ──」；后台任务用 agent_manage list 看进度。`,
+      `不支持的操作: ${action}。支持: fork / create（同义，fork 单个子 Agent）。` +
+        `\n结果：非 detached 的 fork 返回值里已有「── 输出 ──」；后台任务用 agent_manage list 看进度；` +
+        `再说话/停止用 agent_send。`,
     );
-  }
-
-  /**
-   * 旧 list/status/output/stop：从 SubagentExecutor 结果缓存读取（若实现了 getResult/listResults）。
-   */
-  private doLegacyResultAction(
-    action: string,
-    name: string,
-    ctx: ToolContext,
-  ): ToolResponse {
-    const ports = resolveToolRuntimePorts(ctx);
-    const exec = ports.subagentExecutor as
-      | {
-          getResult?: (taskId: string) => {
-            taskId: string;
-            ok: boolean;
-            output?: string;
-            error?: string;
-            elapsedMs?: number;
-            subSessionId?: string;
-          } | null;
-          listResults?: () => Array<{
-            taskId: string;
-            ok: boolean;
-            output?: string;
-            error?: string;
-            elapsedMs?: number;
-          }>;
-        }
-      | undefined;
-
-    if (action === "list" || action === "status") {
-      const rows = exec?.listResults?.() ?? [];
-      if (rows.length === 0) {
-        return createToolResponse(
-          true,
-          "当前没有已缓存的子 Agent 结果。\n" +
-            "请用 agent_message action=fork（默认同步，返回值含输出）创建任务；" +
-            "或 detached=true 后用 agent_manage list 查看后台进度。",
-        );
-      }
-      const lines = rows.map(
-        (r) =>
-          `- ${r.taskId}: ${r.ok ? "ok" : "fail"} ${r.elapsedMs != null ? `(${r.elapsedMs}ms)` : ""}\n  ${(r.output || r.error || "").slice(0, 200)}`,
-      );
-      return createToolResponse(true, `子 Agent 结果缓存（${rows.length}）:\n${lines.join("\n")}`);
-    }
-
-    if (action === "output") {
-      if (!name) {
-        return createToolResponse(
-          false,
-          "output 需要 name=taskId（fork 时传入的 name / 返回的 taskId）。\n" +
-            "推荐：直接用 fork 的同步返回值（含 ── 输出 ──），无需再调 output。",
-        );
-      }
-      const r = exec?.getResult?.(name);
-      if (!r) {
-        return createToolResponse(
-          false,
-          `未找到 taskId=${name} 的缓存结果。\n` +
-            "可能原因：尚未 fork、进程已重启、或使用了旧版 harness-only output。\n" +
-            "请重新 agent_message action=fork（detached=false）获取完整输出。",
-        );
-      }
-      return createToolResponse(r.ok, [
-        `taskId: ${r.taskId}`,
-        r.subSessionId ? `subSessionId: ${r.subSessionId}` : "",
-        r.elapsedMs != null ? `elapsedMs: ${r.elapsedMs}` : "",
-        r.error ? `error: ${r.error}` : "",
-        "── 输出 ──",
-        r.output || "(无输出)",
-      ].filter(Boolean).join("\n"));
-    }
-
-    if (action === "stop" || action === "update-task") {
-      return createToolResponse(
-        false,
-        `${action} 请用 agent_manage（stop/message）管理运行中队友；` +
-          `同步 fork 任务结束后无需 stop。`,
-      );
-    }
-
-    return createToolResponse(false, `不支持的操作: ${action}`);
   }
 
   /**
@@ -314,59 +221,6 @@ export class SubagentTool extends Tool {
       });
     } catch (err) {
       return createToolResponse(false, `fork 失败: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  /**
-   * fork_layer：并发 fork 当前 ready 的 task 层（真并行）。
-   * 与 todo_manage 清单配合（无独立 fork_layer action）：
-   *   1. LLM 先 todo_manage create 建清单（无依赖项可并行）
-   *   2. LLM 调 agent_message fork_layer → 真正并发 fork 这一层的所有 task
-   */
-  private async doForkLayer(
-    ctx: ToolContext,
-    forkOptions: ForkOptions,
-  ): Promise<ToolResponse> {
-    const ports = resolveToolRuntimePorts(ctx);
-    if (!ports.subagentExecutor) {
-      return createToolResponse(
-        false,
-        "子 Agent 执行器未注入。harness 需通过 runtime.setSubagentExecutor() 注入。",
-      );
-    }
-
-    // 从 TaskManager 拿当前 ready 的 task 层
-    const allTasks = TASK_MANAGER.getTasks(ctx.sessionId);
-    const ready = TaskScheduler.selectLayer(allTasks);
-    if (ready.length === 0) {
-      return createToolResponse(true, "当前没有可并行执行的 task（可能全部完成、或下层被依赖阻塞）。");
-    }
-
-    try {
-      const results = await ports.subagentExecutor.forkLayer(
-        ready.map((t) => ({ id: t.id, desc: t.desc })),
-        forkOptions,
-      );
-      const lines: string[] = [
-        `⚡ 并发 fork ${ready.length} 个子 Agent 完成：`,
-        "",
-      ];
-      for (const r of results) {
-        const status = r.ok ? "✅" : "❌";
-        lines.push(`${status} ${r.taskId} (${r.elapsedMs}ms)${r.error ? ` — ${r.error}` : ""}`);
-        if (r.output) {
-          const preview = r.output.length > 200 ? r.output.slice(0, 200) + "..." : r.output;
-          lines.push(`   输出预览: ${preview}`);
-        }
-      }
-      const okCount = results.filter((r) => r.ok).length;
-      lines.push("", `成功 ${okCount}/${results.length}`);
-      return createToolResponse(okCount === results.length, lines.join("\n"), {
-        payload: { results, total: results.length, ok: okCount },
-        displayEvents: [{ type: "terminal", stream: "info", text: `[子 Agent] fork_layer 完成: ${okCount}/${results.length}` }],
-      });
-    } catch (err) {
-      return createToolResponse(false, `fork_layer 失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

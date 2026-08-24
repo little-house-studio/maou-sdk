@@ -1,6 +1,5 @@
 /**
  * 工具系统基础类型与抽象类
- * 对应 Python: core/tools/base.py
  */
 
 import type { z } from "zod";

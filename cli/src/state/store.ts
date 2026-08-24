@@ -540,7 +540,7 @@ export const useStore = create<Store>((set, get) => ({
       source: "human",
       author: { type: "human" as const, id: "user", displayName: "user" },
     };
-    // Grok：仅当本来就在最下面时贴底 + 让 user 顶到视口顶（bottomPad 动态算）
+    // 仅当本来就在最下面时贴底 + 让 user 顶到视口顶（bottomPad 动态算）
     const atBottom = s.autoFollow || s.chatScrollOffset <= 0;
     return {
       messages: [...s.messages, msg],
@@ -1073,7 +1073,7 @@ export const useStore = create<Store>((set, get) => ({
 
   onStream: (ev) => {
     // 高频 delta 节流：合并 ~64ms 内的 assistant_delta / thinking_delta，避免每个 token
-    // 触发全树 React/Ink 重渲，导致流式中无法打字/滚轮（事件循环被渲染占满）。
+    // 触发全树 重渲，导致流式中无法打字/滚轮（事件循环被渲染占满）。
     // 非 delta 事件先 flush 再处理，保证 tool_call 等顺序不错乱。
     applyStreamEvent(ev);
   },

@@ -1,6 +1,5 @@
 /**
  * 协议适配器共享类型与接口
- * 对应 Python: core/llm/adapters/adapter.py
  */
 
 /** LLM 使用量统计 */
@@ -160,8 +159,10 @@ export interface APIPreset {
   supportsVision?: boolean;
   anthropicVersion?: string;
   reasoning_params?: Record<string, unknown>;
-  /** 使用 OAuth 订阅令牌认证：LLMClient 会按厂商调整认证头（如 Anthropic 改 Bearer + anthropic-beta） */
+  /** 使用 OAuth 订阅令牌认证：LLMClient 会按厂商调整认证头并在过期时续票 */
   oauth?: boolean;
+  /** 订阅登录厂商；缺省时从 protocol / url 推断 */
+  oauthProvider?: "anthropic" | "openai-codex" | "github-copilot" | "google" | "xai";
   /** 追加/覆盖的请求头（在适配器构建的头之上合并） */
   extraHeaders?: Record<string, string>;
   /**

@@ -1,17 +1,14 @@
 /**
- * Stealth Mode —— 工具名伪装
+ * Stealth Mode —— 工具名别名
  *
- * 对标 pi-ai：把本项目的工具名映射成 Claude Code 的规范工具名（Bash/Read/Edit/…），
- * 让对 Claude Code 工具有特殊优化/识别的后端把请求当成"标准 agent"对待。
- *
- * 映射是可逆的：发送前 applySchemas 把工具名改成 Claude Code 名，收到工具调用后
- * restoreName 还原回本项目名以便查执行器。多个本项目工具映射到同一 Claude 名时，
- * 按出现顺序"先到先得"，其余保留原名（保证可逆，不产生歧义）。
+ * 发送时把本项目工具名换成常见 agent 名（Bash/Read/Edit/…），
+ * 收到工具调用后再还原，以便查执行器。
+ * 多个本项目工具映射到同一别名时，按出现顺序先到先得，其余保留原名。
  */
 
 import type { ToolSchema } from "./tools/index.js";
 
-/** 本项目工具名 → Claude Code 规范工具名（16 条） */
+/** 本项目工具名 → 常见 agent 工具名（16 条） */
 export const CLAUDE_CODE_TOOL_MAP: Record<string, string> = {
   use_terminal: "Bash",
   reader: "Read",
@@ -24,7 +21,6 @@ export const CLAUDE_CODE_TOOL_MAP: Record<string, string> = {
   use_browser: "WebFetch",
   todo_manage: "TodoWrite",
   task_manage: "TodoWrite", // 兼容旧名
-  notebook: "NotebookEdit",
   agent_message: "Task",
   agent_manage: "Task",
   project_manage: "Task",
@@ -36,9 +32,9 @@ export const CLAUDE_CODE_TOOL_MAP: Record<string, string> = {
 
 /** 工具名映射器（有状态、可逆） */
 export interface StealthMapper {
-  /** 本项目名 → Claude Code 名（先到先得；冲突或无映射则保留原名） */
+  /** 本项目名 → 别名（先到先得；冲突或无映射则保留原名） */
   forwardName(name: string): string;
-  /** Claude Code 名 → 本项目名（还原；未知名原样返回） */
+  /** 别名 → 本项目名（还原；未知名原样返回） */
   restoreName(name: string): string;
   /** 批量改写工具 schema 的 name 字段 */
   applySchemas(schemas: ToolSchema[]): ToolSchema[];

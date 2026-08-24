@@ -24,7 +24,7 @@ impl App {
         self.vram.capture_from_buffer(buf);
     }
 
-    /// 对齐 Ink toastCopy：✓ 已复制 N 字「预览…」（空/空白不 toast）
+    /// ✓ 已复制 N 字「预览…」（空/空白不 toast）
     pub(crate) fn toast_copy(&mut self, text: &str) {
         let Some(msg) = mouse::format_copy_toast(text) else {
             return;
@@ -194,7 +194,7 @@ impl App {
             // Re-enter follow only when user explicitly reaches the latest edge
             if self.scroll_from_bottom == 0 {
                 self.auto_follow = true;
-                // 回底即恢复 Grok 预留空白（不要只绑 streaming）
+                // 回底即恢复预留空白（不要只绑 streaming）
                 self.follow_tail_boost = true;
             }
         }
@@ -202,7 +202,7 @@ impl App {
 
     /// When content grows at the tail and the user is not following, increase
     /// `from_bottom` by the growth so the absolute viewport stays put
-    /// (Ink `setMaxChatScroll(..., "pin-content")`).
+    /// `).
     pub(crate) fn pin_scroll_on_max_change(from_bottom: usize, prev_max: usize, max_scroll: usize, auto_follow: bool) -> usize {
         if auto_follow || from_bottom == 0 {
             return 0;
@@ -333,7 +333,7 @@ impl App {
         let _ = had_toast;
     }
 
-    /// Grok-style tail pad when pinned to latest (`auto_follow` && from_bottom==0).
+    /// Tail pad when pinned to latest (`auto_follow` && from_bottom==0).
     ///
     /// Pad so that **the last user message sits at the top of the viewport** while
     /// empty space below fills with AI output. As the tail grows, pad shrinks to 0
@@ -342,7 +342,7 @@ impl App {
     /// `tail_lines` = rendered lines from last user-head through end of content
     /// (before pad). If unknown, pass 0 → generous pad while streaming/boost.
     pub(crate) fn follow_tail_pad_lines(&self, viewport_h: usize, tail_lines: usize) -> usize {
-        // Grok 式：只要有消息就预留尾部空白（文档高度稳定）。
+        // 只要有消息就预留尾部空白（文档高度稳定）。
         // 上滚时 pad 仍在文档末尾，滚回底部可再次吸附到预留空白；
         // 勿在 from_bottom!=0 时去掉 pad，否则 max_scroll 收缩、再也回不到「大空白」态。
         if self.messages.is_empty() {
@@ -360,7 +360,7 @@ impl App {
         1.min(h.saturating_sub(1).max(1))
     }
 
-    /// Snap to latest + enable Grok tail pad (only when user was already following).
+    /// Snap to latest + enable tail pad (only when user was already following).
     pub(crate) fn pin_follow_for_send(&mut self) {
         // 前提：本来就在最下面；上滚阅读中发送不抢滚动
         if !(self.auto_follow || self.scroll_from_bottom == 0) {
@@ -469,7 +469,7 @@ impl App {
                         self.overlay_scroll = 0;
                     }
                     self.overlay = Some(o);
-                    // Ink: open overlay clears input selection
+                    // open overlay clears input selection
                     self.sel.clear();
                     set_pointer_shape("default");
                     if !had_overlay || kind_changed {
@@ -657,13 +657,13 @@ impl App {
         });
     }
 
-    /// Ink notifyCursorActivity: reset blink phase to "on" so typing isn't mid-off.
+    /// reset blink phase to "on" so typing isn't mid-off.
     pub(crate) fn notify_caret_activity(&mut self) {
         self.caret_blink_on = true;
         self.caret_blink_at = Instant::now();
     }
 
-    /// Toggle software caret every ~530ms (Ink cursor blink).
+    /// Toggle software caret every ~530ms .
     pub(crate) fn tick_caret_blink(&mut self) {
         if self.chrome.lite {
             self.caret_blink_on = true;
@@ -689,12 +689,12 @@ impl App {
     pub(crate) fn insert_str(&mut self, s: &str) {
         // typing re-pins input viewport to caret
         self.input_view_offset = None;
-        // Ink scrubInput: strip mouse/CSI garbage before draft
+        // strip mouse/CSI garbage before draft
         let s = scrub_input(s);
         if s.is_empty() {
             return;
         }
-        // Ink: printable input replaces active text selection
+        // printable input replaces active text selection
         let _ = self.take_input_sel_delete();
         self.cursor = mouse::snap_char_boundary(&self.input, self.cursor);
         self.input.insert_str(self.cursor, &s);
@@ -703,7 +703,7 @@ impl App {
     }
 
     pub(crate) fn backspace(&mut self) {
-        // Ink InputBar: backspace deletes selection first
+        // backspace deletes selection first
         if self.take_input_sel_delete() {
             self.emit_input();
             return;
@@ -748,7 +748,7 @@ impl App {
         self.emit_input();
     }
 
-    /// Forward Delete (Ink TextArea Delete / sel-first).
+    /// Forward Delete .
     pub(crate) fn delete_forward(&mut self) {
         if self.take_input_sel_delete() {
             self.emit_input();
@@ -765,7 +765,7 @@ impl App {
 
     /// Bracketed paste / multi-char insert (caret ends after pasted block).
     pub(crate) fn paste_str(&mut self, s: &str) {
-        // Normalize CRLF → LF (Ink paste path), then scrub control sequences
+        // Normalize CRLF → LF , then scrub control sequences
         let s = scrub_input(&s.replace("\r\n", "\n").replace('\r', "\n"));
         if s.is_empty() {
             return;
@@ -921,7 +921,7 @@ impl App {
     }
 
     pub(crate) fn screen_dump_text(&self) -> String {
-        // Ctrl+G：从显存整屏文字；头注明 ratatui，避免与 Ink dump 的 `· ink` 混淆
+        // Ctrl+G：从显存整屏文字；头注明 ratatui
         let body = {
             let mut out = self.vram.dump_all();
             if out.trim().is_empty() {
@@ -938,13 +938,13 @@ impl App {
         )
     }
 
-    /// True if scroll line looks like a user bubble head (Ink user message).
+    /// True if scroll line looks like a user bubble head .
     pub(crate) fn looks_user_head_line(line: &str) -> bool {
         (line.contains("user") || line.contains("user:"))
             && (line.contains('│') || line.contains('⨁') || line.contains('|'))
     }
 
-    /// Ink older bar label: `↑ ` + preview of previous user body.
+    /// older bar label: `↑ ` + preview of previous user body.
     pub(crate) fn prev_user_jump_label(&self, width: usize) -> String {
         let vis_top = self.visible_start;
         if vis_top == 0 || self.scroll_plain.is_empty() {
@@ -1008,7 +1008,7 @@ impl App {
         }
     }
 
-    /// Jump scroll so previous user message near top of viewport (Ink older-user bar).
+    /// Jump scroll so previous user message near top of viewport .
     pub(crate) fn jump_prev_user(&mut self) {
         // Prefer content-anchored jump: scan scroll_plain upward from visible top
         let vis_top = self.visible_start;
@@ -1042,7 +1042,7 @@ impl App {
         emit(&OutMsg::JumpPrevUser);
     }
 
-    /// Copy input / full-editor text selection (Ink Ctrl+C when sel on draft).
+    /// Copy input / full-editor text selection .
     pub(crate) fn copy_input_selection(&mut self) -> bool {
         if let Some((a, b)) = self.sel.input_range() {
             let src = if self.full_editor {
@@ -1064,7 +1064,7 @@ impl App {
         false
     }
 
-    /// Copy any active selection: input first, then chat/global (Ink meta+c / Ctrl+Shift+C).
+    /// Copy any active selection: input first, then chat/global .
     pub(crate) fn copy_active_selection(&mut self) -> bool {
         if self.copy_input_selection() {
             return true;
@@ -1150,7 +1150,7 @@ impl App {
         col.saturating_sub(self.content_x0())
     }
 
-    /// Prompt prefix width for input (Ink: `" ❯ "` = 3 cols).
+    /// Prompt prefix width for input .
     pub(crate) fn input_prompt_cols(&self) -> u16 {
         mouse::prompt_cols()
     }

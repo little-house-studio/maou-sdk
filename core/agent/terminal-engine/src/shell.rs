@@ -1,5 +1,5 @@
 /**
- * shell.rs — 跨平台 shell 包装 + 子进程环境（对齐 Grok shell_command_argv / env overrides）
+ * shell.rs — 跨平台 shell 包装 + 子进程环境
  *
  * 业务层只调：
  *   - shell_command_argv(command)  → 如何执行用户命令字符串

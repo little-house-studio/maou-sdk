@@ -1,7 +1,7 @@
 /**
- * filtered-stdin.ts —— 从 stdin 剥离鼠标 SGR/SS3/OSC 序列后再喂给 Ink。
+ * filtered-stdin.ts —— 从 stdin 剥离鼠标 SGR/SS3/OSC 序列后再喂。
  *
- * 解决 react-ink-textarea 内部 useInput 把 SGR 鼠标序列当文本插入的乱码 bug。
+ * 避免 SGR 鼠标序列被当成键盘文本插入。
  * 关键：
  *  - 跨 chunk 半包（如 `\x1b[<35` + `;83;30M`）必须挂起
  *  - 中文等 UTF-8 多字节绝不能用 latin1 字符串当最终文本写出
@@ -9,14 +9,14 @@
  *  - 不完整 UTF-8 尾字节也要挂起，避免半个汉字被拆成替换符
  *
  * 策略：全程用 latin1 仅作「按字节」的正则剥离；写出时 Buffer.from(s,"latin1")
- * 还原原始字节，Ink 按 UTF-8 读到正确中文。
+ * 还原原始字节， 按 UTF-8 读到正确中文。
  */
 
 import { PassThrough } from "node:stream";
 
 /** 完整 SGR 鼠标（1006）：CSI < btn ; col ; row M/m */
 const SGR_MOUSE = /\x1b\[<\d+;\d+;\d+[Mm]/g;
-/** ESC 已被吃掉后的残片（Ink parseKeypress 或半包残留） */
+/** ESC 已被吃掉后的残片 */
 const SGR_MOUSE_ORPHAN = /\[<\d+;\d+;\d+[Mm]/g;
 const SS3 = /\x1bO[A-Z]/g;
 const OSC_DCS = /\x1b[\]P][^\x07\x1b]*(?:\x07|\x1b\\)/g;
@@ -80,18 +80,18 @@ function writeBytes(filtered: PassThrough, latin1Str: string): void {
   filtered.write(Buffer.from(latin1Str, "latin1"));
 }
 
-/** 包装原 stdin，剥离 SGR/SS3/OSC 序列后转发，代理 TTY 接口给 Ink。 */
+/** 包装原 stdin，剥离 SGR/SS3/OSC 序列后转发，代理 TTY 接口。 */
 export function createFilteredStdin(source: NodeJS.ReadableStream & {
   isTTY?: boolean; isRaw?: boolean; setRawMode?: (m: boolean) => unknown;
   ref?: () => unknown; unref?: () => unknown; resume?: () => unknown; pause?: () => unknown;
 }): any {
   const filtered: any = new PassThrough();
   /**
-   * resume/pause 只控制 PassThrough（Ink 读端），不要 pause 底层 process.stdin：
-   * - source 必须一直 flowing，source.on('data') 才能剥鼠标并把键喂给 Ink
+   * resume/pause 只控制 PassThrough，不要 pause 底层 process.stdin
+   * source 必须一直 flowing，source.on('data') 才能剥鼠标并把键喂
    * - useMouseInput 也直接挂在 process.stdin 上；pause source 会键盘+鼠标双死
-   * - 旧 bug：resume 只 resume source 不 resume PassThrough → Ink 收不到键
-   * - 随后误修成两边一起 pause → Ink pause 时把 stdin 掐死 → 整屏无法操作
+   * 旧 bug：resume 只 resume source 不 resume PassThrough → 收不到键
+   * 随后误修成两边一起 pause → pause 时把 stdin 掐死 → 整屏无法操作
    */
   const ptResume = filtered.resume.bind(filtered);
   const ptPause = filtered.pause.bind(filtered);
@@ -121,7 +121,7 @@ export function createFilteredStdin(source: NodeJS.ReadableStream & {
   filtered.resume = () => ptResume();
   filtered.pause = () => ptPause();
 
-  // 启动时保证底层 stdin flowing（不依赖 Ink 何时 resume）
+  // 启动时保证底层 stdin flowing
   try {
     source.resume?.();
   } catch {

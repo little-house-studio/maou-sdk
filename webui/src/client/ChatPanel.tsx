@@ -1,5 +1,5 @@
 /**
- * ChatPanel —— CLI 工作流对齐 + Codex-desktop 布局
+ * ChatPanel —— CLI 工作流 + 桌面聊天布局
  * wire chrome reuses draft DraftMarkdown / RoleAvatar / ToolCard for shell parity.
  */
 import {
@@ -42,6 +42,7 @@ import {
   type StreamEvent,
 } from "./api";
 import { formatModelErrorForUi } from "./model-error-ui";
+import { stripTaskCompletionMarkup } from "./strip-task-completion";
 import {
   SessionUsageModal,
   type SessionUsageStats,
@@ -68,6 +69,8 @@ export type ChatLine = {
   id: string;
   role: "user" | "assistant" | "system" | "tool" | "thinking";
   text: string;
+  /** 流式累积原文；text 已剥掉 task_completion */
+  raw?: string;
   err?: boolean;
   terminalId?: string;
   agentName?: string;
@@ -171,7 +174,10 @@ function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
         : m.role === "tool"
           ? "tool"
           : "assistant";
-    const text = m.content || "";
+    const text =
+      role === "assistant"
+        ? stripTaskCompletionMarkup(m.content || "")
+        : m.content || "";
     // 优先 session 落盘的 tool_name（Agent 权威），正文解析仅兜底
     const fromMeta = (m.toolName || "").trim();
     const fromBody = role === "tool" ? extractToolNameFromText(text) : undefined;
@@ -209,7 +215,9 @@ const HELP_TEXT = [
   "/usage · /cost · /analyze — 会话用量 / 诊断",
   "/context — 上下文占用与压缩阈值（Runtime）",
   "/init — 初始化项目说明（Runtime 任务注入）",
-  "/goal [任务] — 监督模式（若 Runtime 启用）",
+  "/plan [<objective>|off|view|approve|revise|clear] — 先写计划，确认后再改",
+  "/goal [<objective>|clear|edit|pause|resume] — 进入 goal 目标模式，按完成度续跑",
+  "/ultragoal [<objective> [--budget <tokens>] | status | pause | resume | clear] — 多 agent 宿主验收长目标",
   "/help — 本帮助",
   "",
   "热键: Enter 发送（忙碌时入队） · / 补全 ↑↓ Tab · Ctrl+N 新会话 · Ctrl+M 模型 · Ctrl+. / Esc 停止 · Shift+Tab 审批 · Ctrl+Shift+C 复制 · R 重试",
@@ -229,7 +237,9 @@ const SLASH_SUGGESTIONS = [
   "compact",
   "context",
   "init",
+  "plan",
   "goal",
+  "ultragoal",
   "help",
 ] as const;
 
@@ -790,13 +800,19 @@ export function ChatPanel({
       for (let i = next.length - 1; i >= 0; i--) {
         if (next[i]!.role === "assistant") {
           // 状态占位（… 调用模型…）收到正文 delta 时整段替换，避免拼进气泡
-          const cur = next[i]!.text;
-          const base = /^\u2026\s/.test(cur.trimStart()) ? "" : cur;
-          next[i] = { ...next[i]!, text: base + delta };
+          const cur = next[i]!;
+          const rawBase = /^\u2026\s/.test(cur.text.trimStart()) ? "" : (cur.raw ?? cur.text);
+          const raw = rawBase + delta;
+          next[i] = { ...cur, raw, text: stripTaskCompletionMarkup(raw) };
           return next;
         }
       }
-      next.push({ id: uid(), role: "assistant", text: delta });
+      next.push({
+        id: uid(),
+        role: "assistant",
+        text: stripTaskCompletionMarkup(delta),
+        raw: delta,
+      });
       return next;
     });
   }, []);
@@ -869,10 +885,19 @@ export function ChatPanel({
             if (idx >= 0) {
               const cur = next[idx]!;
               // 终态 content 为权威；已有流式前缀则合并覆盖，避免重复气泡
-              next[idx] = { ...cur, text: content };
+              next[idx] = {
+                ...cur,
+                raw: content,
+                text: stripTaskCompletionMarkup(content),
+              };
               return next;
             }
-            next.push({ id: uid(), role: "assistant", text: content });
+            next.push({
+              id: uid(),
+              role: "assistant",
+              text: stripTaskCompletionMarkup(content),
+              raw: content,
+            });
             return next;
           });
           break;
@@ -1674,7 +1699,7 @@ export function ChatPanel({
     }
   }, [refreshApproval, meta?.sessionId, markSessionRunning, setBusy]);
 
-  /** modeOverride: Ctrl+Enter 强制 insert（Grok send-now 对齐） */
+  /** modeOverride: Ctrl+Enter 强制 insert */
   const send = async (modeOverride?: ChatSendMode) => {
     const text = input.trim();
     if (!text) return;
@@ -1879,7 +1904,7 @@ export function ChatPanel({
     });
   };
 
-  // Global shortcuts (Codex/CLI-like workflow — not full CLI chrome)
+  // Global shortcuts（与 CLI 热键同类，不是完整 CLI 外壳）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
@@ -2311,7 +2336,7 @@ export function ChatPanel({
     } else if (e.key === "Escape") {
       setSlashOpen(false);
     }
-    // Ctrl/Cmd+Enter：强制插入模式（Grok send-now / interrupt 对齐）
+    // Ctrl/Cmd+Enter：强制插入模式
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       e.preventDefault();
       void send("insert");

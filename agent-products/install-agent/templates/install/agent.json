@@ -1,0 +1,24 @@
+{
+  "name": "install",
+  "display_name": "Install Agent",
+  "role": "install",
+  "scope": "global",
+  "round_limit": 80,
+  "max_retries": 10,
+  "tool_compression": "normal",
+  "thinking_context_mode": "first_round",
+  "terminalMode": "mini",
+  "terminal_mode": "auto",
+  "tools": [
+    "use_terminal",
+    "terminal/*",
+    "search_internet",
+    "web_fetch",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "glob",
+    "grep",
+    "todo/*"
+  ]
+}

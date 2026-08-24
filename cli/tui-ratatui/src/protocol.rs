@@ -58,7 +58,7 @@ pub struct UiMessage {
     pub kind: Option<String>,
     #[serde(default)]
     pub author_label: Option<String>,
-    /// Per-message usage (Ink MessageRow ↑/↓ compact).
+    /// Per-message usage .
     #[serde(default)]
     pub usage_input: Option<u64>,
     #[serde(default)]
@@ -124,7 +124,7 @@ pub struct ProtoChrome {
     pub used_tokens: Option<u64>,
     #[serde(default)]
     pub cache_label: Option<String>,
-    /// 0–100 when cache eligible (Ink InfoBar color thresholds)
+    /// 0–100 when cache eligible 
     #[serde(default)]
     pub cache_pct: Option<f64>,
     #[serde(default)]
@@ -149,7 +149,7 @@ pub struct ProtoChrome {
     pub history_base: Option<u32>,
     #[serde(default)]
     pub perf_hud: bool,
-    /// Ink PerfHud multi-line (cpu/mem/load/verdict)
+    /// PerfHud multi-line (cpu/mem/load/verdict)
     #[serde(default)]
     pub perf_lines: Vec<String>,
     /// "hot" | "warm" | "ok"
@@ -157,10 +157,10 @@ pub struct ProtoChrome {
     pub perf_heat: Option<String>,
     #[serde(default)]
     pub supervisor: Option<ProtoSupervisor>,
-    /// Ink eventBlockExpanded — wheel may route to supervisor scroll
+    /// eventBlockExpanded — wheel may route to supervisor scroll
     #[serde(default)]
     pub event_block_expanded: bool,
-    /// Ink supervisorMessages contents (EventBlock expanded body)
+    /// supervisorMessages contents (EventBlock expanded body)
     #[serde(default)]
     pub supervisor_messages: Vec<String>,
 }
@@ -570,9 +570,9 @@ pub enum OutMsg {
     SoundToggle,
     ScrollToBottom,
     GoalAction { action: String },
-    /// Ink toggleEventBlockExpanded
+    /// toggleEventBlockExpanded
     EventBlockToggle,
-    /// Ink scrollSupervisor when EventBlock expanded
+    /// scrollSupervisor when EventBlock expanded
     SupervisorScroll { dir: String },
     JumpPrevUser,
     Quit,

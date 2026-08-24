@@ -7,14 +7,14 @@
  * 以及多协议适配器（OpenAI / Anthropic / Responses / Google / Mistral / Bedrock /
  * Azure / Cloudflare / Vertex / Codex / Copilot）。
  *
- * 对标 pi-ai 的能力补齐：
+ * 还提供：
  *   - 模型注册表（registry/）：内置目录 + 定价 + 能力 + 自动补全
  *   - 图片生成（image/）：generateImages / getImageModel
  *   - 类型安全工具（tools/）：TypeBox Type/Static + validateToolCall
  *   - 内置 agentLoop（agent-loop.ts）
  *   - 跨厂商交接（handoff.ts）
  *   - Faux/Mock provider（faux.ts）
- *   - 订阅 OAuth 登录（oauth/）：Claude Pro/Max、ChatGPT、Copilot、Gemini CLI
+ *   - 订阅 OAuth 登录（oauth/）：anthropic / openai-codex / github-copilot / google / xai
  *
  * 本层零内部依赖（仅 node 内置 + 少量小工具库），可独立搭建 ChatGPT 应用。
  */
@@ -32,7 +32,7 @@ export type {
 } from './chat-session.js'
 // ConnectionTestResult 与 connection-test 同源语义；chat-session 保留类型 re-export
 
-// ─── stream / complete + Context（无状态核心 API，对标 pi-ai）─────────────────
+// ─── stream / complete + Context（无状态核心 API）────────────────────────────
 export { stream, complete, StreamResult } from './stream.js'
 // ─── SSE 桥接（LLM 流 → 浏览器，Server-Sent Events）──────────────────────────
 export { streamToSSE, encodeSSEFrame, collectSSE, SSE_HEADERS } from './sse.js'
@@ -149,7 +149,7 @@ export type {
 } from './adapters/types.js'
 export { registerAdapter, getAdapterRegistry } from './adapter-registry.js'
 
-// ─── 防傻瓜能力校验（guardrails）────────────────────────────────────────────
+// ─── 发送前能力校验（guardrails）────────────────────────────────────────────
 export { validateRequest } from './guardrails.js'
 export type { GuardrailResult } from './guardrails.js'
 
@@ -193,7 +193,7 @@ export {
 export { normalizeCacheUsage, cacheHitPct } from './cache-usage.js'
 export type { NormalizedCacheUsage } from './cache-usage.js'
 
-// ─── 模型注册表（内置目录 + 定价 + 能力，对标 pi-ai getModel/getModels）──────
+// ─── 模型注册表（内置目录 + 定价 + 能力）────────────────────────────────────
 export {
   getProviders,
   getProvider,
@@ -217,7 +217,7 @@ export type {
   Model,
 } from './registry/index.js'
 
-// ─── 图片生成（对标 pi-ai generateImages / getImageModel）───────────────────
+// ─── 图片生成 ──────────────────────────────────────────────────────────────
 export {
   generateImages,
   getImageProviders,
@@ -233,7 +233,7 @@ export type {
   GenerateImagesResult,
 } from './image/index.js'
 
-// ─── 类型安全工具定义（TypeBox，对标 pi-ai Type/Static/validateToolCall）─────
+// ─── 类型安全工具定义（TypeBox）─────────────────────────────────────────────
 export {
   Type,
   defineTool,
@@ -250,7 +250,7 @@ export type {
   ValidateResult,
 } from './tools/index.js'
 
-// ─── 内置 agentLoop（对标 pi-ai agentLoop）──────────────────────────────────
+// ─── 内置 agentLoop ────────────────────────────────────────────────────────
 export { agentLoop } from './agent-loop.js'
 export type {
   AgentLoopTool,
@@ -264,7 +264,7 @@ export type {
   AgentLoopStepResult,
 } from './agent-loop.js'
 
-// ─── 跨厂商交接（对标 pi-ai cross-provider handoff）─────────────────────────
+// ─── 跨厂商交接 ────────────────────────────────────────────────────────────
 export {
   normalizeForHandoff,
   normalizeToolCallIds,
@@ -275,7 +275,7 @@ export {
 } from './handoff.js'
 export type { HandoffOptions, ThinkingMode } from './handoff.js'
 
-// ─── 统一思考强度（对标 pi-ai 5 级 reasoning）──────────────────────────────
+// ─── 统一思考强度 ──────────────────────────────────────────────────────────
 export {
   reasoningParamsFor,
   reasoningBudget,
@@ -290,10 +290,10 @@ export {
 } from './reasoning.js'
 export type { ReasoningLevel, EffortLevel } from './reasoning.js'
 
-// ─── 环境变量 Key 检测（对标 pi-ai getEnvApiKey/findEnvKeys，覆盖 30+ 厂商）──
+// ─── 环境变量 Key 检测（覆盖 30+ 厂商）──────────────────────────────────────
 export { getEnvApiKey, findEnvKeys, hasEnvKey, PROVIDER_ENV_KEYS } from './env.js'
 
-// ─── 上下文溢出检测（对标 pi-ai overflow detection，覆盖 20+ 厂商）───────────
+// ─── 上下文溢出检测（覆盖 20+ 厂商）─────────────────────────────────────────
 export {
   detectContextOverflow,
   detectUnsupportedMediaContent,
@@ -336,15 +336,15 @@ export type {
   ModelSvgProbeOptions,
 } from './model-svg-probe.js'
 
-// ─── WebSocket 传输（对标 pi-ai websocket/websocket-cached；经 fetchImpl 注入）──
+// ─── WebSocket 传输（经 fetchImpl 注入）────────────────────────────────────
 export { createWebSocketFetch } from './transport.js'
 export type { WebSocketFetchOptions } from './transport.js'
 
-// ─── Stealth 工具名伪装（对标 pi-ai stealth mode）──────────────────────────
+// ─── Stealth 工具名别名 ────────────────────────────────────────────────────
 export { createStealthMapper, CLAUDE_CODE_TOOL_MAP } from './stealth.js'
 export type { StealthMapper } from './stealth.js'
 
-// ─── compat 兼容标志矩阵（OpenAI 兼容厂商；对标 pi-ai OpenAICompat）──────────
+// ─── compat 兼容标志矩阵（OpenAI 兼容厂商）──────────────────────────────────
 export type { OpenAICompat, AnthropicCompat, ThinkingFormat, StructuredOutputCompat, EffortLevel as CompatEffortLevel } from './adapters/compat.js'
 export { detectCompat, resolveCompat } from './adapters/compat.js'
 
@@ -353,7 +353,7 @@ export { readEnv, hasEnvAccess, isBrowserLike } from './runtime-env.js'
 // 注意：HTTP 代理（core/llm/proxy）静态依赖 undici（node-only），仅经子路径导入，
 // 不从此浏览器安全入口导出。
 
-// ─── Faux / Mock Provider（对标 pi-ai registerFauxProvider）─────────────────
+// ─── Faux / Mock Provider ──────────────────────────────────────────────────
 export {
   registerFauxProvider,
   unregisterFauxProvider,
@@ -366,7 +366,7 @@ export {
 } from './faux.js'
 export type { FauxResponse, FauxPart, FauxResponder } from './faux.js'
 
-// ─── 订阅 OAuth 登录（对标 pi-ai login*；命名空间避免污染顶层）──────────────
+// ─── 订阅 OAuth 登录 ───────────────────────────────────────────────────────
 export * as oauth from './oauth/index.js'
 
 // ─── 适配器类型 ─────────────────────────────────────────────────────────────

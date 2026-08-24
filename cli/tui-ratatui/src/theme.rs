@@ -1,5 +1,5 @@
 //! Theme tokens → ratatui Color (hex #rrggbb).
-//! Defaults + ProtoTheme mirror Ink `ThemeTokens` / `assets/themes/tau-ceti.json`.
+//! Defaults + ProtoTheme mirror `ThemeTokens` / `assets/themes/tau-ceti.json`.
 
 use crate::protocol::{ProtoNavItem, ProtoTheme};
 use ratatui::style::Color;
@@ -44,7 +44,7 @@ pub struct Theme {
     pub user_bg: Color,
     pub system_bg: Color,
     pub footer_bg: Color,
-    /// Ink inputFieldBg — input field + NORMAL approval chip
+    /// inputFieldBg — input field + NORMAL approval chip
     pub input_field_bg: Color,
     pub border: Color,
     pub selected_bg: Color,
@@ -81,7 +81,7 @@ pub struct Theme {
     pub nav_settings_hover: Color,
     /// 动态 nav 段（优先）
     pub nav_items: Vec<NavSeg>,
-    /// Ink completion desc on computer-blue
+    /// completion desc on computer-blue
     pub completion_desc: Color,
     pub completion_hint: Color,
     /// Placeholder on input field (darker gray on #B0B0B0)
@@ -95,7 +95,7 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        // Exact hex from assets/themes/tau-ceti.json (+ Ink sel-fx constants)
+        // Exact hex from assets/themes/tau-ceti.json 
         Self {
             // 略抬亮底 + 暖灰（略泛黄，非中性灰）
             bg: hex(0x1A, 0x1A, 0x1A),
@@ -155,7 +155,7 @@ impl Default for Theme {
             input_placeholder_fg: hex(0x40, 0x40, 0x40),
             sel_flash_bg: Color::Rgb(220, 220, 220),
             sel_flash_fg: Color::Rgb(20, 20, 20),
-            // Ink SEL_FG_SGR ≈ #EBEBEB
+            // SEL_FG_SGR ≈ #EBEBEB
             sel_fg: hex(0xEB, 0xEB, 0xEB),
             sel_bg: hex(0x21, 0x21, 0xFF),
         }

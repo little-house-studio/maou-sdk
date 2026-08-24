@@ -47,7 +47,6 @@ type MenuState = { parentId: string } | null;
 
 /**
  * 对话顶栏横向祖先链 + 点击展开多级子会话树。
- * 对齐 DSH ConversationSessionHeader crumbs + SubagentCatalogAction。
  */
 export function SessionTreeCrumbs({
   sessions,

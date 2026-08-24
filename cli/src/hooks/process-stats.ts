@@ -2,7 +2,7 @@
  * 本进程 CPU / 内存 / 事件循环采样（TUI 右上角 PerfHud 用）。
  *
  * 帮助区分：
- *   - CLI 自身（ink/paint/grid 高、loopLag 低、load 不高）
+ *   - CLI 自身（ui/paint/grid 高、loopLag 低、load 不高）
  *   - 整机争用（load 高、loopLag 高、本进程 cpu 未必顶满）
  *   - agent 后端（ag 高）
  *
@@ -53,7 +53,7 @@ export type ProcessStatsSnap = {
   agentShare: number;
   /** 本窗 paint 帧率（含光标闪烁脏行） */
   fps: number;
-  /** 本窗 Ink onRender 次数/秒 */
+  /** 本窗 onRender 次数/秒 */
   inkFps: number;
   uiPhases: UiPhaseRates;
   uiTop: UiPhase | null;
@@ -299,7 +299,7 @@ function diagnose(s: {
   if (machineHot && !cliHot && !agentHot) {
     return {
       verdict: "machine",
-      verdictHint: `整机忙 load/核=${loadPerCore.toFixed(2)} lag=${Math.round(loopLagMs)}ms·非本CLI独吞`,
+      verdictHint: `整机忙 load/核=${loadPerCore.toFixed(2)} lag=${Math.round(loopLagMs)}ms·非本 CLI`,
     };
   }
 
@@ -317,14 +317,14 @@ function diagnose(s: {
   if (scrollShare > 0.25 || uiTop === "scroll" || (uiPhases.scroll ?? 0) >= 5) {
     return {
       verdict: "cli-scroll",
-      verdictHint: "CLI滚动管线·ink/layout+paint 重（非仅电脑）",
+      verdictHint: "CLI 滚动管线·layout/paint 重（非仅电脑）",
     };
   }
 
   if (uiTop === "ink" || (uiPhases.ink ?? 0) > (uiPhases.paint ?? 0) * 1.2) {
     return {
       verdict: "cli-ink",
-      verdictHint: "CLI Ink/React 提交过密·布局重",
+      verdictHint: "CLI 提交过密·布局重",
     };
   }
 

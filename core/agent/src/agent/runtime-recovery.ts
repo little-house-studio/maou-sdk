@@ -132,7 +132,6 @@ export function buildToolLoopControl(dominant?: string): string {
 const MUTATING_PATH_TOOLS = new Set([
   "edit_file",
   "write_file",
-  "undo_edit",
   "edit",
   "write",
 ]);

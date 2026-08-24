@@ -1,7 +1,6 @@
 /**
  * JSON Schema 派生管道 —— 从规范文件（OUTPUT.jsonc）派生运行时 json_settings。
  * 这是"设计时"路径，只在 Prompt 编译阶段执行一次，不在 Agent 循环中调用。
- * 对应 Python: core/protocol/json_schema.py
  */
 
 import { stripJsonComments, isJsonObjectSchema } from "./json-repair.js";
@@ -347,7 +346,6 @@ function predictLengthFromJsonSchema(schema: Record<string, unknown>): number {
 
 /**
  * 规范化 json_settings
- * 对应 Python: normalize_json_settings
  */
 export function normalizeJsonSettings(settings: unknown): JsonSettings {
   const payload =
@@ -498,7 +496,6 @@ function deriveJsonSettingsFromSectionedPromptText(
 
 /**
  * 从 schema 文本派生 json_settings —— 主入口
- * 对应 Python: derive_json_settings_from_schema_text
  *
  * 支持两种格式：
  * 1. 分区式 prompt 文本（包含"输出格式"、"输出案例"等标题）

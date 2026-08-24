@@ -1,22 +1,23 @@
 {
   "name": "project",
-  "description": "项目管理集成统一入口（上帝工具，占位）",
+  "description": "项目领域统一入口。list/create/send 转 project_agent；disband/members/message 转 project_manage。只派任务也可用 project_send。失效项目用 create 重新绑定。",
   "parameters": {
     "type": "object",
     "properties": {
-      "reason": {
+      "action": {
         "type": "string",
-        "description": "为什么必须调用此工具？"
+        "enum": [
+          "list",
+          "create",
+          "send",
+          "disband",
+          "members",
+          "message"
+        ]
       },
-      "description": {
-        "type": "string",
-        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
-      }
+      "description": { "type": "string", "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。" }
     },
-    "required": [
-      "description",
-      "reason"
-    ],
-    "additionalProperties": false
+    "required": ["description", "action"],
+    "additionalProperties": true
   }
 }

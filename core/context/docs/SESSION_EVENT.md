@@ -51,3 +51,20 @@ Helpers: `authorHuman` / `authorAgent` / `authorSystem` / `authorTool` / `format
 ## 兼容
 
 旧 JSONL 无 author 时：`resolveMessageAuthor` 从 source/kind/tool_name/from 推断。
+
+## 账本 sidecar（Session Ledger）
+
+主 jsonl 仍是人向消息日志。事件源账本在 `<sessionId>.ledger.jsonl`（`save()` 不会重写它）。
+
+新功能只做两件事，不必再写落盘 / 查询 / 模型工具：
+
+```ts
+registerLedgerEvent({
+  type: "plan/accept",          // 必须 domain/action
+  surface: "model",             // log | model | ui
+  description: "用户接受计划",
+});
+appendLedgerEvent(sessionDir, sessionId, "plan/accept", { planId });
+```
+
+账本文件是 `<sessionDir>/<id>.ledger.jsonl`，模型用 reader/grep 读。`appendMessage` / `appendTrace` / `ToolExecutor` 已自动镜像。

@@ -1,5 +1,5 @@
 /**
- * defineEval — Agent 评估系统 API（对标 Vercel Eve）
+ * defineEval — Agent 评估系统 API
  *
  * 用法：在 evals/ 目录下创建 .eval.ts 文件，导出 defineEval() 的返回值。
  * 文件名即评估名（如 revenue.eval.ts → 评估名 "revenue"）。

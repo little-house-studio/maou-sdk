@@ -766,7 +766,7 @@ export async function searchFreeEngines(
   };
 }
 
-/** 头词塌缩后的垂直/改写查询：逼引擎离开字典页 */
+/** 头词塌缩后的垂直/改写查询：让引擎离开字典页 */
 function buildHeadTokenRescueQueries(query: string, coreCjk: string): string[] {
   const out: string[] = [];
   out.push(`site:bilibili.com ${coreCjk}`);
@@ -1176,7 +1176,7 @@ export function expandExplainQueries(query: string): string[] {
       out.push(`${cjk} 谐音`);
       out.push(`${cjk} 出处`);
       out.push(`"${cjk}"`);
-      // 长梗：双段检索，逼引擎同时看到前后实体
+      // 长梗：双段检索，让引擎同时看到前后实体
       if (cjk.length >= 5) {
         out.push(`${cjk.slice(0, 3)} ${cjk.slice(3)} 梗`);
         out.push(`"${cjk.slice(0, 3)}" "${cjk.slice(3)}"`);

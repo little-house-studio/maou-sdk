@@ -1,5 +1,5 @@
 /**
- * defineChannel — 消息通道定义 API（对标 Vercel Eve）
+ * defineChannel — 消息通道定义 API
  *
  * 用法：在 agent/channels/ 目录下创建 .ts 文件，导出 defineChannel() 的返回值。
  * 文件名即通道名（如 slack.ts → 通道名 "slack"）。

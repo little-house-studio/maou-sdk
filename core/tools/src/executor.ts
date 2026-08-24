@@ -1,10 +1,10 @@
 /**
  * 工具执行管道
- * 对应 Python: core/tools/executor.py
  * 封装工具调用、超时处理与事件发射
  */
 
 import type { Tool, ToolContext, ToolResponse, ToolCall } from "./base.js";
+import { resolveToolRuntimePorts } from "./base.js";
 import { ensureToolError, toolFail, toolFailFromThrown } from "./errors.js";
 import type { ToolRegistry } from "./registry.js";
 
@@ -70,13 +70,15 @@ export class ToolExecutor {
           "以及 tools 白名单是否包含 `mcp`。\n" +
           "- flat 模式则直接调 `mcp__<server>__<tool>`，无元工具 `mcp`。";
       }
+      const result = toolFail("unknown_tool", `不支持的工具: ${name}${hint}`, {
+        code: "unknown_tool",
+        details: { toolName: name },
+      });
+      noteToolExec(ctx, toolCall, result, 0);
       return {
         toolCall,
         events: [],
-        result: toolFail("unknown_tool", `不支持的工具: ${name}${hint}`, {
-          code: "unknown_tool",
-          details: { toolName: name },
-        }),
+        result,
       };
     }
 
@@ -85,38 +87,45 @@ export class ToolExecutor {
       tool.definition.allowedModes !== null &&
       !tool.definition.allowedModes.includes(ctx.agentMode)
     ) {
+      const result = toolFail(
+        "mode_denied",
+        `工具 '${toolCall.name}' 在 ${ctx.agentMode} 模式下不可用`,
+        {
+          code: "mode_denied",
+          details: {
+            toolName: toolCall.name,
+            agentMode: ctx.agentMode,
+            allowedModes: tool.definition.allowedModes,
+          },
+        },
+      );
+      noteToolExec(ctx, toolCall, result, 0);
       return {
         toolCall,
         events: [],
-        result: toolFail(
-          "mode_denied",
-          `工具 '${toolCall.name}' 在 ${ctx.agentMode} 模式下不可用`,
-          {
-            code: "mode_denied",
-            details: {
-              toolName: toolCall.name,
-              agentMode: ctx.agentMode,
-              allowedModes: tool.definition.allowedModes,
-            },
-          },
-        ),
+        result,
       };
     }
 
     // 带超时的执行
+    const started = Date.now();
     try {
       const result = await this._executeWithTimeout(tool, toolCall, ctx);
       // 统一保证 ok:false 带 error 字段（含未走 createToolResponse 的实现）
-      return { toolCall, events: [], result: ensureToolError(result) };
+      const wrapped = { toolCall, events: [], result: ensureToolError(result) };
+      noteToolExec(ctx, toolCall, wrapped.result, Date.now() - started);
+      return wrapped;
     } catch (err: unknown) {
+      const result = toolFailFromThrown(err, {
+        prefix: `工具 ${toolCall.name} 执行异常`,
+        fallbackCategory: "execution",
+        extras: { details: { toolName: toolCall.name } },
+      });
+      noteToolExec(ctx, toolCall, result, Date.now() - started);
       return {
         toolCall,
         events: [],
-        result: toolFailFromThrown(err, {
-          prefix: `工具 ${toolCall.name} 执行异常`,
-          fallbackCategory: "execution",
-          extras: { details: { toolName: toolCall.name } },
-        }),
+        result,
       };
     }
   }
@@ -179,5 +188,29 @@ export class ToolExecutor {
           reject(err);
         });
     });
+  }
+}
+
+/** 所有工具执行自动入账；新工具不必再写落盘函数 */
+function noteToolExec(
+  ctx: ToolContext,
+  toolCall: ToolCall,
+  result: ToolResponse,
+  durationMs: number,
+): void {
+  try {
+    const ledger = resolveToolRuntimePorts(ctx).sessionLedger;
+    if (!ledger) return;
+    ledger.append("tool/exec", {
+      name: toolCall.name,
+      toolCallId: toolCall.id,
+      ok: result.ok !== false,
+      durationMs,
+      ...(result.ok === false
+        ? { error: String(result.message ?? "").slice(0, 300) }
+        : {}),
+    });
+  } catch {
+    /* 账本失败不影响工具 */
   }
 }

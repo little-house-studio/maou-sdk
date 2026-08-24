@@ -1,8 +1,8 @@
 /**
  * ThemeTokens —— 51-token 主题系统类型定义。
  *
- * 对齐 maou-agent/docs/tui-report.md §8 的 51-token 分类，使未来与 pi-tui
- * 主题 JSON 格式可互导。分类：通用/状态/边框/角色/思考级别/语法/Markdown/
+ * 对齐 maou-agent/docs/tui-report.md §8 的 51-token 分类。
+ * 分类：通用/状态/边框/角色/思考级别/语法/Markdown/
  * Diff/模式。每个 token 在调色板实例中必须填值（无死 token）。
  */
 

@@ -1,0 +1,28 @@
+{
+  "name": "agent_send",
+  "description": "向已有队友或子 Agent 派活、插话、中断或停止。不创建、不 fork。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "to": {
+        "type": "string",
+        "description": "目标 Agent 名称"
+      },
+      "content": {
+        "type": "string",
+        "description": "消息内容。stop 可不填。"
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["message", "interrupt", "insert", "stop"],
+        "description": "message=派活/补一句（默认）；insert=插队；interrupt=打断并带话；stop=停止当前任务"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
+      }
+    },
+    "required": ["description", "to"],
+    "additionalProperties": false
+  }
+}

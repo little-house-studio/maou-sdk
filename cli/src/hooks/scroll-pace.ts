@@ -2,7 +2,7 @@
  * 滚动速度自适应 + commit 预算。
  *
  * 目标：ink 提交 ≈ paint 完成 ≈ 25fps，而不是 ink 27、paint 15 空转。
- * Grok 式思路：滚轮事件合并 + 限频应用 offset，每帧跳更多行。
+ * 滚轮事件合并 + 限频应用 offset，每帧跳更多行。
  */
 
 /** 最近窗内滚轮事件计数 */
@@ -44,7 +44,7 @@ export function scrollCoalesceMs(baseMs: number): number {
 }
 
 /**
- * 两次 applyChatScrollDelta（→ React/Ink commit）最小间隔。
+ * 两次 applyChatScrollDelta最小间隔。
  * 40ms ≈ 25 commit/s：与目标 25fps 对齐，避免 ink 堆积、paint 跟不上。
  * MAOU_SCROLL_COMMIT_MS 可覆盖。
  */

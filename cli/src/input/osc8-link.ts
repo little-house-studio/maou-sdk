@@ -38,7 +38,7 @@ export function osc8Close(): string {
 
 /**
  * 把可见文本包进 OSC 8，使终端在 hover 时显示手型指针。
- * Ink 的 sanitize-ansi 会保留 OSC；string-width 不计入控制序列。
+ * 的 sanitize-ansi 会保留 OSC；string-width 不计入控制序列。
  */
 export function wrapClickableLink(text: string, id: string): string {
   if (!text || !osc8PointerLinksEnabled()) return text;
@@ -49,7 +49,7 @@ export function wrapClickableLink(text: string, id: string): string {
 }
 
 /**
- * 供 Ink `<Transform transform={...}>` 使用的工厂。
+ * `<Transform transform={...}>` 使用的工厂。
  * 在样式（颜色/粗体）应用之后再包 OSC 8，避免 chalk 插在 link 边界外。
  */
 export function makeClickableTransform(id: string): (s: string) => string {

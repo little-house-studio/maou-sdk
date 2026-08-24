@@ -1,9 +1,6 @@
 /**
- * 会话树投影 — 对齐 DeepSeek Harness ConversationSessionHeader.deriveAncestry
- * 与 SubagentCatalogAction 的父子展开。
- *
- * DSH：沿 parentId 上走到第一个非 subagent（根会话），crumbs = 根 → 当前。
- * 我们：有 parentSessionId（或 id 里的 `::fork::`）即视为子会话，停在无父节点。
+ * 会话树投影：沿 parent 上走到根，crumbs = 根 → 当前。
+ * 有 parentSessionId（或 id 里的 `::fork::`）即视为子会话，停在无父节点。
  */
 
 export type SessionTreeNode = {

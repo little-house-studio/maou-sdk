@@ -40,6 +40,34 @@ importers:
         specifier: ^3.0.0
         version: 3.2.6(@types/debug@4.1.13)(@types/node@22.20.0)(tsx@4.22.4)(yaml@2.9.0)
 
+  agent-products/install-agent:
+    dependencies:
+      '@little-house-studio/agent':
+        specifier: workspace:*
+        version: link:../../core/agent
+      '@little-house-studio/context':
+        specifier: workspace:*
+        version: link:../../core/context
+      '@little-house-studio/llm':
+        specifier: workspace:*
+        version: link:../../core/llm
+      '@little-house-studio/tools':
+        specifier: workspace:*
+        version: link:../../core/tools
+      '@little-house-studio/types':
+        specifier: workspace:*
+        version: link:../../core/types
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.6(@types/debug@4.1.13)(@types/node@22.20.0)(tsx@4.22.4)(yaml@2.9.0)
+
   agent-products/ops-agent:
     dependencies:
       '@little-house-studio/agent':
@@ -85,6 +113,9 @@ importers:
       '@little-house-studio/context':
         specifier: workspace:*
         version: link:../core/context
+      '@little-house-studio/install-agent':
+        specifier: workspace:*
+        version: link:../agent-products/install-agent
       '@little-house-studio/llm':
         specifier: workspace:*
         version: link:../core/llm
