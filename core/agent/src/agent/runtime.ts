@@ -2809,7 +2809,7 @@ export class AgentRuntime {
             finalMessages: finalMessages as Array<Record<string, unknown>>,
             leanExtras: true,
           });
-          if (pre.ok) {
+          if (pre.ok || pre.surfaceChanged) {
             finalMessages = pre.finalMessages;
             if (pre.compressedHistory) compressedHistory = pre.compressedHistory;
             overflowLeanMode = true;
@@ -2975,7 +2975,7 @@ export class AgentRuntime {
               finalMessages: finalMessages as Array<Record<string, unknown>>,
               leanExtras: true,
             });
-            if (shrunk.ok) {
+            if (shrunk.ok || shrunk.surfaceChanged) {
               finalMessages = shrunk.finalMessages;
               if (shrunk.compressedHistory) compressedHistory = shrunk.compressedHistory;
               if (shrunk.stage && shrunk.stage !== "activeStage") {
@@ -5029,6 +5029,7 @@ export class AgentRuntime {
     finalMessages: Array<Record<string, unknown>>;
     leanExtras: boolean;
   }): Promise<{
+    /** 估 token 是否落入 contextLimit 的 95% 内 */
     ok: boolean;
     finalMessages: Array<Record<string, unknown>>;
     compressedHistory?: LLMMessage[];
@@ -5039,7 +5040,7 @@ export class AgentRuntime {
     taskBlocks?: string[];
     emergencyTrimmed?: boolean;
     dropped?: number;
-    /** 工作集或发出去的 messages 是否真变矮（没变则超窗不得重试） */
+    /** 工作集或发出去的 messages 是否真变矮（没变且仍超窗则不得原样重试） */
     surfaceChanged?: boolean;
   }> {
     const {
@@ -5233,8 +5234,9 @@ export class AgentRuntime {
       emergencyTrimmed ||
       (stage != null && stage !== "activeStage") ||
       estimatedTokens < beforeTok;
+    const ok = estimatedTokens <= Math.floor(contextLimit * 0.95);
     return {
-      ok: surfaceChanged,
+      ok,
       finalMessages,
       compressedHistory,
       estimatedTokens,
