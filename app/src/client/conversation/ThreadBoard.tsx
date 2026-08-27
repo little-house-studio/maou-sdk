@@ -30,6 +30,7 @@ export function ThreadBoard({
       <div
         ref={setScroll}
         className={`wire-context-scroll chat-log codex-log${empty ? " is-empty" : ""} ${className}`.trim()}
+        data-thread-scroll=""
         role="log"
       >
         {children}

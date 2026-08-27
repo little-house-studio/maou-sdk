@@ -7,7 +7,7 @@ import type { ContextPanelProps } from "../drafts/panels/ContextPanel";
 import type { DraftApiConfig, UiMode } from "../drafts/types";
 import type { ChatPanelProps } from "../ChatPanel";
 import type { LiveSettingsPanelProps } from "../live/LiveSettingsPanel";
-import type { ActivityBarProps, LeftActivityId } from "./activity";
+import type { ActivityBarProps } from "./activity";
 
 export type WireShellVariant = "draft" | "live";
 
@@ -32,7 +32,6 @@ export type WireHostBag = {
   mode: UiMode;
   showFiles: boolean;
   showLeft: boolean;
-  leftPane: LeftActivityId;
   leftW: number;
   agentPct: number;
   railW: number;

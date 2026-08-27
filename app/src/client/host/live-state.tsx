@@ -21,12 +21,10 @@ import {
 } from "../live/adapters";
 import { SHELL_LEFT, LIVE_FILES_RAIL } from "../shell/metrics";
 import {
-  AGENTS_ACTIVITY_ID,
   FILES_ACTIVITY_ID,
   LEFT_ACTIVITY_TABS,
   RIGHT_ACTIVITY_TABS,
-  SESSIONS_ACTIVITY_ID,
-  type LeftActivityId,
+  SIDEBAR_ACTIVITY_ID,
 } from "../shell/activity";
 import type { WireHostBag } from "../shell/types";
 
@@ -56,7 +54,6 @@ export function useLiveHostBag(): WireHostBag {
   } | null>(null);
   const [showFiles, setShowFiles] = useState(true);
   const [showLeft, setShowLeft] = useState(true);
-  const [leftPane, setLeftPane] = useState<LeftActivityId>(AGENTS_ACTIVITY_ID);
   const [agentBusy, setAgentBusy] = useState(false);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [leftW, setLeftW] = useState<number>(SHELL_LEFT.default);
@@ -370,7 +367,6 @@ export function useLiveHostBag(): WireHostBag {
     mode,
     showFiles,
     showLeft,
-    leftPane,
     leftW,
     agentPct,
     railW,
@@ -392,21 +388,15 @@ export function useLiveHostBag(): WireHostBag {
     },
     leftActivity: {
       tabs: LEFT_ACTIVITY_TABS,
-      activeId: showLeft && mode === "chat" ? leftPane : null,
+      activeId: showLeft && mode === "chat" ? SIDEBAR_ACTIVITY_ID : null,
       onSelect: (id) => {
-        if (id !== AGENTS_ACTIVITY_ID && id !== SESSIONS_ACTIVITY_ID) return;
+        if (id !== SIDEBAR_ACTIVITY_ID) return;
         if (mode !== "chat") {
           setMode("chat");
           setShowLeft(true);
-          setLeftPane(id);
           return;
         }
-        if (showLeft && leftPane === id) {
-          setShowLeft(false);
-          return;
-        }
-        setShowLeft(true);
-        setLeftPane(id);
+        setShowLeft((v) => !v);
       },
     },
     activity: {

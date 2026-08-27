@@ -19,12 +19,10 @@ import type { ComposerImage } from "../composer/images";
 import type { DraftApiConfig, DraftShellProps, UiMode } from "../drafts/types";
 import { DRAFT_FILES_RAIL, SHELL_LEFT } from "../shell/metrics";
 import {
-  AGENTS_ACTIVITY_ID,
   FILES_ACTIVITY_ID,
   LEFT_ACTIVITY_TABS,
   RIGHT_ACTIVITY_TABS,
-  SESSIONS_ACTIVITY_ID,
-  type LeftActivityId,
+  SIDEBAR_ACTIVITY_ID,
 } from "../shell/activity";
 import type { WireHostBag } from "../shell/types";
 
@@ -36,7 +34,6 @@ export function useDraftHostBag({
     initialSettingsOpen ? "settings" : "chat",
   );
   const [showLeft, setShowLeft] = useState(true);
-  const [leftPane, setLeftPane] = useState<LeftActivityId>(AGENTS_ACTIVITY_ID);
   const [leftW, setLeftW] = useState<number>(SHELL_LEFT.default);
   const [agentPct, setAgentPct] = useState<number>(SHELL_LEFT.agentPct);
   const [railW, setRailW] = useState<number>(DRAFT_FILES_RAIL.default);
@@ -228,7 +225,6 @@ export function useDraftHostBag({
     mode,
     showFiles: state.showFiles,
     showLeft,
-    leftPane,
     leftW,
     agentPct,
     railW,
@@ -248,21 +244,15 @@ export function useDraftHostBag({
     },
     leftActivity: {
       tabs: LEFT_ACTIVITY_TABS,
-      activeId: showLeft && mode === "chat" ? leftPane : null,
+      activeId: showLeft && mode === "chat" ? SIDEBAR_ACTIVITY_ID : null,
       onSelect: (id) => {
-        if (id !== AGENTS_ACTIVITY_ID && id !== SESSIONS_ACTIVITY_ID) return;
+        if (id !== SIDEBAR_ACTIVITY_ID) return;
         if (mode !== "chat") {
           setMode("chat");
           setShowLeft(true);
-          setLeftPane(id);
           return;
         }
-        if (showLeft && leftPane === id) {
-          setShowLeft(false);
-          return;
-        }
-        setShowLeft(true);
-        setLeftPane(id);
+        setShowLeft((v) => !v);
       },
     },
     activity: {

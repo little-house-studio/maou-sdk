@@ -10,14 +10,20 @@ export {
   RIGHT_ACTIVITY_TABS,
   LEFT_ACTIVITY_TABS,
   FILES_ACTIVITY_ID,
-  AGENTS_ACTIVITY_ID,
-  SESSIONS_ACTIVITY_ID,
+  SIDEBAR_ACTIVITY_ID,
 } from "./activity";
 export {
   SHELL_LEFT,
   SHELL_ACTIVITY,
+  SHELL_ASIDE_ANIM_MS,
   LIVE_FILES_RAIL,
   DRAFT_FILES_RAIL,
 } from "./metrics";
+export {
+  SHELL_FOCUS_REGIONS,
+  closestShellRegion,
+  isShellFocusRegion,
+} from "./focus";
+export type { ShellFocusRegion } from "./focus";
 export type { WireHostBag, WireShellVariant, LiveChatBag } from "./types";
 export type { ActivityTab, ActivityBarProps } from "./activity";

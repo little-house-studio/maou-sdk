@@ -40,6 +40,12 @@ describe("context chrome CSS coexistence", () => {
     );
   });
 
+  it("loop spine is a non-sticky bar under the round chips", () => {
+    assert.match(css, /--user-extend:\s*calc\(var\(--round-gutter\) \/ 2\)/);
+    assert.match(css, /\.wire-loop-spine\s*\{[^}]*width:\s*var\(--spine/s);
+    assert.doesNotMatch(css, /\.wire-user-stick[\s\S]*?\.msg-body::after/);
+  });
+
   it("user question rows stick to the thread top", () => {
     assert.match(css, /\.wire-thread-stage\s*\{/s);
     assert.match(
@@ -49,6 +55,23 @@ describe("context chrome CSS coexistence", () => {
     assert.match(css, /\.wire-user-stick\s*\{[^}]*top:\s*0/s);
     assert.match(css, /\.wire-user-stick\s*\{[^}]*background:\s*var\(--n-bg\)/s);
     assert.match(css, /\.wire-thread-lead\s*\{/s);
+  });
+
+  it("round chip sticks with the user bar inside its turn", () => {
+    assert.match(
+      css,
+      /\.wire-reply-turn > \.wire-info-hover,\s*\.wire-reply-turn > \.wire-round-chip\s*\{[^}]*position:\s*sticky/s,
+    );
+    assert.match(
+      css,
+      /\.wire-reply-turn > \.wire-info-hover,\s*\.wire-reply-turn > \.wire-round-chip\s*\{[^}]*top:\s*var\(--user-stick-h/s,
+    );
+    assert.match(css, /\.wire-loop-spine::after\s*\{[^}]*height:\s*var\(--spine/s);
+    assert.doesNotMatch(css, /\.wire-reply-turn::before\s*\{/);
+    assert.match(
+      css,
+      /\.wire-reply-turn > \.wire-info-hover,\s*\.wire-reply-turn > \.wire-round-chip\s*\{[^}]*z-index:\s*32/s,
+    );
   });
 
   it("thread scroll has no top padding so sticky sits flush under crumbs", () => {

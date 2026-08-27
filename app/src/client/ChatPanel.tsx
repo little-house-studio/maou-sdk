@@ -265,24 +265,29 @@ function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
           Boolean((m as { ok?: boolean }).ok === false)),
     };
   });
-  let prevToolAt: number | undefined;
+  inferToolDurationsFromStartGaps(lines);
+  return lines;
+}
+
+/** Start-to-start gap is the earlier tool's duration. */
+export function inferToolDurationsFromStartGaps(lines: ChatLine[]): void {
+  let prev: ChatLine | undefined;
   for (const line of lines) {
     if (line.role === "assistant" || line.role === "user") {
-      prevToolAt = undefined;
+      prev = undefined;
       continue;
     }
     if (line.role !== "tool") continue;
     if (
-      line.durationMs == null &&
-      line.startedAt != null &&
-      prevToolAt != null
+      prev?.durationMs == null &&
+      prev?.startedAt != null &&
+      line.startedAt != null
     ) {
-      const gap = line.startedAt - prevToolAt;
-      if (gap >= 80 && gap < 30 * 60 * 1000) line.durationMs = gap;
+      const gap = line.startedAt - prev.startedAt;
+      if (gap >= 80 && gap < 30 * 60 * 1000) prev.durationMs = gap;
     }
-    if (line.startedAt != null) prevToolAt = line.startedAt;
+    if (line.startedAt != null) prev = line;
   }
-  return lines;
 }
 
 function hydrateToolLines(

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { ConversationPane } from "./ConversationPane";
 import { ThreadBoard } from "./ThreadBoard";
 import { UserStick } from "./UserStick";
+import { stackFlowOffset, stickHomeScrollTop } from "./scroll-offset";
 import { ASK_PREVIEW_MAX, clipAskPreview } from "./ask-preview";
 import {
   ASK_ANCHOR_SEL,
@@ -40,6 +41,7 @@ describe("ThreadBoard", () => {
     );
     assert.match(html, /wire-thread-rail-host/);
     assert.match(html, /wire-context-scroll/);
+    assert.match(html, /data-thread-scroll/);
     assert.match(html, /msg/);
     const src = readFileSync(join(here, "ThreadBoard.tsx"), "utf8");
     assert.doesNotMatch(src, /rail\?:/);
@@ -63,6 +65,36 @@ describe("UserStick", () => {
     const stickOnly = renderToStaticMarkup(createElement(UserStick, null, "q"));
     assert.doesNotMatch(stickOnly, /data-ask-anchor/);
     assert.match(stickOnly, /wire-user-stick/);
+    assert.match(stickOnly, /role="button"/);
+    assert.match(stickOnly, /跳到这条提问/);
+    const src = readFileSync(join(here, "UserStick.tsx"), "utf8");
+    assert.match(src, /onClickCapture/);
+    assert.match(src, /scrollStickHome/);
+  });
+
+  it("jumps a stuck stick back to its in-flow top", () => {
+    assert.equal(stickHomeScrollTop(80, 80, 400), null);
+    assert.equal(stickHomeScrollTop(80, 200, 400), 80);
+    assert.equal(stickHomeScrollTop(500, 600, 400), 400);
+    assert.equal(stickHomeScrollTop(200, 200, 400), null);
+  });
+
+  it("stacks previous siblings and flex gap for a sticky node's home", () => {
+    assert.equal(stackFlowOffset(0, 8, []), 0);
+    assert.equal(
+      stackFlowOffset(0, 16, [{ height: 28, marginTop: 0, marginBottom: -16 }]),
+      28,
+    );
+    assert.equal(
+      stackFlowOffset(0, 8, [
+        { height: 40, marginTop: 0, marginBottom: 0 },
+        { height: 60, marginTop: 0, marginBottom: 0 },
+      ]),
+      116,
+    );
+    const src = readFileSync(join(here, "scroll-offset.ts"), "utf8");
+    assert.match(src, /position === "sticky"/);
+    assert.match(src, /inFlowOffsetInParent/);
   });
 });
 
@@ -113,6 +145,7 @@ describe("conversation source boundaries", () => {
       "UserStick.tsx",
       "contract.ts",
       "ask-preview.ts",
+      "scroll-offset.ts",
     ]) {
       const src = readFileSync(join(here, file), "utf8");
       assert.doesNotMatch(src, /from ["']\.\.\/drafts/);

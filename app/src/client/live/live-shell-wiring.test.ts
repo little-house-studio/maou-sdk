@@ -33,6 +33,9 @@ describe("live shell production wiring", () => {
     "shell/RightAside.tsx",
     "shell/ActivityBar.tsx",
     "shell/activity.ts",
+    "shell/focus.ts",
+    "shell/AsidePane.tsx",
+    "shell/SidebarFrame.tsx",
     "ports/live.ts",
   ]);
   const chat = readGraph([
@@ -142,6 +145,13 @@ describe("live shell production wiring", () => {
     assert.match(app, /RightAside|wire-aside/);
     assert.match(app, /LeftAside|leftActivity/);
     assert.match(read("shell/ActivityBar.tsx"), /from\s+["']lucide-react["']/);
+    assert.match(read("shell/activity.ts"), /SIDEBAR_ACTIVITY_ID/);
+    assert.doesNotMatch(read("shell/activity.ts"), /SESSIONS_ACTIVITY_ID|智能体/);
+    assert.match(read("shell/SidebarFrame.tsx"), /wire-v-split/);
+    assert.match(read("shell/SidebarFrame.tsx"), /sidebar\.agents/);
+    assert.match(read("shell/SidebarFrame.tsx"), /sidebar\.sessions/);
+    assert.match(read("shell/AsidePane.tsx"), /is-animating/);
+    assert.match(read("shell/WireShell.tsx"), /data-focus-region|ShellFocusContext/);
     assert.doesNotMatch(read("shell/WireShell.tsx"), /shell\.activity/);
     assert.match(app, /fetchMeta|onMetaChange/);
     assert.match(app, /fetchTerminals/);

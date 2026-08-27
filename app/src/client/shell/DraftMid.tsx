@@ -1,4 +1,5 @@
 import { SlotOutlet } from "../slots";
+import { useShellRegion } from "./focus";
 import { LeftAside } from "./LeftAside";
 import { RightAside } from "./RightAside";
 import type { WireHostBag } from "./types";
@@ -36,7 +37,9 @@ export function DraftMid(bag: WireHostBag) {
   return (
     <div className="wire-body">
       <LeftAside {...bag} />
-      <div className="wire-body-main">{mid}</div>
+      <div className="wire-body-main" {...useShellRegion("center")}>
+        {mid}
+      </div>
       <RightAside {...bag} />
     </div>
   );

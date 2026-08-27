@@ -11,6 +11,9 @@ export const SHELL_ACTIVITY = {
   width: 36,
 } as const;
 
+/** Aside open/close width animation. CSS must use the same ms. */
+export const SHELL_ASIDE_ANIM_MS = 180;
+
 export const LIVE_FILES_RAIL = {
   default: 320,
   min: 220,

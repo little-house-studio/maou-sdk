@@ -1,11 +1,10 @@
 import React from "react";
-import { Bot, FolderTree, MessagesSquare, type LucideIcon } from "lucide-react";
+import { Bot, FolderTree, type LucideIcon } from "lucide-react";
 import type { ActivityBarProps, ActivityIconName } from "./activity";
 
 const ICONS: Record<ActivityIconName, LucideIcon> = {
   files: FolderTree,
   bot: Bot,
-  sessions: MessagesSquare,
 };
 
 /** Slim icon strip. Tabs are data; host owns which panel is open. */

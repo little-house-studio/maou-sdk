@@ -68,31 +68,7 @@ export function layoutAskMarks(
   }));
 }
 
-/** In-flow offset. Ignores sticky visual shift so rail ticks stay put. */
-export function offsetInScroll(el: HTMLElement, root: HTMLElement): number {
-  let y = 0;
-  let n: HTMLElement | null = el;
-  while (n && n !== root) {
-    y += n.offsetTop;
-    const parent = n.offsetParent as HTMLElement | null;
-    if (!parent || parent === root) break;
-    if (root.contains(parent)) {
-      n = parent;
-      continue;
-    }
-    let r: HTMLElement | null = root;
-    let rootY = 0;
-    while (r && r !== parent) {
-      rootY += r.offsetTop;
-      const rp = r.offsetParent as HTMLElement | null;
-      if (!rp || rp === parent) break;
-      r = rp;
-    }
-    y -= rootY;
-    break;
-  }
-  return Math.max(0, y);
-}
+export { offsetInScroll } from "../conversation/scroll-offset";
 
 export function pointerOverAskGutter(
   clientX: number,

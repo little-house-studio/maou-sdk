@@ -2,12 +2,13 @@
  * Draft-aligned thread rendering: groupThreadBlocks + MessageRow / AssistantTurn.
  * Used by ContextPanel (fixtures) and live ChatPanel (wire chrome) for UI parity.
  */
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ASK_PREVIEW_MAX,
   UserStick,
   askAnchorProps,
   clipAskPreview,
+  offsetInScroll,
 } from "../../conversation";
 import type { DraftMessage } from "../types";
 import {
@@ -415,6 +416,51 @@ function LoopFoot({
   );
 }
 
+/** In-flow bar from the user box left edge through every round. Not sticky. */
+function LoopSpine() {
+  const ref = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const spine = ref.current;
+    const host = spine?.parentElement;
+    if (!spine || !host) return;
+
+    const paint = () => {
+      const stick = host.querySelector<HTMLElement>(".wire-user-stick");
+      host.style.setProperty(
+        "--user-stick-h",
+        `${stick ? stick.offsetHeight : 0}px`,
+      );
+      const box = host.querySelector<HTMLElement>(
+        ".wire-user-stick .bubble.user .msg-body",
+      );
+      const endEl =
+        host.querySelector<HTMLElement>(
+          ".wire-loop-rounds > .wire-reply-turn:last-child",
+        ) ?? host.querySelector<HTMLElement>(".wire-loop-rounds");
+      if (!box || !endEl) {
+        spine.hidden = true;
+        return;
+      }
+      const top = offsetInScroll(box, host);
+      const end = offsetInScroll(endEl, host) + endEl.offsetHeight;
+      spine.hidden = false;
+      spine.style.top = `${top}px`;
+      spine.style.bottom = "auto";
+      spine.style.height = `${Math.max(0, end - top)}px`;
+    };
+
+    paint();
+    const ro = new ResizeObserver(paint);
+    ro.observe(host);
+    const stickEl = host.querySelector(".wire-user-stick");
+    if (stickEl) ro.observe(stickEl);
+    const rounds = host.querySelector(".wire-loop-rounds");
+    if (rounds) ro.observe(rounds);
+    return () => ro.disconnect();
+  }, []);
+  return <span className="wire-loop-spine" ref={ref} aria-hidden />;
+}
+
 function LoopBlock({
   user,
   replies,
@@ -435,19 +481,24 @@ function LoopBlock({
       data-loop-complete={showFoot ? "true" : "false"}
       {...(user ? askAnchorProps(user.id, clipAskPreview(user.body)) : {})}
     >
+      <LoopSpine />
       {user ? (
         <UserStick>
           <MessageRow message={user} onOpenTerminal={onOpenTerminal} />
         </UserStick>
       ) : null}
-      {shown.map((block, i) => (
-        <AssistantTurn
-          key={block.assistant?.id ?? block.internals[0]?.id ?? `reply-${i}`}
-          assistant={block.assistant}
-          internals={block.internals}
-          round={i + 1}
-        />
-      ))}
+      {shown.length > 0 ? (
+        <div className="wire-loop-rounds">
+          {shown.map((block, i) => (
+            <AssistantTurn
+              key={block.assistant?.id ?? block.internals[0]?.id ?? `reply-${i}`}
+              assistant={block.assistant}
+              internals={block.internals}
+              round={i + 1}
+            />
+          ))}
+        </div>
+      ) : null}
       {showFoot ? (
         <LoopFoot replies={replies} roundCount={shown.length} />
       ) : null}

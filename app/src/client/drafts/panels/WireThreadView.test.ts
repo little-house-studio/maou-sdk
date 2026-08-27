@@ -166,6 +166,13 @@ describe("WireThreadView source structure", () => {
     assert.doesNotMatch(src, /ask-scroll-rail/);
     assert.doesNotMatch(src, /wire-thread-rail-host/);
     assert.match(src, /UserStick/);
+    assert.match(src, /wire-loop-spine|LoopSpine/);
+    assert.match(src, /offsetInScroll/);
+    assert.match(src, /--user-stick-h/);
+    assert.match(src, /\.wire-user-stick \.bubble\.user \.msg-body/);
+    assert.match(src, /wire-reply-turn:last-child/);
+    assert.doesNotMatch(src, /style\.bottom = ["']0["']/);
+    assert.match(src, /wire-loop-rounds/);
     assert.match(src, /askAnchorProps/);
     assert.match(src, /wire-thread-lead/);
     assert.match(src, /InfoHover/);
@@ -197,6 +204,8 @@ describe("WireThreadView round chip", () => {
     assert.match(html, /data-ask-anchor/);
     assert.match(html, /data-ask-id="u"/);
     assert.match(html, /wire-round-chip/);
+    assert.match(html, /wire-loop-spine/);
+    assert.match(html, /wire-loop-rounds/);
     assert.match(html, /data-round="1"/);
     assert.match(html, /第 1 轮/);
     assert.match(html, /工具 1/);

@@ -875,6 +875,46 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   border-right: 1px solid var(--n-line-solid);
 }
 
+.wire-shell-region {
+  display: contents;
+}
+
+.wire-aside-pane {
+  overflow: hidden;
+  flex: 0 0 auto;
+  align-self: stretch;
+  min-width: 0;
+}
+
+.wire-aside-pane.is-animating {
+  transition: width 180ms ease;
+}
+
+.wire-aside-pane-inner {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.wire-aside-pane.is-stick-end .wire-aside-pane-inner {
+  margin-left: auto;
+}
+
+.wire-aside-pane-inner > .wire-left,
+.wire-aside-pane-inner > .wire-right {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wire-aside-pane.is-animating {
+    transition: none;
+  }
+}
+
 .wire-left-stack {
   display: flex;
   flex-direction: column;
@@ -882,16 +922,14 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   min-height: 0;
 }
 
-.wire-left-stack .wire-left-agents,
+.wire-left-stack .wire-left-agents {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .wire-left-stack .wire-left-sessions {
   flex: 1;
   min-height: 0;
-  border-top: none;
-}
-
-.wire-left-stack .wire-left-agents[hidden],
-.wire-left-stack .wire-left-sessions[hidden] {
-  display: none;
 }
 
 .wire-mid {
@@ -925,7 +963,8 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--n-rail, var(--n-elevated));
+  border-top: 1px solid var(--n-line);
+  background: var(--n-rail-alt, var(--n-surface));
 }
 
 .wire-v-split,
@@ -1942,8 +1981,8 @@ html[data-theme="dark"] .wire-shell.draft-shell,
 
 /* User question rows stick flush under the breadcrumb chrome.
    Scroll top padding is 0 so `top: 0` is the chrome edge; a lead spacer
-   keeps rest breathing room and scrolls away. The bar's own background
-   masks content, including the left round-chip gutter. */
+   keeps rest breathing room and scrolls away. Paper background masks
+   scrolling content. The current turn chip sticks below this bar. */
 .wire-user-stick {
   position: sticky;
   top: 0;
@@ -1953,6 +1992,7 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   padding-left: var(--round-gutter, var(--thread-inset, 24px));
   width: calc(100% + var(--round-gutter, var(--thread-inset, 24px)));
   box-sizing: border-box;
+  cursor: pointer;
 }
 
 .wire-thread-lead {
@@ -1986,7 +2026,12 @@ html[data-theme="dark"] .wire-shell.draft-shell,
 .wire-context-scroll {
   --thread-inset: 24px;
   --round-gutter: var(--thread-inset);
+  --user-extend: calc(var(--round-gutter) / 2);
+  --chip: 14px;
+  --spine: 3px;
+  --loop-gap: 8px;
   --stick-top-pad: 28px;
+  --user-stick-h: 0px;
   flex: 1 1 auto;
   min-height: 0;
   overflow-x: hidden !important;
@@ -2589,10 +2634,12 @@ html[data-theme="dark"] .wire-ask-tick::after {
 
 /* User — raised warm block (what I said) */
 .wire-context .bubble.codex-bubble.user .msg-body {
+  position: relative;
   background: var(--n-user-bg);
   color: var(--n-on-ink);
   border-radius: 0;
   padding: 10px 12px 12px;
+  margin-left: calc(-1 * var(--user-extend, 12px));
 }
 
 .wire-context .bubble.codex-bubble.user .msg-role {
@@ -2618,6 +2665,7 @@ html[data-theme="dark"] .wire-ask-tick::after {
 
 /* Assistant — round chip hangs in the left thread gutter */
 .wire-reply-turn {
+  position: relative;
   display: grid;
   grid-template-columns: var(--round-gutter, var(--thread-inset, 24px)) minmax(0, 1fr);
   align-items: start;
@@ -2627,16 +2675,25 @@ html[data-theme="dark"] .wire-ask-tick::after {
   box-sizing: border-box;
 }
 
-.wire-reply-turn > .wire-info-hover {
+/* Stick below the user bar. --user-stick-h is set on .wire-loop.
+   Bare `.wire-round-chip` is the HoverTip empty-content unwrap. */
+.wire-reply-turn > .wire-info-hover,
+.wire-reply-turn > .wire-round-chip {
+  position: sticky;
+  top: var(--user-stick-h, 0px);
+  z-index: 32;
   justify-self: center;
+  align-self: start;
 }
 
 .wire-round-chip {
   appearance: none;
+  position: relative;
+  z-index: 2;
   flex-shrink: 0;
   box-sizing: border-box;
-  width: 14px;
-  height: 14px;
+  width: var(--chip, 14px);
+  height: var(--chip, 14px);
   margin-top: 3px;
   padding: 0;
   display: inline-flex;
@@ -2720,10 +2777,45 @@ html[data-theme="dark"] .wire-ask-tick::after {
 }
 
 .wire-loop {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--loop-gap, 8px);
   min-width: 0;
+  padding-bottom: 12px;
+  --user-stick-h: 0px;
+}
+
+.wire-loop-rounds {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--loop-gap, 8px);
+  min-width: 0;
+}
+
+.wire-loop-rounds > .wire-reply-turn + .wire-reply-turn {
+  margin-top: 16px;
+}
+
+.wire-loop-spine {
+  position: absolute;
+  left: calc(-1 * var(--user-extend, 12px));
+  width: var(--spine, 3px);
+  transform: translateX(-50%);
+  background: var(--n-user-bg, #1a1817);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.wire-loop-spine::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: calc(var(--round-gutter, var(--thread-inset, 24px)) / 2);
+  height: var(--spine, 3px);
+  background: inherit;
 }
 
 .wire-loop-foot {
@@ -6012,7 +6104,7 @@ html[data-theme="dark"] .wire-ask-tick::after {
   background: var(--n-rail) !important;
 }
 .wire-shell.draft-shell .wire-left-sessions {
-  background: var(--n-rail) !important;
+  background: var(--n-rail-alt) !important;
 }
 .wire-shell.draft-shell .wire-right,
 .wire-shell.draft-shell .wire-files-panel,
@@ -9453,6 +9545,9 @@ html[data-theme="dark"] .wire-shell.draft-shell .wire-session-tree {
   --dsh-composer-text-max-height: 33vh;
   --thread-inset: 24px;
   --round-gutter: var(--thread-inset);
+  --user-extend: calc(var(--round-gutter) / 2);
+  --chip: 14px;
+  --loop-gap: 8px;
   --center-pad-x: 0px;
   --float-inset: 0px;
   --float-composer-h: 0px;
@@ -9731,11 +9826,12 @@ html[data-app-chrome="darwin"] .wire-topbar input,
   app-region: no-drag;
 }
 
-/* Rails / topbar / right unit: selected fill is quiet. Center keeps --n-on. */
-.wire-shell.draft-shell .wire-topbar,
-.wire-shell.draft-shell .wire-left,
-.wire-shell.draft-shell .wire-aside {
+/* Selected fill is quiet until the region last operated. */
+.wire-shell.draft-shell [data-shell-region] {
   --n-on: var(--n-on-quiet);
+}
+.wire-shell.draft-shell [data-shell-region][data-shell-focus] {
+  --n-on: var(--n-label);
 }
 
 /* Selected chrome: inverse fill. dock cards / send / approval lights stay. */

@@ -87,15 +87,15 @@ describe("sheet theme", () => {
     );
   });
 
-  it("chrome selected fill is quiet gray; center keeps --n-on", () => {
+  it("selected fill is quiet until the focused shell region", () => {
     assert.match(draftCss, /--n-on-quiet:\s*#4a4a4a/);
     assert.match(
       draftCss,
-      /\.wire-shell\.draft-shell \.wire-topbar,[\s\S]*?\.wire-aside\s*\{[^}]*--n-on:\s*var\(--n-on-quiet\)/s,
+      /\.wire-shell\.draft-shell \[data-shell-region\]\s*\{[^}]*--n-on:\s*var\(--n-on-quiet\)/s,
     );
-    assert.doesNotMatch(
+    assert.match(
       draftCss,
-      /\.wire-center\s*\{[^}]*--n-on:\s*var\(--n-on-quiet\)/s,
+      /\.wire-shell\.draft-shell \[data-shell-region\]\[data-shell-focus\]\s*\{[^}]*--n-on:\s*var\(--n-label\)/s,
     );
   });
 
@@ -201,6 +201,46 @@ describe("sheet theme", () => {
     );
   });
 
+  it("user block extends left; loop spine is a separate 3px bar under chips", () => {
+    assert.match(draftCss, /--user-extend:\s*calc\(var\(--round-gutter\) \/ 2\)/);
+    assert.match(
+      draftCss,
+      /\.wire-context \.bubble\.codex-bubble\.user \.msg-body\s*\{[^}]*margin-left:\s*calc\(-1 \* var\(--user-extend/s,
+    );
+    assert.doesNotMatch(
+      draftCss,
+      /\.wire-user-stick[\s\S]*?\.msg-body::after/,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-loop-spine\s*\{[^}]*width:\s*var\(--spine/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-loop-spine\s*\{[^}]*z-index:\s*0/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-loop-spine::after\s*\{[^}]*height:\s*var\(--spine/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-loop\s*\{[^}]*position:\s*relative/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-round-chip\s*\{[^}]*z-index:\s*2/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-loop-rounds > \.wire-reply-turn \+ \.wire-reply-turn\s*\{[^}]*margin-top:\s*16px/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-loop\s*\{[^}]*padding-bottom:\s*12px/s,
+    );
+  });
+
   it("round chips hang in the left thread gutter; left and right insets match", () => {
     assert.match(draftCss, /--thread-inset:\s*24px/);
     assert.match(
@@ -218,6 +258,10 @@ describe("sheet theme", () => {
     assert.match(
       draftCss,
       /\.wire-shell\.draft-shell \.wire-composer-frame[\s\S]*?padding:\s*0 var\(--thread-inset/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-reply-turn > \.wire-info-hover,\s*\.wire-reply-turn > \.wire-round-chip\s*\{[^}]*position:\s*sticky/s,
     );
   });
 

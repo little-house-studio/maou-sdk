@@ -35,8 +35,9 @@ describe("shell SlotMap", () => {
     );
     assert.match(
       draftCss,
-      /\.wire-left-stack \.wire-left-agents\[hidden\],[\s\S]*?display:\s*none/,
+      /\.wire-aside-pane\.is-animating\s*\{[^}]*transition:\s*width 180ms/s,
     );
+    assert.match(draftCss, /\.wire-v-split/);
   });
 
   it("chrome keeps cell stroke on focus and topbar meta", () => {

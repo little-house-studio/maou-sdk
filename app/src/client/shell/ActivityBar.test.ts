@@ -23,19 +23,19 @@ describe("ActivityBar", () => {
     assert.match(html, /wire-activity-tab is-on/);
   });
 
-  it("left strip uses 智能体 / 会话 icons", () => {
+  it("left strip is one 侧栏 icon", () => {
     const html = renderToStaticMarkup(
       createElement(ActivityBar, {
         tabs: LEFT_ACTIVITY_TABS,
-        activeId: "agents",
+        activeId: "sidebar",
         onSelect: () => {},
         edge: "left",
       }),
     );
     assert.match(html, /class="wire-activity is-left"/);
     assert.match(html, /aria-label="左侧页签"/);
-    assert.match(html, /aria-label="智能体"/);
-    assert.match(html, /aria-label="会话"/);
+    assert.match(html, /aria-label="侧栏"/);
+    assert.doesNotMatch(html, /aria-label="智能体"|aria-label="会话"/);
     assert.match(html, /<svg/);
   });
 });

@@ -1,4 +1,5 @@
 import { SlotOutlet } from "../slots";
+import { useShellRegion } from "./focus";
 import { LeftAside } from "./LeftAside";
 import { RightAside } from "./RightAside";
 import type { WireHostBag } from "./types";
@@ -9,7 +10,7 @@ export function LiveMid(bag: WireHostBag) {
   return (
     <div className="wire-body">
       <LeftAside {...bag} />
-      <div className="wire-body-main">
+      <div className="wire-body-main" {...useShellRegion("center")}>
         {bag.mode === "settings" ? (
           <div className="wire-mid is-settings" data-live-region="settings">
             <SlotOutlet name="shell.center" props={bag} slotKey="settings" />
