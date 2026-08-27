@@ -8,8 +8,8 @@ import {
   DOCK_EXPAND_H_UI,
   DOCK_EXPAND_W_UI,
   DOCK_TAB_H,
-  type DockCardId,
 } from "../drafts/bottom-dock";
+import type { DockCardId } from "./ids";
 
 /** How the face content should sit on the manila folder fill. */
 export type DockBoardSurface =
@@ -152,7 +152,7 @@ export const DEFAULT_DOCK_BOARD_LAYOUT: Record<DockCardId, DockBoardLayout> = {
     minWidth: 360,
     minHeight: 180,
     resizable: true,
-    persistKey: "maou-webui-dock-terminal-size",
+    persistKey: "maou-app-dock-terminal-size",
     surface: "dark",
   },
   agent: { ...COMPACT, surface: "transparent" },
@@ -162,7 +162,7 @@ export const DEFAULT_DOCK_BOARD_LAYOUT: Record<DockCardId, DockBoardLayout> = {
     minWidth: 520,
     minHeight: 300,
     resizable: true,
-    persistKey: "maou-webui-dock-proactive-size",
+    persistKey: "maou-app-dock-proactive-size",
     surface: "paper",
   },
 };

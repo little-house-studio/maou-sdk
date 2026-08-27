@@ -81,12 +81,13 @@ describe("live settings adapters", () => {
     );
   });
 
-  it("nav puts combined runtime_defaults first, then llm", () => {
-    assert.ok(LIVE_SETTINGS_SECTIONS.length >= 2);
+  it("nav puts appearance first, then runtime_defaults, then llm", () => {
+    assert.ok(LIVE_SETTINGS_SECTIONS.length >= 3);
     const ids = LIVE_SETTINGS_SECTIONS.map((s) => s.id);
-    assert.equal(ids[0], "runtime_defaults");
+    assert.equal(ids[0], "appearance");
+    assert.ok(ids.includes("runtime_defaults"));
     assert.ok(ids.includes("llm"));
-    assert.equal(LIVE_SETTINGS_SECTIONS[0]!.label, "方案与审批");
+    assert.equal(LIVE_SETTINGS_SECTIONS[0]!.label, "外观");
   });
 
   it("approval mode helpers cover normal/auto/yolo", () => {

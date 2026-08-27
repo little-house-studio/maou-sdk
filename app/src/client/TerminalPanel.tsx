@@ -6,15 +6,8 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 /** 懒加载 chunk 自带 wire 样式，不依赖外层 CSS 是否已热更 */
 import "./terminal-wire.css";
-import {
-  agentTerminalWsUrl,
-  fetchTerminalCapabilities,
-  fetchTerminals,
-  humanTerminalWsUrl,
-  stopTerminal,
-  type TerminalCapabilities,
-  type TerminalInfo,
-} from "./api";
+import { useAppPorts } from "./ports";
+import type { TerminalCapabilities, TerminalInfo } from "./api";
 
 export type OpenTerminalRequest = {
   id: string;
@@ -28,7 +21,7 @@ type Props = {
   defaultAgent?: string;
 };
 
-const FONT_KEY = "maou.webui.term.fontSize";
+const FONT_KEY = "maou.app.term.fontSize";
 
 function readFontSize(): number {
   const n = Number(localStorage.getItem(FONT_KEY));
@@ -70,6 +63,13 @@ export function TerminalPanel({
   onOpenConsumed,
   defaultAgent = "coding",
 }: Props) {
+  const {
+    agentTerminalWsUrl,
+    fetchTerminalCapabilities,
+    fetchTerminals,
+    humanTerminalWsUrl,
+    stopTerminal,
+  } = useAppPorts().terminals;
   const [list, setList] = useState<TerminalInfo[]>([]);
   const [active, setActive] = useState<Active | null>(null);
   const [status, setStatus] = useState("");
@@ -144,26 +144,26 @@ export function TerminalPanel({
       scrollback: 10000,
       macOptionIsMeta: true,
       theme: {
-        background: "#1a1817",
-        foreground: "#f5f0e8",
+        background: "#0b0b0b",
+        foreground: "#c7ff20",
         cursor: "#c7ff20",
-        cursorAccent: "#1a1817",
+        cursorAccent: "#0b0b0b",
         selectionBackground: "rgba(199, 255, 32, 0.24)",
-        selectionForeground: "#f5f0e8",
-        black: "#1a1817",
-        red: "#ff741d",
-        green: "#3bffa7",
-        yellow: "#ffd900",
-        blue: "#2121ff",
-        magenta: "#8363ff",
+        selectionForeground: "#c7ff20",
+        black: "#0b0b0b",
+        red: "#ff5a2e",
+        green: "#c7ff20",
+        yellow: "#ffb020",
+        blue: "#8b7ec8",
+        magenta: "#8b7ec8",
         cyan: "#c7ff20",
-        white: "#f5f0e8",
-        brightBlack: "#8a8278",
+        white: "#ecece8",
+        brightBlack: "#8a8a84",
         brightRed: "#ff8f4a",
-        brightGreen: "#6bffc0",
-        brightYellow: "#ffe34d",
-        brightBlue: "#5a5aff",
-        brightMagenta: "#a48fff",
+        brightGreen: "#d4ff4a",
+        brightYellow: "#ffd06a",
+        brightBlue: "#a79be0",
+        brightMagenta: "#a79be0",
         brightCyan: "#d4ff4a",
         brightWhite: "#ffffff",
       },
@@ -306,10 +306,10 @@ export function TerminalPanel({
         } else if (msg.type === "exit") {
           suppressReconnect.current = true;
           setStatus(`已退出 ${msg.code ?? ""}`.trim());
-          term.writeln(`\r\n\x1b[90m[webui] process ended (${msg.code ?? "?"})\x1b[0m`);
+          term.writeln(`\r\n\x1b[90m[app] process ended (${msg.code ?? "?"})\x1b[0m`);
         } else if (msg.type === "error") {
           setStatus("错误");
-          term.writeln(`\r\n\x1b[31m[webui] ${msg.message ?? "error"}\x1b[0m`);
+          term.writeln(`\r\n\x1b[31m[app] ${msg.message ?? "error"}\x1b[0m`);
         }
       } catch {
         /* ignore */
@@ -339,7 +339,7 @@ export function TerminalPanel({
       if (caps && !caps.humanShell) {
         setStatus("人壳不可用");
         term.writeln(
-          `\x1b[31m[webui] ${caps.reason ?? "人壳需要 Rust terminal-engine .node"}\x1b[0m`,
+          `\x1b[31m[app] ${caps.reason ?? "人壳需要 Rust terminal-engine .node"}\x1b[0m`,
         );
         return;
       }
@@ -349,7 +349,7 @@ export function TerminalPanel({
         setStatus(opts.mode === "create" ? "新开壳…" : "重连人壳…");
         term.reset();
         term.writeln(
-          `\x1b[90m[webui] ${opts.mode === "create" ? "open" : "attach"} human shell…\x1b[0m`,
+          `\x1b[90m[app] ${opts.mode === "create" ? "open" : "attach"} human shell…\x1b[0m`,
         );
       }
       const ws = new WebSocket(humanTerminalWsUrl());
@@ -427,7 +427,7 @@ export function TerminalPanel({
       if (!opts?.silent) {
         setStatus("连接中…");
         term.reset();
-        term.writeln(`\x1b[90m[webui] attach ${agent}/${id}…\x1b[0m`);
+        term.writeln(`\x1b[90m[app] attach ${agent}/${id}…\x1b[0m`);
       }
 
       const ws = new WebSocket(agentTerminalWsUrl(id, agent));

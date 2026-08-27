@@ -1,15 +1,16 @@
 /**
- * createWebUiServer —— Express + WebSocket
+ * createAppServer —— Express + WebSocket
  * - 聊天：NDJSON StreamEvent
  * - Agent 终端：/ws/agent-terminal（subscribe / 轮询）
  * - 人开壳：/ws/terminal（Rust openInteractive）
+ * - 桌面端 listen.kind=socket：unix socket / named pipe，不占 TCP 端口
  */
 
 import express from "express";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { dirname } from "node:path";
+import type { WebSocket } from "ws";
 import { WebSocketServer } from "ws";
 import { AgentHub, type AgentHubOpts } from "./agent-hub.js";
 import { CopilotHub } from "./copilot-hub.js";
@@ -32,45 +33,59 @@ import { mountProactiveRoutes } from "./proactive/routes.js";
 import { mountLlmConfigRoutes } from "./llm-config-routes.js";
 import { mountWebhookRoutes } from "./webhook.js";
 import { shutdownTerminalEngine } from "@little-house-studio/tools";
+import { loadSessionToolMeta } from "./session-intents.js";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+export type AppListen =
+  | { kind: "tcp"; host?: string; port?: number }
+  | { kind: "socket"; path: string };
 
-export interface WebUiServerOpts extends AgentHubOpts {
+export type AppListenInfo = {
+  host: string;
+  port: number;
+  url: string;
+  socketPath?: string;
+};
+
+export interface AppServerOpts extends AgentHubOpts {
   port?: number;
   host?: string;
-  staticDir?: string;
+  listen?: AppListen;
   /** agent 名，默认 coding */
   agentName?: string;
 }
 
-export interface WebUiServer {
+export interface AppServer {
   http: HttpServer;
   hub: AgentHub;
   copilot: CopilotHub;
-  /** 业务 Agent ProactiveService（看板/扫描/派发）；Web 只做路由壳 */
+  /** 业务 Agent ProactiveService（看板/扫描/派发）；App 只做路由壳 */
   proactive: ProactiveService;
-  start: () => Promise<{ host: string; port: number; url: string }>;
+  start: () => Promise<AppListenInfo>;
   close: () => Promise<void>;
+  attachAgentTerminal: (
+    ws: WebSocket,
+    opts: { id: string; agentName: string; pollMs?: number },
+  ) => void;
+  attachHumanTerminal: (ws: WebSocket) => void;
 }
 
-function resolveStaticDir(explicit?: string): string | null {
-  if (explicit && existsSync(explicit)) return explicit;
-  const candidates = [
-    join(__dirname, "../client"),
-    join(__dirname, "../../dist/client"),
-    join(process.cwd(), "webui/dist/client"),
-    join(process.cwd(), "dist/client"),
-  ];
-  for (const d of candidates) {
-    if (existsSync(join(d, "index.html"))) return d;
+function resolveListen(opts: AppServerOpts): AppListen {
+  if (opts.listen) return opts.listen;
+  if (opts.port != null || opts.host != null) {
+    return {
+      kind: "tcp",
+      host: opts.host ?? "127.0.0.1",
+      port: opts.port ?? 0,
+    };
   }
-  return null;
+  throw new Error("createAppServer requires listen (socket) or host/port");
 }
 
-export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
+export function createAppServer(opts: AppServerOpts = {}): AppServer {
   // MVP security: loopback-only by default (DESIGN.md)
-  const host = opts.host ?? "127.0.0.1";
-  const port = opts.port ?? 8787;
+  const listen = resolveListen(opts);
+  const host = listen.kind === "tcp" ? (listen.host ?? "127.0.0.1") : "ipc";
+  const port = listen.kind === "tcp" ? (listen.port ?? 0) : 0;
   const agentName = opts.agentName ?? "coding";
   const hub = new AgentHub(opts);
   const copilot = new CopilotHub(opts);
@@ -92,10 +107,16 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
   app.use(express.json({ limit: "4mb" }));
 
   // Lightweight liveness only — do not ensureAgent / load sessions here.
+  app.get("/api/session-intents", (req, res) => {
+    const sessionId = String(req.query.sessionId ?? "");
+    const root = String(req.query.root ?? hub.projectRoot ?? "");
+    res.json(loadSessionToolMeta(sessionId, root));
+  });
+
   app.get("/api/health", (_req, res) => {
     res.json({
       ok: true,
-      service: "maou-webui",
+      service: "maou-app",
       agentName: hub.agentName || agentName,
       projectRoot: hub.projectRoot,
     });
@@ -210,6 +231,17 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     }
   });
 
+  app.get("/api/commands", (_req, res) => {
+    try {
+      res.json({ ok: true, commands: hub.listCommandCatalog() });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
   app.get("/api/runtime/running", (_req, res) => {
     try {
       res.json({
@@ -232,7 +264,15 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     try {
       const title =
         req.body?.title != null ? String(req.body.title) : undefined;
-      const { sessionId } = hub.newSession(title);
+      const parentSessionId = req.body?.parentSessionId
+        ? String(req.body.parentSessionId).trim()
+        : "";
+      const fork = Boolean(req.body?.fork);
+      const { sessionId } = parentSessionId
+        ? fork
+          ? hub.forkSession(parentSessionId, title)
+          : hub.newChildSession(parentSessionId, title)
+        : hub.newSession(title);
       res.json({
         ok: true,
         ...hub.getMeta(),
@@ -626,7 +666,8 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
 
   app.post("/api/chat", async (req, res) => {
     const message = String(req.body?.message ?? "").trim();
-    if (!message) {
+    const images = Array.isArray(req.body?.images) ? req.body.images : [];
+    if (!message && !images.length) {
       res.status(400).json({ ok: false, error: "message required" });
       return;
     }
@@ -659,7 +700,7 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
       }
     };
     try {
-      for await (const ev of hub.runChat(message)) {
+      for await (const ev of hub.runChat(message, { images })) {
         if (
           ev &&
           typeof ev === "object" &&
@@ -812,28 +853,9 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     }
   });
 
-  const staticDir = resolveStaticDir(opts.staticDir);
-  if (staticDir) {
-    app.use(express.static(staticDir));
-    app.get("*", (req, res, next) => {
-      if (req.path.startsWith("/api") || req.path.startsWith("/ws")) {
-        next();
-        return;
-      }
-      res.sendFile(join(staticDir, "index.html"), (err) => {
-        if (err) next();
-      });
-    });
-  } else {
-    app.get("/", (_req, res) => {
-      res
-        .type("html")
-        .send(
-          `<!doctype html><meta charset=utf-8><title>maou webui</title>
-          <p>请先构建前端：cd webui && pnpm run build</p>`,
-        );
-    });
-  }
+  app.get("/", (_req, res) => {
+    res.status(404).json({ ok: false, error: "desktop client only" });
+  });
 
   const http = createHttpServer(app);
 
@@ -874,22 +896,40 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
     copilot,
     proactive,
     start() {
-      return new Promise<{ host: string; port: number; url: string }>((resolve, reject) => {
+      return new Promise<AppListenInfo>((resolve, reject) => {
         http.once("error", reject);
-        http.listen(port, host, () => {
+        const onListening = () => {
           proactive.start();
+          if (listen.kind === "socket") {
+            resolve({
+              host: "ipc",
+              port: 0,
+              url: `ipc:${listen.path}`,
+              socketPath: listen.path,
+            });
+            return;
+          }
           const addr = http.address();
           const actualPort =
             typeof addr === "object" && addr && typeof addr.port === "number"
               ? addr.port
               : port;
-          // bind 用 loopback；对外展示域名由 cli/local-entry 拼 maou.localhost
           resolve({
             host,
             port: actualPort,
             url: `http://${host}:${actualPort}`,
           });
-        });
+        };
+        if (listen.kind === "socket") {
+          const sock = listen.path;
+          if (!sock.startsWith("\\\\.\\pipe\\")) {
+            mkdirSync(dirname(sock), { recursive: true });
+            if (existsSync(sock)) unlinkSync(sock);
+          }
+          http.listen(sock, onListening);
+          return;
+        }
+        http.listen(port, host, onListening);
       });
     },
     close() {
@@ -902,8 +942,23 @@ export function createWebUiServer(opts: WebUiServerOpts = {}): WebUiServer {
         shutdownTerminalEngine();
         wssAgent.close();
         wssHuman.close();
-        http.close(() => resolve());
+        http.close(() => {
+          if (listen.kind === "socket" && !listen.path.startsWith("\\\\.\\pipe\\")) {
+            try {
+              if (existsSync(listen.path)) unlinkSync(listen.path);
+            } catch {
+              /* ignore */
+            }
+          }
+          resolve();
+        });
       });
+    },
+    attachAgentTerminal(ws, attachOpts) {
+      attachAgentTerminalSocket(ws, attachOpts);
+    },
+    attachHumanTerminal(ws) {
+      attachTerminalSocket(termHub, ws, hub.projectRoot, hub.agentName || agentName);
     },
   };
 }

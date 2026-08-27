@@ -22,26 +22,9 @@ import type { ProtoNavItem } from "./protocol-types.js";
 import { isLiteMode, LITE_HISTORY_BASE } from "../config/lite-mode.js";
 import { tipsForContext } from "../config/cli-tips.js";
 import { HISTORY_BASE_ROUNDS } from "../config/ui-constants.js";
-import { estimateTokens, estimateContextTokens } from "@little-house-studio/llm";
 import { uncachedInputTokens } from "@little-house-studio/agent";
-import { previewCurrentSystemPrompt } from "../lib/preview-system.js";
+import { occupancyFromState } from "../lib/context-occupancy.js";
 import { buildPerfHudPayload } from "./perf-hud-lines.js";
-
-/** Cache system prompt text for idle ↑ estimate . */
-let cachedSystemPromptAgent = "";
-let cachedSystemPromptText = "";
-function systemPromptForAgent(agentName: string | undefined): string {
-  const name = agentName ?? "";
-  if (name === cachedSystemPromptAgent) return cachedSystemPromptText;
-  try {
-    const r = previewCurrentSystemPrompt(name || "coding");
-    cachedSystemPromptText = r.ok ? r.text : "";
-  } catch {
-    cachedSystemPromptText = "";
-  }
-  cachedSystemPromptAgent = name;
-  return cachedSystemPromptText;
-}
 
 /**
  * 协议侧 duration 用整数 ms。
@@ -200,21 +183,8 @@ function goalObjective(plan: string | undefined): string | undefined {
 }
 
 export function toProtoChrome(s: UIState): ProtoChrome {
-  // ── 上下文占用（窗口语义，禁止 Σ 全历史各轮 prompt）──
-  // 历史 bug：最近一轮 input=0（空转/?）时回退「所有轮 input+output 相加」→ 虚高到 1M+
-  // 正确：最近一次有效 prompt_tokens / 本轮累计 / idle 估算，绝不用跨轮累加当「当前窗口」
-  const lastValidRound = [...(s.rounds ?? [])]
-    .reverse()
-    .find((r) => (r.input ?? 0) > 0 || (r.total ?? 0) > 0);
-  const currentIn = s.currentRoundUsage?.input ?? 0;
-  const lastCtx =
-    currentIn > 0
-      ? currentIn
-      : lastValidRound
-        ? (lastValidRound.input ?? lastValidRound.total ?? 0)
-        : 0;
-  // InfoBar 占用：当前窗口 ≈ lastCtx；无有效轮次时用 idle 估算（在下方 up 算完后回填）
-  let ctxTokens = lastCtx > 0 ? lastCtx : 0;
+  // 占用 = 上一条回报的 input + output。无 usage 则为 0。
+  const ctxTokens = occupancyFromState(s);
   // 镜像历史 + 本轮未封印的 currentRoundUsage，避免流式中/首轮永远 c—
   const cacheHistLive = [...(s.cacheHistory ?? [])];
   if (
@@ -255,50 +225,15 @@ export function toProtoChrome(s: UIState): ProtoChrome {
       token_budget: s.maxContext && s.maxContext > 0 ? s.maxContext : undefined,
     };
   }
-  // busy = uncachedInputTokens(usage); idle = estimateContextTokens + draft − cache
-  const draft = (s as UIState & { inputDraft?: string }).inputDraft ?? "";
-  let up = s.eventBlock.upTokens ?? s.currentRoundUsage?.input ?? 0;
+  // ↑ 只认上一条真实 usage 的未缓存 input；idle 不再估算正文。
+  let up = s.lastOccupancy?.input ?? 0;
   const liveMode = s.eventBlock.mode ?? "idle";
   if (s.streaming || ((s.currentRoundUsage?.input ?? 0) > 0 && liveMode !== "idle")) {
-    // input 已是 prompt 总量；建缓存(cacheWrite)属于本轮真实上传，计入 ↑
     up = uncachedInputTokens({
-      input_tokens: s.currentRoundUsage?.input ?? 0,
+      input_tokens: s.lastOccupancy?.input ?? s.currentRoundUsage?.input ?? 0,
       cache_read_input_tokens: s.currentRoundUsage?.cacheRead ?? 0,
       cache_creation_input_tokens: s.currentRoundUsage?.cacheWrite ?? 0,
     });
-  } else {
-    const historyMsgs = s.messages.map((m) => {
-      const parts: string[] = [];
-      if (m.content) parts.push(m.content);
-      for (const b of m.thinkingBlocks ?? []) {
-        if (b.content) parts.push(b.content);
-      }
-      for (const tc of m.toolCalls ?? []) {
-        parts.push(`${tc.name} ${tc.args ?? ""}`);
-        if (tc.result) parts.push(tc.result);
-      }
-      return { content: parts.join("\n") };
-    });
-    if (draft.trim()) historyMsgs.push({ content: draft });
-    // system + session messages + draft − last cache_read
-    const sys = systemPromptForAgent(s.agentName);
-    const totalEst = estimateContextTokens({
-      systemPrompt: sys || undefined,
-      messages: historyMsgs,
-    });
-    const lastIdleRound = s.rounds.length > 0 ? s.rounds[s.rounds.length - 1] : null;
-    const lastCache = lastIdleRound?.cacheRead ?? 0;
-    const draftTok = draft.trim() ? estimateTokens(draft) : 0;
-    if (lastCache > 0 && totalEst > 0) {
-      up = Math.max(draftTok, totalEst - lastCache);
-    } else {
-      // first round / no cache: whole package is new input 
-      up = totalEst > 0 ? totalEst : draftTok;
-    }
-    // 无 API usage 时：窗口占用用 idle 整包估（仍禁止 Σ 历史各轮）
-    if (ctxTokens <= 0 && totalEst > 0) {
-      ctxTokens = totalEst;
-    }
   }
 
   return {
@@ -317,7 +252,7 @@ export function toProtoChrome(s: UIState): ProtoChrome {
     aborting: s.aborting,
     event_mode: s.eventBlock.mode,
     up_tokens: up,
-    down_tokens: s.eventBlock.downTokens ?? s.currentRoundUsage?.output ?? 0,
+    down_tokens: s.lastOccupancy?.output ?? s.eventBlock.downTokens ?? s.currentRoundUsage?.output ?? 0,
     detail: s.eventBlock.detail,
     approval_mode: mode,
     approval_label: approvalLabel,

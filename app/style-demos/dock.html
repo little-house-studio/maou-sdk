@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 底栏矩形</title>
+    <style>
+      :root, html[data-theme="light"] {
+        --bg: #ededed;
+        --ink: #000000;
+        --dim: #828282;
+        --line: #9b9b9b;
+        --on: #000000;
+        --on-ink: #ededed;
+        --info: #1400ff;
+        --logs: #b80c00;
+        --tasks: #994c00;
+        --term: #c45a00;
+        --agent: #4900b8;
+        --pro: #1400ff;
+        --row: 1.3125em;
+        --rail: 24px;
+      }
+      html[data-theme="dark"] {
+        --bg: #0b0b0b;
+        --ink: #ecece8;
+        --dim: #8a8a84;
+        --line: #5c5c58;
+        --on: #ecece8;
+        --on-ink: #0b0b0b;
+        --info: #b8ff00;
+        --logs: #ff2200;
+        --tasks: #ff8800;
+        --term: #ff8800;
+        --agent: #6600ff;
+        --pro: #b8ff00;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font: 400 14px / var(--row) Helvetica Neue, Helvetica, Arial, "PingFang SC", sans-serif;
+      }
+      button, textarea { font: inherit; color: inherit; }
+      button { background: none; border: 0; padding: 0; cursor: pointer; }
+      a { color: inherit; text-decoration: none; }
+      @media (hover: hover) {
+        a:hover, button:hover { color: var(--info); }
+        button.on:hover { color: var(--on-ink); }
+      }
+
+      .sheet {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+      }
+      .table {
+        display: grid;
+        grid-template-columns: repeat(72, minmax(0, 1fr));
+        border-bottom: 1px solid var(--line);
+      }
+      .cell { border-left: 1px solid var(--line); min-width: 0; min-height: var(--row); }
+      .index { height: calc(var(--row) * 2); }
+      .index .id { grid-column: span 28; display: flex; align-items: center; padding: 0 0.4em; }
+      .index a { display: grid; place-items: center; color: var(--dim); }
+      .index .to-dir { grid-column: span 8; }
+      .index .swatch { grid-column: span 9; }
+      .index .on { background: var(--on); color: var(--on-ink); }
+
+      .hint { min-height: calc(var(--row) * 2); }
+      .hint .k { grid-column: span 12; padding: 0.35em 0.4em; color: var(--dim); }
+      .hint .v { grid-column: span 60; padding: 0.35em 0.5em; color: var(--dim); }
+
+      .stage {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: calc(var(--row) * 2) minmax(0, 1fr);
+        position: relative;
+      }
+      .top .brand { grid-column: span 12; display: flex; align-items: center; padding: 0 0.4em; }
+      .top .modes { grid-column: span 40; display: flex; align-items: center; justify-content: center; gap: 1.6em; }
+      .top .meta { grid-column: span 20; display: flex; align-items: center; justify-content: end; gap: 1.2em; padding: 0 0.4em; color: var(--dim); }
+      .top button.on { box-shadow: inset 0 -1px 0 var(--info); }
+
+      .work {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+      }
+      .mid {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 168px minmax(0, 1fr) 168px;
+        border-bottom: 1px solid var(--line);
+      }
+      .rail, .files, .center { border-left: 1px solid var(--line); min-width: 0; min-height: 0; }
+      .rail, .files { padding: 0.2em 0.5em 0.6em; color: var(--dim); }
+      .center {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+        min-height: 0;
+      }
+      .hero { display: grid; place-items: center; color: var(--dim); }
+      .hero h2 { margin: 0 0 0.25em; font-size: 1.5em; font-weight: 400; color: var(--ink); }
+      .composer-frame { padding: 0 24px 24px; }
+      .composer {
+        border: 1px solid var(--line);
+        background: var(--bg);
+      }
+      .composer textarea {
+        width: 100%;
+        min-height: 56px;
+        border: 0;
+        resize: none;
+        outline: none;
+        background: transparent;
+        color: var(--ink);
+        padding: 12px 16px;
+      }
+      .composer textarea::placeholder { color: var(--dim); }
+
+      .dock {
+        position: relative;
+        z-index: 4;
+        border-top: 1px solid var(--line);
+        background: var(--bg);
+      }
+      .ears {
+        display: flex;
+        height: var(--rail);
+        align-items: stretch;
+      }
+      .ear {
+        min-width: 72px;
+        padding: 0 8px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--ear-ink);
+        background: var(--ear-fill);
+        font-size: 11px;
+      }
+      .ear .c {
+        min-width: 1.1em;
+        height: 1.1em;
+        padding: 0 0.25em;
+        background: var(--on-ink);
+        color: var(--ear-fill);
+        display: grid;
+        place-items: center;
+        font-size: 11px;
+      }
+      .slot { width: 92px; }
+
+      .float {
+        position: absolute;
+        z-index: 8;
+        background: var(--ear-fill);
+        color: var(--ear-ink);
+        min-width: 320px;
+        min-height: 220px;
+      }
+      .float-bar {
+        height: 24px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0 8px;
+        cursor: grab;
+        font-size: 11px;
+      }
+      .float-body {
+        padding: 10px 12px;
+        background: var(--bg);
+        color: var(--dim);
+        min-height: 180px;
+        border-top: 1px solid var(--line);
+      }
+      .float-body h3 { margin: 0 0 0.3em; font-weight: 400; color: var(--ink); }
+      .stow { margin-left: auto; width: 22px; height: 22px; }
+
+      .tone-logs { --ear-fill: var(--logs); --ear-ink: #ededed; }
+      .tone-tasks { --ear-fill: var(--tasks); --ear-ink: #ededed; }
+      html[data-theme="dark"] .tone-tasks { --ear-ink: #0b0b0b; }
+      .tone-terminal { --ear-fill: var(--term); --ear-ink: #ededed; }
+      html[data-theme="dark"] .tone-terminal { --ear-ink: #0b0b0b; }
+      .tone-agent { --ear-fill: var(--agent); --ear-ink: #ededed; }
+      html[data-theme="dark"] .tone-agent { --ear-ink: #0b0b0b; }
+      .tone-proactive { --ear-fill: var(--pro); --ear-ink: #ededed; }
+      html[data-theme="dark"] .tone-proactive { --ear-ink: #0b0b0b; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">
+      <header class="table index">
+        <span class="cell id">Maou · 底栏矩形</span>
+        <a class="cell to-dir" href="index.html">目录</a>
+        <button class="cell swatch on" type="button" data-t="light">亮色</button>
+        <button class="cell swatch" type="button" data-t="dark">暗色</button>
+        <a class="cell swatch" href="shell.html#plate">纸样壳</a>
+      </header>
+      <div class="table hint">
+        <div class="cell k">点耳弹出</div>
+        <div class="cell v">矩形标签，点击弹出。拖标题挪窗，拖到窗底收纳。左右拖排序。没有吸附扫动。</div>
+      </div>
+      <div class="stage" id="stage">
+        <div class="table top">
+          <div class="cell brand">Maou</div>
+          <nav class="cell modes">
+            <button class="on" type="button">聊天</button>
+            <button type="button">项目</button>
+            <button type="button">Team</button>
+            <button type="button">设置</button>
+          </nav>
+          <div class="cell meta">
+            <span>deepseek-v4-flash</span>
+            <span>yolo</span>
+          </div>
+        </div>
+        <div class="work">
+          <div class="mid">
+            <aside class="rail">
+              <div>系统</div>
+              <div style="background:var(--on);color:var(--on-ink);margin:0.4em -0.5em;padding:0 0.5em;">Ops Agent</div>
+            </aside>
+            <main class="center">
+              <div class="hero">
+                <div>
+                  <p style="margin:0 0 0.3em;color:var(--dim)">空单元</p>
+                  <h2>输入卡左右留白</h2>
+                </div>
+              </div>
+              <div class="composer-frame">
+                <div class="composer">
+                  <textarea placeholder="输入消息… Enter 发送，Shift+Enter 换行"></textarea>
+                </div>
+              </div>
+            </main>
+            <aside class="files">
+              <div>OVERVIEW.md</div>
+              <div>src</div>
+            </aside>
+          </div>
+          <div class="dock" id="dock"></div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const CARDS = [
+        { id: "logs", label: "日志", count: 5, tone: "logs", title: "日志 · 5", body: "INFO  draft shell ready" },
+        { id: "tasks", label: "任务", count: 0, tone: "tasks", title: "任务", body: "没有正在跑的后台任务。" },
+        { id: "terminal", label: "终端", count: 2, tone: "terminal", title: "终端 · 2", body: "$ pnpm --filter app dev\nVITE ready" },
+        { id: "agent", label: "agent", count: 1, tone: "agent", title: "Ops Agent", body: "Ops Agent · idle" },
+        { id: "proactive", label: "主动", count: 0, tone: "proactive", title: "主动智能", body: "扫描 / 看板 / 派发" },
+      ];
+      const state = {
+        order: CARDS.map((c) => c.id),
+        openId: "terminal",
+        float: { left: 220, bottom: 40 },
+      };
+      const dock = document.querySelector("#dock");
+      const stage = document.querySelector("#stage");
+
+      function card(id) { return CARDS.find((c) => c.id === id); }
+
+      function render() {
+        const open = state.openId;
+        const c = open ? card(open) : null;
+        const ears = state.order.map((id) => {
+          const k = card(id);
+          if (open === id) return `<div class="slot" data-slot="${id}"></div>`;
+          return `<button type="button" class="ear tone-${k.tone}" data-ear="${id}"><span>${k.label}</span><span class="c">${k.count}</span></button>`;
+        }).join("");
+        dock.innerHTML = `<div class="ears">${ears}</div>` + (c ? `
+          <div class="float tone-${c.tone}" data-float style="left:${state.float.left}px;bottom:${state.float.bottom}px">
+            <div class="float-bar" data-move>
+              <span>${c.label}</span><span class="c">${c.count}</span>
+              <button class="stow" type="button" data-stow>▾</button>
+            </div>
+            <div class="float-body"><h3>${c.title}</h3><pre class="mono" style="margin:0;white-space:pre-wrap">${c.body}</pre></div>
+          </div>` : "");
+        dock.querySelectorAll("[data-ear]").forEach((b) => {
+          b.addEventListener("click", () => {
+            state.openId = b.dataset.ear;
+            render();
+          });
+        });
+        dock.querySelector("[data-stow]")?.addEventListener("click", () => {
+          state.openId = null;
+          render();
+        });
+        const moveEl = dock.querySelector("[data-move]");
+        const floatEl = dock.querySelector("[data-float]");
+        if (moveEl && floatEl) {
+          moveEl.addEventListener("pointerdown", (e) => {
+            if (e.target.closest("[data-stow]") || e.button !== 0) return;
+            const r = floatEl.getBoundingClientRect();
+            const host = stage.getBoundingClientRect();
+            const ox = e.clientX - r.left;
+            const oy = r.bottom - e.clientY;
+            const move = (ev) => {
+              state.float.left = Math.max(8, ev.clientX - host.left - ox);
+              state.float.bottom = Math.max(8, host.bottom - ev.clientY - oy);
+              if (state.float.bottom < 40) {
+                state.openId = null;
+                window.removeEventListener("pointermove", move);
+                window.removeEventListener("pointerup", up);
+                render();
+                return;
+              }
+              floatEl.style.left = state.float.left + "px";
+              floatEl.style.bottom = state.float.bottom + "px";
+            };
+            const up = () => {
+              window.removeEventListener("pointermove", move);
+              window.removeEventListener("pointerup", up);
+            };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", up);
+          });
+        }
+      }
+
+      document.querySelectorAll("[data-t]").forEach((b) => {
+        b.addEventListener("click", () => {
+          document.documentElement.dataset.theme = b.dataset.t;
+          document.querySelectorAll("[data-t]").forEach((x) => x.classList.toggle("on", x === b));
+        });
+      });
+      const startTheme = new URLSearchParams(location.search).get("theme");
+      if (startTheme === "dark" || startTheme === "light") {
+        document.documentElement.dataset.theme = startTheme;
+        document.querySelectorAll("[data-t]").forEach((x) => {
+          x.classList.toggle("on", x.dataset.t === startTheme);
+        });
+      }
+      render();
+    </script>
+  </body>
+</html>

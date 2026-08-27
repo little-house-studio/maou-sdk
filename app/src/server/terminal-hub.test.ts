@@ -37,7 +37,7 @@ describe("TerminalHub detach ≠ stop", () => {
         stopped.push(id);
       },
       logs: async () => "replay-line\n",
-      list: () => [{ id: "human_1", agentName: "webui", cwd: "/tmp", state: "running" }],
+      list: () => [{ id: "human_1", agentName: "app", cwd: "/tmp", state: "running" }],
     };
     const hub = new TerminalHub(() => engine);
     const session = await hub.create({

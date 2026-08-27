@@ -2,7 +2,7 @@
  * Dist-level gate: production index.html entry + modulepreload + static import
  * closure must not pull CodeMirror / xterm into first paint.
  *
- * Runs against shipped `webui/dist/client` after `vite build`.
+ * Runs against shipped `app/dist/client` after `vite build`.
  */
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";

@@ -5,41 +5,24 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
+  type ClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  abortChat,
-  answerApproval,
-  clearChatQueue,
-  clearSession,
-  createSession,
-  deleteSession,
-  enqueueChat,
-  exportTranscript,
-  fetchApproval,
-  fetchMeta,
-  fetchModels,
-  fetchLlmConfig,
-  fetchSessionStats,
-  fetchSessions,
-  removeChatQueueItem,
-  renameSession,
-  runCommand,
-  setApprovalMode,
-  setModel,
-  streamChat,
-  switchSession,
-  type ApprovalMode,
-  type ChatHistoryLine,
-  type ChatSendMode,
-  type Meta,
-  type PendingApproval,
-  type SessionSummary,
-  type StreamEvent,
+import { useAppPorts } from "./ports";
+import type {
+  ApprovalMode,
+  ChatHistoryLine,
+  ChatImage,
+  ChatSendMode,
+  Meta,
+  PendingApproval,
+  SessionSummary,
+  StreamEvent,
 } from "./api";
 import { formatModelErrorForUi } from "./model-error-ui";
 import { stripTaskCompletionMarkup } from "./strip-task-completion";
@@ -55,6 +38,15 @@ import {
   WireThreadView,
   chatLinesToDraftMessages,
 } from "./drafts/panels/WireThreadView";
+import {
+  asToolParams,
+  extractToolCallIntent,
+  readToolIntent,
+} from "./drafts/tool-card";
+import {
+  applySessionToolMeta,
+  fetchSessionToolMeta,
+} from "./session-intents";
 import { ApprovalBanner } from "./drafts/panels/ApprovalBanner";
 import { ApprovalPhysicsSwitch } from "./drafts/panels/ApprovalPhysicsSwitch";
 import {
@@ -63,7 +55,32 @@ import {
 } from "./drafts/panels/ModelCascadeMenu";
 import { ChromeMark } from "./drafts/icons/Marks";
 import { SessionTreeCrumbs } from "./drafts/layout/SessionTreeCrumbs";
+import { flattenSessionForest } from "./drafts/session-ancestry";
+import { hierarchyIndentPx } from "./drafts/visual-marks";
 import type { DraftApproval } from "./drafts/types";
+import { Composer, type ComposerProps } from "./composer";
+import {
+  applyMentionPick,
+  commandByName,
+  composeCommandInput,
+  filterCommandHits,
+  filterMentionHits,
+  filterPaletteHits,
+  filterSlashHits,
+  mergeCommandCatalog,
+  mentionQuery,
+  slashPrefixAtCursor,
+  stripSlashToken,
+} from "./composer/commands";
+import type { AppCommand } from "./composer/commands";
+import {
+  clipboardToComposerImages,
+  mergeComposerImages,
+  type ComposerImage,
+} from "./composer/images";
+import { OptionalOutlet } from "./composer/OptionalOutlet";
+import { ConversationPane } from "./conversation";
+import { AskScrollRail } from "./drafts/AskScrollRail";
 
 export type ChatLine = {
   id: string;
@@ -81,12 +98,21 @@ export type ChatLine = {
   toolName?: string;
   /** 配对 tool_call ↔ tool_result */
   toolCallId?: string;
+  /** tool_call 参数 description：这一步在做什么 */
+  toolDescription?: string;
   /** 可一点重试的用户原文（error 行） */
   retryText?: string;
   /** thinking 行元数据（耗时 / token） */
   thinkStartedAt?: number;
   thinkDurationMs?: number;
   thinkOutputTokens?: number;
+  images?: ChatImage[];
+  /** 本轮助手气泡开始（epoch ms） */
+  startedAt?: number;
+  durationMs?: number;
+  usageInput?: number;
+  usageOutput?: number;
+  round?: number;
 };
 
 /**
@@ -166,8 +192,24 @@ function extractTerminalId(ev: StreamEvent): string | undefined {
   return m?.[1];
 }
 
+function historyTsMs(ts?: string): number | undefined {
+  if (!ts) return undefined;
+  const n = Date.parse(ts);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
-  return msgs.map((m) => {
+  const intents = new Map<string, string>();
+  for (const m of msgs) {
+    if (!Array.isArray(m.toolCalls)) continue;
+    for (const tc of m.toolCalls) {
+      const id = (tc.id || "").trim();
+      const d = (tc.description || "").trim();
+      if (id && d) intents.set(id, d);
+    }
+  }
+  let round = 0;
+  const lines = msgs.map((m) => {
     const role =
       m.role === "user" || m.role === "assistant" || m.role === "system"
         ? m.role
@@ -178,7 +220,6 @@ function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
       role === "assistant"
         ? stripTaskCompletionMarkup(m.content || "")
         : m.content || "";
-    // 优先 session 落盘的 tool_name（Agent 权威），正文解析仅兜底
     const fromMeta = (m.toolName || "").trim();
     const fromBody = role === "tool" ? extractToolNameFromText(text) : undefined;
     const toolName =
@@ -187,18 +228,79 @@ function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
           ? fromMeta
           : fromBody
         : undefined;
+    const startedAt = historyTsMs(m.ts);
+    const asstRound = role === "assistant" ? ++round : undefined;
+    const callId = (m.toolCallId || "").trim();
+    const toolDescription =
+      role === "tool"
+        ? (m.toolDescription || "").trim() ||
+          (callId ? intents.get(callId) : undefined) ||
+          extractToolCallIntent(text) ||
+          undefined
+        : undefined;
+    const durationMs =
+      role === "tool" &&
+      m.durationMs != null &&
+      Number.isFinite(m.durationMs) &&
+      m.durationMs > 0
+        ? m.durationMs
+        : undefined;
     return {
       id: m.id || uid(),
       role: role as ChatLine["role"],
       text,
       toolName,
-      toolCallId: m.toolCallId,
+      toolCallId: callId || undefined,
+      ...(toolDescription ? { toolDescription } : {}),
+      ...(durationMs != null ? { durationMs } : {}),
+      ...(m.images?.length ? { images: m.images } : {}),
+      ...(startedAt ? { startedAt } : {}),
+      ...(asstRound ? { round: asstRound } : {}),
+      ...(m.usageInput && m.usageInput > 0 ? { usageInput: m.usageInput } : {}),
+      ...(m.usageOutput && m.usageOutput > 0 ? { usageOutput: m.usageOutput } : {}),
       err:
         role === "tool" &&
         (/^✗|❌|缺少必填|失败/i.test(text.trim()) ||
           m.toolOk === false ||
           Boolean((m as { ok?: boolean }).ok === false)),
     };
+  });
+  let prevToolAt: number | undefined;
+  for (const line of lines) {
+    if (line.role === "assistant" || line.role === "user") {
+      prevToolAt = undefined;
+      continue;
+    }
+    if (line.role !== "tool") continue;
+    if (
+      line.durationMs == null &&
+      line.startedAt != null &&
+      prevToolAt != null
+    ) {
+      const gap = line.startedAt - prevToolAt;
+      if (gap >= 80 && gap < 30 * 60 * 1000) line.durationMs = gap;
+    }
+    if (line.startedAt != null) prevToolAt = line.startedAt;
+  }
+  return lines;
+}
+
+function hydrateToolLines(
+  setLines: (fn: (prev: ChatLine[]) => ChatLine[]) => void,
+  sessionId?: string | null,
+  projectRoot?: string,
+) {
+  const sid = (sessionId || "").trim();
+  const root = (projectRoot || "").trim();
+  if (!sid || !root) return;
+  void fetchSessionToolMeta(sid, root).then((extra) => {
+    if (
+      Object.keys(extra.intents).length === 0 &&
+      Object.keys(extra.durations).length === 0
+    ) {
+      return;
+    }
+    setLines((prev) => applySessionToolMeta(prev, extra));
   });
 }
 
@@ -223,30 +325,10 @@ const HELP_TEXT = [
   "热键: Enter 发送（忙碌时入队） · / 补全 ↑↓ Tab · Ctrl+N 新会话 · Ctrl+M 模型 · Ctrl+. / Esc 停止 · Shift+Tab 审批 · Ctrl+Shift+C 复制 · R 重试",
 ].join("\n");
 
-const SLASH_SUGGESTIONS = [
-  "new",
-  "clear",
-  "export",
-  "stop",
-  "model",
-  "sessions",
-  "approval",
-  "usage",
-  "cost",
-  "analyze",
-  "compact",
-  "context",
-  "init",
-  "plan",
-  "goal",
-  "ultragoal",
-  "help",
-] as const;
-
 /** Cap pending user messages while a turn is running */
 const MAX_QUEUE = 20;
 
-const SEND_MODE_KEY = "maou.webui.sendMode";
+const SEND_MODE_KEY = "maou.app.sendMode";
 
 function loadSendMode(): ChatSendMode {
   try {
@@ -274,11 +356,13 @@ const RUNTIME_SLASH = new Set([
   "compact",
   "context",
   "init",
+  "plan",
   "goal",
+  "ultragoal",
   "agent",
 ]);
 
-type Props = {
+export type ChatPanelProps = {
   onOpenTerminal?: (id: string, agentName?: string) => void;
   defaultAgent?: string;
   onMetaChange?: (meta: Meta) => void;
@@ -312,12 +396,42 @@ export function ChatPanel({
   className,
   chrome = "default",
   onDockLogLines,
-}: Props) {
+}: ChatPanelProps) {
+  const {
+    abortChat,
+    answerApproval,
+    clearChatQueue,
+    clearSession,
+    createSession,
+    deleteSession,
+    enqueueChat,
+    exportTranscript,
+    fetchApproval,
+    fetchMeta,
+    fetchModels,
+    fetchLlmConfig,
+    fetchSessionStats,
+    fetchSessions,
+    removeChatQueueItem,
+    renameSession,
+    fetchCommandCatalog,
+    runCommand,
+    setApprovalMode,
+    setModel,
+    streamChat,
+    switchSession,
+  } = useAppPorts().chat;
+  const { fetchProjectTree, fetchMdTree } = useAppPorts().files;
   const isWire =
     chrome === "wire" ||
     (typeof className === "string" && className.includes("wire-context"));
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [input, setInput] = useState("");
+  const [inputEpoch, setInputEpoch] = useState(0);
+  const replaceInput = useCallback((v: string) => {
+    setInput(v);
+    setInputEpoch((n) => n + 1);
+  }, []);
   const [busy, setBusyState] = useState(false);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -350,6 +464,16 @@ export function ChatPanel({
   const [usageModalRaw, setUsageModalRaw] = useState<string | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteIdx, setPaletteIdx] = useState(0);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const [overlayDismissed, setOverlayDismissed] = useState(false);
+  const [commandBlock, setCommandBlock] = useState<string | null>(null);
+  const [commandBlockSelected, setCommandBlockSelected] = useState(false);
+  const cursorRef = useRef(0);
+  const [filePaths, setFilePaths] = useState<string[]>([]);
+  const [attachImages, setAttachImages] = useState<ComposerImage[]>([]);
+  const [extraCommands, setExtraCommands] = useState<AppCommand[]>([]);
   /** 发送模式：队列（等本轮）/ 插入（打断当前流）—— 对接到 MessageQueue */
   const [sendMode, setSendModeState] = useState<ChatSendMode>(() => loadSendMode());
   /** 发送框上方：未成功发送 / 已排队待投递 */
@@ -365,6 +489,7 @@ export function ChatPanel({
   /** Guards double-Enter before busyRef flips inside runUserMessage */
   const inFlightSendRef = useRef(false);
   const lastUserRef = useRef("");
+  const lastImagesRef = useRef<ChatImage[]>([]);
   /**
    * 每会话独立 run 代数。切会话不 bump 其它会话。
    * Map: sessionId → { gen, ac }
@@ -430,6 +555,71 @@ export function ChatPanel({
       return () => clearTimeout(t);
     }
   }, [threadRailId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        let tree;
+        try {
+          ({ tree } = await fetchProjectTree());
+        } catch {
+          ({ tree } = await fetchMdTree());
+        }
+        const acc: string[] = [];
+        const walk = (nodes: typeof tree) => {
+          for (const n of nodes) {
+            if (n.type === "file") acc.push(n.path);
+            if (n.children?.length) walk(n.children);
+          }
+        };
+        walk(tree);
+        if (!cancelled) setFilePaths(acc);
+      } catch {
+        if (!cancelled) setFilePaths([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchProjectTree, fetchMdTree]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchCommandCatalog()
+      .then((list) => {
+        if (cancelled) return;
+        setExtraCommands(
+          list.map((c) => ({
+            name: c.name.replace(/^\//, "").trim().toLowerCase(),
+            label: `/${c.name.replace(/^\//, "").trim()}`,
+            description: c.description || c.name,
+            runtime: true,
+            palette: false,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setExtraCommands([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchCommandCatalog, meta?.agentName]);
+
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") {
+        ev.preventDefault();
+        setPaletteOpen((v) => !v);
+        setPaletteIdx(0);
+        setSlashOpen(false);
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const pushMeta = useCallback((m: Meta) => {
     setMeta(m);
@@ -520,9 +710,12 @@ export function ChatPanel({
     try {
       const r = await fetchSessionStats();
       if (r.stats) {
-        // 会话累计 input 作为上下文占用近似；上限来自 preset maxContext
+        const used =
+          (r.stats.contextUsed != null && r.stats.contextUsed > 0
+            ? r.stats.contextUsed
+            : (r.stats.lastInputTokens ?? 0) + (r.stats.lastOutputTokens ?? 0));
         patchContextUsage({
-          used: r.stats.inputTokens,
+          used,
           max: maxContextRef.current,
         });
       }
@@ -589,7 +782,7 @@ export function ChatPanel({
         // 恢复 last-session 历史（与 CLI 启动一致）
         if (m.sessionId && Array.isArray(m.messages) && m.messages.length > 0) {
           setLines(historyToLines(m.messages));
-          setStatus(`已恢复会话 ${m.sessionId.slice(0, 8)}…`);
+          hydrateToolLines(setLines, m.sessionId, m.projectRoot);
         }
         const md = await fetchModels(m.provider || undefined);
         if (cancelled) return;
@@ -794,6 +987,35 @@ export function ChatPanel({
     setStatus("已清空排队");
   }, []);
 
+  const steerAllQueued = useCallback(async () => {
+    const items = outbox.filter((o) => o.status === "queued");
+    for (const item of items) {
+      await removeOutboxItem(item);
+      await enqueueToBackend(item.text, "insert", "已插入打断");
+    }
+  }, [outbox, removeOutboxItem, enqueueToBackend]);
+
+  const steerOutboxItem = useCallback(
+    async (item: OutboxItem) => {
+      await removeOutboxItem(item);
+      await enqueueToBackend(item.text, "insert", "已插入打断");
+    },
+    [removeOutboxItem, enqueueToBackend],
+  );
+
+  const onCommandLaunch = useCallback(() => {
+    setPaletteOpen((v) => !v);
+    setPaletteIdx(0);
+    setSlashOpen(false);
+    focusComposer();
+  }, [focusComposer]);
+
+  const onOverlayDismiss = useCallback(() => {
+    setSlashOpen(false);
+    setPaletteOpen(false);
+    setOverlayDismissed(true);
+  }, []);
+
   const patchLastAssistant = useCallback((delta: string) => {
     setLines((prev) => {
       const next = [...prev];
@@ -812,6 +1034,7 @@ export function ChatPanel({
         role: "assistant",
         text: stripTaskCompletionMarkup(delta),
         raw: delta,
+        startedAt: Date.now(),
       });
       return next;
     });
@@ -897,6 +1120,7 @@ export function ChatPanel({
               role: "assistant",
               text: stripTaskCompletionMarkup(content),
               raw: content,
+              startedAt: Date.now(),
             });
             return next;
           });
@@ -924,12 +1148,15 @@ export function ChatPanel({
           // 未知时不要写入字面量 "tool"（会污染后续正文解析）
           const displayName = name || undefined;
           const label = displayName || "tool";
-          const params =
-            tool?.parameters ?? (ev.parameters as Record<string, unknown>) ?? {};
+          const paramsRaw =
+            tool?.parameters ??
+            (tool as { arguments?: unknown } | undefined)?.arguments ??
+            ev.parameters ??
+            ev.arguments;
           const desc =
-            typeof params.description === "string"
-              ? params.description.trim()
-              : "";
+            readToolIntent(paramsRaw) ||
+            (typeof ev.description === "string" ? ev.description.trim() : "");
+          const params = asToolParams(paramsRaw);
           const tid =
             typeof params.id === "string"
               ? params.id
@@ -944,6 +1171,8 @@ export function ChatPanel({
             text: `▶ ${label}${desc ? ` · ${desc}` : ""}`,
             toolName: displayName,
             toolCallId: toolCallId || undefined,
+            toolDescription: desc || undefined,
+            startedAt: Date.now(),
             terminalId: isTerm ? tid : undefined,
             agentName: defaultAgent,
           });
@@ -960,6 +1189,11 @@ export function ChatPanel({
               "",
           ).trim();
           const content = String(ev.content ?? ev.result ?? "");
+          const evDur = Number(
+            ev.durationMs ?? (ev as { elapsed?: unknown }).elapsed,
+          );
+          const resultDuration =
+            Number.isFinite(evDur) && evDur > 0 ? evDur : undefined;
           const fromContent = extractToolNameFromText(content);
           const ok = ev.ok !== false;
           const tid = extractTerminalId(ev);
@@ -1006,11 +1240,25 @@ export function ChatPanel({
                   err: !ok,
                   terminalId: tid ?? cur.terminalId,
                   agentName: cur.agentName || defaultAgent,
+                  toolDescription: cur.toolDescription,
+                  durationMs:
+                    resultDuration ??
+                    (cur.startedAt != null
+                      ? Date.now() - cur.startedAt
+                      : cur.durationMs),
                 };
                 return next;
               }
             }
             const label = name || "tool";
+            const call = toolCallId
+              ? [...prev]
+                  .reverse()
+                  .find(
+                    (l) =>
+                      l.role === "tool" && l.toolCallId === toolCallId,
+                  )
+              : undefined;
             return [
               ...prev,
               {
@@ -1019,6 +1267,12 @@ export function ChatPanel({
                 text: `${ok ? "✓" : "✗"} ${label}${tid ? ` · ${tid}` : ""}${snippet ? `\n${snippet}` : ""}`,
                 toolName: name || undefined,
                 toolCallId: toolCallId || undefined,
+                toolDescription: call?.toolDescription,
+                durationMs:
+                  resultDuration ??
+                  (call?.startedAt != null
+                    ? Date.now() - call.startedAt
+                    : undefined),
                 err: !ok,
                 terminalId: tid,
                 agentName: defaultAgent,
@@ -1051,15 +1305,37 @@ export function ChatPanel({
               0,
           );
           if (inn || out) {
-            setTurnUsage((prev) => ({
-              in: (prev?.in ?? 0) + (Number.isFinite(inn) ? inn : 0),
-              out: (prev?.out ?? 0) + (Number.isFinite(out) ? out : 0),
-            }));
+            setTurnUsage({
+              in: Number.isFinite(inn) ? inn : 0,
+              out: Number.isFinite(out) ? out : 0,
+            });
           }
-          // 本轮 prompt tokens ≈ 当前上下文占用
-          if (Number.isFinite(inn) && inn > 0) {
+          if ((Number.isFinite(inn) && inn > 0) || (Number.isFinite(out) && out > 0)) {
+            const now = Date.now();
+            setLines((prev) => {
+              const next = [...prev];
+              for (let i = next.length - 1; i >= 0; i--) {
+                if (next[i]!.role !== "assistant") continue;
+                const cur = next[i]!;
+                next[i] = {
+                  ...cur,
+                  usageInput: Number.isFinite(inn) && inn > 0 ? inn : cur.usageInput,
+                  usageOutput: Number.isFinite(out) && out > 0 ? out : cur.usageOutput,
+                  durationMs:
+                    cur.startedAt != null
+                      ? Math.max(cur.durationMs ?? 0, now - cur.startedAt)
+                      : cur.durationMs,
+                };
+                break;
+              }
+              return next;
+            });
+          }
+          const occ =
+            (Number.isFinite(inn) ? inn : 0) + (Number.isFinite(out) ? out : 0);
+          if (occ > 0) {
             patchContextUsage({
-              used: inn,
+              used: occ,
               max: Number.isFinite(maxCtx) && maxCtx > 0 ? maxCtx : undefined,
             });
           } else if (Number.isFinite(maxCtx) && maxCtx > 0) {
@@ -1097,34 +1373,52 @@ export function ChatPanel({
         }
         case "done": {
           const u = ev.usage as Record<string, unknown> | undefined;
-          if (u) {
-            const inn = Number(u.prompt_tokens ?? u.input ?? 0);
-            const out = Number(u.completion_tokens ?? u.output ?? 0);
-            const maxCtx = Number(u.max_context ?? u.maxContext ?? 0);
-            if (inn || out) setTurnUsage({ in: inn, out });
-            if (Number.isFinite(inn) && inn > 0) {
-              patchContextUsage({
-                used: inn,
-                max: Number.isFinite(maxCtx) && maxCtx > 0 ? maxCtx : undefined,
-              });
-            }
+          const inn = Number(u?.prompt_tokens ?? u?.input ?? 0);
+          const out = Number(u?.completion_tokens ?? u?.output ?? 0);
+          const maxCtx = Number(u?.max_context ?? u?.maxContext ?? 0);
+          if (u && (inn || out)) setTurnUsage({ in: inn, out });
+          const occ =
+            (Number.isFinite(inn) ? inn : 0) + (Number.isFinite(out) ? out : 0);
+          if (occ > 0) {
+            patchContextUsage({
+              used: occ,
+              max: Number.isFinite(maxCtx) && maxCtx > 0 ? maxCtx : undefined,
+            });
           }
           void refreshContextUsage();
-          // 结束时冻结 thinking 耗时
           {
             const now = Date.now();
-            setLines((prev) =>
-              prev.map((l) => {
-                if (l.role !== "thinking" || l.thinkStartedAt == null) return l;
-                return {
-                  ...l,
-                  thinkDurationMs: Math.max(
-                    l.thinkDurationMs ?? 0,
-                    now - l.thinkStartedAt,
-                  ),
+            setLines((prev) => {
+              const next = prev.map((l) => {
+                if (l.role === "thinking" && l.thinkStartedAt != null) {
+                  return {
+                    ...l,
+                    thinkDurationMs: Math.max(
+                      l.thinkDurationMs ?? 0,
+                      now - l.thinkStartedAt,
+                    ),
+                  };
+                }
+                return l;
+              });
+              for (let i = next.length - 1; i >= 0; i--) {
+                if (next[i]!.role !== "assistant") continue;
+                const cur = next[i]!;
+                next[i] = {
+                  ...cur,
+                  durationMs:
+                    cur.startedAt != null
+                      ? Math.max(cur.durationMs ?? 0, now - cur.startedAt)
+                      : cur.durationMs,
+                  usageInput:
+                    Number.isFinite(inn) && inn > 0 ? inn : cur.usageInput,
+                  usageOutput:
+                    Number.isFinite(out) && out > 0 ? out : cur.usageOutput,
                 };
-              }),
-            );
+                break;
+              }
+              return next;
+            });
           }
           break;
         }
@@ -1136,7 +1430,7 @@ export function ChatPanel({
             lastUserRef.current = content;
             append({ id: uid(), role: "user", text: content });
             // 新一轮 assistant 气泡，承接插入/排队后的回复
-            append({ id: uid(), role: "assistant", text: "" });
+            append({ id: uid(), role: "assistant", text: "", startedAt: Date.now() });
           }
           setOutbox((prev) =>
             prev.filter((o) => {
@@ -1275,6 +1569,9 @@ export function ChatPanel({
             )
           ) {
             append({ id: uid(), role: "system", text: msg });
+            if (/压缩|compact|archive|summaryStage|archiveStage/i.test(msg)) {
+              patchContextUsage({ used: 0 });
+            }
           }
           break;
         }
@@ -1380,6 +1677,7 @@ export function ChatPanel({
           const r = await switchSession(hit.id);
           pushMeta(r.meta);
           setLines(historyToLines(r.messages));
+          hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
           setTurnUsage(null);
           await refreshSessions();
           append({
@@ -1521,7 +1819,7 @@ export function ChatPanel({
   }, []);
 
   const runUserMessage = useCallback(
-    async (text: string) => {
+    async (text: string, images?: ChatImage[]) => {
       // 绑定到发送时的会话；切走后该流仍继续，只在焦点会话时刷 UI
       let sessionId: string =
         activeSessionRef.current || meta?.sessionId || "__pending__";
@@ -1542,6 +1840,7 @@ export function ChatPanel({
       markSessionRunning(sessionId, true);
 
       lastUserRef.current = text;
+      lastImagesRef.current = images ?? [];
       stickBottomRef.current = true;
 
       // 仅当前焦点会话立刻画气泡
@@ -1549,8 +1848,13 @@ export function ChatPanel({
         activeSessionRef.current === sessionId ||
         sessionId === "__pending__"
       ) {
-        append({ id: uid(), role: "user", text });
-        append({ id: uid(), role: "assistant", text: "" });
+        append({
+          id: uid(),
+          role: "user",
+          text,
+          ...(images?.length ? { images } : {}),
+        });
+        append({ id: uid(), role: "assistant", text: "", startedAt: Date.now() });
         busyRef.current = true;
         setBusy(true);
         setTurnUsage(null);
@@ -1558,7 +1862,7 @@ export function ChatPanel({
       setSlashOpen(false);
 
       try {
-        for await (const ev of streamChat(text, ac.signal)) {
+        for await (const ev of streamChat(text, ac.signal, images)) {
           const cur = sessionRunsRef.current.get(sessionId);
           if (!cur || cur.gen !== gen) break;
 
@@ -1659,6 +1963,7 @@ export function ChatPanel({
       meta?.sessionId,
       markSessionRunning,
       setBusy,
+      streamChat,
     ],
   );
 
@@ -1701,9 +2006,14 @@ export function ChatPanel({
 
   /** modeOverride: Ctrl+Enter 强制 insert */
   const send = async (modeOverride?: ChatSendMode) => {
-    const text = input.trim();
-    if (!text) return;
-    setInput("");
+    const live = inputRef.current?.value ?? input;
+    const text = composeCommandInput(commandBlock, live).trim();
+    const images = attachImages.slice();
+    if (!text && !images.length) return;
+    replaceInput("");
+    setCommandBlock(null);
+    setCommandBlockSelected(false);
+    setAttachImages([]);
     // Reset auto-grown textarea height after send
     if (inputRef.current) {
       inputRef.current.style.height = "";
@@ -1729,15 +2039,15 @@ export function ChatPanel({
 
     const mode = modeOverride ?? sendMode;
 
-    // Busy or send already in-flight: 对接后端 MessageQueue
-    if (busyRef.current || inFlightSendRef.current) {
+    // 附图走 runChat；队列只收文本
+    if ((busyRef.current || inFlightSendRef.current) && !images.length) {
       await enqueueToBackend(text, mode);
       return;
     }
 
     inFlightSendRef.current = true;
     try {
-      await runUserMessage(text);
+      await runUserMessage(text, images);
     } catch (e) {
       // 未成功发送 → 放在 composer 上方 outbox
       const err = e instanceof Error ? e.message : String(e);
@@ -1766,6 +2076,7 @@ export function ChatPanel({
       pushMeta(r.meta);
       activeSessionRef.current = r.sessionId;
       setLines(historyToLines(r.messages));
+      hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
       setTurnUsage(null);
       stickBottomRef.current = true;
       const stillRunning = runningSessionIdsRef.current.includes(r.sessionId);
@@ -1800,6 +2111,44 @@ export function ChatPanel({
     focusComposer();
   };
 
+  const adoptSession = async (
+    r: Awaited<ReturnType<typeof createSession>>,
+    statusText: string,
+  ) => {
+    pushMeta(r.meta);
+    activeSessionRef.current = r.sessionId;
+    setLines(historyToLines(r.messages));
+    hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
+    setTurnUsage(null);
+    stickBottomRef.current = true;
+    busyRef.current = false;
+    setBusy(false);
+    abortRef.current = null;
+    await refreshSessions();
+    setStatus(statusText);
+    focusComposer();
+  };
+
+  const onForkSession = async (parentId: string) => {
+    setOutbox([]);
+    setPending([]);
+    const r = await createSession(undefined, {
+      parentSessionId: parentId,
+      fork: true,
+    });
+    await adoptSession(r, "已派生会话");
+  };
+
+  const onNewChildSession = async (parentId: string) => {
+    setOutbox([]);
+    setPending([]);
+    const r = await createSession(undefined, {
+      parentSessionId: parentId,
+      fork: false,
+    });
+    await adoptSession(r, "新子会话");
+  };
+
   const onDeleteSession = async (id: string) => {
     if (!id) return;
     if (!window.confirm(`删除会话 ${id.slice(0, 12)}…？`)) return;
@@ -1824,6 +2173,7 @@ export function ChatPanel({
       pushMeta(r.meta);
       setSessions(r.sessions);
       setLines(historyToLines(r.messages));
+      hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
       setTurnUsage(null);
       stickBottomRef.current = true;
       setStatus("已删除会话");
@@ -1848,17 +2198,16 @@ export function ChatPanel({
   };
 
   const retryLastUser = (text?: string) => {
-    const msg =
-      text ||
-      [...lines].reverse().find((l) => l.role === "user")?.text ||
-      lastUserRef.current;
-    if (!msg) return;
-    if (busyRef.current || inFlightSendRef.current) {
+    const lastLine = [...lines].reverse().find((l) => l.role === "user");
+    const msg = text || lastLine?.text || lastUserRef.current;
+    const images = lastLine?.images ?? lastImagesRef.current;
+    if (!msg && !images?.length) return;
+    if ((busyRef.current || inFlightSendRef.current) && !images?.length) {
       void enqueueToBackend(msg, sendMode, "重试已排队");
       return;
     }
     inFlightSendRef.current = true;
-    void runUserMessage(msg)
+    void runUserMessage(msg, images)
       .catch((e) => {
         const err = e instanceof Error ? e.message : String(e);
         setOutbox((prev) => [
@@ -1929,8 +2278,9 @@ export function ChatPanel({
       }
       // Esc: close slash menu or cancel in-flight turn (CLI escape-cancel)
       if (e.key === "Escape") {
-        if (slashOpen) {
+        if (slashOpen || paletteOpen) {
           setSlashOpen(false);
+          setPaletteOpen(false);
           return;
         }
         if (busyRef.current) {
@@ -1971,7 +2321,7 @@ export function ChatPanel({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [lines, busy, stopRun, approval, slashOpen, pushMeta]);
+  }, [lines, busy, stopRun, approval, slashOpen, paletteOpen, pushMeta]);
 
   const onCascadeModelSelect = async (provider: string, modelId: string) => {
     if (!provider || !modelId) return;
@@ -2024,6 +2374,8 @@ export function ChatPanel({
         onSelect={(id) => void onSessionChange(id)}
         onDelete={(id) => void onDeleteSession(id)}
         onRename={(id, title) => void onRenameSession(id, title)}
+        onFork={(id) => void onForkSession(id)}
+        onNewChild={(id) => void onNewChildSession(id)}
       />
     ) : null;
 
@@ -2115,16 +2467,20 @@ export function ChatPanel({
 
   const emptyTitle = isWire ? "从哪里开始？" : "What should we work on?";
   const emptySub = isWire
-    ? "描述任务，或输入 /help。终端从工具卡或 Ctrl+` 打开；任务与日志在底部 dock。"
+    ? "输入任务，或 /help。工具和终端在两侧。"
     : "Describe a task, or type /help. Tools and terminals open on the right.";
 
   // Wire: same groupThreadBlocks tree as draft ContextPanel
-  const wireDraftMessages = isWire
-    ? chatLinesToDraftMessages(lines, {
-        agentBusy: busy,
-        agentName: meta?.agentName || defaultAgent,
-      })
-    : [];
+  const wireDraftMessages = useMemo(
+    () =>
+      isWire
+        ? chatLinesToDraftMessages(lines, {
+            agentBusy: busy,
+            agentName: meta?.agentName || defaultAgent,
+          })
+        : [],
+    [isWire, lines, busy, meta?.agentName, defaultAgent],
+  );
 
   const messageList = isWire ? (
     <WireThreadView
@@ -2132,7 +2488,7 @@ export function ChatPanel({
       emptyTitle={emptyTitle}
       emptySub={emptySub}
       onOpenTerminal={onOpenTerminal}
-      scrollRef={logRef}
+      agentBusy={busy}
     />
   ) : (
     <div
@@ -2240,21 +2596,79 @@ export function ChatPanel({
     </div>
   );
 
-  const slashPrefix = input.startsWith("/")
-    ? input.slice(1).split(/\s/)[0]?.toLowerCase() ?? ""
-    : "";
-  const slashHits = input.startsWith("/")
-    ? SLASH_SUGGESTIONS.filter((s) => s.startsWith(slashPrefix)).slice(0, 8)
-    : [];
+  const commandCatalog = useMemo(
+    () => mergeCommandCatalog(extraCommands),
+    [extraCommands],
+  );
+  const slashPrefix = commandBlock
+    ? null
+    : slashPrefixAtCursor(
+        inputRef.current?.value ?? input,
+        inputRef.current?.selectionStart ?? cursorRef.current,
+      );
+  const typingSlash = slashPrefix != null;
+  const commandHits = filterCommandHits(
+    paletteOpen && !typingSlash ? "" : (slashPrefix ?? ""),
+    commandCatalog,
+  );
+  const slashHits = commandHits.map((c) => c.name);
+  const mentionQ = mentionQuery(input);
+  const mentionHits = mentionQ != null ? filterMentionHits(mentionQ, filePaths) : [];
+  const paletteHits = paletteOpen
+    ? commandHits
+    : filterPaletteHits(input, commandCatalog);
+  const mentionOpen =
+    !overlayDismissed &&
+    !paletteOpen &&
+    !typingSlash &&
+    mentionQ != null;
   const slashSel =
     slashHits.length > 0
       ? slashHits[Math.min(slashIdx, slashHits.length - 1)]!
       : null;
 
-  const applySlashHit = (s: string) => {
-    setInput(`/${s} `);
+  const commitCommandBlock = (s: string) => {
+    const name = commandByName(s, commandCatalog)?.name ?? s;
+    setCommandBlock(name);
+    setCommandBlockSelected(false);
+    replaceInput(
+      stripSlashToken(inputRef.current?.value ?? input, cursorRef.current),
+    );
     setSlashOpen(false);
     setSlashIdx(0);
+    setPaletteOpen(false);
+    setOverlayDismissed(true);
+    window.setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const applySlashHit = (s: string) => {
+    commitCommandBlock(s);
+  };
+
+  const applyPaletteHit = (s: string) => {
+    setPaletteOpen(false);
+    if (s === "new") {
+      void onNewSession();
+      return;
+    }
+    if (s === "fork") {
+      const id = meta?.sessionId;
+      if (id) void onForkSession(id);
+      return;
+    }
+    if (s === "model") {
+      modelMenuRef.current?.open();
+      return;
+    }
+    if (s === "usage" || s === "cost") {
+      usageClick();
+      return;
+    }
+    if (s === "stop") {
+      void stopRun();
+      return;
+    }
+    commitCommandBlock(s);
   };
 
   const providerOptions = (
@@ -2268,7 +2682,9 @@ export function ChatPanel({
     models.length ? models : meta?.model ? [{ id: meta.model }] : []
   ).filter((m) => m.id);
   const canRetry = lines.some((l) => l.role === "user");
-  const canSend = Boolean(input.trim());
+  const canSend =
+    Boolean(composeCommandInput(commandBlock, input).trim()) ||
+    attachImages.length > 0;
   /** Draft ComposerBar: stop only when busy and empty draft */
   const showStopWire = busy && !canSend && pending.length === 0;
   /** 上下文占用百分比（仅保留一处模型选择：左侧 cascade） */
@@ -2280,19 +2696,31 @@ export function ChatPanel({
         )
       : null;
   // 右侧 status 不再回显模型名（cascade 已显示）；仅保留运行/错误等状态
-  const statusDisplay = (() => {
+  const statusFull = (() => {
     if (pending.length > 0) return "等待审批";
     if (busy) return "运行中";
     const s = (status || "").trim();
     if (!s) return "";
     if (/^模型\s/i.test(s)) return "";
+    if (/已恢复|已删除/.test(s)) return "";
     return s;
   })();
-  const statusError = /error|失败|不可用|HTML|JSON|后端|API\s*\d|拒绝/i.test(
-    statusDisplay,
+  const statusError = /error|失败|不可用|HTML|JSON|后端|API\s*\d|拒绝|离线/i.test(
+    statusFull,
   );
+  const statusDisplay = (() => {
+    if (!statusFull) return "";
+    if (statusFull.length <= 8) return statusFull;
+    if (statusError) {
+      if (/HTML|host 未就绪|桌面|Unexpected token/i.test(statusFull)) {
+        return "离线";
+      }
+      return "错误";
+    }
+    return statusFull.length > 12 ? `${statusFull.slice(0, 10)}…` : statusFull;
+  })();
 
-  const slashMenu = slashOpen && slashHits.length > 0 && (
+  const slashMenu = typingSlash && !overlayDismissed && slashHits.length > 0 && (
     <div className="slash-menu" role="listbox">
       {slashHits.map((s, i) => (
         <button
@@ -2312,33 +2740,74 @@ export function ChatPanel({
 
   const onComposerKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-    if (slashOpen && slashHits.length > 0) {
+    const liveSlashNow =
+      !commandBlock &&
+      slashPrefixAtCursor(
+        e.currentTarget.value,
+        e.currentTarget.selectionStart ?? 0,
+      ) != null;
+    const overlayHits = paletteOpen
+      ? paletteHits.map((c) => c.name)
+      : mentionOpen
+        ? mentionHits
+        : slashHits;
+    const overlayIdx = paletteOpen
+      ? paletteIdx
+      : mentionOpen
+        ? mentionIdx
+        : slashIdx;
+    const setOverlayIdx = paletteOpen
+      ? setPaletteIdx
+      : mentionOpen
+        ? setMentionIdx
+        : setSlashIdx;
+    if (
+      (liveSlashNow || paletteOpen || mentionOpen) &&
+      overlayHits.length > 0
+    ) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setSlashIdx((i) => (i + 1) % slashHits.length);
+        setOverlayIdx((i) => (i + 1) % overlayHits.length);
         return;
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setSlashIdx((i) => (i - 1 + slashHits.length) % slashHits.length);
+        setOverlayIdx(
+          (i) => (i - 1 + overlayHits.length) % overlayHits.length,
+        );
         return;
       }
       if (e.key === "Tab" && !e.shiftKey) {
         e.preventDefault();
-        if (slashSel) applySlashHit(slashSel);
+        const pick = overlayHits[Math.min(overlayIdx, overlayHits.length - 1)];
+        if (pick) {
+          if (mentionOpen) {
+            replaceInput(
+              applyMentionPick(inputRef.current?.value ?? input, pick),
+            );
+          }
+          else if (paletteOpen) applyPaletteHit(pick);
+          else applySlashHit(pick);
+        }
         return;
       }
       if (e.key === "Escape") {
         e.preventDefault();
         setSlashOpen(false);
+        setPaletteOpen(false);
         return;
       }
     } else if (e.key === "Escape") {
       setSlashOpen(false);
+      setPaletteOpen(false);
     }
     // Ctrl/Cmd+Enter：强制插入模式
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       e.preventDefault();
+      if (!input.trim() && busy && queueLen > 0) {
+        void steerAllQueued();
+        return;
+      }
       void send("insert");
       return;
     }
@@ -2355,15 +2824,21 @@ export function ChatPanel({
     }
   };
 
-  const onComposerChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
-    const v = e.target.value;
+  const onComposerInput = (v: string) => {
     setInput(v);
-    const open = v.startsWith("/") && !v.includes("\n");
-    setSlashOpen(open);
+    setOverlayDismissed(false);
+    const at = inputRef.current?.selectionStart ?? cursorRef.current;
+    cursorRef.current = at;
+    const prefix = slashPrefixAtCursor(v, at);
+    const open = prefix != null;
+    setSlashOpen(open && !paletteOpen);
     if (open) setSlashIdx(0);
-    const el = e.target;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(Math.max(el.scrollHeight, 56), 180)}px`;
+    setMentionIdx(0);
+    if (paletteOpen && !open) setPaletteOpen(false);
+  };
+
+  const onComposerChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    onComposerInput(e.target.value);
   };
 
   const usageClick = () => {
@@ -2383,6 +2858,9 @@ export function ChatPanel({
             inputTokens: r.stats.inputTokens,
             outputTokens: r.stats.outputTokens,
             cacheRead: r.stats.cacheRead,
+            lastInputTokens: r.stats.lastInputTokens,
+            lastOutputTokens: r.stats.lastOutputTokens,
+            contextUsed: r.stats.contextUsed,
             file: r.stats.file,
           });
         } else {
@@ -2391,8 +2869,12 @@ export function ChatPanel({
         }
         // Keep chip % in sync
         if (r.stats) {
+          const used =
+            r.stats.contextUsed != null && r.stats.contextUsed > 0
+              ? r.stats.contextUsed
+              : (r.stats.lastInputTokens ?? 0) + (r.stats.lastOutputTokens ?? 0);
           patchContextUsage({
-            used: r.stats.inputTokens,
+            used,
             max: maxContextRef.current,
           });
         }
@@ -2509,145 +2991,145 @@ export function ChatPanel({
         >
           <ChromeMark kind="stop" size={14} decorative />
         </button>
-      ) : (
-        <button
-          type="button"
-          className={`send-btn wire-icon-btn wire-composer-send mode-${sendMode}`}
-          disabled={!canSend}
-          onClick={() => void send()}
-          aria-label={
-            busy
-              ? sendMode === "insert"
-                ? "插入发送"
-                : "排队发送"
-              : "发送"
-          }
-          title={
-            busy
+      ) : null}
+      <button
+        type="button"
+        className={`send-btn wire-icon-btn wire-composer-send mode-${sendMode}`}
+        disabled={!canSend}
+        onClick={() => void send()}
+        aria-label={
+          busy
+            ? sendMode === "insert"
+              ? "插入发送"
+              : "排队发送"
+            : "发送"
+        }
+        title={
+          !canSend
+            ? "输入文字后发送"
+            : busy
               ? sendMode === "insert"
                 ? "插入发送 (Enter) · 打断当前流"
                 : "排队发送 (Enter) · 本轮结束后投递"
               : `发送 (Enter) · 模式 ${sendModeLabel}`
-          }
-        >
-          <ChromeMark kind="send" size={15} decorative />
-        </button>
-      )}
+        }
+      >
+        <ChromeMark kind="send" size={15} decorative />
+      </button>
     </div>
   );
 
-  /** Wire: draft ComposerBar card layout (textarea + toolbar icons) */
+  const composerProps: ComposerProps = {
+    variant: "live",
+    input,
+    inputEpoch,
+    busy,
+    pendingApproval: pending.length > 0,
+    sendMode,
+    placeholder:
+      pending.length > 0
+        ? "可先输入下一条… 处理审批后发送"
+        : busy && !input.trim() && queueLen > 0
+          ? "空稿 ⌃↵ 将排队全部插入当前轮"
+          : busy
+            ? sendMode === "insert"
+              ? "运行中… Enter 插入打断 · Ctrl+Enter 同 · Alt+Enter 切队列"
+              : "运行中… Enter 排队 · Ctrl+Enter 插入打断 · Alt+Enter 切模式"
+            : "输入消息… Enter 发送，Shift+Enter 换行",
+    statusDisplay,
+    statusTitle: statusFull,
+    statusError,
+    slashHits,
+    slashIdx,
+    slashOpen: !commandBlock && !overlayDismissed && typingSlash,
+    paletteOpen: paletteOpen && !commandBlock,
+    paletteHits: commandHits,
+    paletteIdx,
+    mentionOpen,
+    mentionHits,
+    mentionIdx,
+    filePaths,
+    images: attachImages,
+    outbox,
+    provider: meta?.provider ?? "",
+    model: meta?.model ?? "",
+    providers: providerOptions,
+    models: modelOptions,
+    approval,
+    contextPct,
+    canRetry,
+    canSteerQueue: Boolean(busy && queueLen > 0 && !input.trim()),
+    inputRef,
+    modelMenuRef,
+    agentName: meta?.agentName,
+    onInputChange: onComposerInput,
+    onCursorChange: (n) => {
+      cursorRef.current = n;
+      const live = inputRef.current?.value ?? input;
+      const open = slashPrefixAtCursor(live, n) != null;
+      setSlashOpen(open && !paletteOpen && !commandBlock && !overlayDismissed);
+    },
+    commandBlock,
+    commandBlockSelected,
+    onCommandBlockChange: setCommandBlock,
+    onCommandBlockSelect: setCommandBlockSelected,
+    onInputPaste: (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      const dt = e.clipboardData;
+      const hasImg = Boolean(
+        dt &&
+          ([...dt.files].some((f) => f.type.startsWith("image/")) ||
+            [...dt.items].some(
+              (it) => it.kind === "file" && it.type.startsWith("image/"),
+            )),
+      );
+      if (!hasImg) return;
+      e.preventDefault();
+      void clipboardToComposerImages(dt, attachImages.length).then((extra) => {
+        if (!extra.length) return;
+        setAttachImages((prev) => mergeComposerImages(prev, extra));
+      });
+    },
+    onImagesChange: setAttachImages,
+    onInputBlur: () => {
+      window.setTimeout(() => setSlashOpen(false), 120);
+    },
+    onInputKeyDown: onComposerKeyDown,
+    onSend: () => void send(),
+    onStop: () => void stopRun(),
+    onCycleSendMode: cycleSendMode,
+    onSlashPick: applySlashHit,
+    onPalettePick: applyPaletteHit,
+    onMentionPick: (path) =>
+      replaceInput(applyMentionPick(inputRef.current?.value ?? input, path)),
+    onCommandLaunch,
+    onOverlayDismiss,
+    onModelSelect: onCascadeModelSelect,
+    onModelsLoaded: (pid, list) => {
+      if (pid === (meta?.provider || pid)) setModels(list);
+    },
+    onApprovalChange: (mode) => void onApprovalChange(mode as ApprovalMode),
+    onUsageClick: usageClick,
+    onRetryLast: () => retryLastUser(),
+    onCopyTranscript: () => {
+      void exportTranscript()
+        .then((t) => copyToClipboard(t))
+        .then(() => setStatus("已复制 transcript"))
+        .catch((err) =>
+          setStatus(err instanceof Error ? err.message : String(err)),
+        );
+    },
+    onRemoveOutbox: (item) => void removeOutboxItem(item),
+    onClearOutbox: () => void clearOutboxQueued(),
+    onRetryOutbox: retryOutboxItem,
+    onSteerOutbox: (item) => void steerOutboxItem(item),
+  };
+
   const wireComposer = (
-    <div className="composer codex-composer wire-composer">
-      {outboxPanel}
-      <div className="composer-row-wrap">
-        {slashMenu}
-        <div
-          className={`composer-row wire-composer-card${
-            pending.length > 0 ? " has-pending-approval" : ""
-          }${busy ? " is-busy" : ""}${sendMode === "insert" ? " mode-insert" : " mode-queue"}`}
-        >
-          <textarea
-            ref={inputRef}
-            className="wire-composer-input"
-            value={input}
-            rows={2}
-            placeholder={
-              pending.length > 0
-                ? "可先输入下一条… 处理审批后发送"
-                : busy
-                  ? sendMode === "insert"
-                    ? "运行中… Enter 插入打断 · Ctrl+Enter 同 · Alt+Enter 切队列"
-                    : "运行中… Enter 排队 · Ctrl+Enter 插入打断 · Alt+Enter 切模式"
-                  : "输入消息… Enter 发送，Shift+Enter 换行 · / 命令 · Alt+Enter 切模式"
-            }
-            onChange={onComposerChange}
-            onKeyDown={onComposerKeyDown}
-            onBlur={() => {
-              window.setTimeout(() => setSlashOpen(false), 120);
-            }}
-          />
-          <div className="composer-toolbar wire-composer-toolbar">
-            <div className="composer-toolbar-left wire-composer-tools">
-              <ModelCascadeMenu
-                ref={modelMenuRef}
-                className="wire-composer-model-cascade"
-                provider={meta?.provider ?? ""}
-                model={meta?.model ?? ""}
-                providers={providerOptions}
-                models={modelOptions}
-                onSelect={onCascadeModelSelect}
-                onModelsLoaded={(pid, list) => {
-                  if (pid === (meta?.provider || pid)) setModels(list);
-                }}
-              />
-              <ApprovalPhysicsSwitch
-                className="wire-composer-approval-switch"
-                value={approval}
-                onChange={(mode) => void onApprovalChange(mode)}
-              />
-              <button
-                type="button"
-                className="usage-chip wire-composer-usage"
-                title={
-                  contextUsage
-                    ? `上下文 ${contextUsage.used.toLocaleString()} / ${contextUsage.max.toLocaleString()} tokens · 点击打开用量详情`
-                    : "上下文占用 · 点击打开用量详情"
-                }
-                onClick={usageClick}
-              >
-                {contextPct != null ? `上下文 ${contextPct}%` : "上下文 —"}
-              </button>
-              <span className="wire-composer-tool-sep" aria-hidden />
-              <button
-                type="button"
-                className="composer-tool-btn"
-                disabled={!canRetry}
-                onClick={() => retryLastUser()}
-                title="重试上一条"
-                aria-label="重试上一条"
-              >
-                <ChromeMark kind="retry" size={14} decorative />
-              </button>
-              <button
-                type="button"
-                className="composer-tool-btn"
-                onClick={() =>
-                  void exportTranscript()
-                    .then((t) => copyToClipboard(t))
-                    .then(() => setStatus("已复制 transcript"))
-                    .catch((err) =>
-                      setStatus(
-                        err instanceof Error ? err.message : String(err),
-                      ),
-                    )
-                }
-                title="复制 transcript"
-                aria-label="复制 transcript"
-              >
-                <ChromeMark kind="copy" size={14} decorative />
-              </button>
-            </div>
-            <div className="composer-toolbar-right wire-composer-actions">
-              {statusDisplay ? (
-                <span
-                  className={`composer-status${statusError ? " is-error" : ""}${
-                    pending.length > 0 ? " is-approval" : ""
-                  }${busy && !statusError ? " is-busy" : ""}`}
-                  title={statusDisplay}
-                >
-                  {busy && !statusError ? (
-                    <span className="composer-status-dot" aria-hidden />
-                  ) : null}
-                  <span className="composer-status-text">{statusDisplay}</span>
-                </span>
-              ) : null}
-              {sendModeControl}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+    <OptionalOutlet
+      name="conversation.composer"
+      props={composerProps}
+      fallback={<Composer {...composerProps} />}
+    />
   );
 
   const composer = isWire ? (
@@ -2784,37 +3266,34 @@ export function ChatPanel({
     );
   }
 
-  const composerDock = (
-    <div
-      className={`codex-composer-dock${isWire ? " wire-composer-dock" : ""}`}
-    >
-      {/* Wire: retry/copy live in ComposerBar-style toolbar; codex keeps links */}
-      {!isWire ? (
-        <div className="thread-actions">
-          <button
-            type="button"
-            className="ghost-link"
-            onClick={() => retryLastUser()}
-            title={busy ? "忙碌时入队重试" : "R · 重试上一条"}
-          >
-            Retry last
-          </button>
-          <button
-            type="button"
-            className="ghost-link"
-            onClick={() =>
-              void exportTranscript()
-                .then((t) => copyToClipboard(t))
-                .then(() => setStatus("已复制 transcript"))
-                .catch((err) =>
-                  setStatus(err instanceof Error ? err.message : String(err)),
-                )
-            }
-          >
-            Copy transcript
-          </button>
-        </div>
-      ) : null}
+  const composerDock = isWire ? (
+    composer
+  ) : (
+    <div className="codex-composer-dock">
+      <div className="thread-actions">
+        <button
+          type="button"
+          className="ghost-link"
+          onClick={() => retryLastUser()}
+          title={busy ? "忙碌时入队重试" : "R · 重试上一条"}
+        >
+          Retry last
+        </button>
+        <button
+          type="button"
+          className="ghost-link"
+          onClick={() =>
+            void exportTranscript()
+              .then((t) => copyToClipboard(t))
+              .then(() => setStatus("已复制 transcript"))
+              .catch((err) =>
+                setStatus(err instanceof Error ? err.message : String(err)),
+              )
+          }
+        >
+          Copy transcript
+        </button>
+      </div>
       {composer}
     </div>
   );
@@ -2847,53 +3326,54 @@ export function ChatPanel({
         </div>
       ) : null}
       {/* Draft ContextPanel: jump-prev at top when scrolled */}
-      {isWire && showJumpPrev ? (
-        <button
-          type="button"
-          className="wire-jump-prev"
-          onClick={jumpPrevUser}
-          title="跳转到上一条用户消息"
-          aria-label={jumpPrevLabel}
-        >
-          <span className="wire-jump-prev-text">{jumpPrevLabel}</span>
-        </button>
-      ) : null}
       {isWire ? (
-        <SessionTreeCrumbs
-          sessions={sessions}
-          activeSessionId={meta?.sessionId ?? null}
-          runningSessionIds={runningSessionIds}
-          onSelect={(id) => {
-            void onSessionChange(id);
-          }}
+        <ConversationPane
+          trail={
+            <SessionTreeCrumbs
+              sessions={sessions}
+              activeSessionId={meta?.sessionId ?? null}
+              runningSessionIds={runningSessionIds}
+              onSelect={(id) => {
+                void onSessionChange(id);
+              }}
+              onFork={(id) => void onForkSession(id)}
+              onNewChild={(id) => void onNewChildSession(id)}
+            />
+          }
+          jumpPrev={null}
+          scrollRef={logRef}
+          empty={lines.length === 0}
+          rail={
+            lines.length === 0 ? null : (
+              <AskScrollRail
+                scrollRef={logRef}
+                revision={`${lines.length}:${lines[lines.length - 1]?.id ?? ""}`}
+              />
+            )
+          }
+          messages={messageList}
+          jumpBottom={
+            showBackToBottom ? (
+              <button
+                type="button"
+                className="wire-jump-bottom"
+                onClick={scrollThreadToBottom}
+                title="回到底部"
+                aria-label="回到底部"
+              >
+                ↓ 回到底部
+              </button>
+            ) : null
+          }
+          permit={approvalBlock}
+          composer={composerDock}
         />
-      ) : null}
-      {!isWire ? approvalBlock : null}
-      <div
-        className={`codex-thread-scroll${
-          isWire ? " wire-thread-scroll" : ""
-        }`}
-      >
-        {messageList}
-      </div>
-      {isWire && showBackToBottom ? (
-        <button
-          type="button"
-          className="wire-jump-bottom"
-          onClick={scrollThreadToBottom}
-          title="回到底部"
-          aria-label="回到底部"
-        >
-          ↓ 回到底部
-        </button>
-      ) : null}
-      {isWire ? (
-        <div className="wire-float wire-float-bottom">
-          {approvalBlock}
-          {composerDock}
-        </div>
       ) : (
-        composerDock
+        <>
+          {approvalBlock}
+          <div className="codex-thread-scroll">{messageList}</div>
+          {composerDock}
+        </>
       )}
       {createPortal(
         <SessionUsageModal
@@ -2937,6 +3417,8 @@ function ThreadRail(props: {
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  onFork?: (id: string) => void;
+  onNewChild?: (id: string) => void;
 }) {
   const wire = Boolean(props.wire);
   const running = new Set(props.runningSessionIds ?? []);
@@ -2946,6 +3428,7 @@ function ThreadRail(props: {
       : " · current session running (others keep going)"
     : "";
   const untitled = wire ? "未命名" : "Untitled";
+  const forest = flattenSessionForest(props.sessions);
   return (
     <div
       className={`thread-rail${props.busy ? " is-busy" : ""}${
@@ -2976,30 +3459,17 @@ function ThreadRail(props: {
           wire ? "wire-pane-title thread-list-label" : "thread-list-label"
         }
       >
-        {wire ? (
-          <span className="wire-pane-title-with-icon">
-            会话
-            {props.agentLabel ? (
-              <span className="wire-session-agent-label">
-                {props.agentLabel}
-              </span>
-            ) : null}
-          </span>
-        ) : (
-          "Sessions"
-        )}
+        {wire
+          ? `会话${props.agentLabel ? ` · ${props.agentLabel}` : ""}`
+          : "Sessions"}
       </div>
       <div className={wire ? "wire-session-scroll" : "thread-list"}>
         {props.sessions.length === 0 && (
-          <div className={wire ? "wire-empty sm" : "thread-empty"}>
-            {wire
-              ? props.agentLabel
-                ? `暂无 ${props.agentLabel} 的会话`
-                : "暂无会话"
-              : "No sessions yet"}
+          <div className={wire ? "wire-empty-row" : "thread-empty"}>
+            {wire ? "还没有会话" : "No sessions yet"}
           </div>
         )}
-        {props.sessions.map((s) => {
+        {forest.map(({ node: s, depth }) => {
           const active = s.id === props.activeId;
           const isRunning = running.has(s.id);
           const title = (s.title || untitled).trim() || untitled;
@@ -3021,29 +3491,37 @@ function ThreadRail(props: {
                 key={s.id}
                 className={`wire-session-row${active ? " active" : ""}${
                   isRunning ? " is-running" : ""
-                }`}
+                }${depth > 0 ? " is-child" : ""}`}
               >
                 <button
                   type="button"
                   className="wire-session-btn"
+                  style={{ paddingLeft: hierarchyIndentPx(depth, 12, 8) }}
                   onClick={() => props.onSelect(s.id)}
                   onDoubleClick={() => props.onRename(s.id, title)}
                   title={`${title} · ${countHint}${when ? ` · ${when}` : ""}${
                     isRunning ? " · 生成中" : ""
                   }`}
                 >
-                  <span
-                    className={`wire-session-icon${isRunning ? " is-running" : ""}`}
-                    aria-hidden
-                    title={isRunning ? "生成中" : undefined}
-                  >
-                    <ChromeMark kind="session" size={13} decorative />
-                  </span>
                   <span className="wire-session-title">{title}</span>
                   <span className="wire-session-time">
                     {isRunning ? "运行中" : when || countHint}
                   </span>
                 </button>
+                {props.onFork ? (
+                  <button
+                    type="button"
+                    className="wire-session-fork"
+                    title="派生"
+                    aria-label={`派生 ${title}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      props.onFork?.(s.id);
+                    }}
+                  >
+                    派生
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="wire-session-del"

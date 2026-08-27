@@ -2,7 +2,6 @@
  * 传统压缩模块：过阈值后留下最近 N 轮，更早的换成一条摘要。
  */
 
-import { estimateTokens } from "../token-estimate.js";
 import { maouToLLMMessage, type MaouMessage } from "../types/message.js";
 import type {
   ContextCompressContext,
@@ -74,13 +73,15 @@ export const legacyContextModule: ContextModule<LegacyCompressConfig> = {
   defaultConfig: DEFAULT_LEGACY_CONFIG,
 
   shouldCompress(ctx: ContextCompressContext<LegacyCompressConfig>): boolean {
-    const tokens = estimateTokens(ctx.history);
+    const tokens = ctx.knownTokens != null && ctx.knownTokens > 0 ? ctx.knownTokens : 0;
+    if (tokens <= 0) return false;
     const pct = ctx.config.triggerPercent;
     return tokens >= Math.floor((ctx.maxTokens * pct) / 100);
   },
 
   async compress(ctx: ContextCompressContext<LegacyCompressConfig>): Promise<ContextModuleResult> {
-    const originalTokens = estimateTokens(ctx.history);
+    const originalTokens =
+      ctx.knownTokens != null && ctx.knownTokens > 0 ? ctx.knownTokens : 0;
     if (!ctx.force && !this.shouldCompress(ctx)) {
       return idle(ctx.history, originalTokens);
     }
@@ -112,7 +113,7 @@ export const legacyContextModule: ContextModule<LegacyCompressConfig> = {
       history,
       droppedSummary: summary,
       originalTokens,
-      compressedTokens: estimateTokens(history),
+      compressedTokens: 0,
       taskBlocks: [],
     };
   },

@@ -65,7 +65,7 @@ export type DraftToolCard = {
   done?: boolean;
   isError?: boolean;
   durationMs?: number;
-  /** One-line task description for collapsed title meta */
+  /** tool_call 参数 description：这一步在做什么 */
   description?: string;
 };
 
@@ -112,6 +112,7 @@ export type DraftMessage = {
   meta?: DraftMessageMeta;
   /** Thinking-line meta when role=thinking */
   thinking?: DraftThinkingMeta;
+  images?: Array<{ mimeType: string; data: string; name?: string }>;
 };
 
 export type DraftBgTask = {

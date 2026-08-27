@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { setResizeCursor } from "./resize-cursor";
 
 export type ResizeHandleProps = {
   /** Which edge is being dragged (affects cursor + delta sign) */
@@ -28,16 +29,20 @@ export function ResizeHandle({
   className = "",
 }: ResizeHandleProps) {
   const startX = useRef(0);
-  const startSize = useRef(0);
+  const startSize = useRef(size);
+  const draggingRef = useRef(false);
   const [dragging, setDragging] = useState(false);
 
   const onPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      e.stopPropagation();
+      e.currentTarget.setPointerCapture(e.pointerId);
       startX.current = e.clientX;
       startSize.current = size;
+      draggingRef.current = true;
       setDragging(true);
+      setResizeCursor("col");
     },
     [size],
   );
@@ -52,22 +57,26 @@ export function ResizeHandle({
       onResize(next);
     };
 
-    const onUp = () => setDragging(false);
+    const onUp = () => {
+      draggingRef.current = false;
+      setDragging(false);
+      setResizeCursor(null);
+    };
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
-    document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
 
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
-      document.body.style.cursor = "";
       document.body.style.userSelect = "";
     };
   }, [dragging, edge, min, max, onResize]);
+
+  useEffect(() => () => setResizeCursor(null, true), []);
 
   return (
     <div
@@ -81,6 +90,10 @@ export function ResizeHandle({
       aria-valuemin={min}
       aria-valuemax={max}
       tabIndex={0}
+      onPointerEnter={() => setResizeCursor("col")}
+      onPointerLeave={() => {
+        if (!draggingRef.current) setResizeCursor(null);
+      }}
       onPointerDown={onPointerDown}
       onKeyDown={(e) => {
         const step = e.shiftKey ? 24 : 8;

@@ -15,6 +15,9 @@ import {
   applyApprovalDecision,
   applyLocalSend,
   applyNewSession,
+  applyForkSession,
+  applyChildSession,
+  applyDraftSlash,
   assertCatalogComplete,
   assertContextShowcaseComplete,
   getScenario,
@@ -202,6 +205,21 @@ describe("draft pure helpers", () => {
     assert.match(after[after.length - 1].body, /hello draft/);
   });
 
+  it("applyLocalSend keeps image chips on the user line", () => {
+    const base = hydrateFromScenario("normal");
+    const next = applyLocalSend(base, "", 99, [
+      { mimeType: "image/png", data: "AAA", name: "a.png" },
+    ]);
+    const msgs = messagesForSession(
+      next.messagesBySession,
+      next.activeSessionId,
+    );
+    const user = msgs[msgs.length - 2];
+    assert.equal(user?.role, "user");
+    assert.equal(user?.images?.length, 1);
+    assert.match(msgs[msgs.length - 1]!.body, /附图/);
+  });
+
   it("applyLocalSend creates a session when list is empty", () => {
     const base = hydrateFromScenario("empty_sessions");
     const next = applyLocalSend(base, "first message", 42);
@@ -223,6 +241,32 @@ describe("draft pure helpers", () => {
         .role,
       "system",
     );
+  });
+
+  it("applyForkSession copies parent messages and links parent", () => {
+    const base = hydrateFromScenario("normal");
+    const parentId = base.activeSessionId;
+    const next = applyForkSession(base, parentId, 77);
+    assert.ok(next.activeSessionId.includes("::fork::"));
+    const child = next.sessions.find((s) => s.id === next.activeSessionId);
+    assert.equal(child?.parentSessionId, parentId);
+    assert.ok((child?.title || "").includes("派生"));
+  });
+
+  it("applyChildSession creates empty child under parent", () => {
+    const base = hydrateFromScenario("normal");
+    const parentId = base.activeSessionId;
+    const next = applyChildSession(base, parentId, 88);
+    const child = next.sessions.find((s) => s.id === next.activeSessionId);
+    assert.equal(child?.title, "子会话");
+    assert.equal(child?.parentSessionId, parentId);
+  });
+
+  it("applyDraftSlash /new creates a session", () => {
+    const base = hydrateFromScenario("normal");
+    const next = applyDraftSlash(base, "/new", 101);
+    assert.ok(next);
+    assert.equal(next!.sessions[0].title, "未命名草稿");
   });
 
   it("applyApprovalDecision clears pending and logs system note", () => {
@@ -325,7 +369,7 @@ describe("file-tree helpers", () => {
     const tree = buildFileTree([
       "maou-agent/package.json *",
       "maou-agent/src/App.tsx",
-      "maou-sdk/webui/README.md",
+      "maou-sdk/app/README.md",
       "empty-dir/",
     ]);
     assert.equal(tree.length, 3);
@@ -352,8 +396,6 @@ describe("draft tree isolation", () => {
       "index.ts",
       "mock-data.ts",
       "layout/WireTopbar.tsx",
-      "layout/LedStrip.tsx",
-      "layout/led-strip.ts",
       "layout/SessionTreeCrumbs.tsx",
       "layout/ResizeHandle.tsx",
       "session-ancestry.ts",

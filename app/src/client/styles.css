@@ -2,8 +2,8 @@
    Reference: frost-branch-mint-sand.grok.me */
 
 :root {
-  color-scheme: dark;
-  --bg: #0a0a0b;
+  color-scheme: light;
+  --bg: #ededed;
   --bg-elevated: #121214;
   --bg-subtle: #1a1a1e;
   --bg-hover: #222226;
@@ -12,7 +12,7 @@
   --border: #26262c;
   --border-soft: #1f1f24;
   --border-strong: #36363e;
-  --fg: #f0f0f2;
+  --fg: #000000;
   --muted: #9b9ba3;
   --muted-2: #6b6b74;
   --fg-subtle: #6b6b74;
@@ -644,7 +644,7 @@ button {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   scrollbar-width: auto;
-  scrollbar-color: var(--border, #444) var(--panel, #16161a);
+  scrollbar-color: #9b9b9b #ededed;
   padding: 24px 0 12px;
   display: flex;
   flex-direction: column;
@@ -660,19 +660,22 @@ button {
   width: 12px;
 }
 
-.chat-log.codex-log::-webkit-scrollbar-track {
-  background: var(--panel, #16161a);
-  border-left: 1px solid var(--border, #333);
+.chat-log.codex-log::-webkit-scrollbar-track,
+.chat-log.codex-log::-webkit-scrollbar-track:hover,
+.chat-log.codex-log::-webkit-scrollbar-track-piece,
+.chat-log.codex-log::-webkit-scrollbar-corner {
+  background: #ededed;
+  border-left: 1px solid #9b9b9b;
 }
 
 .chat-log.codex-log::-webkit-scrollbar-thumb {
-  background: var(--muted, #666);
-  border: 2px solid var(--panel, #16161a);
+  background: #9b9b9b;
+  border: 2px solid #ededed;
   min-height: 40px;
 }
 
 .chat-log.codex-log::-webkit-scrollbar-thumb:hover {
-  background: var(--accent, #b8ff00);
+  background: #828282;
 }
 
 @media (min-width: 640px) {
@@ -895,8 +898,8 @@ button {
 
 /* ── Composer ── */
 .codex-composer-dock {
-  padding: 8px 16px 20px;
-  background: linear-gradient(180deg, transparent, var(--bg) 28%);
+  padding: 0;
+  background: transparent;
   flex-shrink: 0;
 }
 
@@ -926,11 +929,12 @@ button {
 }
 
 .composer.codex-composer {
-  max-width: 48rem;
-  margin: 0 auto;
+  max-width: none;
+  width: 100%;
+  margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
   padding: 0;
   border: none;
   background: transparent;
@@ -981,8 +985,8 @@ button {
 
 .composer-status.is-error {
   color: var(--err);
-  max-width: min(360px, 48vw);
-  white-space: normal;
+  max-width: min(160px, 22vw);
+  white-space: nowrap;
   line-height: 1.35;
 }
 
@@ -1071,7 +1075,7 @@ button.queue-badge:hover {
   flex: 1;
   resize: none;
   min-height: 56px;
-  max-height: 180px;
+  max-height: 33vh;
   overflow-y: auto;
   background: transparent;
   color: var(--fg);

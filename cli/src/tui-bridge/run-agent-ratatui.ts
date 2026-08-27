@@ -5,6 +5,7 @@
 import { spawnRatatui, type RatatuiSession } from "./launch.js";
 import { createCliSession } from "../headless/cli-session.js";
 import { buildFullState } from "../headless/state-snapshot.js";
+import { occupancyFromState } from "../lib/context-occupancy.js";
 import { buildOverlay } from "../headless/overlay-data.js";
 import type { AgentCliConfig } from "../types.js";
 import { useStore } from "../state/store.js";
@@ -89,14 +90,9 @@ export interface RunRatatuiOpts {
 /** 当前 goal 的上下文 token 基线（goal 开始时快照，跨 refresh 保留） */
 let goalTokenBaseline: { key: string; tokens: number } | null = null;
 
-/** 上下文占用（与 InfoBar 的 used_tokens 同源） */
+/** 上下文占用（与 InfoBar 的 used_tokens 同源）：上一条 input + output */
 function contextTokensNow(): number {
-  const s = useStore.getState();
-  const last = s.rounds?.[s.rounds.length - 1];
-  const lastCtx = last
-    ? (last.total ?? last.input ?? 0)
-    : (s.currentRoundUsage?.input ?? 0);
-  return Math.max(0, lastCtx);
+  return occupancyFromState(useStore.getState());
 }
 
 function refreshSupervisor(): void {
@@ -299,10 +295,7 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
     const fullPaint = epochBump;
     const msg = buildFullState(s, snapshotOpts(s, undefined, fullPaint));
     // 含 token/rounds：否则会话恢复或轮次结束后 InfoBar 会一直 0/假值（不热更）
-    const lastRound = s.rounds?.[s.rounds.length - 1];
-    const ctxTok = lastRound
-      ? (lastRound.total ?? lastRound.input + lastRound.output)
-      : (s.currentRoundUsage?.input ?? 0) + (s.currentRoundUsage?.output ?? 0);
+    const ctxTok = occupancyFromState(s);
     // 含 cacheHistory / 本轮 cacheRead：否则 model.usage 只更新缓存命中时 InfoBar c— 不热更
     const sig = [
       s.lastStreamNonce,

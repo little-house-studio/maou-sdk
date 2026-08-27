@@ -1,0 +1,87 @@
+import type { ChangeEvent, ClipboardEvent, KeyboardEvent, RefObject } from "react";
+import type { ModelCascadeMenuHandle } from "../drafts/panels/ModelCascadeMenu";
+import type { DraftAgent } from "../drafts/types";
+import type { AppCommand } from "./commands";
+import type { ComposerImage } from "./images";
+
+export type ComposerVariant = "live" | "draft";
+export type ComposerSendMode = "queue" | "insert";
+
+export type ComposerOutboxItem = {
+  localId: string;
+  text: string;
+  status: "queued" | "failed";
+  mode: ComposerSendMode;
+  error?: string;
+};
+
+export type ComposerModelOption = { id: string; name?: string };
+
+export type ComposerProps = {
+  variant: ComposerVariant;
+  input: string;
+  /** 父组件改稿（发送清空 / 选中指令）时 +1，输入栏才回写 */
+  inputEpoch?: number;
+  busy: boolean;
+  pendingApproval: boolean;
+  sendMode: ComposerSendMode;
+  placeholder: string;
+  statusDisplay: string;
+  statusTitle?: string;
+  statusError: boolean;
+  slashHits: readonly string[];
+  slashIdx: number;
+  slashOpen: boolean;
+  paletteOpen?: boolean;
+  paletteHits?: readonly AppCommand[];
+  paletteIdx?: number;
+  mentionOpen?: boolean;
+  mentionHits?: readonly string[];
+  mentionIdx?: number;
+  filePaths?: readonly string[];
+  images?: readonly ComposerImage[];
+  outbox: readonly ComposerOutboxItem[];
+  provider: string;
+  model: string;
+  providers: readonly ComposerModelOption[];
+  models: readonly ComposerModelOption[];
+  approval: string;
+  contextPct: number | null;
+  canRetry: boolean;
+  canSteerQueue: boolean;
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+  modelMenuRef?: RefObject<ModelCascadeMenuHandle | null>;
+  agents?: readonly DraftAgent[];
+  agentName?: string;
+  usageLabel?: string;
+  onInputChange: (value: string) => void;
+  onInputEvent?: (e: ChangeEvent<HTMLTextAreaElement>) => void;
+  onInputBlur?: () => void;
+  onInputKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onInputPaste?: (e: ClipboardEvent<HTMLTextAreaElement>) => void;
+  onImagesChange?: (images: ComposerImage[]) => void;
+  onSend: () => void;
+  onStop?: () => void;
+  onCycleSendMode?: () => void;
+  onSlashPick?: (cmd: string) => void;
+  onPalettePick?: (cmd: string) => void;
+  onMentionPick?: (path: string) => void;
+  commandBlock?: string | null;
+  commandBlockSelected?: boolean;
+  onCommandBlockChange?: (name: string | null) => void;
+  onCommandBlockSelect?: (selected: boolean) => void;
+  onCursorChange?: (cursor: number) => void;
+  onCommandLaunch: () => void;
+  onOverlayDismiss?: () => void;
+  onModelSelect?: (provider: string, model: string) => void | Promise<void>;
+  onModelsLoaded?: (provider: string, models: ComposerModelOption[]) => void;
+  onApprovalChange: (mode: string) => void;
+  onUsageClick?: () => void;
+  onRetryLast: () => void;
+  onCopyTranscript: () => void;
+  onRemoveOutbox?: (item: ComposerOutboxItem) => void;
+  onClearOutbox?: () => void;
+  onRetryOutbox?: (item: ComposerOutboxItem) => void;
+  onSteerOutbox?: (item: ComposerOutboxItem) => void;
+  onAgentChange?: (id: string) => void;
+};

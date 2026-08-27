@@ -6,10 +6,12 @@
 import type { Express } from "express";
 import {
   listMarkdownTree,
+  listProjectTree,
   readProjectFile,
   writeProjectFile,
   createMarkdownFile,
 } from "./fs-api.js";
+import { readGitStatus } from "./git-status.js";
 
 export type MarkdownRoutesOpts = {
   /** 解析项目根目录 */
@@ -38,6 +40,37 @@ export function mountMarkdownRoutes(
         ok: true,
         root: projectRoot,
         tree: listMarkdownTree(projectRoot),
+      });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/fs/tree", (_req, res) => {
+    try {
+      const projectRoot = root();
+      res.json({
+        ok: true,
+        root: projectRoot,
+        tree: listProjectTree(projectRoot),
+      });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/fs/status", (_req, res) => {
+    try {
+      const projectRoot = root();
+      res.json({
+        ok: true,
+        ...readGitStatus(projectRoot),
       });
     } catch (e) {
       res.status(500).json({

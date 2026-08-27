@@ -112,7 +112,7 @@ describe("compressMaou no-op", () => {
     ]);
     const r = await compressMaou(history, { maxTokens: 500_000, force: true });
     expect(r.stage).toBe("compactStage");
-    expect(r.compressedTokens).toBeLessThan(r.originalTokens);
+    expect(historyVisiblyChanged(history, r.history)).toBe(true);
     const visible = r.history
       .map((m) =>
         m.contents

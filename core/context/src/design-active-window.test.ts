@@ -8,9 +8,7 @@ import {
   activeWindowSeqIds,
   assignTaskIds,
 } from "./compressor.js";
-import { RETAIN_TAIL_RATIO } from "./constants.js";
 import type { MaouMessage } from "./types/message.js";
-import { estimateTokens } from "./token-estimate.js";
 
 function msg(
   seqId: number,
@@ -54,12 +52,12 @@ function buildHistory(n: number): MaouMessage[] {
 }
 
 describe("DESIGN active window", () => {
-  it("retainTailBoundary keeps the newest unit and a token-sized tail", () => {
+  it("retainTailBoundary keeps the newest messages by count", () => {
     expect(retainTailBoundary([], 100)).toBe(0);
     const short = buildHistory(4);
     expect(retainTailBoundary(short, 50_000)).toBe(0);
     const long = buildHistory(20);
-    const b = retainTailBoundary(long, 400);
+    const b = retainTailBoundary(long, 4);
     expect(b).toBeGreaterThan(0);
     expect(b).toBeLessThan(20);
     expect(20 - b).toBeGreaterThanOrEqual(1);
@@ -77,11 +75,10 @@ describe("DESIGN active window", () => {
     history[0] = msg(0, "user", headMarker + " " + "w".repeat(500));
     const assigned = assignTaskIds(history);
 
-    const before = estimateTokens(assigned);
     const r = await compressMaou(assigned, {
-      maxTokens: Math.max(800, Math.floor(before * 0.5)),
-      knownTokens: before * 2,
-      retainTokens: Math.max(80, Math.floor(before * RETAIN_TAIL_RATIO)),
+      maxTokens: 800,
+      knownTokens: 40_000,
+      retainCount: 4,
       force: true,
     });
 
@@ -111,13 +108,13 @@ describe("DESIGN active window", () => {
 
   it("micro stage does not rewrite active-zone messages", async () => {
     const history = buildHistory(20);
-    const retain = Math.max(80, Math.floor(estimateTokens(history) * RETAIN_TAIL_RATIO));
+    const retain = 4;
     const b = retainTailBoundary(history, retain);
     const activeText = history[b]!.contents[0]!.text;
     const r = await compressMaou(history, {
       maxTokens: 50_000,
       knownTokens: 40_000,
-      retainTokens: retain,
+      retainCount: retain,
       force: true,
     });
     // 找 boundary 对应原 seq 的消息

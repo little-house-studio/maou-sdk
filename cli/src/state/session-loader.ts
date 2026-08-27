@@ -259,10 +259,23 @@ export function loadSessionMessages(sessionId: string, cwd = process.cwd()): Loa
 
         const usageRaw = ev.usage as Record<string, unknown> | undefined;
         const usage = usageRaw
-          ? {
-              input: Number(usageRaw.prompt_tokens ?? usageRaw.input_tokens ?? 0) || 0,
-              output: Number(usageRaw.completion_tokens ?? usageRaw.output_tokens ?? 0) || 0,
-            }
+          ? (() => {
+              const input =
+                Number(
+                  usageRaw.prompt_tokens ??
+                    usageRaw.input_tokens ??
+                    usageRaw.input ??
+                    0,
+                ) || 0;
+              const output =
+                Number(
+                  usageRaw.completion_tokens ??
+                    usageRaw.output_tokens ??
+                    usageRaw.output ??
+                    0,
+                ) || 0;
+              return input > 0 || output > 0 ? { input, output } : undefined;
+            })()
           : undefined;
 
         const msg: ChatMessage = {

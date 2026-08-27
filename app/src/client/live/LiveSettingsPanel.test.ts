@@ -27,8 +27,10 @@ describe("LiveSettingsPanel structure", () => {
     // runtime_defaults is first in nav
     assert.match(
       adapters,
-      /LIVE_SETTINGS_SECTIONS[\s\S]*runtime_defaults[\s\S]*llm/,
+      /LIVE_SETTINGS_SECTIONS[\s\S]*appearance[\s\S]*runtime_defaults[\s\S]*llm/,
     );
+    assert.match(src, /data-live-settings-section=["']appearance["']/);
+    assert.match(src, /data-sheet-theme/);
     assert.match(src, /data-live-settings-section=["']runtime_defaults["']/);
     assert.match(src, /data-live-settings-section-agent/);
     assert.match(src, /data-live-settings-section-template/);

@@ -76,8 +76,8 @@ describe("project-docs helpers", () => {
   it("ProjectWorkbench renders tree editor outline chrome", () => {
     const html = renderToStaticMarkup(
       createElement(ProjectWorkbench, {
-        projectLabel: "maou-sdk/webui",
-        projectPath: "~/maou-sdk/webui",
+        projectLabel: "maou-sdk/app",
+        projectPath: "~/maou-sdk/app",
       }),
     );
     assert.match(html, /wire-project/);
@@ -100,7 +100,7 @@ describe("project-docs helpers", () => {
     // Preview path renders ATX headings as real heading tags (outline jump targets)
     assert.match(html, /<h1 class="dm-h dm-h1"|dm-h1|maou-sdk/);
     // PROJECT.md fixture tables render in default split preview
-    assert.match(html, /dm-table|<table|职责|cli|webui/i);
+    assert.match(html, /dm-table|<table|职责|cli|app/i);
   });
 
   it("filterDocsForQuickOpen matches path basename and title", () => {

@@ -12,6 +12,9 @@ export type SessionUsageStats = {
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
+  lastInputTokens?: number;
+  lastOutputTokens?: number;
+  contextUsed?: number;
   file?: string;
 };
 
@@ -62,11 +65,15 @@ export function SessionUsageModal({
   const hit = stats
     ? cacheHitPct(stats.inputTokens, stats.cacheRead)
     : null;
+  const contextUsed =
+    stats?.contextUsed != null && stats.contextUsed > 0
+      ? stats.contextUsed
+      : (stats?.lastInputTokens ?? 0) + (stats?.lastOutputTokens ?? 0);
   const ctxPct =
-    stats && maxContext && maxContext > 0
+    stats && maxContext && maxContext > 0 && contextUsed > 0
       ? Math.min(
           100,
-          Math.max(0, Math.round((stats.inputTokens / maxContext) * 100)),
+          Math.max(0, Math.round((contextUsed / maxContext) * 100)),
         )
       : null;
 
@@ -184,7 +191,10 @@ export function SessionUsageModal({
                         {ctxPct}%
                         <span className="session-usage-muted">
                           {" "}
-                          · {fmt(stats.inputTokens)} / {fmt(maxContext)}
+                          · {fmt(contextUsed)} / {fmt(maxContext)}
+                          {" "}
+                          （上一条 in {fmt(stats.lastInputTokens ?? 0)} + out{" "}
+                          {fmt(stats.lastOutputTokens ?? 0)}）
                         </span>
                       </dd>
                     </div>

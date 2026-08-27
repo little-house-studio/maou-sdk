@@ -17,7 +17,7 @@ export const ARCHIVE_TRIGGER_PERCENT = 90;
 export const MICRO_SINGLE_MSG_CHARS = 800;
 
 /**
- * 最近原文区：按路由窗口 token 占比从尾部往回留（对齐 DSH retainRatio）。
+ * 最近原文区：从尾部按条数比例留下。
  * 微压缩与大压缩共用同一边界。
  */
 export const RETAIN_TAIL_RATIO = 0.16;

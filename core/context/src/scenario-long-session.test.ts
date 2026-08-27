@@ -8,9 +8,6 @@ import { join } from "node:path";
 import { ContextEngine } from "./context-engine.js";
 import { HarnessSessionStore } from "./harness-session-store.js";
 import { TaskSessionStore } from "./task-session-store.js";
-import { estimateTokens } from "./token-estimate.js";
-import { assignTaskIds } from "./compressor.js";
-import type { MaouMessage } from "./types/message.js";
 
 function makeLongSession(): Array<Record<string, unknown>> {
   const msgs: Array<Record<string, unknown>> = [];
@@ -73,18 +70,25 @@ describe("scenario: long session force compress", () => {
 
     const e1 = new ContextEngine({ sessionId, harnessStore: harness, taskStore });
     e1.seedWorkingSet(session);
-    const before = estimateTokens(e1.getHistory());
-    expect(before).toBeGreaterThan(5000);
+    const beforeLen = e1.getHistory().length;
+    const beforeChars = e1
+      .getHistory()
+      .map((m) => m.contents.map((c) => c.text).join("\n"))
+      .join("\n").length;
+    expect(beforeChars).toBeGreaterThan(5000);
 
-    const report = await e1.compress(Math.max(2000, Math.floor(before * 0.4)), {
-      knownTokens: before + 10_000,
+    const report = await e1.compress(2000, {
+      knownTokens: 40_000,
       force: true,
       sourceSessionMessages: session,
     });
     expect(report.stage).not.toBe("activeStage");
-    const after = estimateTokens(e1.getHistory());
-    // 应明显变矮（工具 dump 被摘要）
-    expect(after).toBeLessThan(before * 0.75);
+    const afterChars = e1
+      .getHistory()
+      .map((m) => m.contents.map((c) => c.text).join("\n"))
+      .join("\n").length;
+    expect(e1.getHistory().length).toBeLessThanOrEqual(beforeLen);
+    expect(afterChars).toBeLessThan(beforeChars * 0.75);
 
     const histText = e1
       .getHistory()

@@ -1,0 +1,24 @@
+/** Shared left rail; files rail differs per host (do not unify). */
+export const SHELL_LEFT = {
+  default: 260,
+  min: 200,
+  max: 360,
+  agentPct: 38,
+} as const;
+
+/** Icon activity strip on both rails. */
+export const SHELL_ACTIVITY = {
+  width: 36,
+} as const;
+
+export const LIVE_FILES_RAIL = {
+  default: 320,
+  min: 220,
+  max: 520,
+} as const;
+
+export const DRAFT_FILES_RAIL = {
+  default: 280,
+  min: 200,
+  max: 440,
+} as const;

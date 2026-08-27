@@ -277,8 +277,8 @@ describe("ProjectWorkbench canvas + md chrome", () => {
   it("exposes canvas view chrome and md editor surface", () => {
     const html = renderToStaticMarkup(
       createElement(ProjectWorkbench, {
-        projectLabel: "maou-sdk/webui",
-        projectPath: "~/maou-sdk/webui",
+        projectLabel: "maou-sdk/app",
+        projectPath: "~/maou-sdk/app",
       }),
     );
     assert.match(html, /wire-project/);

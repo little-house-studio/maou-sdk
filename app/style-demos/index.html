@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 单元网格</title>
+    <style>
+      :root {
+        --bg: #ededed;
+        --ink: #000000;
+        --dim: #828282;
+        --line: #9b9b9b;
+        --link: #1400ff;
+        --row: 1.3125em;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font: 400 max(0.95rem, 0.7vw) / var(--row) Helvetica Neue, Helvetica, Arial, "PingFang SC", sans-serif;
+      }
+      a { color: inherit; text-decoration: none; }
+      @media (hover: hover) {
+        a:hover { color: var(--link); }
+      }
+
+      .sheet {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+      }
+      .table {
+        display: grid;
+        grid-template-columns: repeat(72, minmax(0, 1fr));
+        column-gap: 0;
+        row-gap: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .cell { border-left: 1px solid var(--line); min-width: 0; min-height: var(--row); }
+
+      .empty { height: var(--row); }
+      .empty .cell {
+        display: block;
+        height: var(--row);
+        min-height: var(--row);
+      }
+      .head { min-height: calc(var(--row) * 3); }
+      .head .k { grid-column: span 12; padding: 0.8em 0.4em; color: var(--dim); }
+      .head .v { grid-column: span 60; padding: 0.8em 0.5em 1em; }
+      h1 { margin: 0 0 0.25em; font-size: 1.7em; font-weight: 400; letter-spacing: -0.03em; line-height: 1.15; }
+      p { margin: 0; color: var(--dim); }
+      .head p + p { margin-top: 0.45em; }
+
+      .grid { display: grid; grid-template-columns: repeat(72, minmax(0, 1fr)); }
+      a.card {
+        grid-column: span 36;
+        border-left: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        min-height: 9em;
+        padding: 0.9em 0.7em;
+      }
+      .id { color: var(--dim); margin: 0 0 0.35em; }
+      .name { font-size: 1.25em; margin: 0 0 0.25em; font-weight: 400; }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">
+      <div class="table empty" aria-hidden="true"></div>
+      <div class="table head">
+        <div class="cell k">目录</div>
+        <div class="cell v">
+          <h1>细线单元网格</h1>
+          <p>线是格子自己的边：行底 1px、格左 1px，中灰 #9b9b9b 画在纸色 #ededed 上。空格也画，缝里不另铺一条色带。</p>
+          <p><a href="tiling.html">打开空页切分 →</a></p>
+        </div>
+      </div>
+      <div class="grid">
+        <a class="card" href="shell.html#plate">
+          <p class="id">纸样</p>
+          <p class="name">纸色 · 中灰线</p>
+          <p>和 Beckmans 2024 同一套笔画。</p>
+        </a>
+        <a class="card" href="shell.html#phosphor">
+          <p class="id">磷光</p>
+          <p class="name">黑场 · 同法描线</p>
+          <p>线仍比字浅一档，高亮只改字色。</p>
+        </a>
+        <a class="card" href="shell.html#amber">
+          <p class="id">琥珀</p>
+          <p class="name">暖黑</p>
+          <p>同一套左线 + 行底。</p>
+        </a>
+        <a class="card" href="shell.html#ice">
+          <p class="id">冰层</p>
+          <p class="name">冷黑</p>
+          <p>同一套左线 + 行底。</p>
+        </a>
+        <a class="card" href="dock.html">
+          <p class="id">底栏</p>
+          <p class="name">矩形弹出 · 亮/暗色表</p>
+          <p>点耳弹出矩形板。亮色中暗重点色；暗色只亮一种荧光绿。</p>
+        </a>
+      </div>
+    </div>
+    <script>
+      document.querySelectorAll(".table.empty").forEach((row) => {
+        row.replaceChildren(
+          ...Array.from({ length: 72 }, () => {
+            const cell = document.createElement("span");
+            cell.className = "cell";
+            return cell;
+          }),
+        );
+      });
+    </script>
+  </body>
+</html>

@@ -4,6 +4,7 @@ import {
   childrenOf,
   deriveAncestry,
   descendantCount,
+  flattenSessionForest,
   inferParentSessionId,
 } from "./session-ancestry";
 
@@ -58,6 +59,18 @@ describe("session-ancestry", () => {
     assert.equal(descendantCount(all, root.id), 3);
     assert.equal(descendantCount(all, mid.id), 1);
     assert.equal(descendantCount(all, leaf.id), 0);
+  });
+
+  it("flattens forest with children after parent", () => {
+    const rows = flattenSessionForest([sib, leaf, root, mid]);
+    assert.equal(rows[0]?.node.id, root.id);
+    assert.equal(rows[0]?.depth, 0);
+    assert.deepEqual(
+      new Set(rows.map((r) => r.node.id)),
+      new Set([root.id, mid.id, leaf.id, sib.id]),
+    );
+    assert.equal(rows.find((r) => r.node.id === leaf.id)?.depth, 2);
+    assert.equal(rows.find((r) => r.node.id === sib.id)?.depth, 1);
   });
 
   it("breaks cycles", () => {

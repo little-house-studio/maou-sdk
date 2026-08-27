@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 切分页</title>
+    <style>
+      :root {
+        --bg: #0b0b0b;
+        --ink: #ecece8;
+        --dim: #8a8a84;
+        --line: #3a3a36;
+        --accent: #c8ff2a;
+        --on: #0b0b0b;
+        --unit: #101010;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font: 13.5px/1.45 ui-sans-serif, system-ui, -apple-system, "PingFang SC", sans-serif;
+        display: grid;
+        grid-template-rows: 36px minmax(0, 1fr);
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        background: none;
+        border: 0;
+        padding: 0 10px;
+        cursor: pointer;
+        height: 100%;
+      }
+      button:disabled { color: var(--dim); cursor: default; }
+      button.on { color: var(--on); background: var(--accent); }
+
+      .bar {
+        display: flex;
+        align-items: stretch;
+        border-bottom: 1px solid var(--line);
+        font: 500 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .bar .id {
+        display: grid;
+        place-items: center start;
+        padding: 0 12px;
+        border-right: 1px solid var(--line);
+        min-width: 140px;
+      }
+      .bar a {
+        color: var(--dim);
+        text-decoration: none;
+        display: grid;
+        place-items: center;
+        padding: 0 12px;
+        border-right: 1px solid var(--line);
+      }
+      .sep { width: 1px; background: var(--line); }
+
+      .page { min-height: 0; padding: 8px; }
+
+      .tree, .leaf {
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+      }
+      .tree {
+        display: flex;
+      }
+      .tree.v { flex-direction: row; }
+      .tree.h { flex-direction: column; }
+      .child { min-width: 0; min-height: 0; overflow: hidden; }
+
+      .gutter {
+        flex: 0 0 1px;
+        background: var(--line);
+        position: relative;
+        z-index: 2;
+      }
+      .tree.v > .gutter { cursor: col-resize; }
+      .tree.h > .gutter { cursor: row-resize; }
+      .gutter:hover, .gutter.drag { background: var(--accent); }
+
+      .leaf {
+        display: grid;
+        grid-template-rows: 22px minmax(0, 1fr);
+        background: var(--unit);
+        border: 1px solid var(--line);
+        outline: none;
+      }
+      .leaf:focus, .leaf.sel {
+        border-color: var(--accent);
+      }
+      .leaf-h {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 8px;
+        border-bottom: 1px solid var(--line);
+        font: 500 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--dim);
+        background: var(--bg);
+      }
+
+      .slot {
+        overflow: auto;
+        padding: 12px;
+      }
+      .slot.empty {
+        display: grid;
+        place-items: center;
+        color: var(--dim);
+        text-align: center;
+      }
+      .slot.empty p { margin: 0; }
+      .slot.empty b {
+        display: block;
+        color: var(--ink);
+        font-weight: 520;
+        font-size: 16px;
+        letter-spacing: -0.03em;
+        margin-bottom: 6px;
+      }
+
+      .leaf[data-skin="paper"] {
+        --bg: #efece4;
+        --ink: #161616;
+        --dim: #6a675e;
+        --line: #161616;
+        --unit: #f6f3eb;
+        --accent: #161616;
+        --on: #efece4;
+        color: var(--ink);
+      }
+      .leaf[data-skin="amber"] {
+        --bg: #0e0d0a;
+        --ink: #efe6cc;
+        --dim: #8a8068;
+        --line: #3d3628;
+        --unit: #14120c;
+        --accent: #ffb000;
+        --on: #0e0d0a;
+        color: var(--ink);
+      }
+      .leaf[data-skin="invert"] {
+        filter: invert(1);
+      }
+      .leaf[data-skin="dot"] .slot {
+        background-image: radial-gradient(currentColor 0.5px, transparent 0.6px);
+        background-size: 6px 6px;
+        background-color: var(--unit);
+      }
+
+      .mini-ui {
+        border: 1px solid var(--line);
+        background: var(--bg);
+      }
+      .mini-ui header {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+      }
+      .mini-ui textarea {
+        width: 100%;
+        min-height: 64px;
+        border: 0;
+        resize: none;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        padding: 10px;
+        outline: none;
+      }
+      .list div {
+        height: 28px;
+        display: flex;
+        align-items: center;
+        padding: 0 10px;
+        border-bottom: 1px solid var(--line);
+      }
+    </style>
+  </head>
+  <body>
+    <header class="bar">
+      <span class="id">切分页 · BSP</span>
+      <a href="index.html">目录</a>
+      <i class="sep"></i>
+      <button type="button" id="v">竖切</button>
+      <button type="button" id="h">横切</button>
+      <button type="button" id="eq">均分</button>
+      <button type="button" id="del">合并</button>
+      <i class="sep"></i>
+      <button type="button" data-fill="empty">空</button>
+      <button type="button" data-fill="composer">输入</button>
+      <button type="button" data-fill="list">列表</button>
+      <i class="sep"></i>
+      <button type="button" data-skin="">默认</button>
+      <button type="button" data-skin="paper">纸样</button>
+      <button type="button" data-skin="amber">琥珀</button>
+      <button type="button" data-skin="dot">网点</button>
+      <button type="button" data-skin="invert">反相</button>
+    </header>
+    <div class="page" id="page"></div>
+
+    <script>
+      let seq = 1;
+      const leaf = (over = {}) => ({
+        id: "u" + seq++,
+        kind: "leaf",
+        fill: "empty",
+        skin: "",
+        ...over,
+      });
+      let root = leaf();
+      let sel = root.id;
+
+      const find = (node, id, parent = null) => {
+        if (node.kind === "leaf") return node.id === id ? { node, parent } : null;
+        return find(node.a, id, node) || find(node.b, id, node);
+      };
+      const other = (split, child) => (split.a === child ? split.b : split.a);
+      const replace = (parent, old, next) => {
+        if (!parent) {
+          root = next;
+          return;
+        }
+        if (parent.a === old) parent.a = next;
+        else parent.b = next;
+      };
+
+      function split(axis) {
+        const hit = find(root, sel);
+        if (!hit || hit.node.kind !== "leaf") return;
+        const keep = hit.node;
+        const fresh = leaf();
+        const next = { kind: "split", axis, ratio: 0.5, a: keep, b: fresh };
+        replace(hit.parent, keep, next);
+        sel = fresh.id;
+        draw();
+      }
+
+      function merge() {
+        const hit = find(root, sel);
+        if (!hit?.parent) return;
+        const keep = other(hit.parent, hit.node);
+        const at = (function walk(n, p) {
+          if (n === hit.parent) return p;
+          if (n.kind === "split") return walk(n.a, n) ?? walk(n.b, n);
+          return null;
+        })(root, null);
+        replace(at, hit.parent, keep);
+        sel = keep.kind === "leaf" ? keep.id : keep.a.id;
+        draw();
+      }
+
+      function equalize(node = root) {
+        if (node.kind !== "split") return;
+        node.ratio = 0.5;
+        equalize(node.a);
+        equalize(node.b);
+      }
+
+      function patchLeaf(fn) {
+        const hit = find(root, sel);
+        if (!hit || hit.node.kind !== "leaf") return;
+        fn(hit.node);
+        draw();
+      }
+
+      function render(node) {
+        if (node.kind === "split") {
+          const wrap = document.createElement("div");
+          wrap.className = "tree " + node.axis;
+          const a = document.createElement("div");
+          const b = document.createElement("div");
+          a.className = "child";
+          b.className = "child";
+          const set = () => {
+            const r = node.ratio * 100;
+            if (node.axis === "v") {
+              a.style.flex = "0 0 " + r + "%";
+              b.style.flex = "1 1 auto";
+            } else {
+              a.style.flex = "0 0 " + r + "%";
+              b.style.flex = "1 1 auto";
+            }
+          };
+          set();
+          const g = document.createElement("div");
+          g.className = "gutter";
+          g.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
+            g.classList.add("drag");
+            const box = wrap.getBoundingClientRect();
+            const move = (ev) => {
+              const t =
+                node.axis === "v"
+                  ? (ev.clientX - box.left) / box.width
+                  : (ev.clientY - box.top) / box.height;
+              node.ratio = Math.min(0.82, Math.max(0.18, t));
+              set();
+            };
+            const up = () => {
+              g.classList.remove("drag");
+              window.removeEventListener("pointermove", move);
+              window.removeEventListener("pointerup", up);
+            };
+            window.addEventListener("pointermove", move);
+            window.addEventListener("pointerup", up);
+          });
+          a.appendChild(render(node.a));
+          b.appendChild(render(node.b));
+          wrap.append(a, g, b);
+          return wrap;
+        }
+
+        const el = document.createElement("div");
+        el.className = "leaf" + (node.id === sel ? " sel" : "");
+        el.tabIndex = 0;
+        el.dataset.id = node.id;
+        if (node.skin) el.dataset.skin = node.skin;
+        el.addEventListener("mousedown", () => {
+          sel = node.id;
+          document.querySelectorAll(".leaf").forEach((n) => n.classList.toggle("sel", n.dataset.id === sel));
+        });
+        const h = document.createElement("div");
+        h.className = "leaf-h";
+        h.innerHTML = "<span>" + node.id + "</span><span>" + (node.fill === "empty" ? "空" : node.fill) + "</span>";
+        const slot = document.createElement("div");
+        slot.className = "slot" + (node.fill === "empty" ? " empty" : "");
+        if (node.fill === "empty") {
+          slot.innerHTML = "<div><b>空单元</b><p>竖切 / 横切 · 块中再切</p></div>";
+        } else if (node.fill === "composer") {
+          slot.innerHTML =
+            '<div class="mini-ui"><header>输入</header><textarea placeholder="这个块里可以放任何 UI"></textarea></div>';
+        } else if (node.fill === "list") {
+          slot.innerHTML =
+            '<div class="mini-ui list"><div>Ops Agent</div><div>Install Agent</div><div>OVERVIEW.md</div></div>';
+        }
+        el.append(h, slot);
+        return el;
+      }
+
+      function draw() {
+        const page = document.getElementById("page");
+        page.replaceChildren(render(root));
+      }
+
+      document.getElementById("v").onclick = () => split("v");
+      document.getElementById("h").onclick = () => split("h");
+      document.getElementById("eq").onclick = () => {
+        equalize();
+        draw();
+      };
+      document.getElementById("del").onclick = merge;
+      document.querySelectorAll("[data-fill]").forEach((b) => {
+        b.onclick = () => patchLeaf((n) => (n.fill = b.dataset.fill));
+      });
+      document.querySelectorAll("[data-skin]").forEach((b) => {
+        b.onclick = () => patchLeaf((n) => (n.skin = b.dataset.skin));
+      });
+      window.addEventListener("keydown", (e) => {
+        if (e.target.matches("textarea, input")) return;
+        if (e.key === "\\") split("v");
+        if (e.key === "-") split("h");
+        if (e.key === "Backspace") {
+          e.preventDefault();
+          merge();
+        }
+      });
+      draw();
+    </script>
+  </body>
+</html>

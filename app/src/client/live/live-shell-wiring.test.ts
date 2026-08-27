@@ -16,9 +16,36 @@ function read(rel: string): string {
   return readFileSync(join(clientRoot, rel), "utf8");
 }
 
+function readGraph(rels: string[]): string {
+  return rels.map(read).join("\n");
+}
+
 describe("live shell production wiring", () => {
-  const app = read("App.tsx");
-  const chat = read("ChatPanel.tsx");
+  const appEntry = read("App.tsx");
+  const app = readGraph([
+    "App.tsx",
+    "host/LiveApp.tsx",
+    "host/live-state.tsx",
+    "host/live-slots.tsx",
+    "shell/WireShell.tsx",
+    "shell/LiveMid.tsx",
+    "shell/LeftAside.tsx",
+    "shell/RightAside.tsx",
+    "shell/ActivityBar.tsx",
+    "shell/activity.ts",
+    "ports/live.ts",
+  ]);
+  const chat = readGraph([
+    "ChatPanel.tsx",
+    "conversation/ConversationPane.tsx",
+    "conversation/ThreadBoard.tsx",
+    "conversation/UserStick.tsx",
+    "conversation/contract.ts",
+    "composer/Composer.tsx",
+    "composer/ComposerBar.tsx",
+    "composer/ComposerTools.tsx",
+    "composer/QueueDock.tsx",
+  ]);
   const term = read("TerminalPanel.tsx");
   const api = read("api.ts");
   const mdApi = read("markdown/api.ts");
@@ -28,12 +55,25 @@ describe("live shell production wiring", () => {
   it("production entry mounts App (not DraftShell alone)", () => {
     assert.match(main, /from\s+["']\.\/App["']/);
     assert.match(main, /<App\s*\/>/);
+    assert.match(main, /paintDesktopChrome/);
+    assert.match(main, /paintSheetTheme/);
   });
 
   it("App is draft-aligned wire shell with live modes", () => {
+    const liveCss = read("live-shell.css");
+    assert.match(
+      liveCss,
+      /\.live-shell \.wire-body\s*\{[^}]*flex-direction:\s*row/s,
+    );
+    assert.doesNotMatch(
+      liveCss,
+      /\.live-shell \.wire-body\s*\{[^}]*flex-direction:\s*column/s,
+    );
     assert.match(app, /data-live-shell/);
+    assert.match(app, /--shell-left/);
+    assert.match(app, /--shell-files/);
     assert.match(app, /WireTopbar/);
-    assert.match(app, /agentBusy=\{agentBusy\}/);
+    assert.match(app, /agentBusy=\{agentBusy\}|agentBusy,/);
     assert.match(app, /BottomInfoBar/);
     assert.match(app, /UiMode/);
     // Mode surfaces（主动已迁到底栏卡片，不在顶栏 mode）
@@ -52,7 +92,7 @@ describe("live shell production wiring", () => {
     // Must not seed defaultApiConfig as production settings SoT
     assert.doesNotMatch(app, /defaultApiConfig\s*\(/);
     // Draft SettingsPanel component must not be the production settings mount
-    assert.doesNotMatch(app, /from\s+["']\.\/drafts["'][^;]*SettingsPanel|,\s*SettingsPanel\s*,/);
+    assert.doesNotMatch(appEntry, /from\s+["']\.\/drafts["'][^;]*SettingsPanel|,\s*SettingsPanel\s*,/);
     assert.doesNotMatch(app, /<\s*SettingsPanel\b/);
     assert.match(app, /LiveSettingsPanel/);
     assert.match(app, /onSettingsMetaChange/);
@@ -93,11 +133,16 @@ describe("live shell production wiring", () => {
     assert.match(app, /ChatPanel/);
     assert.match(app, /threadRailId/);
     assert.match(app, /live-session-rail|LIVE_SESSION_RAIL/);
-    assert.match(app, /className=["']wire-context["']|className=\{\s*["']wire-context["']/);
-    assert.match(app, /chrome=["']wire["']/);
+    assert.match(app, /className=["']wire-context["']|className=\{\s*["']wire-context["']|className:\s*["']wire-context["']/);
+    assert.match(app, /chrome=["']wire["']|chrome:\s*["']wire["']/);
     assert.match(app, /TerminalPanel/);
     assert.match(app, /onOpenTerminal/);
-    assert.match(app, /showFiles|onToggleFiles/);
+    assert.match(app, /showFiles|onToggleFiles|FILES_ACTIVITY_ID/);
+    assert.match(app, /ActivityBar|shell\.activity/);
+    assert.match(app, /RightAside|wire-aside/);
+    assert.match(app, /LeftAside|leftActivity/);
+    assert.match(read("shell/ActivityBar.tsx"), /from\s+["']lucide-react["']/);
+    assert.doesNotMatch(read("shell/WireShell.tsx"), /shell\.activity/);
     assert.match(app, /fetchMeta|onMetaChange/);
     assert.match(app, /fetchTerminals/);
     assert.match(app, /onTabChange|onDockTabChange/);
@@ -111,26 +156,26 @@ describe("live shell production wiring", () => {
   it("chat first-paint lazy-loads TerminalPanel and LiveProjectHost (not static default import)", () => {
     // Dynamic import boundaries — must not be static `import { TerminalPanel } from`
     assert.match(app, /lazy\s*\(/);
-    assert.match(app, /import\s*\(\s*["']\.\/TerminalPanel["']\s*\)/);
-    assert.match(app, /import\s*\(\s*["']\.\/live\/LiveProjectHost["']\s*\)/);
-    assert.match(app, /import\s*\(\s*["']\.\/live\/ProactiveHost["']\s*\)/);
+    assert.match(app, /import\s*\(\s*["']\.\.\/TerminalPanel["']\s*\)/);
+    assert.match(app, /import\s*\(\s*["']\.\.\/live\/LiveProjectHost["']\s*\)/);
+    assert.match(app, /import\s*\(\s*["']\.\.\/live\/ProactiveHost["']\s*\)/);
     assert.doesNotMatch(
-      app,
+      appEntry,
       /import\s*\{\s*TerminalPanel[^}]*\}\s*from\s*["']\.\/TerminalPanel["']/,
     );
     assert.doesNotMatch(
-      app,
+      appEntry,
       /import\s*\{\s*LiveProjectHost[^}]*\}\s*from\s*["']\.\/live\/LiveProjectHost["']/,
     );
     assert.doesNotMatch(
-      app,
+      appEntry,
       /import\s*\{\s*ProactiveHost[^}]*\}\s*from\s*["']\.\/live\/ProactiveHost["']/,
     );
     // Type-only import of OpenTerminalRequest is OK (erased at runtime)
     assert.match(app, /import\s+type\s+\{[^}]*OpenTerminalRequest/);
     // App must not import ProjectWorkbench via drafts barrel (CodeMirror path)
-    assert.doesNotMatch(app, /from\s+["']\.\/drafts["']/);
-    assert.match(app, /from\s+["']\.\/drafts\/panels\/BottomInfoBar["']/);
+    assert.doesNotMatch(appEntry, /from\s+["']\.\/drafts["']/);
+    assert.match(app, /from\s+["']\.\.\/drafts\/panels\/BottomInfoBar["']/);
     // Source editors are async-only
     const lazyEd = read("markdown/editor/LazySourceEditor.tsx");
     assert.match(lazyEd, /import\s*\(\s*["']\.\/SourceEditor["']\s*\)/);
@@ -151,7 +196,7 @@ describe("live shell production wiring", () => {
     assert.match(app, /setActiveAgent/);
     assert.match(app, /onSelectAgent|liveAgentRows|activeSwitchId/);
     // Agent click remounts ChatPanel so sessions/history rebind
-    assert.match(app, /key=\{activeSwitchId/);
+    assert.match(app, /key=\{activeSwitchId|remountKey:\s*activeSwitchId/);
     // Still may fall back to metaToAgents when list empty
     assert.match(app, /metaToAgents/);
     // No bare name-only highlight when switch_id misses (multi-project safe)
@@ -197,7 +242,11 @@ describe("live shell production wiring", () => {
     assert.match(chat, /wire-float-bottom/);
     assert.match(chat, /ApprovalBanner/);
     assert.match(chat, /wire-jump-bottom/);
-    assert.match(chat, /wire-jump-prev/);
+    assert.match(chat, /wire-jump-bottom-dock/);
+    assert.match(chat, /"plan"/);
+    assert.match(chat, /"ultragoal"/);
+    assert.match(chat, /wire-thread-stage/);
+    assert.match(chat, /ThreadBoard|AskScrollRail/);
     assert.match(chat, /busy && !isWire/);
     assert.match(chat, /WireThreadView|groupThreadBlocks|chatLinesToDraftMessages/);
     assert.match(chat, /onDockLogLines/);
@@ -233,7 +282,7 @@ describe("live shell production wiring", () => {
 
   it("App stabilizes ChatPanel onMetaChange (no bootstrap thrash from polls)", () => {
     assert.match(app, /onChatMetaChange/);
-    assert.match(app, /onMetaChange=\{onChatMetaChange\}/);
+    assert.match(app, /onMetaChange=\{onChatMetaChange\}|onMetaChange:\s*onChatMetaChange/);
     // Must not pass inline arrow that changes every App render
     assert.doesNotMatch(
       app,
@@ -251,6 +300,8 @@ describe("live shell production wiring", () => {
     const liveFiles = read("live/LiveFilesRail.tsx");
     assert.match(liveFiles, /FilesRail/);
     assert.match(liveFiles, /fetchMdTree/);
+    assert.match(liveFiles, /fetchProjectTree/);
+    assert.match(liveFiles, /fetchGitStatus/);
     // Preview is opt-in after selection
     assert.match(liveFiles, /openPath/);
     assert.match(liveFiles, /关闭预览|setOpenPath\(null\)/);
@@ -307,6 +358,7 @@ describe("live shell production wiring", () => {
     assert.match(chat, /streamChat/);
     assert.match(chat, /abortChat/);
     assert.match(chat, /createSession/);
+    assert.match(chat, /onForkSession|fork:\s*true/);
     assert.match(chat, /switchSession/);
     assert.match(chat, /answerApproval/);
     assert.match(chat, /setApprovalMode|setModel/);
@@ -348,6 +400,8 @@ describe("live shell production wiring", () => {
     const createServer = read("../server/create-server.ts");
     assert.match(createServer, /\/ws\/terminal/);
     assert.match(createServer, /\/ws\/agent-terminal/);
+    assert.doesNotMatch(createServer, /express\.static/);
+    assert.match(createServer, /desktop client only/);
     const hub = read("../server/terminal-hub.ts");
     assert.match(hub, /openInteractive/);
     assert.match(hub, /resolveTerminalBackend/);

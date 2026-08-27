@@ -26,6 +26,47 @@ export async function fetchMdTree(): Promise<{
   return { root: j.root ?? "", tree: j.tree ?? [] };
 }
 
+export async function fetchProjectTree(): Promise<{
+  root: string;
+  tree: FsTreeNode[];
+}> {
+  const r = await fetch("/api/fs/tree");
+  if (!r.ok) throw new Error(`fs-tree ${r.status}`);
+  const j = (await r.json()) as {
+    ok?: boolean;
+    root?: string;
+    tree?: FsTreeNode[];
+    error?: string;
+  };
+  if (j.ok === false) throw new Error(j.error || "fs-tree failed");
+  return { root: j.root ?? "", tree: j.tree ?? [] };
+}
+
+export type GitFileStatus = {
+  path: string;
+  status: string;
+  add: number;
+  del: number;
+};
+
+export async function fetchGitStatus(): Promise<{
+  files: GitFileStatus[];
+  add: number;
+  del: number;
+}> {
+  const r = await fetch("/api/fs/status");
+  if (!r.ok) throw new Error(`fs-status ${r.status}`);
+  const j = (await r.json()) as {
+    ok?: boolean;
+    files?: GitFileStatus[];
+    add?: number;
+    del?: number;
+    error?: string;
+  };
+  if (j.ok === false) throw new Error(j.error || "fs-status failed");
+  return { files: j.files ?? [], add: j.add ?? 0, del: j.del ?? 0 };
+}
+
 export async function readFsFile(
   path: string,
 ): Promise<{ path: string; content: string }> {

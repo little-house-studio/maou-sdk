@@ -217,17 +217,20 @@ export {
 } from "./tool-pairing.js";
 export type { Summarizer, CompressOptions, CompressMaouResult, CompressionStage, CompressionResult, TaskSummary } from "./compressor.js";
 
-// Token 估算
+// 上下文占用（上一条 usage 的 input+output）
 export {
   estimateTokens,
   estimateTokensFromText,
   estimateTokensFromStrings,
   contextUsageRatio,
   contextRemainingRatio,
+  parseUsageTokens,
+  occupancyFromUsage,
   parsePromptTokensFromUsage,
   estimateFullPromptTokens,
   resolveContextUsedTokens,
 } from "./token-estimate.js";
+export type { UsageTokens } from "./token-estimate.js";
 
 // 超窗紧急截断 / 剥多模态
 export {

@@ -14,6 +14,9 @@ export {
   hydrateFromScenario,
   applyLocalSend,
   applyNewSession,
+  applyForkSession,
+  applyChildSession,
+  applyDraftSlash,
   applyApprovalDecision,
   messagesForSession,
   sessionTitle,
@@ -38,8 +41,11 @@ export {
 export {
   resolveToolCard,
   toolTitleMeta,
+  toolIntentLabel,
+  toolDurationLabel,
   toolFoldMark,
   toolResultSizeLabel,
+  extractToolCallIntent,
   slicePreview,
 } from "./tool-card";
 export {
@@ -53,6 +59,15 @@ export {
   shouldStickToBottom,
   STICK_TO_BOTTOM_PX,
 } from "./jump-prev-user";
+export {
+  ASK_GUTTER_PX,
+  ASK_PREVIEW_MAX,
+  canShowAskRail,
+  clipAskPreview,
+  layoutAskMarks,
+  pointerOverAskGutter,
+  scrollThumbLayout,
+} from "./ask-scroll-rail";
 export {
   DOCK_CARDS,
   DOCK_PREVIEW_W,
@@ -97,7 +112,7 @@ export {
 } from "./bottom-dock";
 export type { DockCardId } from "./bottom-dock";
 export { BottomInfoBar } from "./panels/BottomInfoBar";
-// Re-export dock-plugin surface (webui plugin area)
+// Re-export dock-plugin surface (app plugin area)
 export {
   createDefaultDockRegistry,
   registerDockPlugin,
@@ -122,7 +137,17 @@ export {
   timecode,
   formatMessageHead,
   formatThinkingHead,
+  formatUsageLine,
+  formatRoundTip,
+  formatLoopTip,
+  formatInfoHoverLabel,
+  roundTipRows,
+  loopTipRows,
+  summarizeLoop,
 } from "./message-meta";
+export type { InfoHoverRow } from "./message-meta";
+export { InfoHover } from "./InfoHover";
+export { HoverTip, HOVER_TIP_OPEN_MS } from "./HoverTip";
 export {
   PROJECT_DOCS,
   DEFAULT_PROJECT_DOC_PATH,

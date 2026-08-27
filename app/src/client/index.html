@@ -7,6 +7,20 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
     />
     <title>Maou WebUI</title>
+    <script>
+      (function () {
+        var ua = navigator.userAgent;
+        if (!/Electron/i.test(ua)) return;
+        var chrome = /Mac/i.test(ua)
+          ? "darwin"
+          : /Windows NT/i.test(ua)
+            ? "win32"
+            : /Linux/i.test(ua)
+              ? "linux"
+              : "";
+        if (chrome) document.documentElement.dataset.appChrome = chrome;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

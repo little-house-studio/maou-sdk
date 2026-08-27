@@ -45,11 +45,10 @@
 ## 预览
 
 ```bash
-cd webui && pnpm run dev
-open http://localhost:5173/draft.html
+cd app && pnpm run dev
 ```
 
-顶栏点 **「项目」**。
+桌面窗口顶栏点 **「项目」**。草稿页在开发时由 Electron 加载 Vite；浏览器直接打开会被拒绝。
 
 ## 测试
 

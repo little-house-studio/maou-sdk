@@ -1,0 +1,51 @@
+appId: studio.littlehouse.maou.app
+productName: Maou
+copyright: Little House Studio
+asar: true
+asarUnpack:
+  - "**/*.node"
+npmRebuild: false
+directories:
+  output: release
+  buildResources: resources
+files:
+  - dist/client/**/*
+  - dist/server/**/*
+  - dist/desktop/**/*
+  - package.json
+extraMetadata:
+  main: dist/desktop/main.js
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+  artifactName: maou-app-${version}-darwin-${arch}.${ext}
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+  artifactName: maou-app-${version}-win32-${arch}.${ext}
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: tar.gz
+      arch:
+        - x64
+  category: Development
+  artifactName: maou-app-${version}-linux-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

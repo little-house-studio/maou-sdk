@@ -8,6 +8,7 @@ import {
   durationStr,
   isDiffResult,
   isWriteTool,
+  readToolIntent,
   resolveToolCard,
   slicePreview,
   toolFoldMark,
@@ -22,6 +23,15 @@ import { ToolCard } from "./panels/ToolCard";
 import { FULL_CONTEXT_MESSAGES } from "./fixtures";
 
 describe("tool-card CLI helpers", () => {
+  it("readToolIntent pulls description from params or JSON", () => {
+    assert.equal(readToolIntent({ description: "读剪贴板" }), "读剪贴板");
+    assert.equal(
+      readToolIntent(JSON.stringify({ description: "列窗口" })),
+      "列窗口",
+    );
+    assert.equal(readToolIntent({ command: "ls" }), "");
+  });
+
   it("compactCount and durationStr match CLI-ish formats", () => {
     assert.equal(compactCount(200), "200");
     assert.equal(compactCount(2000), "2.0k");
@@ -65,8 +75,36 @@ describe("tool-card CLI helpers", () => {
     assert.equal(c.done, true);
     assert.match(toolTitleMeta(c), /scan routes/);
     assert.match(toolTitleMeta(c), /42ms/);
+    assert.doesNotMatch(toolTitleMeta(c), /字|tok/);
     assert.equal(toolFoldMark(c, false), "▶");
     assert.equal(toolFoldMark(c, true), "▼");
+  });
+
+  it("resolveToolCard keeps call intent, not result first line", () => {
+    const m: DraftMessage = {
+      id: "t-res",
+      role: "tool",
+      body: "=== 前台窗口标题 ===\nMaou",
+      tool: {
+        name: "use_terminal",
+        result: "=== 前台窗口标题 ===\nMaou",
+        done: true,
+      },
+    };
+    assert.equal(resolveToolCard(m).description, "");
+    const withIntent: DraftMessage = {
+      ...m,
+      tool: {
+        ...m.tool!,
+        description: "读前台窗口标题",
+        durationMs: 1200,
+      },
+    };
+    const c = resolveToolCard(withIntent);
+    assert.equal(c.description, "读前台窗口标题");
+    assert.equal(toolTitleMeta(c), "读前台窗口标题 1.2s");
+    assert.equal(toolFoldMark({ ...c, isError: true }, false), "▶");
+    assert.equal(toolFoldMark({ ...c, done: false }, false), "▶");
   });
 
   it("slicePreview folds long dumps at CLI preview counts", () => {
@@ -87,9 +125,52 @@ describe("tool-card CLI helpers", () => {
     );
     assert.match(html, /wire-tool-card/);
     assert.match(html, /wire-tool-name/);
+    assert.match(html, /wire-tool-led/);
     assert.match(html, /use_terminal/);
+    assert.match(html, /wire-tool-intent/);
+    assert.match(html, /rg agent-terminal in server/);
+    assert.match(html, /wire-tool-dur/);
+    assert.match(html, /420ms/);
     assert.match(html, /wire-tool-mark/);
+    assert.match(html, />▶</);
+    assert.doesNotMatch(html, /字|tok/);
+    assert.doesNotMatch(html, /打开终端/);
     // collapsed by default — no expanded body sections until click
     assert.doesNotMatch(html, /▸ 输出/);
+  });
+
+  it("error tool cards stay collapsed", () => {
+    const tool = FULL_CONTEXT_MESSAGES.find((m) => m.id === "fc-tool-run");
+    assert.ok(tool?.tool?.isError);
+    const html = renderToStaticMarkup(
+      createElement(ToolCard, { message: tool! }),
+    );
+    assert.match(html, /is-error/);
+    assert.match(html, /is-collapsed/);
+    assert.match(html, /data-tool-led="err"/);
+    assert.doesNotMatch(html, /▸ 输出/);
+  });
+
+  it("tool LED is ok when done, wait while running", () => {
+    const base = {
+      id: "t",
+      role: "tool" as const,
+      body: "out",
+      tool: { name: "reader", result: "out", done: true, isError: false },
+    };
+    const done = renderToStaticMarkup(createElement(ToolCard, { message: base }));
+    assert.match(done, /data-tool-led="ok"/);
+    assert.match(done, /is-ok/);
+
+    const wait = renderToStaticMarkup(
+      createElement(ToolCard, {
+        message: {
+          ...base,
+          tool: { name: "reader", result: "", done: false, isError: false },
+        },
+      }),
+    );
+    assert.match(wait, /data-tool-led="wait"/);
+    assert.match(wait, /is-wait/);
   });
 });

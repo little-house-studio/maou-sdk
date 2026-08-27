@@ -1,18 +1,30 @@
 {
-  "name": "@little-house-studio/webui",
+  "name": "@little-house-studio/app",
   "version": "0.1.0",
-  "description": "Maou WebUI — chat + embedded terminal (SDK layer)",
+  "description": "Maou App — desktop client (macOS / Windows / Linux)",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "maou-web": "./dist/server/cli.js"
+    "maou-app": "./dist/server/cli.js"
   },
-  "main": "./dist/server/index.js",
+  "main": "./dist/desktop/main.js",
   "types": "./dist/server/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/server/index.d.ts",
       "import": "./dist/server/index.js"
+    },
+    "./slots": {
+      "types": "./dist/sdk/slots/index.d.ts",
+      "import": "./dist/sdk/slots/index.js"
+    },
+    "./shell": {
+      "types": "./dist/sdk/shell/public.d.ts",
+      "import": "./dist/sdk/shell/public.js"
+    },
+    "./ports": {
+      "types": "./dist/sdk/ports/public.d.ts",
+      "import": "./dist/sdk/ports/public.js"
     }
   },
   "files": [
@@ -23,14 +35,20 @@
   "scripts": {
     "build:server": "tsc -p tsconfig.server.json",
     "build:client": "vite build",
-    "build": "npm run build:server && npm run build:client",
-    "dev": "concurrently -k \"npm run dev:server\" \"npm run dev:client\"",
-    "dev:server": "tsx watch src/server/cli.ts",
+    "build:sdk": "tsc -p tsconfig.sdk.json",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "build": "npm run build:server && npm run build:client && npm run build:sdk && npm run build:desktop",
+    "dev": "concurrently -k \"npm run dev:client\" \"npm run dev:desktop\"",
+    "dev:desktop": "node scripts/build-desktop.mjs && electron dist/desktop/main.js",
     "dev:client": "vite",
-    "start": "node dist/server/cli.js",
-    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "tsx --test src/server/markdown/fs-api.test.ts src/server/agent-hub.test.ts src/server/session-stats.test.ts src/server/llm-config.test.ts src/server/local-entry.test.ts src/server/workspace-deps.test.ts src/server/webhook.test.ts src/server/terminal-hub.test.ts src/client/drafts/fixtures.test.ts",
-    "test:drafts": "tsx --test src/client/drafts/fixtures.test.ts src/client/drafts/visual-marks.test.ts src/client/drafts/thread-blocks.test.ts src/client/drafts/DraftMarkdown.test.ts src/client/drafts/panels/ContextPanel.test.ts src/client/drafts/context-chrome-css.test.ts src/client/drafts/tool-card.test.ts src/client/drafts/jump-prev-user.test.ts src/client/drafts/message-meta.test.ts src/client/drafts/project-docs.test.ts src/client/drafts/project-graph.test.ts src/client/drafts/project-session.test.ts src/client/drafts/api-settings.test.ts src/client/drafts/panels/SettingsPanel.test.ts src/client/drafts/bottom-dock.test.ts src/client/drafts/panels/BottomInfoBar.test.ts src/client/dock-plugin/dock-plugin.test.ts src/client/drafts/panels/WireThreadView.test.ts src/client/drafts/session-ancestry.test.ts src/client/drafts/layout/SessionTreeCrumbs.test.ts src/client/drafts/layout/led-strip.test.ts src/client/live/adapters.test.ts src/client/live/settings-adapters.test.ts src/client/live/LiveSettingsPanel.test.ts src/client/live/live-shell-wiring.test.ts src/client/live/project-host-docs.test.ts src/client/live/first-paint-dist.test.ts src/client/settings/paste-fill.test.ts src/server/agent-list.test.ts src/server/llm-config.test.ts",
+    "start": "electron dist/desktop/main.js",
+    "pack": "npm run build && electron-builder --config electron-builder.yml",
+    "pack:mac": "npm run build && electron-builder --mac --config electron-builder.yml",
+    "pack:win": "npm run build && electron-builder --win --config electron-builder.yml",
+    "pack:linux": "npm run build && electron-builder --linux --config electron-builder.yml",
+    "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.sdk.json --noEmit && tsc -p tsconfig.desktop.json --noEmit",
+    "test": "tsx --test src/server/markdown/fs-api.test.ts src/server/agent-hub.test.ts src/server/session-stats.test.ts src/server/llm-config.test.ts src/server/local-entry.test.ts src/server/workspace-deps.test.ts src/server/webhook.test.ts src/server/terminal-hub.test.ts src/server/listen-socket.test.ts src/server/command-catalog.test.ts src/server/chat-images.test.ts src/client/drafts/fixtures.test.ts src/desktop/platforms/platforms.test.ts src/client/desktop-transport.test.ts",
+    "test:drafts": "tsx --test src/server/tool-history.test.ts src/client/drafts/fixtures.test.ts src/client/drafts/visual-marks.test.ts src/client/drafts/thread-blocks.test.ts src/client/drafts/DraftMarkdown.test.ts src/client/drafts/panels/ContextPanel.test.ts src/client/drafts/context-chrome-css.test.ts src/client/drafts/tool-card.test.ts src/client/drafts/jump-prev-user.test.ts src/client/drafts/ask-scroll-rail.test.ts src/client/drafts/HoverTip.test.ts src/client/drafts/message-meta.test.ts src/client/drafts/project-docs.test.ts src/client/drafts/project-graph.test.ts src/client/drafts/project-session.test.ts src/client/drafts/api-settings.test.ts src/client/drafts/panels/SettingsPanel.test.ts src/client/drafts/bottom-dock.test.ts src/client/drafts/panels/BottomInfoBar.test.ts src/client/dock-plugin/dock-plugin.test.ts src/client/drafts/panels/WireThreadView.test.ts src/client/drafts/session-ancestry.test.ts src/client/drafts/layout/SessionTreeCrumbs.test.ts src/client/live/adapters.test.ts src/client/live/settings-adapters.test.ts src/client/live/LiveSettingsPanel.test.ts src/client/live/live-shell-wiring.test.ts src/client/live/project-host-docs.test.ts src/client/live/first-paint-dist.test.ts src/client/settings/paste-fill.test.ts src/server/agent-list.test.ts src/server/llm-config.test.ts src/client/slots/core.test.ts src/client/slots/map.test.ts src/client/ports/ports.test.ts src/client/host/live-slots.test.ts src/client/shell/ActivityBar.test.ts src/client/composer/composer.test.ts src/client/drafts/panels/CascadeMenu.test.ts src/client/drafts/InfoHover.test.ts src/desktop/platforms/platforms.test.ts src/client/desktop-transport.test.ts src/server/listen-socket.test.ts src/server/command-catalog.test.ts src/server/chat-images.test.ts src/client/drafts/panels/AgentList.test.ts",
     "test:mvp": "tsx scripts/verify-mvp.mts",
     "test:parity": "tsx scripts/verify-parity.mts"
   },
@@ -52,6 +70,7 @@
     "@xterm/xterm": "^5.5.0",
     "express": "^4.21.0",
     "html-in-canvas-polyfill": "^1.0.1",
+    "lucide-react": "0.544.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
@@ -69,6 +88,9 @@
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.0",
     "concurrently": "^9.0.0",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.8",
     "tsx": "^4.7.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0"

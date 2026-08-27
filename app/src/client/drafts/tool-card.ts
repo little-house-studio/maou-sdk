@@ -97,9 +97,7 @@ export function resolveToolCard(message: DraftMessage): ResolvedToolCard {
   const args = t?.args ?? "";
   const result = t?.result ?? message.body ?? "";
   const description =
-    (t?.description ?? "").trim() ||
-    firstDescriptionFromArgs(args) ||
-    firstLineSummary(result);
+    (t?.description ?? "").trim() || firstDescriptionFromArgs(args);
   return {
     id: message.id,
     name,
@@ -123,42 +121,73 @@ function firstDescriptionFromArgs(args: string): string {
   return "";
 }
 
-function firstLineSummary(body: string): string {
-  const line = body.split("\n").find((l) => l.trim());
-  if (!line) return "";
-  return line.trim().length > 56 ? `${line.trim().slice(0, 55)}…` : line.trim();
+export function asToolParams(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  if (typeof raw === "string") {
+    try {
+      const v = JSON.parse(raw);
+      if (v && typeof v === "object") return v as Record<string, unknown>;
+    } catch {
+      /* free-form */
+    }
+  }
+  return {};
 }
 
-/** Title meta: description + duration + size (when done). */
+/** 从 tool.parameters / JSON 字符串取出 description */
+export function readToolIntent(raw: unknown): string {
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (!t) return "";
+    if (t.startsWith("{") || t.startsWith("[")) {
+      try {
+        return readToolIntent(JSON.parse(t));
+      } catch {
+        return "";
+      }
+    }
+    return "";
+  }
+  if (!raw || typeof raw !== "object") return "";
+  const o = raw as Record<string, unknown>;
+  if (typeof o.description === "string" && o.description.trim()) {
+    return o.description.trim();
+  }
+  if (o.parameters != null) return readToolIntent(o.parameters);
+  if (o.arguments != null) return readToolIntent(o.arguments);
+  return "";
+}
+
+/** `▶ use_terminal · scan routes` 第一行里的调用意图 */
+export function extractToolCallIntent(text: string): string {
+  const first = (text || "").split("\n")[0]?.trim() ?? "";
+  const m = first.match(/^▶\s*[a-zA-Z_][\w.-]*\s+·\s+(.+)$/);
+  return m?.[1]?.trim() ?? "";
+}
+
+export function toolIntentLabel(card: ResolvedToolCard): string {
+  const d = card.description.trim();
+  if (!d) return "";
+  return d.length > 56 ? `${d.slice(0, 55)}…` : d;
+}
+
+export function toolDurationLabel(card: ResolvedToolCard): string {
+  return durationStr(card.durationMs);
+}
+
+/** Title meta: intent + duration. */
 export function toolTitleMeta(card: ResolvedToolCard): string {
-  const parts: string[] = [];
-  if (card.description) {
-    parts.push(
-      card.description.length > 56
-        ? `${card.description.slice(0, 55)}…`
-        : card.description,
-    );
-  }
-  const dur = durationStr(card.durationMs);
-  if (dur) parts.push(`(${dur})`);
-  if (card.done) {
-    const size = toolResultSizeLabel(card.result);
-    if (size) parts.push(size);
-  }
-  return parts.join(" ");
+  return [toolIntentLabel(card), toolDurationLabel(card)]
+    .filter(Boolean)
+    .join(" ");
 }
 
-/** ▶ collapsed · ▼ expanded · ✗ error · ⠋ running */
+/** ▶ collapsed · ▼ expanded */
 export function toolFoldMark(
-  card: ResolvedToolCard,
+  _card: ResolvedToolCard,
   expanded: boolean,
-  spinnerFrame = 0,
+  _spinnerFrame = 0,
 ): string {
-  if (!card.done) {
-    const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-    return frames[spinnerFrame % frames.length]!;
-  }
-  if (card.isError) return "✗";
   return expanded ? "▼" : "▶";
 }
 

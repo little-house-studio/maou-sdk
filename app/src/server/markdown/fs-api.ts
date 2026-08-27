@@ -14,6 +14,33 @@ import {
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 
 const MD_EXTS = new Set([".md", ".mdx", ".markdown"]);
+const TEXT_EXTS = new Set([
+  ".md",
+  ".mdx",
+  ".markdown",
+  ".txt",
+  ".json",
+  ".jsonc",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".css",
+  ".scss",
+  ".html",
+  ".htm",
+  ".yml",
+  ".yaml",
+  ".toml",
+  ".rs",
+  ".go",
+  ".py",
+  ".svg",
+  ".xml",
+  ".sh",
+]);
 const SKIP_DIRS = new Set([
   "node_modules",
   ".git",
@@ -36,6 +63,18 @@ export type FsTreeNode = {
 
 function isMdFile(name: string): boolean {
   return MD_EXTS.has(extname(name).toLowerCase());
+}
+
+function isTextFile(name: string): boolean {
+  const ext = extname(name).toLowerCase();
+  if (TEXT_EXTS.has(ext)) return true;
+  const base = name.toLowerCase();
+  return (
+    base === "makefile" ||
+    base === "dockerfile" ||
+    base === "license" ||
+    base === ".gitignore"
+  );
 }
 
 /** 解析并校验路径：返回绝对路径；非法则 throw */
@@ -97,6 +136,56 @@ export function listMarkdownTree(projectRoot: string): FsTreeNode[] {
   return walkMdTree(root, root, 0);
 }
 
+const MAX_PROJECT_FILES = 800;
+
+function walkProjectTree(
+  absDir: string,
+  root: string,
+  depth: number,
+  budget: { n: number },
+): FsTreeNode[] {
+  if (depth > 8 || budget.n >= MAX_PROJECT_FILES) return [];
+  let entries: string[];
+  try {
+    entries = readdirSync(absDir);
+  } catch {
+    return [];
+  }
+  const dirs: FsTreeNode[] = [];
+  const files: FsTreeNode[] = [];
+  for (const name of entries.sort((a, b) => a.localeCompare(b))) {
+    if (budget.n >= MAX_PROJECT_FILES) break;
+    if (name.startsWith(".") && name !== ".maou" && name !== ".gitignore") {
+      continue;
+    }
+    if (SKIP_DIRS.has(name)) continue;
+    const abs = join(absDir, name);
+    let st;
+    try {
+      st = statSync(abs);
+    } catch {
+      continue;
+    }
+    const rel = relative(root, abs).split(sep).join("/");
+    if (st.isDirectory()) {
+      const children = walkProjectTree(abs, root, depth + 1, budget);
+      if (children.length > 0) {
+        dirs.push({ name, path: rel, type: "dir", children });
+      }
+    } else if (st.isFile() && isTextFile(name)) {
+      budget.n += 1;
+      files.push({ name, path: rel, type: "file" });
+    }
+  }
+  return [...dirs, ...files];
+}
+
+export function listProjectTree(projectRoot: string): FsTreeNode[] {
+  const root = resolve(projectRoot);
+  if (!existsSync(root)) return [];
+  return walkProjectTree(root, root, 0, { n: 0 });
+}
+
 export function readProjectFile(
   projectRoot: string,
   relPath: string,
@@ -105,8 +194,8 @@ export function readProjectFile(
   if (!existsSync(abs) || !statSync(abs).isFile()) {
     throw new Error("file not found");
   }
-  if (!isMdFile(abs)) {
-    throw new Error("only markdown files are allowed");
+  if (!isMdFile(abs) && !isTextFile(abs)) {
+    throw new Error("only text files are allowed");
   }
   const content = readFileSync(abs, "utf8");
   return {

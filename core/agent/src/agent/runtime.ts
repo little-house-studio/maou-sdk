@@ -25,14 +25,8 @@ import {
   buildMessages,
   maybeCompress,
   ContextEngine,
-  estimateTokensFromText,
-  estimateTokens,
-  estimateTokensFromStrings,
-  estimateFullPromptTokens,
-  parsePromptTokensFromUsage,
-  resolveContextUsedTokens,
+  parseUsageTokens,
   emergencyTrimMessages,
-  estimateMessagesTokens,
   stripNonTextContent,
   MAX_ROUNDS,
   DEFAULT_AGENT_ROUND_LIMIT,
@@ -451,12 +445,11 @@ export class AgentRuntime {
   private static COMPRESS_RETRY_MS = 15_000;
 
   /**
-   * 最近一次主模型 API 回报的 prompt/input token（真 usage）。
-   * 压缩与 /context 优先用此值，避免仅估 session 正文导致阈值永不触发。
+   * 上一条主模型回报的 input+output（消息上显示的占用）。
    */
-  private sessionLastApiPromptTokens = new Map<string, number>();
-  /** 记录该 usage 时的 history 估算 token，用于工具结果追加后的增量修正 */
-  private sessionHistoryTokensAtLastApi = new Map<string, number>();
+  private sessionLastOccupancy = new Map<string, { input: number; output: number }>();
+  /** 压缩后占用清零，禁止再读磁盘上一条 usage。 */
+  private sessionOccupancyCleared = new Set<string>();
 
   // ── 可插拔工厂（缺省使用内部默认实现）──
   private createSessionManagerFn: (sessions: SessionStore, maouRoot: string) => SessionManager;
@@ -828,9 +821,7 @@ export class AgentRuntime {
         sourceSessionMessages: msgs,
       });
       this.compressRetryAfter.delete(sessionId);
-      // 压缩后失效旧 API usage，等下一轮真回报
-      this.sessionLastApiPromptTokens.delete(sessionId);
-      this.sessionHistoryTokensAtLastApi.delete(sessionId);
+      this.clearLastOccupancy(sessionId);
       if (report.stage === "activeStage") {
         return {
           ok: false,
@@ -879,97 +870,52 @@ export class AgentRuntime {
   }
 
   /**
-   * 解析会话上下文占用 token（优先 API prompt usage，再与本地全量估算取 max）。
-   * history 可选：传入当前 engine 工作集可避免重复 load。
+   * 解析会话上下文占用：上一条回报的 input + output。
    */
-  private resolveSessionContextTokens(
-    sessionId: string,
-    history?: Parameters<typeof estimateTokens>[0],
-    opts?: {
-      systemPrompt?: string;
-      toolSchemas?: unknown;
-      extras?: string[];
-      /**
-       * B1：从 harness 复用工作集时，磁盘 latest usage 可能仍是**压缩前**的 prompt，
-       * 再 max 进门槛会每轮假触发压缩。此时只信本进程 compress 之后写入的 in-memory API。
-       */
-      ignoreStaleApi?: boolean;
-    },
-  ): number {
-    let api = this.sessionLastApiPromptTokens.get(sessionId) ?? 0;
-    if (api <= 0 && !opts?.ignoreStaleApi) {
-      try {
-        const latest = this.sessions.getLatestUsage(sessionId);
-        api = parsePromptTokensFromUsage(latest.usage as Record<string, unknown>);
-        if (api > 0) {
-          this.sessionLastApiPromptTokens.set(sessionId, api);
-        }
-      } catch { /* ignore */ }
-    }
-
-    let historyTokens = 0;
-    if (history) {
-      historyTokens = estimateTokens(history);
-    } else {
-      try {
-        const session = this.sessions.load(sessionId);
-        if (session?.messages?.length) {
-          // wire 消息粗算（无 Maou 结构时）
-          for (const m of session.messages) {
-            historyTokens += 4;
-            historyTokens += estimateTokensFromText(String((m as { content?: string }).content ?? ""));
-            const tcs = (m as { toolCalls?: unknown[] }).toolCalls;
-            if (Array.isArray(tcs)) {
-              for (const tc of tcs) {
-                historyTokens += 8;
-                const rec = tc as { name?: string; arguments?: unknown; parameters?: unknown };
-                historyTokens += estimateTokensFromText(String(rec.name ?? ""));
-                try {
-                  historyTokens += estimateTokensFromText(
-                    JSON.stringify(rec.arguments ?? rec.parameters ?? {}),
-                  );
-                } catch {
-                  historyTokens += 16;
-                }
-              }
-            }
-          }
-        }
-      } catch { /* ignore */ }
-    }
-
-    // 工具结果追加后：在上次 API prompt 上叠加 history 增量（避免低估）
-    let apiAdjusted = api;
-    if (api > 0) {
-      const atApi = this.sessionHistoryTokensAtLastApi.get(sessionId);
-      if (atApi != null && historyTokens > atApi) {
-        apiAdjusted = api + (historyTokens - atApi);
-      }
-    }
-
-    const estimated = estimateFullPromptTokens({
-      historyTokens,
-      systemPrompt: opts?.systemPrompt,
-      toolSchemas: opts?.toolSchemas,
-      extras: opts?.extras,
-    });
-
-    return resolveContextUsedTokens({
-      apiPromptTokens: apiAdjusted,
-      estimatedPromptTokens: estimated,
-    });
+  private clearLastOccupancy(sessionId: string): void {
+    this.sessionLastOccupancy.delete(sessionId);
+    this.sessionOccupancyCleared.add(sessionId);
   }
 
-  /** 记录主模型本轮 API prompt tokens + 当时 history 估算 */
-  private recordApiPromptTokens(
+  private peekLastOccupancy(sessionId: string): { input: number; output: number } {
+    const mem = this.sessionLastOccupancy.get(sessionId);
+    if (mem && (mem.input > 0 || mem.output > 0)) return mem;
+    if (this.sessionOccupancyCleared.has(sessionId)) return { input: 0, output: 0 };
+    try {
+      const latest = this.sessions.getLatestUsage(sessionId);
+      const usage = parseUsageTokens(latest.usage as Record<string, unknown>);
+      if (usage.input > 0 || usage.output > 0) return usage;
+    } catch { /* ignore */ }
+    return { input: 0, output: 0 };
+  }
+
+  private resolveSessionContextTokens(
+    sessionId: string,
+    _history?: unknown,
+    opts?: { ignoreStaleApi?: boolean },
+  ): number {
+    const mem = this.sessionLastOccupancy.get(sessionId);
+    if (mem && (mem.input > 0 || mem.output > 0)) {
+      return mem.input + mem.output;
+    }
+    if (opts?.ignoreStaleApi || this.sessionOccupancyCleared.has(sessionId)) return 0;
+    const usage = this.peekLastOccupancy(sessionId);
+    if (usage.input > 0 || usage.output > 0) {
+      this.sessionLastOccupancy.set(sessionId, usage);
+      return usage.input + usage.output;
+    }
+    return 0;
+  }
+
+  /** 记下上一条消息上显示的 input / output */
+  private recordLastOccupancy(
     sessionId: string,
     usage: Record<string, unknown> | null | undefined,
-    historyTokens: number,
   ): void {
-    const prompt = parsePromptTokensFromUsage(usage ?? undefined);
-    if (prompt <= 0) return;
-    this.sessionLastApiPromptTokens.set(sessionId, prompt);
-    this.sessionHistoryTokensAtLastApi.set(sessionId, Math.max(0, historyTokens));
+    const parsed = parseUsageTokens(usage ?? undefined);
+    if (parsed.input <= 0 && parsed.output <= 0) return;
+    this.sessionLastOccupancy.set(sessionId, parsed);
+    this.sessionOccupancyCleared.delete(sessionId);
   }
 
   getUsageStatsForSession(sessionId: string): {
@@ -988,16 +934,12 @@ export class AgentRuntime {
       let rounds = 0;
       for (const m of session.messages ?? []) {
         const role = (m as { role?: string }).role;
-        const content = String((m as { content?: string }).content ?? "");
         const usage = (m as { usage?: Record<string, number> }).usage;
         if (usage && (usage.input || usage.output || usage.prompt_tokens)) {
-          input += Number(usage.input ?? usage.prompt_tokens ?? usage.input_tokens ?? 0) || 0;
-          output += Number(usage.output ?? usage.completion_tokens ?? usage.output_tokens ?? 0) || 0;
+          const parsed = parseUsageTokens(usage as Record<string, unknown>);
+          input += parsed.input;
+          output += parsed.output;
           cacheRead += Number(usage.cacheRead ?? usage.cache_read_input_tokens ?? 0) || 0;
-        } else {
-          const t = estimateTokensFromText(content);
-          if (role === "user") input += t;
-          else if (role === "assistant") output += t;
         }
         if (role === "user") rounds++;
       }
@@ -1122,8 +1064,8 @@ export class AgentRuntime {
           "",
           "Context window",
           `  ${bar(ctx.pct)} ${ctx.pct.toFixed(1)}%`,
-          `  Used:                 ~${ctx.used.toLocaleString()} / ${ctx.max.toLocaleString()}`,
-          `  Remaining:            ~${ctx.remaining.toLocaleString()}`,
+          `  Used:                 ${ctx.used.toLocaleString()} / ${ctx.max.toLocaleString()} (last in ${ctx.lastInput.toLocaleString()} + out ${ctx.lastOutput.toLocaleString()})`,
+          `  Remaining:            ${ctx.remaining.toLocaleString()}`,
           `  Thresholds:           compact ${ctx.compactAt}% · summary ${ctx.summaryAt}% · archive ${ctx.archiveAt}%`,
         );
       }
@@ -1142,7 +1084,7 @@ export class AgentRuntime {
 
       lines.push(
         "",
-        "Note: figures are local estimates (session history + TokenTracker).",
+        "Note: context used is last message input+output. Session totals sum logged usage.",
         "Subscription plan bars (5h/weekly) require vendor account API — not available for raw OpenAI-compatible keys.",
       );
 
@@ -1172,11 +1114,14 @@ export class AgentRuntime {
     compactAt: number;
     summaryAt: number;
     archiveAt: number;
+    lastInput: number;
+    lastOutput: number;
   } | null {
     try {
       const session = this.sessions.load(sessionId);
       if (!session) return null;
-      const used = this.resolveSessionContextTokens(sessionId);
+      const last = this.peekLastOccupancy(sessionId);
+      const used = last.input + last.output;
       const max =
         this.currentPreset?.maxContext ??
         this.currentPreset?.maxTokens ??
@@ -1190,6 +1135,8 @@ export class AgentRuntime {
         compactAt: CONTEXT_THRESHOLD_PERCENT,
         summaryAt: 80,
         archiveAt: 90,
+        lastInput: last.input,
+        lastOutput: last.output,
       };
     } catch {
       return null;
@@ -2490,7 +2437,7 @@ export class AgentRuntime {
 
       // 自动压缩检查
       // 阈值基于输入上下文上限 maxContext（非输出 maxTokens）。
-      // 占用 token 优先 API 真 prompt usage，再与 system+tools+history 全量估算取 max。
+      // 占用：上一条回报的 input + output。
       const contextLimit = preset.maxContext ?? preset.maxTokens ?? 65536;
       const compressTriggerAt = contextLimit * (CONTEXT_THRESHOLD_PERCENT / 100);
 
@@ -2522,15 +2469,6 @@ export class AgentRuntime {
 
           if (allowTry) {
             const usedTokens = this.resolveSessionContextTokens(sessionId!, engine.getHistory(), {
-              systemPrompt,
-              toolSchemas,
-              extras: [
-                effectiveBeforeUser,
-                currentDynamicInjections,
-                memoryResult.formattedContext ?? "",
-                this.sessionManager.getRollingSummary(sessionId!) ?? "",
-              ].filter(Boolean),
-              // harness 复用时丢弃压前磁盘 usage，避免门槛永久命中
               ignoreStaleApi: seed.fromHarness,
             });
             if (usedTokens >= compressTriggerAt) {
@@ -2559,8 +2497,7 @@ export class AgentRuntime {
               if (report.stage !== "activeStage") {
                 compressedHistory = engine.toLLMHistory();
                 this.compressRetryAfter.delete(sessionId!);
-                this.sessionLastApiPromptTokens.delete(sessionId!);
-                this.sessionHistoryTokensAtLastApi.delete(sessionId!);
+                this.clearLastOccupancy(sessionId!);
                 const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
                 const merged = existing && report.droppedSummary
                   ? `${existing}\n\n---\n\n${report.droppedSummary}`
@@ -2672,16 +2609,8 @@ export class AgentRuntime {
           );
         }
 
-        // legacy：用全量占用触发；maybeCompress 内部仍估消息体，超阈值才 truncate
-        const legacyUsed = this.resolveSessionContextTokens(sessionId!, undefined, {
-          systemPrompt,
-          toolSchemas,
-          extras: [
-            effectiveBeforeUser,
-            currentDynamicInjections,
-            memoryResult.formattedContext ?? "",
-          ].filter(Boolean),
-        });
+        // legacy：用上一条占用触发
+        const legacyUsed = this.resolveSessionContextTokens(sessionId!);
         const compressResult = prof.sync("context_compress_legacy", () => {
           return maybeCompress(messages, contextLimit, {
             knownTokens: legacyUsed,
@@ -2692,8 +2621,7 @@ export class AgentRuntime {
         const compressed = compressResult.compressed;
         const droppedSummary = compressResult.droppedSummary;
         if (compressed) {
-          this.sessionLastApiPromptTokens.delete(sessionId!);
-          this.sessionHistoryTokensAtLastApi.delete(sessionId!);
+          this.clearLastOccupancy(sessionId!);
           // 把本轮新产生的摘要拼接到滚动摘要里，让后续轮次依然能看到被丢弃内容的线索
           const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
           const merged = existing
@@ -2773,53 +2701,6 @@ export class AgentRuntime {
       let mediaRecoveries = 0;
       // 溢出后可关掉重型 extras，降低固定开销
       let overflowLeanMode = false;
-
-      // 出征前预检：整包已估超 92% 窗口 → 先压再打，少一次必失败的 400
-      {
-        const preEst = estimateMessagesTokens(
-          finalMessages as Array<Record<string, unknown>>,
-        );
-        if (preEst >= Math.floor(contextLimit * 0.92) && !effectiveAbortSignal.aborted) {
-          yield this.logEvent(
-            "warning",
-            `出征前上下文已估 ${preEst}/${contextLimit}（≥92%），先强制压缩`,
-          );
-          const pre = await this.forceShrinkPromptForOverflow({
-            sessionId: sessionId!,
-            contextLimit,
-            attempt: 1,
-            engineEnabled,
-            runSummarizer,
-            systemPrompt,
-            toolSchemas,
-            sessionMessages: sessionMessages as unknown as Array<Record<string, unknown>>,
-            effectiveBeforeUser: overflowLeanMode ? "" : effectiveBeforeUser,
-            currentDynamicInjections: overflowLeanMode ? "" : currentDynamicInjections,
-            structuredMemory: overflowLeanMode ? "" : (memoryResult.formattedContext ?? ""),
-            rollingSummary: this.sessionManager.getRollingSummary(sessionId!) ?? "",
-            platformContext: options.platformContext,
-            projectRoot:
-              this.agentScope === "project" || options.bindingProjectRoot
-                ? effectiveProjectRoot
-                : undefined,
-            userName: options.userName ?? "user",
-            roundCount,
-            currentRound,
-            activeUserMessage,
-            finalMessages: finalMessages as Array<Record<string, unknown>>,
-            leanExtras: true,
-          });
-          if (pre.ok || pre.surfaceChanged) {
-            finalMessages = pre.finalMessages;
-            if (pre.compressedHistory) compressedHistory = pre.compressedHistory;
-            overflowLeanMode = true;
-            yield this.logEvent(
-              "warning",
-              `出征前压缩完成 · 估 ${pre.estimatedTokens} tokens · stage=${pre.stage ?? "?"}`,
-            );
-          }
-        }
-      }
 
       for (;;) {
         const endLlm = prof.start("llm_call", {
@@ -2943,8 +2824,7 @@ export class AgentRuntime {
             text: `Context overflow · shrink · ${ctxOverflowRecoveries}/${MAX_CTX_OVERFLOW_RECOVER}`,
           });
           this.compressRetryAfter.delete(sessionId!);
-          this.sessionLastApiPromptTokens.delete(sessionId!);
-          this.sessionHistoryTokensAtLastApi.delete(sessionId!);
+          this.clearLastOccupancy(sessionId!);
 
           try {
             const shrunk = await this.forceShrinkPromptForOverflow({
@@ -2989,7 +2869,7 @@ export class AgentRuntime {
               } else if (shrunk.emergencyTrimmed) {
                 yield this.logEvent(
                   "warning",
-                  `紧急截断历史 ${shrunk.dropped ?? 0} 条 · 估 ${shrunk.estimatedTokens} tokens`,
+                  `紧急截断历史 ${shrunk.dropped ?? 0} 条`,
                 );
               }
               await this.hooks?.agentThinking();
@@ -2997,7 +2877,7 @@ export class AgentRuntime {
             }
             yield this.logEvent(
               "warning",
-              `上下文溢出恢复未降低占用（估 ${shrunk.estimatedTokens}）`,
+              `上下文溢出恢复未改变工作集`,
             );
           } catch (ce) {
             yield this.logEvent(
@@ -3090,30 +2970,7 @@ export class AgentRuntime {
           ?? (preset as { name?: string }).name
           ?? "",
         );
-        // 压缩门槛：记下本轮真实 prompt tokens（含 system/tools）
-        try {
-          const histTok = estimateFullPromptTokens({
-            historyTokens: estimateTokensFromStrings(
-              (finalMessages as Array<{ content?: unknown }>).map((m) => ({
-                content: typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
-              })),
-            ),
-          });
-          // 用 session history 粗算作增量基线（下一轮工具结果追加后可叠加）
-          let sessionHistTok = 0;
-          try {
-            const sess = this.sessions.load(sessionId!);
-            for (const m of sess?.messages ?? []) {
-              sessionHistTok += 4;
-              sessionHistTok += estimateTokensFromText(String((m as { content?: string }).content ?? ""));
-            }
-          } catch { /* ignore */ }
-          this.recordApiPromptTokens(
-            sessionId!,
-            result.usage as Record<string, unknown>,
-            sessionHistTok > 0 ? sessionHistTok : histTok,
-          );
-        } catch { /* ignore */ }
+        this.recordLastOccupancy(sessionId!, result.usage as Record<string, unknown>);
         // Agent 层权威写入：(agentName, sessionId, mainModel) 桶
         const cacheSnap = promptCacheLedger().recordUsage({
           agentName,
@@ -5029,7 +4886,7 @@ export class AgentRuntime {
     finalMessages: Array<Record<string, unknown>>;
     leanExtras: boolean;
   }): Promise<{
-    /** 估 token 是否落入 contextLimit 的 95% 内 */
+    /** 压缩或截断是否改变了发出去的消息 */
     ok: boolean;
     finalMessages: Array<Record<string, unknown>>;
     compressedHistory?: LLMMessage[];
@@ -5059,27 +4916,6 @@ export class AgentRuntime {
       leanExtras,
     } = opts;
 
-    // 全包目标：50% → 35% → 22%（attempt 1..3）
-    const fullRatio = attempt <= 1 ? 0.5 : attempt === 2 ? 0.35 : 0.22;
-    const fullBudget = Math.max(2048, Math.floor(contextLimit * fullRatio));
-
-    // 固定开销粗算（system + tools schema）
-    const fixedTok = estimateFullPromptTokens({
-      historyTokens: 0,
-      systemPrompt,
-      toolSchemas,
-      extras: leanExtras
-        ? []
-        : [
-            opts.effectiveBeforeUser,
-            opts.currentDynamicInjections,
-            opts.structuredMemory,
-            opts.rollingSummary,
-          ].filter(Boolean),
-    });
-    // 历史预算 = 全包预算 − 固定；至少留 512
-    const historyBudget = Math.max(512, fullBudget - fixedTok);
-
     let compressedHistory: LLMMessage[] | undefined;
     let stage: string | undefined;
     let originalTokens: number | undefined;
@@ -5089,8 +4925,7 @@ export class AgentRuntime {
 
     await this.hooks?.preCompact({ sessionId, force: true, reason: "overflow" });
     this.compressRetryAfter.delete(sessionId);
-    this.sessionLastApiPromptTokens.delete(sessionId);
-    this.sessionHistoryTokensAtLastApi.delete(sessionId);
+    this.clearLastOccupancy(sessionId);
 
     if (engineEnabled && this.harnessStore && this.taskStore) {
       try {
@@ -5100,22 +4935,8 @@ export class AgentRuntime {
           taskStore: this.taskStore,
           summarizer: runSummarizer,
         });
-        const seed = engine.seedWorkingSet(sessionMessages);
-        const known = this.resolveSessionContextTokens(sessionId, engine.getHistory(), {
-          systemPrompt,
-          toolSchemas,
-          extras: leanExtras
-            ? []
-            : [
-                opts.effectiveBeforeUser,
-                opts.currentDynamicInjections,
-                opts.structuredMemory,
-                opts.rollingSummary,
-              ].filter(Boolean),
-          ignoreStaleApi: seed.fromHarness,
-        });
-        const report = await engine.compress(historyBudget, {
-          knownTokens: Math.max(known, historyBudget + 1),
+        engine.seedWorkingSet(sessionMessages);
+        const report = await engine.compress(contextLimit, {
           force: true,
           sourceSessionMessages: sessionMessages,
         });
@@ -5189,8 +5010,7 @@ export class AgentRuntime {
       }
     } else {
       // legacy：直接对 finalMessages force maybeCompress
-      const compressResult = maybeCompress(finalMessages as never, historyBudget, {
-        knownTokens: estimateMessagesTokens(finalMessages) + 1,
+      const compressResult = maybeCompress(finalMessages as never, contextLimit, {
         force: true,
       });
       finalMessages = compressResult.messages as Array<Record<string, unknown>>;
@@ -5208,38 +5028,19 @@ export class AgentRuntime {
       }
     }
 
-    let estimatedTokens = estimateMessagesTokens(finalMessages);
-    let emergencyTrimmed = false;
-    let dropped = 0;
-
-    // 仍超全包预算 → 紧急截断中间历史（保证可继续发）
-    if (estimatedTokens > fullBudget) {
-      const trim = emergencyTrimMessages(finalMessages, fullBudget, {
-        keepTail: attempt >= 3 ? 4 : 8,
-      });
-      finalMessages = trim.messages;
-      estimatedTokens = trim.estimatedTokens;
-      emergencyTrimmed = trim.trimmed;
-      dropped = trim.dropped;
-      // 同步把截断后的历史尽量写回 harness，便于下轮 seed
-      if (engineEnabled && this.harnessStore && compressedHistory) {
-        try {
-          // 仅标记：下轮仍从 session+harness 走 seed；此处不破坏 session 审计
-        } catch { /* ignore */ }
-      }
-    }
-
-    const beforeTok = estimateMessagesTokens(opts.finalMessages);
+    const trim = emergencyTrimMessages(finalMessages, contextLimit, {
+      keepTail: attempt >= 3 ? 4 : 8,
+    });
+    finalMessages = trim.messages;
+    const emergencyTrimmed = trim.trimmed;
+    const dropped = trim.dropped;
     const surfaceChanged =
-      emergencyTrimmed ||
-      (stage != null && stage !== "activeStage") ||
-      estimatedTokens < beforeTok;
-    const ok = estimatedTokens <= Math.floor(contextLimit * 0.95);
+      emergencyTrimmed || (stage != null && stage !== "activeStage");
     return {
-      ok,
+      ok: surfaceChanged,
       finalMessages,
       compressedHistory,
-      estimatedTokens,
+      estimatedTokens: 0,
       stage,
       originalTokens,
       droppedSummary,

@@ -1,6 +1,21 @@
-import React, { useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Composer } from "../../composer";
+import type { ComposerProps } from "../../composer";
+import {
+  applyMentionPick,
+  filterMentionHits,
+  filterPaletteHits,
+  filterSlashHits,
+  mentionQuery,
+  slashPrefixAtCursor,
+} from "../../composer/commands";
+import { fitComposerHeight } from "../../composer/fit-height";
+import {
+  clipboardToComposerImages,
+  mergeComposerImages,
+  type ComposerImage,
+} from "../../composer/images";
 import type { DraftAgent, DraftMeta } from "../types";
-import { ChromeMark } from "../icons/Marks";
 
 export type ComposerBarProps = {
   draftInput: string;
@@ -12,21 +27,19 @@ export type ComposerBarProps = {
   hasActiveSession: boolean;
   agents: DraftAgent[];
   canRetry: boolean;
+  filePaths?: readonly string[];
   onDraftInputChange: (v: string) => void;
-  onSend: () => void;
+  onSend: (images?: ComposerImage[], text?: string) => void;
   onRetryLast: () => void;
   onCopyTranscript: () => void;
   onAgentChange: (agentId: string) => void;
   onApprovalModeChange: (mode: string) => void;
+  /** Draft local stop — clears busy without live agent. */
   onStop?: () => void;
 };
 
-const TEXTAREA_MIN_PX = 44;
-const TEXTAREA_MAX_PX = 160;
-
 /**
- * Composer card: textarea on top, control row below (8px rhythm).
- * Keeps agent / approval / usage / retry / copy / send|stop.
+ * Draft station adapter — same Composer as live, fixture props in.
  */
 export function ComposerBar({
   draftInput,
@@ -38,6 +51,7 @@ export function ComposerBar({
   hasActiveSession,
   agents,
   canRetry,
+  filePaths = [],
   onDraftInputChange,
   onSend,
   onRetryLast,
@@ -46,192 +60,237 @@ export function ComposerBar({
   onApprovalModeChange,
   onStop,
 }: ComposerBarProps) {
-  // Approval is a float above composer — still allow draft typing / queue send.
-  // Pure running with empty draft shows stop; with text, send stays available.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [inputEpoch, setInputEpoch] = useState(0);
+  const [slashIdx, setSlashIdx] = useState(0);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteIdx, setPaletteIdx] = useState(0);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  const [overlayDismissed, setOverlayDismissed] = useState(false);
+  const [cursor, setCursor] = useState(0);
+  const [images, setImages] = useState<ComposerImage[]>([]);
   const statusError =
     statusHint.includes("拒绝") ||
     statusHint.includes("错误") ||
     /error|denied/i.test(statusHint);
-  const canSend = Boolean(draftInput.trim());
-  const showStop = agentBusy && !pendingApproval && !canSend;
-  const taRef = useRef<HTMLTextAreaElement>(null);
-  const liveAgents = agents.filter((a) => !a.stale);
   const placeholder = pendingApproval
     ? "可先输入下一条… 处理审批后发送"
     : agentBusy
       ? "运行中也可输入… Enter 发送（草稿本地回显）"
       : hasActiveSession
-        ? "输入消息… Enter 发送，Shift+Enter 换行"
+        ? "输入消息… Enter 发送，Shift+Enter 换行 · / 命令 · Ctrl+K"
         : "输入消息将自动创建本地会话…";
 
-  // Auto-grow textarea with the draft (capped) — multi-line UX without manual resize
   useEffect(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    const next = Math.min(
-      TEXTAREA_MAX_PX,
-      Math.max(TEXTAREA_MIN_PX, el.scrollHeight),
-    );
-    el.style.height = `${next}px`;
+    const el = inputRef.current;
+    if (el) fitComposerHeight(el);
   }, [draftInput]);
 
-  return (
-    <div className="codex-composer-dock wire-composer-dock">
-      <div className="composer codex-composer wire-composer">
-        <div className="composer-row-wrap">
-          <div
-            className={`composer-row wire-composer-card${
-              pendingApproval ? " has-pending-approval" : ""
-            }${agentBusy ? " is-busy" : ""}`}
-          >
-            <textarea
-              ref={taRef}
-              className="wire-composer-input"
-              rows={2}
-              placeholder={placeholder}
-              value={draftInput}
-              onChange={(e) => onDraftInputChange(e.target.value)}
-              onKeyDown={(e) => {
-                // IME composition (e.g. 中文): don't send on Enter that confirms candidate
-                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  if (draftInput.trim()) onSend();
-                }
-              }}
-            />
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "k") {
+        ev.preventDefault();
+        setPaletteOpen((v) => !v);
+        setPaletteIdx(0);
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
-            <div className="composer-toolbar wire-composer-toolbar">
-              <div className="composer-toolbar-left wire-composer-tools">
-                <label className="chip-select wire-composer-chip">
-                  <span className="visually-hidden">Agent</span>
-                  <select
-                    value={
-                      agents.find((a) => a.name === meta.agentName)?.id ??
-                      agents[0]?.id ??
-                      ""
-                    }
-                    onChange={(e) => {
-                      const a = agents.find((x) => x.id === e.target.value);
-                      if (a) onAgentChange(a.id);
-                    }}
-                    title="当前 agent"
-                    aria-label="Agent"
-                  >
-                    {liveAgents.length === 0 ? (
-                      <option value="">无可用 agent</option>
-                    ) : (
-                      liveAgents.map((a) => {
-                        const prefix =
-                          a.group === "project"
-                            ? a.projectName || "project"
-                            : "系统";
-                        const sub = `/${a.name}`;
-                        return (
-                          <option key={a.id} value={a.id}>
-                            {prefix}
-                            {a.parent ? ` › ${a.parent}${sub}` : sub}
-                          </option>
-                        );
-                      })
-                    )}
-                  </select>
-                </label>
-
-                <label className="chip-select wire-composer-chip">
-                  <span className="visually-hidden">Approval</span>
-                  <select
-                    value={meta.sandboxMode || "yolo"}
-                    onChange={(e) => onApprovalModeChange(e.target.value)}
-                    title="审批模式"
-                    aria-label="Approval"
-                  >
-                    <option value="normal">normal</option>
-                    <option value="auto">auto</option>
-                    <option value="yolo">yolo</option>
-                    <option value="ask">ask</option>
-                  </select>
-                </label>
-
-                <span className="usage-chip wire-composer-usage" title="上下文用量（模拟）">
-                  {usageLabel}
-                </span>
-
-                <span className="wire-composer-tool-sep" aria-hidden />
-
-                <button
-                  type="button"
-                  className="composer-tool-btn"
-                  disabled={!canRetry}
-                  onClick={onRetryLast}
-                  title="重试上一条"
-                  aria-label="重试上一条"
-                >
-                  <ChromeMark kind="retry" size={14} decorative />
-                </button>
-                <button
-                  type="button"
-                  className="composer-tool-btn"
-                  onClick={onCopyTranscript}
-                  title="复制 transcript"
-                  aria-label="复制 transcript"
-                >
-                  <ChromeMark kind="copy" size={14} decorative />
-                </button>
-              </div>
-
-              <div className="composer-toolbar-right wire-composer-actions">
-                <span
-                  className={`composer-status${statusError ? " is-error" : ""}${
-                    pendingApproval ? " is-approval" : ""
-                  }`}
-                  title={statusHint}
-                >
-                  {pendingApproval
-                    ? "等待审批"
-                    : agentBusy
-                      ? "运行中"
-                      : statusHint}
-                </span>
-                {showStop ? (
-                  <button
-                    type="button"
-                    className="ghost wire-icon-btn wire-composer-stop"
-                    disabled={!onStop}
-                    onClick={() => onStop?.()}
-                    title={
-                      onStop
-                        ? "停止本地 busy 态 · 输入文字可改为发送"
-                        : "停止不可用 · 输入文字可改为发送"
-                    }
-                    aria-label="停止"
-                  >
-                    <ChromeMark kind="stop" size={14} decorative />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="send-btn wire-icon-btn wire-composer-send"
-                    disabled={!canSend}
-                    onClick={onSend}
-                    aria-label="发送"
-                    title={
-                      pendingApproval
-                        ? "发送（将清除当前审批并回显）"
-                        : agentBusy
-                          ? "发送并结束本地 busy 态"
-                          : "发送 (Enter)"
-                    }
-                  >
-                    <ChromeMark kind="send" size={15} decorative />
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+  const slashHits = useMemo(
+    () => filterSlashHits(draftInput, undefined, 8, cursor),
+    [draftInput, cursor],
   );
+  const mentionQ = mentionQuery(draftInput);
+  const mentionHits = useMemo(
+    () => (mentionQ != null ? filterMentionHits(mentionQ, filePaths) : []),
+    [mentionQ, filePaths],
+  );
+  const paletteHits = useMemo(
+    () => filterPaletteHits(draftInput),
+    [draftInput],
+  );
+  const slashOpen =
+    !overlayDismissed &&
+    !paletteOpen &&
+    slashPrefixAtCursor(draftInput, cursor) != null &&
+    slashHits.length > 0;
+  const mentionOpen =
+    !overlayDismissed && !paletteOpen && !slashOpen && mentionQ != null;
+
+  const applySlash = (cmd: string) => {
+    onDraftInputChange(`/${cmd} `);
+    setInputEpoch((n) => n + 1);
+    setPaletteOpen(false);
+    inputRef.current?.focus();
+  };
+
+  const sendDraft = () => {
+    const live = inputRef.current?.value ?? draftInput;
+    if (!live.trim() && !images.length) return;
+    onSend(images, live);
+    onDraftInputChange("");
+    setInputEpoch((n) => n + 1);
+    setImages([]);
+  };
+
+  const onCommandLaunch = useCallback(() => {
+    setPaletteOpen((v) => !v);
+    setPaletteIdx(0);
+    setOverlayDismissed(false);
+    inputRef.current?.focus();
+  }, []);
+
+  const onOverlayDismiss = useCallback(() => {
+    setPaletteOpen(false);
+    setOverlayDismissed(true);
+  }, []);
+
+  const bag: ComposerProps = {
+    variant: "draft",
+    input: draftInput,
+    inputEpoch,
+    busy: agentBusy,
+    pendingApproval,
+    sendMode: "queue",
+    placeholder,
+    statusDisplay: pendingApproval
+      ? "等待审批"
+      : agentBusy
+        ? "运行中"
+        : /已恢复/.test(statusHint)
+          ? ""
+          : statusHint,
+    statusError,
+    slashHits,
+    slashIdx,
+    slashOpen,
+    paletteOpen,
+    paletteHits,
+    paletteIdx,
+    mentionOpen,
+    mentionHits,
+    mentionIdx,
+    filePaths,
+    images,
+    outbox: [],
+    provider: meta.provider,
+    model: meta.model,
+    providers: [],
+    models: [],
+    approval: meta.sandboxMode || "yolo",
+    contextPct: null,
+    canRetry,
+    canSteerQueue: false,
+    inputRef,
+    agents,
+    agentName: meta.agentName,
+    usageLabel,
+    onCursorChange: (n) => setCursor(n),
+    onInputChange: (v) => {
+      onDraftInputChange(v);
+      setCursor(inputRef.current?.selectionStart ?? v.length);
+      setSlashIdx(0);
+      setMentionIdx(0);
+      setOverlayDismissed(false);
+      if (
+        paletteOpen &&
+        slashPrefixAtCursor(
+          v,
+          inputRef.current?.selectionStart ?? v.length,
+        ) == null
+      ) {
+        setPaletteOpen(false);
+      }
+    },
+    onInputKeyDown: (e) => {
+      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+      const hits = paletteOpen
+        ? paletteHits.map((c) => c.name)
+        : mentionOpen
+          ? mentionHits
+          : slashHits;
+      const idx = paletteOpen ? paletteIdx : mentionOpen ? mentionIdx : slashIdx;
+      const setIdx = paletteOpen
+        ? setPaletteIdx
+        : mentionOpen
+          ? setMentionIdx
+          : setSlashIdx;
+      if ((slashOpen || paletteOpen || mentionOpen) && hits.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setIdx((i) => (i + 1) % hits.length);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setIdx((i) => (i - 1 + hits.length) % hits.length);
+          return;
+        }
+        if (e.key === "Tab" && !e.shiftKey) {
+          e.preventDefault();
+          const pick = hits[Math.min(idx, hits.length - 1)];
+          if (pick) {
+            if (mentionOpen) {
+              onDraftInputChange(
+                applyMentionPick(inputRef.current?.value ?? draftInput, pick),
+              );
+              setInputEpoch((n) => n + 1);
+            } else applySlash(pick);
+          }
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setPaletteOpen(false);
+          setOverlayDismissed(true);
+          return;
+        }
+      }
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        if ((inputRef.current?.value ?? draftInput).trim() || images.length) {
+          sendDraft();
+        }
+      }
+    },
+    onSend: sendDraft,
+    onInputPaste: (e) => {
+      const dt = e.clipboardData;
+      const hasImg = Boolean(
+        dt &&
+          ([...dt.files].some((f) => f.type.startsWith("image/")) ||
+            [...dt.items].some(
+              (it) => it.kind === "file" && it.type.startsWith("image/"),
+            )),
+      );
+      if (!hasImg) return;
+      e.preventDefault();
+      void clipboardToComposerImages(dt, images.length).then((extra) => {
+        if (!extra.length) return;
+        setImages((prev) => mergeComposerImages(prev, extra));
+      });
+    },
+    onImagesChange: setImages,
+    onStop,
+    onSlashPick: applySlash,
+    onPalettePick: applySlash,
+    onMentionPick: (path) => {
+      onDraftInputChange(
+        applyMentionPick(inputRef.current?.value ?? draftInput, path),
+      );
+      setInputEpoch((n) => n + 1);
+      inputRef.current?.focus();
+    },
+    onCommandLaunch,
+    onOverlayDismiss,
+    onApprovalChange: onApprovalModeChange,
+    onRetryLast,
+    onCopyTranscript,
+    onAgentChange,
+  };
+
+  return <Composer {...bag} />;
 }

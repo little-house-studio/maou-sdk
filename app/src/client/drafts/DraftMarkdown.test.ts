@@ -78,7 +78,7 @@ describe("DraftMarkdown on showcase inventory", () => {
 
   it("renders GFM-ish tables, blockquotes, and hr", () => {
     const table = renderMd(
-      "| 包 | 职责 |\n|----|------|\n| cli | TUI |\n| webui | 草稿 |\n",
+      "| 包 | 职责 |\n|----|------|\n| cli | TUI |\n| app | 草稿 |\n",
     );
     assert.match(table, /class="dm-table"/);
     assert.match(table, /<th[^>]*>包<\/th>/);

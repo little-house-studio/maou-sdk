@@ -116,6 +116,8 @@ export interface CommandRuntimeRef {
     compactAt: number;
     summaryAt: number;
     archiveAt: number;
+    lastInput: number;
+    lastOutput: number;
   } | null;
 }
 
@@ -436,8 +438,8 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
         content:
           `Context window\n` +
           `  ${bar(snap.pct)} ${snap.pct.toFixed(1)}%\n` +
-          `  Used:      ~${snap.used.toLocaleString()} / ${snap.max.toLocaleString()} token\n` +
-          `  Remaining: ~${snap.remaining.toLocaleString()}\n` +
+          `  Used:      ${snap.used.toLocaleString()} / ${snap.max.toLocaleString()} (last in ${snap.lastInput.toLocaleString()} + out ${snap.lastOutput.toLocaleString()})\n` +
+          `  Remaining: ${snap.remaining.toLocaleString()}\n` +
           `  Thresholds: compact ${snap.compactAt}% · summary ${snap.summaryAt}% · archive ${snap.archiveAt}%`,
         meta: { context: true, ...snap },
       };

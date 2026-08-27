@@ -27,8 +27,8 @@ export const REQUIRED_SCENARIO_IDS: readonly ScenarioId[] = [
 ] as const;
 
 const BASE_META: DraftMeta = {
-  projectPath: "~/maou-sdk/webui",
-  projectLabel: "maou-sdk/webui",
+  projectPath: "~/maou-sdk/app",
+  projectLabel: "maou-sdk/app",
   agentName: "coding",
   sandboxMode: "yolo",
   provider: "openai",
@@ -220,19 +220,19 @@ const DEFAULT_FILES = [
   "maou-sdk/.claude/",
   "maou-sdk/.github/",
   "maou-sdk/.maou/",
-  "maou-sdk/webui/src/client/App.tsx",
-  "maou-sdk/webui/src/client/drafts/DraftShell.tsx",
-  "maou-sdk/webui/src/client/drafts/fixtures.ts",
-  "maou-sdk/webui/src/client/styles.css",
-  "maou-sdk/webui/package.json",
-  "maou-sdk/webui/README.md",
+  "maou-sdk/app/src/client/App.tsx",
+  "maou-sdk/app/src/client/drafts/DraftShell.tsx",
+  "maou-sdk/app/src/client/drafts/fixtures.ts",
+  "maou-sdk/app/src/client/styles.css",
+  "maou-sdk/app/package.json",
+  "maou-sdk/app/README.md",
 ];
 
 const DEFAULT_TERM = [
-  "$ pnpm --filter @little-house-studio/webui dev",
+  "$ pnpm --filter @little-house-studio/app dev",
   "VITE v6  ready in 320 ms",
-  "➜  Local:   http://127.0.0.1:5173/",
-  "server listening on :8787",
+  "Electron renderer ready",
+  "host listening on ipc socket",
   "",
   "[草稿] 模拟终端 — 无真实 PTY",
 ];
@@ -362,10 +362,10 @@ export const FULL_CONTEXT_MESSAGES: DraftMessage[] = [
     clickable: true,
     tool: {
       name: "read_file",
-      description: "webui/src/client/drafts/types.ts",
+      description: "app/src/client/drafts/types.ts",
       args: JSON.stringify({
-        description: "webui/src/client/drafts/types.ts",
-        path: "webui/src/client/drafts/types.ts",
+        description: "app/src/client/drafts/types.ts",
+        path: "app/src/client/drafts/types.ts",
       }),
       result:
         "export type MessageRole =\n  | \"user\"\n  | \"assistant\"\n  | \"system\"\n  | \"tool\"\n  | \"err\"\n  | \"thinking\";",
@@ -427,7 +427,7 @@ export const FULL_CONTEXT_MESSAGES: DraftMessage[] = [
     role: "user",
     body:
       "再压一下长内容与路径换行：" +
-      "/Users/mac/Documents/vscodeProject/maou-sdk/webui/src/client/drafts/".repeat(
+      "/Users/mac/Documents/vscodeProject/maou-sdk/app/src/client/drafts/".repeat(
         2,
       ),
   },
@@ -477,7 +477,7 @@ export const FULL_CONTEXT_MESSAGES: DraftMessage[] = [
         description: "query: wire-shell",
         query: "wire-shell",
       }),
-      result: "matches: 12\nwebui/src/client/drafts/draft.css:1",
+      result: "matches: 12\napp/src/client/drafts/draft.css:1",
       done: true,
       durationMs: 55,
     },
@@ -491,7 +491,7 @@ export const FULL_CONTEXT_MESSAGES: DraftMessage[] = [
   {
     id: "fc-orphan-err",
     role: "err",
-    body: "ECONNREFUSED 127.0.0.1:8787 — 后端离线（纯草稿场景下属预期）。",
+    body: "host 离线（纯草稿场景下属预期）。",
     meta: { ts: Date.UTC(2026, 6, 31, 6, 38, 12), authorLabel: "error" },
   },
   {
@@ -1164,13 +1164,118 @@ function cloneMessages(
   return out;
 }
 
+export function applyForkSession(
+  state: LocalDraftState,
+  parentId: string,
+  now = Date.now(),
+): LocalDraftState {
+  const parent = state.sessions.find((s) => s.id === parentId);
+  if (!parent) return state;
+  const id = `${parentId}::fork::draft::${now.toString(36)}`;
+  const next: DraftSession = {
+    id,
+    title: `${parent.title} · 派生`,
+    agent: parent.agent,
+    timeLabel: "刚刚",
+    parentSessionId: parentId,
+  };
+  const parentMsgs = (state.messagesBySession[parentId] ?? []).map((m, i) => ({
+    ...m,
+    id: `${id}-${i}-${m.id}`,
+  }));
+  return {
+    ...state,
+    sessions: [next, ...state.sessions],
+    activeSessionId: id,
+    messagesBySession: {
+      ...state.messagesBySession,
+      [id]: parentMsgs.length
+        ? parentMsgs
+        : [
+            {
+              id: `${id}-sys`,
+              role: "system",
+              body: "派生会话 — 复制了父会话上下文。",
+            },
+          ],
+    },
+    agentBusy: false,
+    pendingApproval: null,
+    statusHint: "草稿 · 仅本地",
+  };
+}
+
+export function applyChildSession(
+  state: LocalDraftState,
+  parentId: string,
+  now = Date.now(),
+): LocalDraftState {
+  const parent = state.sessions.find((s) => s.id === parentId);
+  if (!parent) return state;
+  const id = `s-child-${now}`;
+  const next: DraftSession = {
+    id,
+    title: "子会话",
+    agent: parent.agent,
+    timeLabel: "刚刚",
+    parentSessionId: parentId,
+  };
+  return {
+    ...state,
+    sessions: [next, ...state.sessions],
+    activeSessionId: id,
+    messagesBySession: {
+      ...state.messagesBySession,
+      [id]: [
+        {
+          id: `${id}-sys`,
+          role: "system",
+          body: `子会话 — 挂在「${parent.title}」下。消息只保存在本地。`,
+        },
+      ],
+    },
+    agentBusy: false,
+    pendingApproval: null,
+    statusHint: "草稿 · 仅本地",
+  };
+}
+
+export function applyDraftSlash(
+  state: LocalDraftState,
+  text: string,
+  now = Date.now(),
+): LocalDraftState | null {
+  const trimmed = text.trim();
+  const m = trimmed.match(/^\/([a-z]+)(?:\s+(.*))?$/i);
+  if (!m) return null;
+  const cmd = m[1]!.toLowerCase();
+  if (cmd === "new") return applyNewSession(state, now);
+  if (cmd === "fork" && state.activeSessionId) {
+    return applyForkSession(state, state.activeSessionId, now);
+  }
+  if (cmd === "clear" && state.activeSessionId) {
+    return {
+      ...state,
+      messagesBySession: {
+        ...state.messagesBySession,
+        [state.activeSessionId]: [],
+      },
+      statusHint: "已清空会话",
+    };
+  }
+  return null;
+}
+
 export function applyLocalSend(
   state: LocalDraftState,
   text: string,
   now = Date.now(),
+  images?: DraftMessage["images"],
 ): LocalDraftState {
+  const slash = applyDraftSlash(state, text, now);
+  if (slash) return slash;
   const trimmed = text.trim();
-  if (!trimmed) return state;
+  if (!trimmed && !images?.length) return state;
 
   let activeSessionId = state.activeSessionId;
   let sessions = state.sessions;
@@ -1180,7 +1285,7 @@ export function applyLocalSend(
     activeSessionId = `local-${now}`;
     const created: DraftSession = {
       id: activeSessionId,
-      title: trimmed.slice(0, 42) || "未命名",
+      title: trimmed.slice(0, 42) || (images?.length ? "附图" : "未命名"),
       agent: state.meta.agentName || "coding",
       timeLabel: "刚刚",
     };
@@ -1192,11 +1297,14 @@ export function applyLocalSend(
     id: `u-${now}`,
     role: "user",
     body: trimmed,
+    ...(images?.length ? { images } : {}),
   };
   const echo: DraftMessage = {
     id: `a-${now}`,
     role: "assistant",
-    body: `（草稿回显）收到：${trimmed}`,
+    body: images?.length
+      ? `（草稿回显）收到${trimmed ? `：${trimmed}` : ""} · 附图 ×${images.length}`
+      : `（草稿回显）收到：${trimmed}`,
   };
   const prev = messagesBySession[activeSessionId] ?? [];
   return {

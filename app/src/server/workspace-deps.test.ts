@@ -1,5 +1,5 @@
 /**
- * 防止 webui 再引用未声明的 workspace 包（官方 `pnpm -r build` 会 TS2307 死掉）。
+ * 防止 app 再引用未声明的 workspace 包（官方 `pnpm -r build` 会 TS2307 死掉）。
  */
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
-const webuiRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function walkTs(dir: string, acc: string[] = []): string[] {
   if (!existsSync(dir)) return acc;
@@ -19,9 +19,9 @@ function walkTs(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
-describe("webui workspace deps", () => {
+describe("app workspace deps", () => {
   it("every @little-house-studio import is declared in package.json", () => {
-    const pkg = JSON.parse(readFileSync(join(webuiRoot, "package.json"), "utf8")) as {
+    const pkg = JSON.parse(readFileSync(join(appRoot, "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
     };
@@ -31,7 +31,7 @@ describe("webui workspace deps", () => {
     ]);
     const missing = new Set<string>();
     const re = /from\s+["'](@little-house-studio\/[^/"']+)/g;
-    for (const f of walkTs(join(webuiRoot, "src"))) {
+    for (const f of walkTs(join(appRoot, "src"))) {
       const text = readFileSync(f, "utf8");
       let m: RegExpExecArray | null;
       while ((m = re.exec(text))) {

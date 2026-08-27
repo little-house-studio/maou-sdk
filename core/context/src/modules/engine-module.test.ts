@@ -6,7 +6,6 @@ import { AutoCompressSession } from "../auto-compress.js";
 import { ContextEngine } from "../context-engine.js";
 import { HarnessSessionStore } from "../harness-session-store.js";
 import { TaskSessionStore } from "../task-session-store.js";
-import { estimateTokens } from "../token-estimate.js";
 import type { MaouMessage } from "../types/message.js";
 import {
   registerContextModule,
@@ -99,14 +98,23 @@ describe("ContextEngine × 模块", () => {
     const session = sessionMsgs(18);
     const engine = new ContextEngine({ sessionId, harnessStore: harness, taskStore });
     engine.seedWorkingSet(session);
-    const before = estimateTokens(engine.getHistory());
-    const report = await engine.compress(Math.max(1500, Math.floor(before * 0.35)), {
-      knownTokens: before + 8000,
+    const beforeLen = engine.getHistory().length;
+    const beforeChars = engine
+      .getHistory()
+      .map((m) => m.contents.map((c) => c.text).join(""))
+      .join("").length;
+    const report = await engine.compress(1500, {
+      knownTokens: 20_000,
       force: true,
       sourceSessionMessages: session,
     });
     expect(report.stage).not.toBe("activeStage");
-    expect(estimateTokens(engine.getHistory())).toBeLessThan(before);
+    const afterChars = engine
+      .getHistory()
+      .map((m) => m.contents.map((c) => c.text).join(""))
+      .join("").length;
+    expect(engine.getHistory().length).toBeLessThanOrEqual(beforeLen);
+    expect(afterChars).toBeLessThan(beforeChars);
     const text = engine
       .getHistory()
       .map((m) => m.contents.map((c) => c.text).join(""))
@@ -185,6 +193,7 @@ describe("AutoCompressSession × 模块", () => {
       mode: "legacy",
       maxTokens: 200,
       enabled: true,
+      knownTokens: 200,
       legacy: { ...DEFAULT_LEGACY_CONFIG, triggerPercent: 1, keepRecentRounds: 1 },
     });
     for (let i = 0; i < 6; i++) {

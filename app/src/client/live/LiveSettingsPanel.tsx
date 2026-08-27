@@ -7,25 +7,15 @@
  * + 终端审批
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import {
-  fetchLlmConfig,
-  fetchMeta,
-  fetchModels,
-  parseLlmClipboard,
-  fetchSvgProbeGallery,
-  runLlmSvgProbe,
-  saveLlmConfig,
-  setApprovalMode,
-  setModel,
-  setSvgProbeReference,
-  testLlmConnection,
-  type ApprovalMode,
-  type LlmConfigPresetDto,
-  type LlmConfigRoles,
-  type LlmConfigSnapshot,
-  type LlmConnectionTestResult,
-  type Meta,
-  type SvgProbeGalleryItem,
+import { useAppPorts } from "../ports";
+import type {
+  ApprovalMode,
+  LlmConfigPresetDto,
+  LlmConfigRoles,
+  LlmConfigSnapshot,
+  LlmConnectionTestResult,
+  Meta,
+  SvgProbeGalleryItem,
 } from "../api";
 import { UiEmoji } from "../ui-emoji";
 import {
@@ -41,6 +31,7 @@ import {
   type LiveSettingsSectionId,
   type LiveSettingsSnapshot,
 } from "./settings-adapters";
+import { applySheetTheme, readSheetTheme, type SheetTheme } from "../theme";
 import { PasteFillCard } from "../settings/PasteFillCard";
 import {
   applyLivePasteToRows,
@@ -192,11 +183,29 @@ export function LiveSettingsPanel({
   onMetaChange,
   presentation = "page",
 }: LiveSettingsPanelProps) {
+  const {
+    fetchLlmConfig,
+    fetchMeta,
+    fetchModels,
+    parseLlmClipboard,
+    fetchSvgProbeGallery,
+    runLlmSvgProbe,
+    saveLlmConfig,
+    setApprovalMode,
+    setModel,
+    setSvgProbeReference,
+    testLlmConnection,
+  } = useAppPorts().settings;
   const [snap, setSnap] = useState<LiveSettingsSnapshot>(() =>
     emptyLiveSettingsSnapshot(true),
   );
   const [section, setSection] =
     useState<LiveSettingsSectionId>("runtime_defaults");
+  const [sheetTheme, setSheetTheme] = useState<SheetTheme>(() =>
+    typeof document === "undefined"
+      ? "light"
+      : readSheetTheme(typeof localStorage === "undefined" ? null : localStorage),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
@@ -865,6 +874,46 @@ export function LiveSettingsPanel({
               </button>
             ))}
           </nav>
+
+          {section === "appearance" ? (
+            <section
+              className="wire-settings-section"
+              data-live-settings-section="appearance"
+            >
+              <div className="wire-settings-section-head">
+                <h3 className="wire-settings-h">外观</h3>
+                <p className="wire-settings-desc">
+                  两套色表。亮色是纸上中暗重点色；暗色只亮一种荧光绿。
+                </p>
+              </div>
+              <div className="wire-settings-theme-row" role="radiogroup" aria-label="色表">
+                {(["light", "dark"] as const).map((id) => {
+                  const on = sheetTheme === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      role="radio"
+                      aria-checked={on}
+                      className={`wire-settings-theme-pick${on ? " active" : ""}`}
+                      data-sheet-theme={id}
+                      onClick={() => {
+                        applySheetTheme(
+                          id,
+                          document.documentElement,
+                          localStorage,
+                        );
+                        setSheetTheme(id);
+                        setStatus(id === "dark" ? "已切到暗色" : "已切到亮色");
+                      }}
+                    >
+                      {id === "light" ? "亮色" : "暗色"}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
 
           {/* ── 1. LLM：厂商连接 + 组内多模型 ── */}
           {section === "llm" ? (

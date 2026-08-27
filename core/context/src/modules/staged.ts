@@ -3,7 +3,6 @@
  */
 
 import { compressMaou } from "../compressor.js";
-import { estimateTokens } from "../token-estimate.js";
 import type { CompressionStage } from "../types/compression.js";
 import type { MaouMessage } from "../types/message.js";
 import type {
@@ -78,19 +77,18 @@ export const stagedContextModule: ContextModule<StagedCompressConfig> = {
   defaultConfig: { ...DEFAULT_STAGED_CONFIG, progressive: false },
 
   shouldCompress(ctx: ContextCompressContext<StagedCompressConfig>): boolean {
-    const tokens = ctx.knownTokens && ctx.knownTokens > 0
-      ? Math.max(ctx.knownTokens, estimateTokens(ctx.history))
-      : estimateTokens(ctx.history);
+    const tokens = ctx.knownTokens != null && ctx.knownTokens > 0 ? ctx.knownTokens : 0;
+    if (tokens <= 0) return false;
     return tokens >= Math.floor((ctx.maxTokens * ctx.config.compactTriggerPercent) / 100);
   },
 
   async compress(ctx: ContextCompressContext<StagedCompressConfig>): Promise<ContextModuleResult> {
-    const historyTokens = estimateTokens(ctx.history);
     const tokens =
-      ctx.knownTokens != null && ctx.knownTokens > 0
-        ? Math.max(ctx.knownTokens, historyTokens)
-        : historyTokens;
-    const required = requiredStage(tokens / ctx.maxTokens, ctx.config);
+      ctx.knownTokens != null && ctx.knownTokens > 0 ? ctx.knownTokens : 0;
+    const required = requiredStage(
+      ctx.maxTokens > 0 ? tokens / ctx.maxTokens : 0,
+      ctx.config,
+    );
 
     if (!ctx.force && required === "activeStage") {
       return idle(ctx.history, tokens);
@@ -110,11 +108,11 @@ export const stagedContextModule: ContextModule<StagedCompressConfig> = {
       sessionId: ctx.sessionId,
       maxStage,
       activeTaskIds: ctx.activeTaskIds,
-      knownTokens: ctx.knownTokens,
+      knownTokens: tokens,
       force: ctx.force,
-      retainTokens: ctx.force
+      retainCount: ctx.force
         ? 1
-        : Math.max(1, Math.floor(ctx.maxTokens * retainRatio)),
+        : Math.max(1, Math.floor(ctx.history.length * retainRatio)),
     });
 
     return {

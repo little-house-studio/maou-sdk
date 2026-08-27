@@ -49,6 +49,32 @@ describe("session-stats", () => {
     assert.equal(s.inputTokens, 100);
     assert.equal(s.outputTokens, 20);
     assert.equal(s.cacheRead, 40);
+    assert.equal(s.lastInputTokens, 100);
+    assert.equal(s.lastOutputTokens, 20);
+    assert.equal(s.contextUsed, 120);
+  });
+
+  it("clears occupancy after a later compress event", () => {
+    const dir = join(root, ".maou", "sessions");
+    const sid2 = "test-session-compact";
+    writeFileSync(
+      join(dir, `${sid2}.jsonl`),
+      [
+        JSON.stringify({
+          type: "message",
+          role: "assistant",
+          usage: { prompt_tokens: 100, completion_tokens: 20 },
+        }),
+        JSON.stringify({ type: "compact", content: "上下文已压缩" }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const s = collectSessionStats(root, sid2);
+    assert.equal(s.inputTokens, 100);
+    assert.equal(s.outputTokens, 20);
+    assert.equal(s.contextUsed, 0);
+    assert.equal(s.lastInputTokens, 0);
+    assert.equal(s.lastOutputTokens, 0);
   });
 
   it("formats readable text", () => {

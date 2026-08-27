@@ -51,19 +51,26 @@
 .live-shell .thread-new,
 .live-shell .wire-new-task-btn.thread-new {
   width: 100%;
-  margin-bottom: 8px;
-  border: 1px solid var(--n-line-solid, #3d3834);
-  background: var(--n-surface, #3d3834);
-  color: var(--n-label, #f5f0e8);
+  margin: 0.5em 0 0.2em;
+  border: 1px solid var(--n-line-solid, #9b9b9b);
+  background: transparent;
+  color: var(--n-label, #000000);
   border-radius: 0;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 8px 10px;
+  font: inherit;
+  font-weight: 400;
+  padding: 0 0.4em;
+  min-height: calc(1.3125em * 1.4);
+  justify-content: flex-start;
+}
+
+.live-shell .thread-new::before {
+  content: none;
 }
 
 .live-shell .thread-new:hover,
 .live-shell .wire-new-task-btn.thread-new:hover {
-  background: var(--n-hover, #524c45);
+  background: transparent;
+  color: var(--n-info, #0291FF);
 }
 
 .live-shell .wire-session-agent-label {
@@ -138,12 +145,13 @@
 }
 
 /* Draft ContextPanel parity: floating composer + approval stack */
-.live-shell .wire-context .wire-float-bottom {
+.live-shell .wire-context .wire-float-bottom,
+.live-shell .wire-context .wire-composer-frame {
   flex-shrink: 0;
   width: 100%;
-  max-width: var(--center-max, 100%);
-  margin: 0 auto;
-  padding: 0 var(--center-pad-x, 16px) 12px;
+  max-width: none;
+  margin: 0;
+  padding: 0;
   box-sizing: border-box;
   z-index: 6;
 }
@@ -164,8 +172,8 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: var(--n-rail, #282522);
-  border-left: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-rail, #ededed);
+  border-left: none;
 }
 
 .live-shell .live-files-rail-stack {
@@ -188,9 +196,9 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--n-line-solid, #3d3834);
+  border-top: 1px solid var(--n-line-solid, #9b9b9b);
   overflow: hidden;
-  background: var(--n-bg, #1a1817);
+  background: var(--n-bg, #ededed);
 }
 
 .live-shell .live-files-editor-head {
@@ -202,8 +210,8 @@
   font-size: 11px;
   color: var(--n-secondary, #c9c2b6);
   flex: 0 0 auto;
-  background: var(--n-elevated, #282522);
-  border-bottom: 1px solid var(--n-line-solid, #3d3834);
+  background: var(--n-elevated, #ededed);
+  border-bottom: 1px solid var(--n-line-solid, #9b9b9b);
 }
 
 .live-shell .live-files-editor-path {
@@ -219,8 +227,8 @@
   min-height: 0;
   overflow: auto;
   padding: 12px 14px;
-  background: var(--n-bg, #1a1817);
-  color: var(--n-label, #f5f0e8);
+  background: var(--n-bg, #ededed);
+  color: var(--n-label, #000000);
 }
 
 .live-shell .live-files-preview-body.wire-project-preview {
@@ -233,7 +241,9 @@
   flex: 0 0 auto;
   padding: 8px 10px;
   font-size: 11px;
-  color: var(--n-warn, #ffd900);
+  color: var(--n-err, #ff741d);
+  border-top: 1px solid var(--n-line-solid, #9b9b9b);
+  background: var(--n-bg, #ededed);
 }
 
 .live-shell .live-project-host .md-workbench {
@@ -242,16 +252,26 @@
   height: 100%;
 }
 
-/* 项目模式：与草稿一致，占满 mid，不出现全黑塌缩 */
-.live-shell .wire-mid.is-project {
+/* Body is a row: left aside + mid stack + right aside. */
+.live-shell .wire-body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.live-shell .wire-mid.is-project,
+.live-shell .wire-mid.is-settings,
+.live-shell .wire-mid.is-team {
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--n-bg, #0e0e11);
-  color: var(--n-label, #f5f0e8);
+  background: var(--n-bg, #ededed);
+  color: var(--n-label, #000);
 }
 
 .live-shell .live-project-host {
@@ -262,8 +282,8 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--n-bg, #0e0e11);
-  color: var(--n-label, #f5f0e8);
+  background: var(--n-bg, #ededed);
+  color: var(--n-label, #000);
 }
 
 .live-shell .live-project-host > .wire-project,
@@ -462,9 +482,15 @@
 }
 
 .live-shell .wire-project-preview .dm-code,
-.live-shell .wire-project-preview .dm-pre,
-.live-shell .wire-project-preview pre,
 .live-shell .wire-project-preview code {
+  background: #d0d0d0;
+  color: #000;
+  font-weight: 700;
+  border-radius: 0;
+}
+
+.live-shell .wire-project-preview .dm-pre,
+.live-shell .wire-project-preview pre {
   background: var(--n-elevated, #282522);
   color: var(--n-secondary, #c9c2b6);
   border-radius: 0;
@@ -1449,4 +1475,80 @@
     border-right: none;
     border-bottom: 1px solid var(--n-line-solid, #3d3834);
   }
+}
+
+/* Column flush; composer card is inset 24px so it floats in the mid cell. */
+.live-shell .wire-center,
+.live-shell .wire-context,
+.live-shell [data-composer],
+.live-shell [data-composer] .composer,
+.live-shell [data-composer] .composer-row-wrap,
+.live-shell [data-composer] .composer-row,
+.live-shell .codex-composer-dock,
+.live-shell .composer.codex-composer {
+  width: 100% !important;
+  max-width: none !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  box-sizing: border-box !important;
+}
+.live-shell .wire-composer-frame,
+.live-shell .wire-float-bottom {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 var(--thread-inset, 24px) 24px !important;
+  box-sizing: border-box !important;
+}
+.live-shell [data-composer] .composer-row,
+.live-shell [data-composer] .composer-row.wire-composer-card {
+  border: 1px solid var(--n-line-solid, #9b9b9b) !important;
+  border-radius: 0 !important;
+  background: var(--n-bg, #ededed) !important;
+}
+.live-shell [data-composer] .composer-row:focus-within,
+.live-shell [data-composer] .composer-row.wire-composer-card:focus-within {
+  border: 1px solid var(--n-label, #000000) !important;
+}
+.live-shell [data-composer] .composer-footer,
+.live-shell [data-composer-footer] {
+  display: none !important;
+}
+.live-shell [data-composer] textarea.wire-composer-input {
+  padding-left: 24px !important;
+  padding-right: 24px !important;
+}
+.live-shell [data-composer] .composer-toolbar {
+  padding-left: 24px !important;
+  padding-right: 24px !important;
+}
+
+.live-shell .md-tree-row.file.active,
+.live-shell .md-mode-tabs button.active,
+.live-shell .md-title-row.active,
+.live-shell .do-tree-row.active,
+.live-shell .thread-item-row.active .thread-item,
+.live-shell .term-item.active,
+.live-shell .term-session-chip.is-active,
+.live-shell .proactive-zone-chip.is-on,
+.live-shell .wire-mode-tabs button.active,
+.live-shell .wire-topbar .wire-mode-tabs button.active,
+.live-shell .wire-topbar .wire-text-btn.on,
+.live-shell .wire-agent-scope-tab.is-active,
+.live-shell .wire-agent-item.active,
+.live-shell .wire-agent-item.active.is-stale,
+.live-shell .wire-session-row.active .wire-session-btn,
+.live-shell .vsc-tree-row.is-selected,
+.live-shell .wire-settings-nav-item.active,
+.live-shell .wire-settings-preset-item.is-selected,
+.live-shell .slash-item.active {
+  background: var(--n-on, #000) !important;
+  color: var(--n-on-ink, #ededed) !important;
+  box-shadow: none !important;
+  border-color: var(--n-on, #000) !important;
+}
+.live-shell .wire-agent-item.active {
+  opacity: 1 !important;
 }

@@ -5,7 +5,6 @@
 import type { MaouMessage } from "./types/message.js";
 import type { CompressionStage } from "./types/compression.js";
 import type { Summarizer } from "./compressor.js";
-import { estimateTokens } from "./token-estimate.js";
 import {
   DEFAULT_LEGACY_CONFIG,
   DEFAULT_STAGED_CONFIG,
@@ -30,6 +29,8 @@ export interface AutoCompressConfig {
   mode: CompressMode;
   summarizer?: Summarizer;
   sessionId?: string;
+  /** 上一条回报的占用（input+output）。无值则不自动压。 */
+  knownTokens?: number;
   legacy: LegacyCompressConfig;
   staged: StagedCompressConfig;
   /** 自定义模块的配置，按 id 取 */
@@ -92,7 +93,7 @@ export function toModuleContext(
     sessionId: config.sessionId,
     currentStage,
     force: extras?.force,
-    knownTokens: extras?.knownTokens,
+    knownTokens: extras?.knownTokens ?? config.knownTokens,
     activeTaskIds: extras?.activeTaskIds,
     config: moduleConfigFor(config, config.mode),
   };
@@ -151,7 +152,9 @@ export class AutoCompressSession {
   }
 
   getCurrentTokens(): number {
-    return estimateTokens(this.history);
+    return this.config.knownTokens != null && this.config.knownTokens > 0
+      ? this.config.knownTokens
+      : 0;
   }
 
   getHistoryLength(): number {

@@ -41,7 +41,7 @@ export function initAgentTerminalEngine(maouRoot?: string, projectRoot?: string)
     return true;
   } catch (e) {
     console.warn(
-      "[webui] 终端后端初始化失败:",
+      "[app] 终端后端初始化失败:",
       e instanceof Error ? e.message : e,
     );
     return false;

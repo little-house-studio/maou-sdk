@@ -1,5 +1,6 @@
 import type { DraftSession } from "../types";
-import { ChromeMark } from "../icons/Marks";
+import { flattenSessionForest } from "../session-ancestry";
+import { hierarchyIndentPx } from "../visual-marks";
 
 export type SessionListProps = {
   /** Sessions for the currently selected agent only */
@@ -13,6 +14,8 @@ export type SessionListProps = {
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete?: (id: string) => void;
+  onFork?: (parentId: string) => void;
+  onNewChild?: (parentId: string) => void;
 };
 
 /** Single-line rows: this agent's internal session list */
@@ -25,8 +28,11 @@ export function SessionList({
   onSelect,
   onNew,
   onDelete,
+  onFork,
+  onNewChild,
 }: SessionListProps) {
   const running = new Set(runningSessionIds);
+  const forest = flattenSessionForest(sessions);
   return (
     <section
       className={`wire-session-list${busy ? " is-busy" : ""}${
@@ -36,53 +42,61 @@ export function SessionList({
     >
       <div className="wire-new-task-wrap">
         <button type="button" className="wire-new-task-btn" onClick={onNew}>
-          <ChromeMark kind="new" size={14} decorative />
           新建会话
         </button>
       </div>
       <div className="wire-pane-title">
-        <span className="wire-pane-title-with-icon">
-          <ChromeMark kind="session" size={12} decorative />
-          会话
-          {agentLabel ? (
-            <span className="wire-session-agent-label">{agentLabel}</span>
-          ) : null}
-        </span>
+        会话{agentLabel ? ` · ${agentLabel}` : ""}
       </div>
       <div className="wire-session-scroll">
         {sessions.length === 0 ? (
-          <div className="wire-empty sm">
-            {agentLabel ? `暂无 ${agentLabel} 的会话` : "暂无会话"}
+          <div className="wire-empty-row">
+            {agentLabel ? `还没有会话` : "还没有会话"}
           </div>
         ) : (
-          sessions.map((s) => (
+          forest.map(({ node: s, depth }) => (
             <div
               key={s.id}
               className={`wire-session-row${s.id === activeId ? " active" : ""}${
                 running.has(s.id) ? " is-running" : ""
-              }`}
+              }${depth > 0 ? " is-child" : ""}`}
             >
               <button
                 type="button"
                 className="wire-session-btn"
+                style={{ paddingLeft: hierarchyIndentPx(depth, 12, 8) }}
                 onClick={() => onSelect(s.id)}
                 title={
                   running.has(s.id) ? `${s.title} · 生成中` : s.title
                 }
               >
-                <span
-                  className={`wire-session-icon${
-                    running.has(s.id) ? " is-running" : ""
-                  }`}
-                  aria-hidden
-                >
-                  <ChromeMark kind="session" size={13} decorative />
-                </span>
                 <span className="wire-session-title">{s.title}</span>
                 <span className="wire-session-time">
                   {running.has(s.id) ? "运行中" : s.timeLabel}
                 </span>
               </button>
+              {onFork ? (
+                <button
+                  type="button"
+                  className="wire-session-fork"
+                  title="派生"
+                  aria-label={`派生 ${s.title}`}
+                  onClick={() => onFork(s.id)}
+                >
+                  派生
+                </button>
+              ) : null}
+              {onNewChild ? (
+                <button
+                  type="button"
+                  className="wire-session-child"
+                  title="新建子会话"
+                  aria-label={`新建 ${s.title} 的子会话`}
+                  onClick={() => onNewChild(s.id)}
+                >
+                  子
+                </button>
+              ) : null}
               {onDelete && (
                 <button
                   type="button"

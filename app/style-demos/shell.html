@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="plate">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 单元网格</title>
+    <style>
+      /*
+       * Sheet stroke from https://beckmans.college/2024/sv
+       * --line #9b9b9b on --bg #ededed
+       * row = border-bottom 1px; cell = border-left 1px; gap 0
+       * empty cells still draw the stroke
+       */
+      :root {
+        --bg: #ededed;
+        --ink: #000000;
+        --dim: #828282;
+        --line: #9b9b9b;
+        --link: #1400ff;
+        --on: #ededed;
+        --fill: #ededed;
+        --row: 1.3125em;
+        --hit: 11px;
+      }
+      html[data-theme="phosphor"] {
+        --bg: #0b0b0b;
+        --ink: #ecece8;
+        --dim: #8a8a84;
+        --line: #5c5c58;
+        --link: #c8ff2a;
+        --on: #0b0b0b;
+        --fill: #101010;
+      }
+      html[data-theme="amber"] {
+        --bg: #0e0d0a;
+        --ink: #efe6cc;
+        --dim: #8a8068;
+        --line: #5e5848;
+        --link: #ffb000;
+        --on: #0e0d0a;
+        --fill: #14120c;
+      }
+      html[data-theme="ice"] {
+        --bg: #08090b;
+        --ink: #e4eaf0;
+        --dim: #7a8692;
+        --line: #4e555c;
+        --link: #7dffd2;
+        --on: #08090b;
+        --fill: #0c0e11;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font: 400 max(0.95rem, 0.7vw) / var(--row) Helvetica Neue, Helvetica, Arial, "PingFang SC", sans-serif;
+      }
+      button, textarea, a { font: inherit; color: inherit; }
+      button { background: none; border: 0; padding: 0; cursor: pointer; }
+      a { text-decoration: none; }
+      @media (hover: hover) {
+        a:hover, button:hover { color: var(--link); }
+      }
+
+      .sheet {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        min-width: 0;
+      }
+
+      .table {
+        display: grid;
+        grid-template-columns: repeat(72, minmax(0, 1fr));
+        column-gap: 0;
+        row-gap: 0;
+        border-bottom: 1px solid var(--line);
+        min-width: 0;
+      }
+      .cell {
+        border-left: 1px solid var(--line);
+        min-width: 0;
+        min-height: var(--row);
+      }
+
+      .empty { height: var(--row); }
+      .empty .cell {
+        display: block;
+        height: var(--row);
+        min-height: var(--row);
+      }
+
+      .index { height: calc(var(--row) * 2); }
+      .index .id { grid-column: span 28; padding: 0 0.2em; display: flex; align-items: center; }
+      .index .cell { display: grid; place-items: center; color: var(--dim); }
+      .index .id { display: flex; justify-content: start; color: var(--ink); }
+      .index a { width: 100%; height: 100%; display: grid; place-items: center; }
+      .index .to-dir { grid-column: span 8; }
+      .index .swatch { grid-column: span 9; }
+      .index .on { color: var(--link); }
+
+      .app {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: calc(var(--row) * 2) minmax(0, 1fr) calc(var(--row) * 2);
+      }
+
+      .top .brand { grid-column: span 12; display: flex; align-items: center; padding: 0 0.2em; }
+      .top .modes { grid-column: span 40; display: flex; align-items: center; justify-content: center; gap: 1.6em; }
+      .top .meta { grid-column: span 20; display: flex; align-items: center; justify-content: end; gap: 1.2em; padding: 0 0.2em; color: var(--dim); }
+      .top button.on { color: var(--ink); box-shadow: inset 0 -1px 0 var(--link); }
+
+      .mid {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: repeat(72, minmax(0, 1fr));
+        border-bottom: 1px solid var(--line);
+      }
+      .rail { grid-column: span 16; }
+      .center { grid-column: span 40; }
+      .files { grid-column: span 16; }
+      .rail, .files, .center {
+        border-left: 1px solid var(--line);
+        min-width: 0;
+        min-height: 0;
+        position: relative;
+      }
+      .rail, .files {
+        padding: 0.2em 0.4em 0.6em;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+      }
+      .center {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+      }
+
+      .grip {
+        position: absolute;
+        z-index: 2;
+        background: transparent;
+      }
+      .grip-v {
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: var(--hit);
+        transform: translateX(-50%);
+        cursor: col-resize;
+      }
+      .grip-h {
+        left: 0;
+        right: 0;
+        top: 0;
+        height: var(--hit);
+        transform: translateY(-50%);
+        cursor: row-resize;
+      }
+      .grip:hover { background: color-mix(in srgb, var(--link) 35%, transparent); }
+
+      .lbl { color: var(--dim); margin: 0.7em 0 0.15em; }
+      .tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; border-bottom: 1px solid var(--line); }
+      .tabs button {
+        height: calc(var(--row) * 1.4);
+        color: var(--dim);
+        border-left: 1px solid var(--line);
+      }
+      .tabs button:first-child { border-left: 0; }
+      .tabs button.on { color: var(--ink); box-shadow: inset 0 -1px 0 var(--link); }
+      .row { display: flex; align-items: center; gap: 0.45em; min-height: var(--row); }
+      .row.mute { color: var(--dim); }
+      .dot { width: 0.35em; height: 0.35em; background: var(--link); }
+      .cell-btn {
+        display: block;
+        width: 100%;
+        min-height: calc(var(--row) * 1.4);
+        margin: 0.5em 0 0.2em;
+        border: 1px solid var(--line);
+        text-align: left;
+        padding: 0 0.4em;
+      }
+
+      .thread {
+        overflow: auto;
+        display: grid;
+        place-items: center;
+        padding: 1.4em;
+        min-height: 0;
+      }
+      .hero { width: min(26em, 100%); }
+      .hero .k { color: var(--dim); margin: 0 0 0.4em; }
+      .hero h2 {
+        margin: 0 0 0.35em;
+        font-size: 1.7em;
+        font-weight: 400;
+        letter-spacing: -0.03em;
+        line-height: 1.15;
+      }
+      .hero p { margin: 0; color: var(--dim); }
+
+      .composer { border-top: 1px solid var(--line); padding: 0.4em; position: relative; }
+      .well { border: 1px solid var(--line); background: var(--fill); }
+      .well:focus-within { border-color: var(--ink); }
+      .well textarea {
+        width: 100%;
+        min-height: calc(var(--row) * 3);
+        resize: none;
+        border: 0;
+        outline: none;
+        background: transparent;
+        color: var(--ink);
+        padding: 0.4em 0.5em 0.2em;
+      }
+      .well textarea::placeholder { color: var(--dim); }
+      .tools {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.4em;
+        padding: 0.25em 0.3em;
+        border-top: 1px solid var(--line);
+      }
+      .tools-l, .tools-r { display: flex; gap: 0.35em; align-items: center; }
+      .sq, .send {
+        width: 1.4em;
+        height: 1.4em;
+        border: 1px solid var(--line);
+        display: grid;
+        place-items: center;
+      }
+      .send { background: var(--link); color: var(--on); border-color: var(--link); }
+      .seg { display: grid; grid-template-columns: 1fr 1fr 1fr; border: 1px solid var(--line); }
+      .seg button {
+        height: 1.4em;
+        padding: 0 0.4em;
+        color: var(--dim);
+        border-left: 1px solid var(--line);
+      }
+      .seg button:first-child { border-left: 0; }
+      .seg button.on { color: var(--ink); box-shadow: inset 0 -1px 0 var(--link); }
+
+      .tree { color: var(--dim); }
+      .tree div {
+        min-height: var(--row);
+        display: flex;
+        align-items: center;
+        padding: 0 0.2em;
+        border-bottom: 1px solid transparent;
+      }
+      .tree .on {
+        color: var(--ink);
+        box-shadow: inset 2px 0 0 var(--link);
+      }
+
+      .dock { height: calc(var(--row) * 2); }
+      .dock button {
+        grid-column: span 14;
+        color: var(--dim);
+        border-left: 1px solid var(--line);
+      }
+      .dock .end { grid-column: span 16; }
+      .dock button.on { color: var(--ink); box-shadow: inset 0 1px 0 var(--link); }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">
+      <header class="table index">
+        <span class="cell id">Maou · 单元网格</span>
+        <a class="cell to-dir" href="index.html">目录</a>
+        <a class="cell swatch" href="#plate" data-t="plate">纸样</a>
+        <a class="cell swatch" href="#phosphor" data-t="phosphor">磷光</a>
+        <a class="cell swatch" href="#amber" data-t="amber">琥珀</a>
+        <a class="cell swatch" href="#ice" data-t="ice">冰层</a>
+      </header>
+
+      <div class="table empty" aria-hidden="true"></div>
+
+      <div class="app">
+        <div class="table top">
+          <div class="cell brand">Maou</div>
+          <nav class="cell modes">
+            <button class="on" type="button">聊天</button>
+            <button type="button">项目</button>
+            <button type="button">Team</button>
+            <button type="button">设置</button>
+          </nav>
+          <div class="cell meta">
+            <span>deepseek-v4-flash</span>
+            <span>yolo</span>
+            <button type="button">文件</button>
+          </div>
+        </div>
+
+        <div class="mid">
+          <aside class="rail">
+            <div class="tabs">
+              <button class="on" type="button">系统</button>
+              <button type="button">项目</button>
+              <button type="button">IM</button>
+            </div>
+            <div class="lbl">本机</div>
+            <div class="row"><i class="dot"></i>Ops Agent</div>
+            <div class="row mute">Install Agent</div>
+            <button class="cell-btn" type="button">新建会话</button>
+            <div class="lbl">会话 · coding</div>
+            <div class="row mute">还没有会话</div>
+          </aside>
+          <main class="center">
+            <i class="grip grip-v" data-split="rail" title="拖动分割"></i>
+            <section class="thread">
+              <div class="hero">
+                <p class="k">空单元</p>
+                <h2>从哪里开始？</h2>
+                <p>输入任务，或 /help。工具和终端在两侧。</p>
+              </div>
+            </section>
+            <section class="composer">
+              <i class="grip grip-h" data-split="composer" title="拖动分割"></i>
+              <div class="well">
+                <textarea placeholder="输入消息… Enter 发送，Shift+Enter 换行"></textarea>
+                <div class="tools">
+                  <div class="tools-l">
+                    <button class="sq" type="button">+</button>
+                    <div class="seg">
+                      <button type="button">问</button>
+                      <button type="button">审</button>
+                      <button class="on" type="button">放行</button>
+                    </div>
+                  </div>
+                  <div class="tools-r">
+                    <button type="button">ds-flash</button>
+                    <button type="button">12%</button>
+                    <button type="button">队列</button>
+                    <button class="send" type="button">↑</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </main>
+          <aside class="files">
+            <i class="grip grip-v" data-split="files" title="拖动分割"></i>
+            <div class="lbl">coding / OVERVIEW.md</div>
+            <div class="tree">
+              <div>.maou</div>
+              <div>agents / coding</div>
+              <div class="on">OVERVIEW.md</div>
+              <div>docs</div>
+              <div>src</div>
+              <div>DESIGN.md</div>
+              <div>README.md</div>
+            </div>
+          </aside>
+        </div>
+
+        <footer class="table dock">
+          <button type="button">日志 5</button>
+          <button type="button">任务 0</button>
+          <button class="on" type="button">终端 2</button>
+          <button type="button">agent 0</button>
+          <button class="end" type="button">主动 0</button>
+        </footer>
+      </div>
+    </div>
+
+    <script>
+      document.querySelectorAll(".table.empty").forEach((row) => {
+        row.replaceChildren(
+          ...Array.from({ length: 72 }, () => {
+            const cell = document.createElement("span");
+            cell.className = "cell";
+            return cell;
+          }),
+        );
+      });
+      const themes = ["plate", "phosphor", "amber", "ice"];
+      function apply(name) {
+        const t = themes.includes(name) ? name : "plate";
+        document.documentElement.dataset.theme = t;
+        document.querySelectorAll(".index a[data-t]").forEach((a) => {
+          a.classList.toggle("on", a.dataset.t === t);
+        });
+      }
+      window.addEventListener("hashchange", () => apply((location.hash || "#plate").slice(1)));
+      apply((location.hash || "#plate").slice(1));
+
+      document.querySelectorAll(".grip").forEach((el) => {
+        el.addEventListener("pointerdown", (e) => {
+          e.preventDefault();
+          el.style.background = "color-mix(in srgb, var(--link) 45%, transparent)";
+          const up = () => {
+            el.style.background = "";
+            window.removeEventListener("pointerup", up);
+          };
+          window.addEventListener("pointerup", up);
+        });
+      });
+    </script>
+  </body>
+</html>

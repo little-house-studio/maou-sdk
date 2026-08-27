@@ -101,17 +101,12 @@ describe("folder path geometry (design SVGs → content-local)", () => {
     assert.ok(rightXFromCssWidth(DOCK_TAB_W) >= FOLDER.tabRight - 0.1);
   });
 
-  it("strip body height aligns with fold shoulder, not ear tip", () => {
-    // ear y=0..1, body y=1..4 → body is 3/4 of full track
-    assert.equal(DOCK_TRACK_H, 32);
-    assert.equal(DOCK_STRIP_BODY_H, 24);
-    assert.equal(DOCK_EAR_RISE_H, 8);
-    assert.equal(
-      DOCK_STRIP_BODY_H,
-      Math.round((FOLDER.stripBottom - FOLDER.bodyTop) * FOLDER_SCALE),
-    );
+  it("strip is the full bar; idle chips share that height", () => {
+    assert.equal(DOCK_TRACK_H, 24);
+    assert.equal(DOCK_TAB_H, DOCK_TRACK_H);
+    assert.equal(DOCK_STRIP_BODY_H, DOCK_TRACK_H);
+    assert.equal(DOCK_EAR_RISE_H, 0);
     assert.equal(DOCK_EAR_RISE_H + DOCK_STRIP_BODY_H, DOCK_TRACK_H);
-    assert.ok(DOCK_STRIP_BODY_H < DOCK_TRACK_H);
   });
 });
 

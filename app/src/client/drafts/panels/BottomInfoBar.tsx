@@ -23,17 +23,11 @@ import {
 } from "../../dock-plugin";
 import {
   DOCK_CLICK_SLOP_PX,
-  DOCK_EXPAND_H_MAX,
   DOCK_EXPAND_H_UI,
-  DOCK_EXPAND_W_UI,
-  DOCK_PREVIEW_W_MIN,
-  DOCK_EAR_RISE_H,
-  DOCK_STRIP_BODY_H,
   DOCK_TAB_H,
   DOCK_TAB_W,
   DOCK_TRACK_H,
-  FOLDER,
-  FOLDER_SCALE,
+  DOCK_STRIP_BODY_H,
   OPEN_KICK_V,
   SPRING_OPEN,
   STOW_EASE_S,
@@ -45,33 +39,18 @@ import {
   boardPlacementFromSlot,
   boardTiltDeg,
   boardWidthForPanel,
-  bottomYFromCssHeight,
-  buildFolderPath,
   createDockDragSession,
   defaultDockOrder,
   dockCardById,
   dockTabZIndex,
-  folderViewBox,
-  hoverTextOpacity,
   lerpBoardPos,
   resolveDockPointerUp,
-  rightXFromCssWidth,
   shouldStowFloat,
   springSettled,
   springStep,
-  stepHoverMap,
-  stripWidthForHoverProgress,
-  dockMagnetPose,
-  dockMagnetTransform,
-  dockMagnetWinner,
-  lerpMagnetPose,
-  magnetPoseSettled,
-  DOCK_MAGNET_REST,
   type BoardPos,
   type DockCardId,
   type DockDragSession,
-  type DockMagnetPose,
-  type DockMagnetSlot,
 } from "../bottom-dock";
 
 /** @deprecated alias */
@@ -195,33 +174,6 @@ function cardTitle(
   }
 }
 
-/** Short preview line shown on hover (extra strip only, not expand head). */
-function cardPreviewLine(
-  id: DockCardId,
-  ctx: {
-    termLines: string[];
-    logs: string[];
-    agentName: string;
-    agentStatus: string;
-    bgTasks?: DraftBgTask[];
-  },
-): string {
-  switch (id) {
-    case "logs":
-      return ctx.logs[ctx.logs.length - 1] || "暂无新日志";
-    case "terminal":
-      return ctx.termLines[ctx.termLines.length - 1] || "无活动会话";
-    case "agent":
-      return `${ctx.agentName} · ${ctx.agentStatus}`;
-    case "tasks": {
-      const run = (ctx.bgTasks ?? []).find((t) => t.status === "running");
-      return run?.title || (ctx.bgTasks?.[0]?.title ?? "暂无后台任务");
-    }
-    case "proactive":
-      return "挂靠 coding · 扫描 / 看板 / 派发";
-  }
-}
-
 function cardCount(
   id: DockCardId,
   ctx: {
@@ -246,79 +198,29 @@ function cardCount(
   }
 }
 
-/** Preview width grows with title (design: only right edge H expands). */
-function previewWidthPx(title: string, preview: string): number {
-  const approx = 56 + Math.min(title.length + preview.length * 0.35, 40) * 7;
-  return Math.min(440, Math.max(DOCK_PREVIEW_W_MIN, approx));
-}
-
 /**
- * One continuous folder geometry for tab → preview → expand.
- * Path topology fixed (ear); only rightX / bottomY change; CSS size lockstep.
- *
- * `hoverProgress` 0..1 morphs strip width (right edge only) between tab and
- * preview — use with rAF so the path does not jump / stretch-deform the ear.
+ * Rect tab / raised board size. Tab is a fixed chip; expand grows height.
  */
 export function dockCardGeometry(opts: {
   phase: "tab" | "preview" | "expand";
-  title?: string;
-  preview?: string;
   panelH?: number;
-  /** 0 = tab width, 1 = full preview width (right edge only). */
-  hoverProgress?: number;
 }): {
-  phase: "tab" | "preview" | "expand";
+  phase: "tab" | "expand";
   cssW: number;
   cssH: number;
-  rightX: number;
-  bottomY: number;
-  pathD: string;
-  viewBox: string;
-  textOpacity: number;
 } {
   if (opts.phase === "expand") {
     const panel = Math.max(0, opts.panelH ?? 0);
-    const cssH = boardHeightForPanel(panel);
-    const hp = Math.max(0, Math.min(1, opts.hoverProgress ?? 0));
-    const pullW = boardWidthForPanel(panel);
-    const hoverW =
-      hp > 0.001
-        ? stripWidthForHoverProgress(
-            hp,
-            previewWidthPx(opts.title ?? "", opts.preview ?? ""),
-          )
-        : 0;
-    const cssW = Math.max(pullW, hoverW);
-    const rightX = rightXFromCssWidth(cssW);
-    const bottomY = bottomYFromCssHeight(cssH);
     return {
       phase: "expand",
-      cssW,
-      cssH,
-      rightX,
-      bottomY,
-      pathD: buildFolderPath(rightX, bottomY),
-      viewBox: folderViewBox(rightX, bottomY),
-      textOpacity: 1,
+      cssW: boardWidthForPanel(panel),
+      cssH: boardHeightForPanel(panel),
     };
   }
-  // Strip: continuous morph tab ↔ preview via hoverProgress
-  const hp = Math.max(0, Math.min(1, opts.hoverProgress ?? 0));
-  const previewW = previewWidthPx(opts.title ?? "", opts.preview ?? "");
-  const cssW = stripWidthForHoverProgress(hp, previewW);
-  const cssH = DOCK_TAB_H;
-  const rightX = rightXFromCssWidth(cssW);
-  const bottomY = FOLDER.stripBottom;
-  const phase: "tab" | "preview" = hp > 0.02 ? "preview" : "tab";
   return {
-    phase,
-    cssW,
-    cssH,
-    rightX,
-    bottomY,
-    pathD: buildFolderPath(rightX, bottomY),
-    viewBox: folderViewBox(rightX, bottomY),
-    textOpacity: hoverTextOpacity(hp),
+    phase: "tab",
+    cssW: DOCK_TAB_W,
+    cssH: DOCK_TAB_H,
   };
 }
 
@@ -326,10 +228,9 @@ type EarMode = "pending" | "open" | "float" | "reorder";
 
 /**
  * Bottom dock:
- * - idle: 功能名 + 事件数
- * - hover: 标题 + 预览
- * - expand: 标题 + 详细 的可自由拖放悬浮窗；拖到底收纳
- * - 标签可排序；越靠右 z-index 越高
+ * - idle: 矩形标签（功能名 + 事件数）
+ * - expand: 点击弹出矩形浮板；拖标题挪窗，拖到底收纳
+ * - 标签可横拖排序；越靠右 z-index 越高
  */
 export function BottomInfoBar({
   termLines,
@@ -380,14 +281,6 @@ export function BottomInfoBar({
     taskRunning,
     taskTotal,
   };
-  const previewCtx = {
-    termLines,
-    logs,
-    agentName: name,
-    agentStatus: st.label,
-    bgTasks,
-  };
-
   const [order, setOrder] = useState<DockCardId[]>(() => defaultDockOrder());
   /**
    * Remembered open sizes (w always; h used when resizable or custom default).
@@ -418,15 +311,6 @@ export function BottomInfoBar({
     setBoardSizeById((prev) => ({ ...prev, [id]: next }));
     return next;
   }, []);
-  const [hoverId, setHoverId] = useState<DockCardId | null>(null);
-  /** Per-card strip morph 0..1 — sweep keeps the previous card retracting. */
-  const [hoverMap, setHoverMap] = useState<Partial<Record<DockCardId, number>>>(
-    {},
-  );
-  const [magnetById, setMagnetById] = useState<
-    Partial<Record<DockCardId, DockMagnetPose>>
-  >({});
-  const [pointerOnTrack, setPointerOnTrack] = useState(false);
   const [openId, setOpenId] = useState<DockCardId | null>(null);
   const [panelH, setPanelH] = useState(0);
   const [floatPos, setFloatPos] = useState<FloatPos | null>(null);
@@ -446,20 +330,12 @@ export function BottomInfoBar({
   const orderRef = useRef(order);
   const springRef = useRef({ x: 0, v: 0 });
   const rafRef = useRef(0);
-  const hoverRafRef = useRef(0);
-  const hoverMapRef = useRef(hoverMap);
-  const magnetRef = useRef(magnetById);
-  const hoverIdRef = useRef(hoverId);
-  const pointerXRef = useRef<number | null>(null);
   const dragRef = useRef<DockDragSession | null>(null);
   const liveSnapRef = useRef(false);
   const earModeRef = useRef<EarMode>("pending");
   const detachDocListenersRef = useRef<(() => void) | null>(null);
   const slotRefs = useRef<Partial<Record<DockCardId, HTMLElement | null>>>({});
   const trackRef = useRef<HTMLDivElement | null>(null);
-  hoverMapRef.current = hoverMap;
-  magnetRef.current = magnetById;
-  hoverIdRef.current = hoverId;
   /** Slot bottom/left captured at pull start for bottom-edge lift. */
   const slotAnchorRef = useRef<{ left: number; bottom: number } | null>(null);
   const slotAnchoredRef = useRef(true);
@@ -493,112 +369,6 @@ export function BottomInfoBar({
     onReservedHeightChange?.(DOCK_TRACK_H);
   }, [onReservedHeightChange]);
 
-  // Hover strip + magnet sweep: per-card morph, peek out of the slot
-  const liveIdForHover: DockCardId | null =
-    panelH > 0 ? (openId ?? pullingId) : null;
-
-  const readMagnetSlots = useCallback((): DockMagnetSlot[] => {
-    const slots: DockMagnetSlot[] = [];
-    for (const id of orderRef.current) {
-      const el = slotRefs.current[id];
-      if (!el) continue;
-      const r = el.getBoundingClientRect();
-      slots.push({ id, center: r.left + r.width / 2 });
-    }
-    return slots;
-  }, []);
-
-  useEffect(() => {
-    const frozen =
-      dragging || pressing || reorderId != null || liveIdForHover != null;
-    // Keep the preview strip while the pointer is down but the board
-    // has not become live yet — otherwise width shrinks then grows.
-    const holdHover =
-      reorderId == null &&
-      (pressing || dragging) &&
-      floatPos == null &&
-      !popping;
-    const wantId = holdHover ? null : frozen ? null : hoverId;
-    const reduceMotion =
-      typeof matchMedia === "function" &&
-      matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-    if (hoverRafRef.current) {
-      cancelAnimationFrame(hoverRafRef.current);
-      hoverRafRef.current = 0;
-    }
-
-    let last = performance.now();
-    const tick = (now: number) => {
-      const dt = Math.min(0.048, (now - last) / 1000);
-      last = now;
-      const ids = orderRef.current;
-      const nextMap = holdHover
-        ? hoverMapRef.current
-        : stepHoverMap(hoverMapRef.current, wantId, dt, ids);
-      hoverMapRef.current = nextMap;
-      setHoverMap(nextMap);
-
-      let magnetBusy = false;
-      if (holdHover) {
-        magnetBusy = Object.values(magnetRef.current).some(
-          (p) => p != null && !magnetPoseSettled(p),
-        );
-      } else {
-        const px = frozen ? null : pointerXRef.current;
-        const slots = px == null ? [] : readMagnetSlots();
-        const nextMagnet: Partial<Record<DockCardId, DockMagnetPose>> = {};
-        for (const id of ids) {
-          const slot = slots.find((s) => s.id === id);
-          const raw =
-            px == null || !slot
-              ? DOCK_MAGNET_REST
-              : dockMagnetPose(px, slot.center, id === wantId);
-          const target = reduceMotion
-            ? { ...raw, risePx: 0, leanDeg: 0, shiftX: 0 }
-            : raw;
-          const cur = magnetRef.current[id] ?? DOCK_MAGNET_REST;
-          const pose = lerpMagnetPose(cur, target, Math.min(1, dt * 16));
-          if (!magnetPoseSettled(pose)) {
-            nextMagnet[id] = pose;
-            magnetBusy = true;
-          } else if (target.influence > 0.02) {
-            nextMagnet[id] = target;
-          }
-        }
-        magnetRef.current = nextMagnet;
-        setMagnetById(nextMagnet);
-      }
-
-      const hoverBusy = Object.keys(nextMap).length > 0;
-      const settled =
-        !pointerOnTrack && !hoverBusy && !magnetBusy && wantId == null;
-      if (!settled) {
-        hoverRafRef.current = requestAnimationFrame(tick);
-      } else {
-        hoverRafRef.current = 0;
-      }
-    };
-
-    hoverRafRef.current = requestAnimationFrame(tick);
-    return () => {
-      if (hoverRafRef.current) {
-        cancelAnimationFrame(hoverRafRef.current);
-        hoverRafRef.current = 0;
-      }
-    };
-  }, [
-    hoverId,
-    pointerOnTrack,
-    dragging,
-    pressing,
-    reorderId,
-    liveIdForHover,
-    floatPos,
-    popping,
-    readMagnetSlots,
-  ]);
-
   const stopSpring = useCallback(() => {
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
@@ -615,8 +385,6 @@ export function BottomInfoBar({
   const captureSlotAnchor = useCallback((id: DockCardId) => {
     const slot = slotRefs.current[id];
     if (slot) {
-      // Layout box, not the magnet-transformed rect — peek would shift the
-      // slot floor and the board would jump when the pose eases out.
       const prev = slot.style.transform;
       slot.style.transform = "none";
       const r = slot.getBoundingClientRect();
@@ -898,7 +666,6 @@ export function BottomInfoBar({
     // Reload persisted size for this board
     setSizeFor(id, readDockBoardSize(layoutFor(id)));
     const targetH = openHFor(id);
-    setHoverId(null);
     setPullingId(null);
     setSlotAnchored(true);
     slotAnchoredRef.current = true;
@@ -922,7 +689,6 @@ export function BottomInfoBar({
   );
 
   const stowCard = useCallback(() => {
-    setHoverId(null);
     setPullingId(null);
     setBoardTilt(0);
     liveSnapRef.current = false;
@@ -956,7 +722,6 @@ export function BottomInfoBar({
         result.kind === "click-switch" ||
         result.kind === "spring-switch"
       ) {
-        setHoverId(null);
         setPullingId(null);
         setSizeFor(result.id, readDockBoardSize(layoutFor(result.id)));
         setOpen(result.id);
@@ -1020,7 +785,6 @@ export function BottomInfoBar({
     stopSpring();
     liveSnapRef.current = false;
     setPressing(true);
-    setHoverId(null);
     setBoardTilt(0);
     try {
       (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
@@ -1160,8 +924,6 @@ export function BottomInfoBar({
               x: out.height,
               v: out.session.vel * 1000,
             };
-            magnetRef.current = {};
-            setMagnetById({});
           }
           if (d.kind === "open" && out.provisionalOpen) {
             setPullingId(d.id);
@@ -1232,30 +994,6 @@ export function BottomInfoBar({
     panelH > 0 ? (openId ?? pullingId) : null;
   const expanded = liveId != null && panelH > 2;
 
-  const applyTrackPointer = useCallback(
-    (clientX: number | null) => {
-      if (clientX == null) {
-        pointerXRef.current = null;
-        setPointerOnTrack(false);
-        setHoverId(null);
-        return;
-      }
-      pointerXRef.current = clientX;
-      setPointerOnTrack(true);
-      if (dragging || pressing || reorderId != null || liveId != null) {
-        setHoverId(null);
-        return;
-      }
-      const win = dockMagnetWinner(
-        readMagnetSlots(),
-        clientX,
-        hoverIdRef.current,
-      );
-      if (win !== hoverIdRef.current) setHoverId(win);
-    },
-    [dragging, pressing, reorderId, liveId, readMagnetSlots],
-  );
-
   const orderedCards = useMemo(
     () => order.map((id) => dockCardById(id)),
     [order],
@@ -1270,17 +1008,13 @@ export function BottomInfoBar({
         popping ? "is-popping" : "",
         pressing ? "is-pressing" : "",
         reorderId ? "is-reordering" : "",
-        pointerOnTrack ? "is-sweeping" : "",
       ]
         .filter(Boolean)
         .join(" ")}
       style={
         {
           "--dock-track-h": `${DOCK_TRACK_H}px`,
-          /* body band only — rail top = folder 折角, not ear tip */
           "--dock-strip-body-h": `${DOCK_STRIP_BODY_H}px`,
-          "--dock-ear-rise-h": `${DOCK_EAR_RISE_H}px`,
-          "--folder-scale": String(FOLDER_SCALE),
           height: DOCK_TRACK_H,
         } as React.CSSProperties
       }
@@ -1293,83 +1027,32 @@ export function BottomInfoBar({
         className="wire-dock-track"
         role="tablist"
         aria-label="停靠卡片"
-        onPointerMove={(e) => applyTrackPointer(e.clientX)}
-        onPointerLeave={() => applyTrackPointer(null)}
       >
         <div className="wire-dock-track-fill" aria-hidden />
         {orderedCards.map((card, index) => {
           const isLive = liveId === card.id;
           const isOpen = openId === card.id;
-          const hoverT = hoverMap[card.id] ?? 0;
-          const isHovering = !isLive && hoverT > 0.02;
-          const magnet = !isLive
-            ? (magnetById[card.id] ?? DOCK_MAGNET_REST)
-            : DOCK_MAGNET_REST;
-          const isPeeking = !isLive && (magnet.influence > 0.1 || isHovering);
           const title = cardTitle(card.id, titleCtx);
-          const preview = cardPreviewLine(card.id, previewCtx);
           const count = cardCount(card.id, countCtx);
           const geo = dockCardGeometry({
             phase: isLive ? "expand" : "tab",
-            title,
-            preview,
             panelH: isLive ? panelH : 0,
-            hoverProgress: hoverT,
           });
-          // Rightmost = highest z among docked; live board always topmost
           const zDock = dockTabZIndex(index, orderedCards.length);
-          const z = isLive
-            ? 80
-            : isHovering
-              ? 40 + zDock
-              : isPeeking
-                ? 22 + zDock
-                : zDock;
+          const z = isLive ? 80 : zDock;
           const isReordering = reorderId === card.id;
           const lifting = isLive && slotAnchored;
-          const textOp = isLive ? 1 : geo.textOpacity;
-
-          // Saved board width only after the card leaves the rack.
           const liveW =
             isLive && floatPos ? boardWFor(card.id, panelH) : geo.cssW;
-          const liveGeo =
-            isLive && liveW !== geo.cssW
-              ? (() => {
-                  const rightX = rightXFromCssWidth(liveW);
-                  const bottomY = bottomYFromCssHeight(geo.cssH);
-                  return {
-                    ...geo,
-                    cssW: liveW,
-                    rightX,
-                    bottomY,
-                    pathD: buildFolderPath(rightX, bottomY),
-                    viewBox: folderViewBox(rightX, bottomY),
-                  };
-                })()
-              : isLive
-                ? {
-                    ...geo,
-                    cssW: liveW,
-                    rightX: rightXFromCssWidth(liveW),
-                    pathD: buildFolderPath(
-                      rightXFromCssWidth(liveW),
-                      bottomYFromCssHeight(geo.cssH),
-                    ),
-                    viewBox: folderViewBox(
-                      rightXFromCssWidth(liveW),
-                      bottomYFromCssHeight(geo.cssH),
-                    ),
-                  }
-                : geo;
-
+          const liveH = geo.cssH;
           const floatStyle: React.CSSProperties =
             isLive && floatPos
               ? {
                   position: "fixed",
                   left: floatPos.left,
                   top: floatPos.top,
-                  width: liveGeo.cssW,
-                  height: liveGeo.cssH,
+                  width: liveW,
+                  height: liveH,
                   zIndex: z,
                   transform:
                     boardTilt !== 0
@@ -1378,11 +1061,9 @@ export function BottomInfoBar({
                   transformOrigin: "50% 100%",
                 }
               : {
-                  width: liveGeo.cssW,
-                  height: liveGeo.cssH,
+                  width: liveW,
+                  height: isLive ? liveH : "100%",
                   zIndex: z,
-                  transform: dockMagnetTransform(magnet),
-                  transformOrigin: "50% 100%",
                 };
 
           // When board is out, keep a layout spacer in the track + fixed board
@@ -1397,7 +1078,7 @@ export function BottomInfoBar({
                   data-dock-slot={card.id}
                   style={{
                     width: DOCK_TAB_W,
-                    height: DOCK_TAB_H,
+                    height: "100%",
                     zIndex: zDock,
                   }}
                   aria-hidden
@@ -1424,11 +1105,7 @@ export function BottomInfoBar({
                     .join(" ")}
                   style={floatStyle}
                 >
-                  <FolderShapeSvg
-                    className="wire-dock-card-svg"
-                    pathD={liveGeo.pathD}
-                    viewBox={liveGeo.viewBox}
-                  />
+                  <div className="wire-dock-card-fill" aria-hidden />
                   <div className="wire-dock-card-ui" data-folder-ui="overlay">
                     <button
                       type="button"
@@ -1552,8 +1229,6 @@ export function BottomInfoBar({
               className={[
                 "wire-dock-card",
                 `tone-${card.tone}`,
-                isHovering ? "is-raised is-preview" : "",
-                isPeeking ? "is-peeking" : "",
                 isLive ? "is-raised is-live" : "",
                 isLive && !floatPos ? "is-slot-pull" : "",
                 isReordering ? "is-reorder" : "",
@@ -1562,42 +1237,19 @@ export function BottomInfoBar({
                 .filter(Boolean)
                 .join(" ")}
               style={floatStyle}
-              title={`${title} · ${preview}`}
-              data-dock-peek={isPeeking ? magnet.influence.toFixed(2) : undefined}
+              title={title}
             >
-              <FolderShapeSvg
-                className="wire-dock-card-svg"
-                pathD={geo.pathD}
-                viewBox={geo.viewBox}
-              />
+              <div className="wire-dock-card-fill" aria-hidden />
               <div className="wire-dock-card-ui" data-folder-ui="overlay">
                 <button
                   type="button"
                   className="wire-dock-card-ear"
                   data-folder-part="ear"
-                  title="上拉展开 · 左右拖排序"
+                  title="点击弹出 · 左右拖排序"
                   onPointerDown={(e) => beginEarPress(card.id, e)}
                 >
-                  {/* Label + badge always present; path grows right, then text fades in */}
-                  {/* Always keep 功能名 + 数; hover only ADDS title/preview */}
                   <span className="wire-dock-tab-label">{card.label}</span>
                   <span className="wire-dock-tab-badge">{count}</span>
-                  <span
-                    className="wire-dock-tab-extra"
-                    data-hover-text="true"
-                    style={{
-                      opacity: textOp,
-                      /* grow available space with progress so text is additive not swapped */
-                      flexGrow: textOp > 0.01 ? 1 : 0,
-                      flexBasis: textOp > 0.01 ? "auto" : 0,
-                      width: textOp > 0.01 ? undefined : 0,
-                      pointerEvents: textOp < 0.05 ? "none" : undefined,
-                    }}
-                    aria-hidden={textOp < 0.05}
-                  >
-                    <span className="wire-dock-tab-title">{title}</span>
-                    <span className="wire-dock-tab-preview">{preview}</span>
-                  </span>
                 </button>
 
                 {isLive && panelH > 20 ? (
@@ -1657,44 +1309,10 @@ export function BottomInfoBar({
   );
 }
 
-function FolderShapeSvg({
-  className,
-  pathD,
-  viewBox,
-}: {
-  className?: string;
-  pathD: string;
-  viewBox: string;
-}) {
-  return (
-    <svg
-      className={className}
-      viewBox={viewBox}
-      preserveAspectRatio="none"
-      aria-hidden
-      focusable="false"
-    >
-      <path
-        d={pathD}
-        fill="var(--dock-fill, #A182FF)"
-        data-folder-path={pathD}
-      />
-    </svg>
-  );
-}
-
 const TASK_STATUS_ZH: Record<DraftBgTask["status"], string> = {
   running: "进行中",
   done: "完成",
   queued: "排队",
-};
-
-const TONE_ACCENT: Record<string, string> = {
-  logs: "#ff5a2e",
-  tasks: "#c9c2b6",
-  terminal: "#b8ff00",
-  agent: "#a182ff",
-  proactive: "#5ad4ff",
 };
 
 /**
@@ -1805,7 +1423,7 @@ function DockCardBody({
         contentKind={contentKind}
         title={title}
         count={count}
-        accent={TONE_ACCENT[id]}
+        accent="var(--dock-fill)"
         logs={logs}
         termLines={termLines}
         taskLines={taskLines}

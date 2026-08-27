@@ -16,6 +16,7 @@ function freshState(): UIState {
     sessionId: null, agentName: "test", provider: "p", model: "m", maxContext: 100000,
     round: 0, thinkingLevel: 2, rounds: [], cacheHistory: [],
     currentRoundUsage: { input: 0, output: 0 },
+    lastOccupancy: null,
     eventBlock: { mode: "idle", upTokens: 0, downTokens: 0 },
     toast: null, overlay: null,
   });
@@ -70,7 +71,20 @@ describe("reducer: 27 StreamEvent types", () => {
     });
     expect(s.currentRoundUsage.input).toBe(100);  // 不翻倍
     expect(s.currentRoundUsage.output).toBe(50);
+    expect(s.lastOccupancy).toEqual({ input: 100, output: 50 });
     expect(s.maxContext).toBe(200000);
+  });
+
+  it("assistant usage overwrites lastOccupancy; compress clears it", () => {
+    let s = apply(freshState(), { type: "assistant_delta", delta: "hi" });
+    s = apply(s, {
+      type: "assistant",
+      content: "hi",
+      usage: { prompt_tokens: 80, completion_tokens: 20 },
+    });
+    expect(s.lastOccupancy).toEqual({ input: 80, output: 20 });
+    s = apply(s, { type: "log", level: "info", message: "上下文已压缩 compactStage" });
+    expect(s.lastOccupancy).toBeNull();
   });
 
   it("tool_call: ev.tool 是对象（陷阱④）", () => {

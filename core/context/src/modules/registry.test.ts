@@ -89,6 +89,7 @@ describe("context modules", () => {
     const result = await legacyContextModule.compress({
       history,
       maxTokens: 200,
+      knownTokens: 200,
       currentStage: "activeStage",
       config: {
         triggerPercent: 1,

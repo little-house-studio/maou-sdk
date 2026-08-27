@@ -3,7 +3,7 @@
  *   [系统 | 项目 | IM]
  *   · 系统：按「机器/本机」分组 → agent 树（含子 agent）
  *   · 项目：按「项目名称」分组 → project agent 树
- *   · IM：占位
+ *   · IM：按待回复 / 阻塞 / 运行排序的可点收件箱
  * 选中高亮 = 当前会话 agent；终端图标 = 有持久终端在跑
  */
 import { useMemo, useState } from "react";
@@ -16,9 +16,31 @@ export type AgentListProps = {
   agents: DraftAgent[];
   activeId: string;
   onSelect: (id: string) => void;
+  /** IM 行点选后切回聊天 */
+  onOpenChat?: () => void;
   /** 正在跑持久终端的 agent name 集合 */
   terminalAgentNames?: ReadonlySet<string> | string[];
 };
+
+const IM_RANK: Record<DraftAgent["status"], number> = {
+  needs_reply: 0,
+  blocked: 1,
+  running: 2,
+  done_unread: 3,
+  idle: 4,
+  done_read: 5,
+};
+
+export function buildImInbox(agents: readonly DraftAgent[]): DraftAgent[] {
+  return agents
+    .filter((a) => !a.stale)
+    .slice()
+    .sort((a, b) => {
+      const d = IM_RANK[a.status] - IM_RANK[b.status];
+      if (d !== 0) return d;
+      return (a.displayName || a.name).localeCompare(b.displayName || b.name);
+    });
+}
 
 type ScopeTab = "system" | "project" | "im";
 
@@ -129,6 +151,7 @@ export function AgentList({
   agents,
   activeId,
   onSelect,
+  onOpenChat,
   terminalAgentNames,
 }: AgentListProps) {
   const [tab, setTab] = useState<ScopeTab>("system");
@@ -188,9 +211,7 @@ export function AgentList({
             type="button"
             role="tab"
             aria-selected={tab === t.id}
-            className={`wire-agent-scope-tab${tab === t.id ? " is-active" : ""}${
-              t.id === "system" && tab === t.id ? " is-system" : ""
-            }${t.id === "project" && tab === t.id ? " is-project" : ""}`}
+            className={`wire-agent-scope-tab${tab === t.id ? " is-active" : ""}`}
             onClick={() => setTab(t.id)}
           >
             {t.label}
@@ -200,9 +221,14 @@ export function AgentList({
 
       <div className="wire-agent-tree" role="tree">
         {tab === "im" ? (
-          <div className="wire-agent-empty">
-            <UiEmoji name="chat" /> IM 对接即将推出
-          </div>
+          <ImInbox
+            agents={agents}
+            activeId={activeId}
+            onSelect={(id) => {
+              onSelect(id);
+              onOpenChat?.();
+            }}
+          />
         ) : groups.length === 0 ? (
           <div className="wire-agent-empty">
             {tab === "system" ? "暂无系统 Agent" : "暂无项目 Agent"}
@@ -345,6 +371,57 @@ function AgentRow({
           </span>
         ) : null}
       </button>
+    </div>
+  );
+}
+
+function ImInbox({
+  agents,
+  activeId,
+  onSelect,
+}: {
+  agents: DraftAgent[];
+  activeId: string;
+  onSelect: (id: string) => void;
+}) {
+  const rows = buildImInbox(agents);
+  if (rows.length === 0) {
+    return <div className="wire-agent-empty">暂无 agent 可对话</div>;
+  }
+  return (
+    <div className="wire-im-inbox" role="list" aria-label="IM 收件箱">
+      {rows.map((a) => {
+        const on = a.id === activeId;
+        const statusTitle = STATUS_LABEL_ZH[a.status];
+        const scope = a.group === "project" ? a.projectName || "项目" : "系统";
+        return (
+          <button
+            key={a.id}
+            type="button"
+            role="listitem"
+            className={`wire-agent-item wire-im-row status-${a.status}${
+              on ? " active" : ""
+            }`}
+            aria-selected={on}
+            onClick={() => onSelect(a.id)}
+            title={[a.displayName || a.name, statusTitle, scope]
+              .filter(Boolean)
+              .join(" · ")}
+          >
+            <span className="wire-agent-status-sq" aria-hidden>
+              <StatusMark kind={a.status} size={10} title={statusTitle} />
+            </span>
+            <span className="wire-agent-main">
+              <span className="wire-agent-name">{a.displayName || a.name}</span>
+              <span className="wire-im-sub">
+                {statusTitle}
+                {a.overview ? ` · ${a.overview}` : ` · ${a.role}`}
+                {` · ${scope}`}
+              </span>
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

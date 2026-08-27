@@ -12,6 +12,21 @@ function compactCount(n: number): string {
   return String(n);
 }
 
+/** input / output / 占用（占用 = 二者之和）。轮次圆标 InfoHover 用，不进正文。 */
+export function formatUsageLine(
+  input?: number | null,
+  output?: number | null,
+): string {
+  const inn = input != null && Number.isFinite(input) && input > 0 ? input : 0;
+  const out = output != null && Number.isFinite(output) && output > 0 ? output : 0;
+  if (inn <= 0 && out <= 0) return "";
+  const parts: string[] = [];
+  if (inn > 0) parts.push(`↑${compactCount(inn)}`);
+  if (out > 0) parts.push(`↓${compactCount(out)}`);
+  parts.push(`占用 ${compactCount(inn + out)}`);
+  return parts.join(" · ");
+}
+
 /** None → ""; 0 → "0ms" (must not look like missing). */
 export function durationStr(ms: number | undefined | null): string {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return "";
@@ -51,14 +66,21 @@ export function loopMark(round: number | undefined | null): string {
   return `↺${round}`;
 }
 
-/** HH:MM:SS local from epoch ms; missing → --:--:-- */
+/** HH:MM:SS local from epoch ms; missing → "" */
 export function timecode(tsMs: number | undefined | null): string {
-  if (tsMs == null || !Number.isFinite(tsMs) || tsMs <= 0) return "--:--:--";
+  if (tsMs == null || !Number.isFinite(tsMs) || tsMs <= 0) return "";
   const d = new Date(tsMs);
   const h = d.getHours();
   const m = d.getMinutes();
   const s = d.getSeconds();
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+/** `agent:ops` → `ops` */
+export function displayAgentName(label: string): string {
+  const t = label.trim();
+  if (t.toLowerCase().startsWith("agent:")) return t.slice(6).trim() || t;
+  return t;
 }
 
 export function defaultAuthorLabel(role: MessageRole, agentName = "coding"): string {
@@ -81,19 +103,28 @@ export function defaultAuthorLabel(role: MessageRole, agentName = "coding"): str
 }
 
 export type MessageHeadParts = {
-  logo: string;
-  text: string;
+  who: string;
+  time: string;
+  duration: string;
   live: boolean;
   streaming: boolean;
   isError: boolean;
   queued: boolean;
 };
 
+export function messageHeadEmpty(head: MessageHeadParts): boolean {
+  return (
+    !head.who &&
+    !head.time &&
+    !head.duration &&
+    !head.live &&
+    !head.queued &&
+    !head.isError
+  );
+}
+
 /**
- * Build CLI-style head line for a draft message.
- * user:   `sid | user | HH:MM:SS | ↑tok [| queued]`
- * asst:   `↺N | agent:coding | HH:MM:SS | (dur) | ↓tok` + optional LIVE
- * system: `sid | system | HH:MM:SS`
+ * Visible thread head. Id / logo / fake clock / token counts stay off the line.
  */
 export function formatMessageHead(
   message: DraftMessage,
@@ -101,78 +132,38 @@ export function formatMessageHead(
 ): MessageHeadParts {
   const m = message.meta;
   const streaming = Boolean(m?.streaming);
-  const label =
-    m?.authorLabel?.trim() || defaultAuthorLabel(message.role, agentName);
-  const sid = shortId(message.id);
-  const tc = timecode(m?.ts);
   const queued = Boolean(m?.kind?.includes("queued_user"));
-
-  if (message.role === "user") {
-    let text = `${sid} | ${label} | ${tc}`;
-    const up = m?.usageInput;
-    if (up != null && up > 0) text += ` | ↑${compactCount(up)}`;
-    if (queued) text += " | queued";
-    return {
-      logo: "◈",
-      text,
-      live: false,
-      streaming: false,
-      isError: false,
-      queued,
-    };
-  }
-
-  if (message.role === "assistant") {
-    const parts: string[] = [];
-    const lm = loopMark(m?.round);
-    if (lm) parts.push(lm);
-    parts.push(label);
-    parts.push(tc);
-    const dur = durationStr(m?.durationMs);
-    if (dur) parts.push(`(${dur})`);
-    const dn = m?.usageOutput;
-    if (dn != null && dn > 0) parts.push(`↓${compactCount(dn)}`);
-    return {
-      logo: streaming ? "…" : "◈",
-      text: parts.join(" | "),
-      live: streaming,
-      streaming,
-      isError: false,
-      queued: false,
-    };
-  }
-
-  if (message.role === "system") {
-    return {
-      logo: "▣",
-      text: `${sid} | ${label} | ${tc}`,
-      live: false,
-      streaming: false,
-      isError: false,
-      queued: false,
-    };
-  }
-
-  if (message.role === "err") {
-    return {
-      logo: "✕",
-      text: `${sid} | ${label} | ${tc}`,
-      live: false,
-      streaming: false,
-      isError: true,
-      queued: false,
-    };
-  }
-
-  // thinking / tool fall through to simple labels (tool uses ToolCard head)
-  return {
-    logo: "·",
-    text: `${sid} | ${label} | ${tc}`,
+  const blank = {
+    who: "",
+    time: "",
+    duration: "",
     live: false,
     streaming: false,
     isError: false,
     queued: false,
   };
+
+  if (message.role === "user") {
+    return { ...blank, queued };
+  }
+
+  if (message.role === "assistant") {
+    return {
+      ...blank,
+      live: streaming,
+      streaming,
+    };
+  }
+
+  if (message.role === "system") {
+    return { ...blank, who: "系统" };
+  }
+
+  if (message.role === "err") {
+    return { ...blank, who: "错误", isError: true };
+  }
+
+  return blank;
 }
 
 /**
@@ -204,4 +195,201 @@ export function formatThinkingHead(
     parts.push(opts.collapsed === false ? "▼" : "▶");
   }
   return parts.join(" · ");
+}
+
+export type RoundTipInput = {
+  round: number;
+  startedAt?: number;
+  durationMs?: number;
+  toolCount?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  live?: boolean;
+};
+
+export type InfoHoverRow = { label: string; value: string };
+
+export function formatInfoHoverLabel(rows: readonly InfoHoverRow[]): string {
+  return rows.map((r) => `${r.label} ${r.value}`).join("\n");
+}
+
+/** Label/value rows for the round-chip InfoHover. */
+export function roundTipRows(input: RoundTipInput): InfoHoverRow[] {
+  const n = Math.max(1, Math.floor(input.round) || 1);
+  const rows: InfoHoverRow[] = [{ label: "轮次", value: String(n) }];
+  const start = timecode(input.startedAt);
+  if (start) rows.push({ label: "开始", value: start });
+  const dur = durationStr(input.durationMs);
+  if (dur) rows.push({ label: "用时", value: dur });
+  else if (input.live) rows.push({ label: "用时", value: "…" });
+  if (input.toolCount != null && input.toolCount >= 0) {
+    rows.push({ label: "工具", value: String(input.toolCount) });
+  }
+  if (input.inputTokens != null && input.inputTokens > 0) {
+    rows.push({ label: "输入", value: `${compactCount(input.inputTokens)} tok` });
+  }
+  if (input.outputTokens != null && input.outputTokens > 0) {
+    rows.push({ label: "输出", value: `${compactCount(input.outputTokens)} tok` });
+  }
+  if (
+    (input.inputTokens != null && input.inputTokens > 0) ||
+    (input.outputTokens != null && input.outputTokens > 0)
+  ) {
+    rows.push({
+      label: "占用",
+      value: `${compactCount((input.inputTokens ?? 0) + (input.outputTokens ?? 0))} tok`,
+    });
+  }
+  return rows;
+}
+
+/** Hover text for the round chip (round / start / duration / tools / output tok). */
+export function formatRoundTip(input: RoundTipInput): string {
+  const n = Math.max(1, Math.floor(input.round) || 1);
+  const lines = [`第 ${n} 轮`];
+  const start = timecode(input.startedAt);
+  if (start) lines.push(`开始 ${start}`);
+  const dur = durationStr(input.durationMs);
+  if (dur) lines.push(`用时 ${dur}`);
+  else if (input.live) lines.push("用时 …");
+  if (input.toolCount != null && input.toolCount >= 0) {
+    lines.push(`工具 ${input.toolCount}`);
+  }
+  if (input.inputTokens != null && input.inputTokens > 0) {
+    lines.push(`输入 ${compactCount(input.inputTokens)} tok`);
+  }
+  if (input.outputTokens != null && input.outputTokens > 0) {
+    lines.push(`输出 ${compactCount(input.outputTokens)} tok`);
+  }
+  if (
+    (input.inputTokens != null && input.inputTokens > 0) ||
+    (input.outputTokens != null && input.outputTokens > 0)
+  ) {
+    lines.push(
+      `占用 ${compactCount((input.inputTokens ?? 0) + (input.outputTokens ?? 0))} tok`,
+    );
+  }
+  return lines.join("\n");
+}
+
+export type LoopReplyInput = {
+  assistant: {
+    meta?: {
+      ts?: number;
+      durationMs?: number;
+      usageInput?: number;
+      usageOutput?: number;
+    };
+  } | null;
+  internals: Array<{
+    role: string;
+    tool?: { durationMs?: number };
+    meta?: { durationMs?: number };
+  }>;
+};
+
+export type LoopSummary = {
+  roundCount: number;
+  startedAt?: number;
+  durationMs?: number;
+  toolCount: number;
+  outputTokens: number;
+  lastInputTokens: number;
+  lastOutputTokens: number;
+  occupancy: number;
+};
+
+function finitePositive(n: number | undefined | null): n is number {
+  return n != null && Number.isFinite(n) && n > 0;
+}
+
+/** Wall-clock of a finished user-turn: start of first round → end of last round. */
+export function summarizeLoop(replies: LoopReplyInput[]): LoopSummary {
+  let toolCount = 0;
+  let outputTokens = 0;
+  let lastInputTokens = 0;
+  let lastOutputTokens = 0;
+  let startedAt: number | undefined;
+  let lastEnd: number | undefined;
+  let durationSum = 0;
+  let toolDurSum = 0;
+
+  for (const block of replies) {
+    const meta = block.assistant?.meta;
+    const ts = meta?.ts;
+    const dur = meta?.durationMs;
+    if (finitePositive(ts)) {
+      startedAt = startedAt == null ? ts : Math.min(startedAt, ts);
+      const end = ts + (finitePositive(dur) ? dur : 0);
+      lastEnd = lastEnd == null ? end : Math.max(lastEnd, end);
+    }
+    if (dur != null && Number.isFinite(dur) && dur >= 0) durationSum += dur;
+    const inTok = meta?.usageInput;
+    const outTok = meta?.usageOutput;
+    if (finitePositive(inTok)) lastInputTokens = inTok;
+    if (finitePositive(outTok)) {
+      outputTokens += outTok;
+      lastOutputTokens = outTok;
+    }
+    for (const part of block.internals) {
+      if (part.role !== "tool") continue;
+      toolCount += 1;
+      const td = part.tool?.durationMs ?? part.meta?.durationMs;
+      if (finitePositive(td)) toolDurSum += td;
+    }
+  }
+
+  let durationMs: number | undefined;
+  if (startedAt != null && lastEnd != null && lastEnd > startedAt) {
+    durationMs = lastEnd - startedAt;
+  } else if (durationSum > 0) {
+    durationMs = durationSum;
+  } else if (toolDurSum > 0) {
+    durationMs = toolDurSum;
+  }
+
+  return {
+    roundCount: replies.length,
+    startedAt,
+    durationMs,
+    toolCount,
+    outputTokens,
+    lastInputTokens,
+    lastOutputTokens,
+    occupancy: lastInputTokens + lastOutputTokens,
+  };
+}
+
+/** Label/value rows for the loop-footer InfoHover. */
+export function loopTipRows(input: LoopSummary): InfoHoverRow[] {
+  const n = Math.max(0, Math.floor(input.roundCount) || 0);
+  const rows: InfoHoverRow[] = [{ label: "轮次", value: `共 ${n}` }];
+  const start = timecode(input.startedAt);
+  if (start) rows.push({ label: "开始", value: start });
+  rows.push({ label: "工具", value: String(input.toolCount) });
+  rows.push({
+    label: "输出",
+    value: `${compactCount(input.outputTokens)} tok`,
+  });
+  if (input.occupancy > 0) {
+    rows.push({
+      label: "占用",
+      value: `${compactCount(input.occupancy)} tok`,
+    });
+  }
+  return rows;
+}
+
+/** Hover text for the loop footer (rounds / start / tools / output tok). */
+export function formatLoopTip(input: LoopSummary): string {
+  const n = Math.max(0, Math.floor(input.roundCount) || 0);
+  const lines = [`共 ${n} 轮`];
+  const start = timecode(input.startedAt);
+  if (start) lines.push(`开始 ${start}`);
+  lines.push(`共工具 ${input.toolCount}`);
+  lines.push(`共输出 ${compactCount(input.outputTokens)} tok`);
+  if (input.occupancy > 0) {
+    lines.push(`占用 ${compactCount(input.occupancy)} tok`);
+  }
+  return lines.join("\n");
 }

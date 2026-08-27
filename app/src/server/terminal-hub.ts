@@ -68,8 +68,8 @@ function loadEngineFromBackend(): Engine | null {
           be.subscribe!(id, (ev) => {
             onEvent({
               kind: ev.kind,
-              data: ev.data,
-              exitCode: ev.exitCode ?? null,
+              data: ev.kind === "data" ? ev.data : undefined,
+              exitCode: ev.kind === "exit" ? ev.exitCode ?? null : null,
             });
           })
       : undefined,
@@ -156,7 +156,7 @@ export class TerminalHub {
     const cwd = opts.cwd || process.cwd();
     const cols = Math.max(2, opts.cols ?? 80);
     const rows = Math.max(1, opts.rows ?? 24);
-    const agentName = opts.agentName || "webui";
+    const agentName = opts.agentName || "app";
     const shell = opts.shell ?? resolveInteractiveShell();
     const id = await engine.openInteractive({ agentName, cwd, cols, rows, shell });
     const unsub = this.bindStream(engine, id, opts.onData, opts.onExit);
@@ -180,7 +180,7 @@ export class TerminalHub {
     const listed = typeof engine.list === "function" ? engine.list() : [];
     const info = listed.find((t) => t.id === id);
     const cached = this.meta.get(id);
-    const agentName = info?.agentName ?? info?.agent_name ?? cached?.agentName ?? "webui";
+    const agentName = info?.agentName ?? info?.agent_name ?? cached?.agentName ?? "app";
     const cwd = info?.cwd ?? cached?.cwd ?? process.cwd();
     if (!info && !cached) {
       throw new Error(`终端 ${id} 不存在`);

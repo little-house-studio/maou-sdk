@@ -8,12 +8,8 @@ import {
   PROJECT_DOCS,
   type ProjectDoc,
 } from "../drafts/project-docs";
-import {
-  fetchMdTree,
-  readFsFile,
-  writeFsFile,
-  type FsTreeNode,
-} from "../markdown/api";
+import { useAppPorts } from "../ports";
+import type { FsTreeNode } from "../markdown/api";
 import {
   kindFromPath,
   needsContentLoad,
@@ -38,6 +34,7 @@ function flattenFsFiles(nodes: FsTreeNode[], acc: string[] = []): string[] {
 /** 预取前 N 个文件正文，避免工作台打开时一片空/黑 */
 async function prefetchContents(
   paths: string[],
+  readFsFile: (path: string) => Promise<{ path: string; content: string }>,
   limit = 12,
 ): Promise<Map<string, string>> {
   const map = new Map<string, string>();
@@ -59,6 +56,7 @@ export function LiveProjectHost({
   projectLabel,
   projectPath,
 }: LiveProjectHostProps) {
+  const { fetchMdTree, readFsFile, writeFsFile } = useAppPorts().files;
   // 先用草稿 fixtures 占位，保证立刻有完整 UI（与 draft 对齐）
   const [docs, setDocs] = useState<ProjectDoc[]>(() => PROJECT_DOCS);
   const [source, setSource] = useState<"draft" | "live">("draft");
@@ -80,7 +78,7 @@ export function LiveProjectHost({
     } finally {
       inflightRef.current.delete(path);
     }
-  }, []);
+  }, [readFsFile]);
 
   const loadLive = useCallback(async () => {
     setHint("加载项目文档…");
@@ -95,7 +93,7 @@ export function LiveProjectHost({
         setHint("无 live markdown · 使用草稿文档");
         return;
       }
-      const bodies = await prefetchContents(paths, 16);
+      const bodies = await prefetchContents(paths, readFsFile, 16);
       const docsLive: ProjectDoc[] = paths.map((path) => ({
         path,
         title: titleFromPath(path),
@@ -122,7 +120,7 @@ export function LiveProjectHost({
         }`,
       );
     }
-  }, [ensureContent]);
+  }, [ensureContent, fetchMdTree, readFsFile]);
 
   useEffect(() => {
     void loadLive();
@@ -136,7 +134,7 @@ export function LiveProjectHost({
       loadedRef.current.add(path);
       setDocs((prev) => withDocContent(prev, path, content));
     },
-    [source],
+    [source, writeFsFile],
   );
 
   const onActivePathChange = useCallback(

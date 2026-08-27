@@ -45,8 +45,8 @@ describe("compressMaou knownTokens / force", () => {
       maxTokens: 1_000_000,
       force: true,
     });
-    // force 后会跑 micro；是否有效压缩取决于内容，但 originalTokens 为 history 估
-    expect(r.originalTokens).toBeGreaterThan(0);
+    // force 无 knownTokens：占用为 0，只按条数尝试微压
+    expect(r.originalTokens).toBe(0);
     // 无 force 且远低于 70% 应 active
     const r2 = await compressMaou(history, { maxTokens: 1_000_000 });
     expect(r2.stage).toBe("activeStage");

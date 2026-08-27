@@ -8,19 +8,27 @@ import React, { useId } from "react";
 
 export type ApprovalSwitchMode = "normal" | "auto" | "yolo";
 
-const MODES: readonly ApprovalSwitchMode[] = ["normal", "auto", "yolo"] as const;
+export const APPROVAL_MODES: readonly ApprovalSwitchMode[] = [
+  "normal",
+  "auto",
+  "yolo",
+] as const;
 
-const LABELS: Record<ApprovalSwitchMode, string> = {
+export const APPROVAL_LABELS: Record<ApprovalSwitchMode, string> = {
   normal: "严格",
   auto: "自动",
   yolo: "放行",
 };
 
-const TITLES: Record<ApprovalSwitchMode, string> = {
+export const APPROVAL_TITLES: Record<ApprovalSwitchMode, string> = {
   normal: "严格 · 危险操作需审批",
   auto: "自动 · 低风险自动通过",
   yolo: "放行 · 全部不询问",
 };
+
+const MODES = APPROVAL_MODES;
+const LABELS = APPROVAL_LABELS;
+const TITLES = APPROVAL_TITLES;
 
 const LIGHT: Record<ApprovalSwitchMode, "red" | "yellow" | "green"> = {
   normal: "red",

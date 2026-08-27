@@ -36,6 +36,7 @@ import type {
 import type { CompletionItem } from "../overlay/Completer.js";
 import { complete, applyCompletion } from "../overlay/Completer.js";
 import { reduce } from "./reducer.js";
+import { lastOccupancyFromMessages } from "../lib/context-occupancy.js";
 import { dispatchDisplayEvent } from "../events/display-events.js";
 import { SUPERVISOR_MANAGER } from "@little-house-studio/agent";
 import { loadCacheHistoryFromLedger } from "../lib/prompt-cache.js";
@@ -274,6 +275,7 @@ const initialState: UIState = {
   rounds: [],
   cacheHistory: [],
   currentRoundUsage: { input: 0, output: 0 },
+  lastOccupancy: null,
   eventBlock: { mode: "idle", upTokens: 0, downTokens: 0 },
   toast: null,
   overlay: null,
@@ -509,7 +511,7 @@ export const useStore = create<Store>((set, get) => ({
   setSessionId: (sessionId) => {
     const s = get();
     const { cacheHistory } = loadCacheHistoryFromLedger(s.agentName, sessionId, s.model);
-    set({ sessionId, cacheHistory, currentRoundUsage: { input: 0, output: 0 } });
+    set({ sessionId, cacheHistory, currentRoundUsage: { input: 0, output: 0 }, lastOccupancy: null });
     if (sessionId) {
       const an = resolveAgentName(get().agentName, DEFAULT_AGENT_NAME);
       try {
@@ -560,6 +562,7 @@ export const useStore = create<Store>((set, get) => ({
       currentAssistantId: null,
       rounds: [],
       cacheHistory: [],
+      lastOccupancy: null,
       round: 0,
       sessionId: null,
       toast: null,
@@ -605,6 +608,7 @@ export const useStore = create<Store>((set, get) => ({
       gallerySeed,
       eventBlock: { mode: "idle" as const, upTokens: 0, downTokens: 0 },
       currentRoundUsage: { input: 0, output: 0 },
+      lastOccupancy: null,
       terminalApproval: null,
       // 清掉「按 agent 缓存」里当前 agent 的旧上下文（coding/maou 都清）
       agentSessionMap: {
@@ -1062,13 +1066,18 @@ export const useStore = create<Store>((set, get) => ({
         round: cached.messages.length,
         cacheHistory,
         currentRoundUsage: { input: 0, output: 0 },
+        lastOccupancy: lastOccupancyFromMessages(cached.messages),
       });
       return true;
     }
     return false;
   },
   setMessages: (messages, systemEvents = []) => set({
-    messages, systemEvents, currentAssistantId: null, round: messages.length,
+    messages,
+    systemEvents,
+    currentAssistantId: null,
+    round: messages.length,
+    lastOccupancy: lastOccupancyFromMessages(messages),
   }),
 
   onStream: (ev) => {

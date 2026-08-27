@@ -9,6 +9,17 @@
  * 5. Optionally wrap with DockBoardShell surface tokens / layout helper classes
  */
 export type {
+  DockCardId,
+  DockCardTone,
+  DockCardDef,
+} from "./ids";
+export {
+  DOCK_CARDS,
+  defaultDockOrder,
+  dockCardById,
+  isDockCardId,
+} from "./ids";
+export type {
   DockContentKind,
   DockPluginSlot,
   DockPluginRegistry,

@@ -20,7 +20,7 @@ Maou Agent 官方 SDK / Coding Agent monorepo（`@little-house-studio/*`）。
 | 组件 | 说明 |
 |------|------|
 | `@little-house-studio/cli`（`maou`） | 终端入口（Ratatui） |
-| `@little-house-studio/webui`（`maou-web`） | Web 入口：对话 + 内置终端 |
+| `@little-house-studio/app`（`maou-app`） | 桌面客户端：对话 + 内置终端（macOS / Windows / Linux） |
 | `@little-house-studio/coding-agent` | 编程 Agent 产品 |
 | `@little-house-studio/agent` / `context` / `tools` / `llm` / `types` … | 运行时与工具层 |
 

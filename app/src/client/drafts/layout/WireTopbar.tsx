@@ -1,20 +1,12 @@
 import React from "react";
 import type { DraftMeta, UiMode } from "../types";
-import { chromeMarkForMode } from "../visual-marks";
-import { ChromeMark } from "../icons/Marks";
 import { MaouLogo } from "../icons/MaouLogo";
-import { LedStrip } from "./LedStrip";
-import { resolveLedState } from "./led-strip";
 
 export type WireTopbarProps = {
   mode: UiMode;
   onModeChange: (m: UiMode) => void;
   meta: DraftMeta;
   usageLabel: string;
-  showFiles: boolean;
-  onToggleFiles: () => void;
-  /** Agent 是否在跑 — 驱动顶栏 3×18 LED */
-  agentBusy?: boolean;
 };
 
 const MODES: { id: UiMode; label: string }[] = [
@@ -24,46 +16,39 @@ const MODES: { id: UiMode; label: string }[] = [
   { id: "settings", label: "设置" },
 ];
 
-/** 顶栏：CLI logo + 模式（含设置）+ 右侧 meta / 文件 */
+/** 顶栏：左 logo · 中模式页签 · 右 meta */
 export function WireTopbar({
   mode,
   onModeChange,
   meta,
   usageLabel,
-  showFiles,
-  onToggleFiles,
-  agentBusy = false,
 }: WireTopbarProps) {
-  const led = resolveLedState({
-    busy: agentBusy,
-    offline: meta.offline,
-  });
+  const darwinChrome =
+    typeof navigator !== "undefined" &&
+    /Electron/i.test(navigator.userAgent) &&
+    /Mac/i.test(navigator.userAgent);
   return (
-    <header className="wire-topbar">
+    <header className={`wire-topbar${darwinChrome ? " is-darwin-chrome" : ""}`}>
       <div className="wire-topbar-left">
         <span className="wire-wordmark" title="Maou CLI brand">
           <MaouLogo compact />
         </span>
-        <nav className="wire-mode-tabs" role="tablist" aria-label="界面模式">
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              role="tab"
-              aria-selected={mode === m.id}
-              className={mode === m.id ? "active" : ""}
-              onClick={() => onModeChange(m.id)}
-            >
-              <ChromeMark kind={chromeMarkForMode(m.id)} size={13} decorative />
-              {m.label}
-            </button>
-          ))}
-        </nav>
       </div>
 
-      <div className="wire-topbar-center">
-        <LedStrip state={led} />
-      </div>
+      <nav className="wire-mode-tabs" role="tablist" aria-label="界面模式">
+        {MODES.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            role="tab"
+            aria-selected={mode === m.id}
+            className={mode === m.id ? "active" : ""}
+            onClick={() => onModeChange(m.id)}
+          >
+            {m.label}
+          </button>
+        ))}
+      </nav>
 
       <div className="wire-topbar-right">
         <span
@@ -75,14 +60,6 @@ export function WireTopbar({
           </span>
           <span className="wire-meta-dim">{usageLabel}</span>
         </span>
-        <button
-          type="button"
-          className={`wire-text-btn${showFiles ? " on" : ""}`}
-          onClick={onToggleFiles}
-        >
-          <ChromeMark kind="files" size={14} decorative />
-          文件
-        </button>
       </div>
     </header>
   );

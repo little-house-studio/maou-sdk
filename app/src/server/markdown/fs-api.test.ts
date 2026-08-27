@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import {
   resolveSafePath,
   listMarkdownTree,
+  listProjectTree,
   readProjectFile,
   writeProjectFile,
   createMarkdownFile,
@@ -58,5 +59,13 @@ describe("markdown tree and files", () => {
 
   it("rejects non-markdown", () => {
     assert.throws(() => writeProjectFile(root, "docs/x.txt", "nope"), /markdown/);
+  });
+
+  it("lists project text tree and reads text files", () => {
+    writeFileSync(join(root, "docs", "note.ts"), "export const n = 1;\n");
+    const tree = listProjectTree(root);
+    assert.ok(JSON.stringify(tree).includes("note.ts"));
+    const f = readProjectFile(root, "docs/note.ts");
+    assert.match(f.content, /export const n/);
   });
 });

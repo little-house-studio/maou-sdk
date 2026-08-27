@@ -19,7 +19,7 @@ import {
   createMarkdownFile,
   resolveSafePath,
 } from "../src/server/markdown/fs-api.ts";
-import { createWebUiServer } from "../src/server/create-server.ts";
+import { createAppServer } from "../src/server/create-server.ts";
 import {
   listAgentTerminals,
   getAgentTerminalLogs,
@@ -40,7 +40,7 @@ function log(s: string) {
 }
 
 // ── 1) FS helpers (real shipped functions) ──
-const proj = join(tmpdir(), `maou-webui-mvp-${Date.now()}`);
+const proj = join(tmpdir(), `maou-app-mvp-${Date.now()}`);
 mkdirSync(proj, { recursive: true });
 mkdirSync(join(proj, "docs"), { recursive: true });
 writeFileSync(join(proj, "docs", "hello.md"), "# Hello\n\nbody\n", "utf8");
@@ -66,7 +66,7 @@ log(`[fs] ok tree/read/write/create under ${proj}`);
 // ── 2) HTTP server real routes on loopback ──
 initAgentTerminalEngine();
 const port = 18787 + Math.floor(Math.random() * 800);
-const bound = createWebUiServer({
+const bound = createAppServer({
   host: "127.0.0.1",
   port,
   projectRoot: proj,
@@ -82,7 +82,7 @@ const health = await fetch(`${url}/api/health`);
 const healthBody = (await health.json()) as Record<string, unknown>;
 assert.equal(health.ok, true);
 assert.equal(healthBody.ok, true);
-assert.equal(healthBody.service, "maou-webui");
+assert.equal(healthBody.service, "maou-app");
 writeFileSync(
   join(SCRATCH, "webui-health.txt"),
   JSON.stringify(healthBody, null, 2) + "\n",

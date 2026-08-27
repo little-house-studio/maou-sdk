@@ -103,8 +103,7 @@ const n = 42;
 ```
 
 ```bash
-pnpm --filter @little-house-studio/webui build
-curl -s http://127.0.0.1:8787/api/health
+pnpm --filter @little-house-studio/app dev
 ```
 
 ## 8. 表格

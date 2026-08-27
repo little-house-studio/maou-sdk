@@ -130,7 +130,7 @@ export interface Toast {
 }
 
 export interface RoundUsage {
-  /** 归一后的 prompt **总量**（含缓存命中与写入）= 上下文占用 / 命中率分母 */
+  /** 归一后的 prompt **总量**（含缓存命中与写入）；窗口占用另见 lastOccupancy */
   input: number;
   output: number;
   total?: number;
@@ -258,6 +258,8 @@ export interface UIState {
   rounds: RoundUsage[];          // 每轮 token（sparkline 用，最近 20）
   cacheHistory: CacheStat[];     // 最近 20 轮缓存统计（cacheRead/input，合并算平均率）
   currentRoundUsage: RoundUsage; // 本轮累计
+  /** 上一条回报的 input/output。压缩后清空，等下一轮真实 usage。 */
+  lastOccupancy: { input: number; output: number } | null;
   eventBlock: EventBlock;
   toast: Toast | null;
   overlay: OverlayKind;

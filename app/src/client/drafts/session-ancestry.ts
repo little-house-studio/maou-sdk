@@ -94,6 +94,33 @@ export function descendantCount(
   return n;
 }
 
+export type SessionForestRow = {
+  node: SessionTreeNode;
+  depth: number;
+};
+
+/** 根在前，子跟在父后。无父或父不在表里的当根。 */
+export function flattenSessionForest(
+  sessions: SessionTreeNode[],
+): SessionForestRow[] {
+  const { children } = indexSessionTree(sessions);
+  const ids = new Set(sessions.map((s) => s.id));
+  const roots = sessions.filter((s) => {
+    const p = resolveParentId(s);
+    return !p || !ids.has(p);
+  });
+  const out: SessionForestRow[] = [];
+  const seen = new Set<string>();
+  const walk = (node: SessionTreeNode, depth: number) => {
+    if (seen.has(node.id)) return;
+    seen.add(node.id);
+    out.push({ node, depth });
+    for (const child of children.get(node.id) ?? []) walk(child, depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+  return out;
+}
+
 export function equalAncestry(
   left: SessionTreeNode[],
   right: SessionTreeNode[],

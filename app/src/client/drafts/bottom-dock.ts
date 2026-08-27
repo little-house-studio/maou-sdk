@@ -14,11 +14,21 @@
  *  expand:  M0 1V34H34.5V1H10.5L9.5 0H1L0 1Z
  */
 
-/**
- * Bottom dock slots — TASK/busy chrome moved here from context top bar.
- * 日志 | 任务 | 终端 | agent | 主动（附属驻扎，卡片非独立顶栏页）
- */
-export type DockCardId = "logs" | "tasks" | "terminal" | "agent" | "proactive";
+export type {
+  DockCardId,
+  DockCardTone,
+  DockCardDef,
+} from "../dock-plugin/ids";
+export {
+  DOCK_CARDS,
+  defaultDockOrder,
+  dockCardById,
+  isDockCardId,
+} from "../dock-plugin/ids";
+import {
+  defaultDockOrder,
+  type DockCardId,
+} from "../dock-plugin/ids";
 
 /** Content-local design units (origin = design 3.5,3.5). */
 export const FOLDER = {
@@ -39,24 +49,17 @@ export const FOLDER = {
 } as const;
 
 /**
- * Scale content units → CSS px.
- * Content height for strip = 4 → ~32px track tabs (matches mock density).
+ * Scale content units → CSS px (expand board width/height).
  */
 export const FOLDER_SCALE = 8;
 
-/** Track / tab strip height (content h 4 × scale) — full chip incl. ear. */
-export const DOCK_TRACK_H = Math.round(FOLDER.stripBottom * FOLDER_SCALE); // 32
+/** Full-width collapsed dock strip. Idle chips share this height. */
+export const DOCK_TRACK_H = 24;
 export const DOCK_TAB_H = DOCK_TRACK_H;
 export const DOCK_TAB_W = Math.round(FOLDER.tabRight * FOLDER_SCALE); // 92
-/**
- * Body band only (y = bodyTop..stripBottom): height of the bottom rail /
- * track-fill. Aligns with the folder shoulder (折角), not the ear tip.
- */
-export const DOCK_STRIP_BODY_H = Math.round(
-  (FOLDER.stripBottom - FOLDER.bodyTop) * FOLDER_SCALE,
-); // 24
-/** Ear lip height above the shoulder (y = 0..bodyTop). */
-export const DOCK_EAR_RISE_H = Math.round(FOLDER.bodyTop * FOLDER_SCALE); // 8
+/** Idle rail body fills the strip. */
+export const DOCK_STRIP_BODY_H = DOCK_TRACK_H;
+export const DOCK_EAR_RISE_H = 0;
 
 /** Preview min width (design 43.5 × scale); grows with title. */
 export const DOCK_PREVIEW_W_MIN = Math.round(FOLDER.previewRight * FOLDER_SCALE); // 348
@@ -190,38 +193,6 @@ export function folderClipPathPolygon(): string {
 
 // ── Physics ──────────────────────────────────────────────────────────
 
-export type DockCardTone =
-  | "logs"
-  | "tasks"
-  | "terminal"
-  | "agent"
-  | "proactive";
-
-export type DockCardDef = {
-  id: DockCardId;
-  label: string;
-  tone: DockCardTone;
-};
-
-/** Split of former top TASKS + ops surface into bottom folder boards. */
-export const DOCK_CARDS: readonly DockCardDef[] = [
-  { id: "logs", label: "日志", tone: "logs" },
-  { id: "tasks", label: "任务", tone: "tasks" },
-  { id: "terminal", label: "终端", tone: "terminal" },
-  { id: "agent", label: "agent", tone: "agent" },
-  { id: "proactive", label: "主动", tone: "proactive" },
-] as const;
-
-/** Default left→right dock order. */
-export function defaultDockOrder(): DockCardId[] {
-  return DOCK_CARDS.map((c) => c.id);
-}
-
-export function dockCardById(id: DockCardId): DockCardDef {
-  const c = DOCK_CARDS.find((x) => x.id === id);
-  if (!c) throw new Error(`unknown dock card ${id}`);
-  return c;
-}
 
 /**
  * Reorder dock tabs: move `fromId` to index `toIndex` (0 = leftmost).
@@ -718,10 +689,6 @@ export function displayResizeHeight(
   if (raw <= 0) return 0;
   if (raw <= DOCK_EXPAND_H_MAX) return raw;
   return rubberBand(raw, DOCK_EXPAND_H_MAX, DOCK_EXPAND_H_MAX);
-}
-
-export function isDockCardId(v: string): v is DockCardId {
-  return DOCK_CARDS.some((c) => c.id === v);
 }
 
 /** Click-open impulse (px/s spring velocity) — board pops out of the slot. */

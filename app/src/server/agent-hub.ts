@@ -46,6 +46,12 @@ import {
   type TerminalApprover,
 } from "@little-house-studio/tools";
 import {
+  buildCommandCatalog,
+  scanSkillCommandNames,
+  type CommandCatalogItem,
+} from "./command-catalog.js";
+import { sanitizeChatImages } from "./chat-images.js";
+import {
   collectSessionStats,
   formatSessionAnalyze,
   formatSessionStats,
@@ -59,6 +65,11 @@ import {
   type LiveAgentDto,
 } from "./agent-list.js";
 import { listAgentTerminals, rebindAgentTerminalPersist } from "./agent-terminals.js";
+import {
+  collectToolCallIntents,
+  readHistoryToolMeta,
+  slimAssistantToolCalls,
+} from "./tool-history.js";
 export { resolveWorkspaceForSwitch } from "@little-house-studio/agent";
 
 function lastSessionPath(projectRoot: string): string {
@@ -139,8 +150,14 @@ export type ChatHistoryLine = {
   toolName?: string;
   toolOk?: boolean;
   toolCallId?: string;
+  /** tool_call 参数 description */
+  toolDescription?: string;
+  durationMs?: number;
+  toolCalls?: Array<{ id: string; description: string }>;
   images?: Message["images"];
   source?: string;
+  usageInput?: number;
+  usageOutput?: number;
 };
 
 export type WebhookDeliverOk = {
@@ -685,6 +702,7 @@ export class AgentHub implements WebhookHost {
     if (!id) return [];
     const data = this.sessionStore!.load(id);
     const msgs = (data?.messages ?? []) as Array<Record<string, unknown>>;
+    const callIntents = collectToolCallIntents(msgs);
     return msgs.map((m, i) => {
       const raw = m.content;
       let content = "";
@@ -717,6 +735,17 @@ export class AgentHub implements WebhookHost {
         : undefined;
       const source = typeof m.source === "string" ? m.source : undefined;
       const role = String(m.role ?? "assistant");
+      const usage = m.usage as Record<string, unknown> | undefined;
+      const usageInput = Number(
+        usage?.prompt_tokens ?? usage?.input_tokens ?? usage?.input ?? 0,
+      );
+      const usageOutput = Number(
+        usage?.completion_tokens ?? usage?.output_tokens ?? usage?.output ?? 0,
+      );
+      const toolMeta =
+        role === "tool" ? readHistoryToolMeta(m, callIntents) : {};
+      const toolCalls =
+        role === "assistant" ? slimAssistantToolCalls(m) : [];
       return {
         id: `${id}-${i}`,
         role,
@@ -725,8 +754,15 @@ export class AgentHub implements WebhookHost {
         ...(toolName ? { toolName } : {}),
         ...(toolCallId ? { toolCallId } : {}),
         ...(toolOk !== undefined ? { toolOk } : {}),
+        ...(toolMeta.toolDescription
+          ? { toolDescription: toolMeta.toolDescription }
+          : {}),
+        ...(toolMeta.durationMs != null ? { durationMs: toolMeta.durationMs } : {}),
+        ...(toolCalls.length ? { toolCalls } : {}),
         ...(images?.length ? { images } : {}),
         ...(source ? { source } : {}),
+        ...(Number.isFinite(usageInput) && usageInput > 0 ? { usageInput } : {}),
+        ...(Number.isFinite(usageOutput) && usageOutput > 0 ? { usageOutput } : {}),
       };
     });
   }
@@ -854,7 +890,23 @@ export class AgentHub implements WebhookHost {
     this.ensureAgent();
     const id = sessionId || this.sessionId;
     if (!id) return null;
-    return collectSessionStats(this.projectRoot, id);
+    const stats = collectSessionStats(this.projectRoot, id);
+    return this.applyRuntimeOccupancy(id, stats);
+  }
+
+  private applyRuntimeOccupancy(sessionId: string, stats: SessionStats): SessionStats {
+    try {
+      const snap = this.handle?.runtime.getContextSnapshotForSession?.(sessionId);
+      if (!snap) return stats;
+      return {
+        ...stats,
+        contextUsed: snap.used,
+        lastInputTokens: snap.lastInput,
+        lastOutputTokens: snap.lastOutput,
+      };
+    } catch {
+      return stats;
+    }
   }
 
   getSessionStatsText(sessionId?: string | null): string {
@@ -873,9 +925,23 @@ export class AgentHub implements WebhookHost {
    * 流式跑一轮用户消息；yield StreamEvent。
    * 同一会话再次发送会替换该会话旧 run；其它会话 run 不受影响。
    */
-  async *runChat(message: string): AsyncGenerator<StreamEvent> {
+  listCommandCatalog(): CommandCatalogItem[] {
+    const handle = this.ensureAgent();
+    const runtime = handle.runtime?.commandRegistry?.list() ?? [];
+    const skills = scanSkillCommandNames({
+      projectRoot: this.projectRoot,
+      maouRoot: this.maouRoot,
+    });
+    return buildCommandCatalog(runtime, skills);
+  }
+
+  async *runChat(
+    message: string,
+    opts?: { images?: Message["images"] },
+  ): AsyncGenerator<StreamEvent> {
     const agent = this.ensureAgent();
-    const text = message.trim();
+    const images = sanitizeChatImages(opts?.images);
+    const text = message.trim() || (images.length ? "(附图)" : "");
     if (!text) return;
 
     if (!this.sessionId) {
@@ -906,8 +972,9 @@ export class AgentHub implements WebhookHost {
         preset,
         stream: true,
         abortSignal: ac.signal,
-        source: "webui",
+        source: "app",
         sandboxMode: this.sandboxMode,
+        ...(images.length ? { images } : {}),
       })) {
         yield ev;
         if (ev.type === "done" || ev.type === "error") break;
@@ -981,7 +1048,7 @@ export class AgentHub implements WebhookHost {
     const queueMode = AgentHub.mapSendMode(mode);
     const { id, decision } = MESSAGE_QUEUE.enqueue(this.sessionId, text, {
       mode: queueMode,
-      source: "webui",
+      source: "app",
       metadata: { uiMode: mode },
     });
     return {
@@ -1259,6 +1326,33 @@ export class AgentHub implements WebhookHost {
     return { sessionId: slot.sessionId! };
   }
 
+  forkSession(parentId: string, title?: string): { sessionId: string } {
+    this.ensureAgent();
+    const parent = String(parentId || "").trim();
+    if (!parent) throw new Error("parentSessionId required");
+    if (!this.sessionStore!.load(parent)) {
+      throw new Error(`session not found: ${parent}`);
+    }
+    const child = this.sessionStore!.forkSession(parent, title);
+    this.rememberSession(child.id);
+    return { sessionId: child.id };
+  }
+
+  newChildSession(parentId: string, title?: string): { sessionId: string } {
+    this.ensureAgent();
+    const parent = String(parentId || "").trim();
+    if (!parent) throw new Error("parentSessionId required");
+    const data = this.sessionStore!.load(parent);
+    if (!data) throw new Error(`session not found: ${parent}`);
+    const child = this.sessionStore!.create({
+      title: title ?? "子会话",
+      agentName: data.agentName ?? this.agentName,
+      parentSessionId: parent,
+    });
+    this.rememberSession(child.id);
+    return { sessionId: child.id };
+  }
+
   switchSession(
     sessionIdOrOpts: string | { agent?: string; session: string },
   ): { sessionId: string } {
@@ -1380,7 +1474,7 @@ export class AgentHub implements WebhookHost {
     const slot = opts.agent || opts.session ? this.slotFor(opts.agent, opts.session) : null;
     const id = slot?.sessionId || this.sessionId || "";
     const stats = slot
-      ? collectSessionStats(slot.projectRoot, id)
+      ? this.applyRuntimeOccupancy(id, collectSessionStats(slot.projectRoot, id))
       : this.getSessionStats(id);
     return { sessionId: id, stats: (stats ?? {}) as Record<string, unknown> };
   }

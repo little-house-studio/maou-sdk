@@ -14,7 +14,7 @@
  */
 import type { ReactNode } from "react";
 import type { DockBoardSurface } from "./layout";
-import type { DockCardId } from "../drafts/bottom-dock";
+import type { DockCardId } from "./ids";
 
 export type DockBoardShellProps = {
   cardId: DockCardId;

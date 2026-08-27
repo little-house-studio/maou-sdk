@@ -11,7 +11,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
-import { createWebUiServer } from "../src/server/create-server.ts";
+import { createAppServer } from "../src/server/create-server.ts";
 import { AgentHub } from "../src/server/agent-hub.ts";
 
 const SCRATCH =
@@ -50,7 +50,7 @@ L(`[hub] sessions ${s1.sessionId.slice(0, 6)}/${s2.sessionId.slice(0, 6)} model+
 
 // HTTP
 const port = 19000 + Math.floor(Math.random() * 500);
-const server = createWebUiServer({
+const server = createAppServer({
   host: "127.0.0.1",
   port,
   projectRoot: project,

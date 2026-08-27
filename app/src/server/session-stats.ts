@@ -15,6 +15,12 @@ export type SessionStats = {
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
+  /** 上一条回报的 input */
+  lastInputTokens: number;
+  /** 上一条回报的 output */
+  lastOutputTokens: number;
+  /** 上下文占用 = last input + last output */
+  contextUsed: number;
   file: string;
 };
 
@@ -82,6 +88,9 @@ export function collectSessionStats(
     inputTokens: 0,
     outputTokens: 0,
     cacheRead: 0,
+    lastInputTokens: 0,
+    lastOutputTokens: 0,
+    contextUsed: 0,
     file,
   };
   if (!existsSync(file)) return stats;
@@ -115,14 +124,33 @@ export function collectSessionStats(
       stats.inputTokens += u.input;
       stats.outputTokens += u.output;
       stats.cacheRead += u.cacheRead;
+      if (u.input > 0 || u.output > 0) {
+        stats.lastInputTokens = u.input;
+        stats.lastOutputTokens = u.output;
+        stats.contextUsed = u.input + u.output;
+      }
     }
-    // raw style nested
     const data = ev.data as Record<string, unknown> | undefined;
     if (data?.usage) {
       const u = parseUsage(data.usage);
       stats.inputTokens += u.input;
       stats.outputTokens += u.output;
       stats.cacheRead += u.cacheRead;
+      if (u.input > 0 || u.output > 0) {
+        stats.lastInputTokens = u.input;
+        stats.lastOutputTokens = u.output;
+        stats.contextUsed = u.input + u.output;
+      }
+    }
+    if (
+      type === "compact" ||
+      type.startsWith("compact/") ||
+      role === "compact" ||
+      (typeof ev.content === "string" && /上下文已压缩/.test(ev.content))
+    ) {
+      stats.lastInputTokens = 0;
+      stats.lastOutputTokens = 0;
+      stats.contextUsed = 0;
     }
   }
   return stats;
@@ -138,7 +166,8 @@ export function formatSessionStats(s: SessionStats): string {
     `  Messages:   ${s.messageCount} (user ${s.userTurns} · assistant ${s.assistantTurns})`,
     `  Tool calls: ${s.toolCalls}`,
     `  Tokens:     in ${s.inputTokens.toLocaleString()} · out ${s.outputTokens.toLocaleString()} · cache_read ${s.cacheRead.toLocaleString()}`,
-    `  Cache hit:  ${hit} (approx from logged usage)`,
+    `  Context:    ${s.contextUsed.toLocaleString()} (last in ${s.lastInputTokens.toLocaleString()} + out ${s.lastOutputTokens.toLocaleString()})`,
+    `  Cache hit:  ${hit} (from logged usage)`,
     `  File:       ${s.file}`,
   ].join("\n");
 }

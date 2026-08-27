@@ -2,13 +2,12 @@
  * 主动智能 client API
  */
 
-/** 仅类型；Agent 层 pure subpath，勿从 agent 包根 import */
 import type {
   ProactiveBoard,
   ProactiveChatLine,
   ProactiveJobState,
   ProactiveSettings,
-} from "@little-house-studio/agent/proactive/types";
+} from "./proactive-model";
 
 export type ProactiveSnapshot = {
   ok: boolean;

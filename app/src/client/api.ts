@@ -1,4 +1,4 @@
-/** 浏览器侧 API —— 对齐 DESIGN + CLI 工作流（会话/模型/审批/命令） */
+/** 渲染进程 API —— 对齐 DESIGN + CLI 工作流（会话/模型/审批/命令） */
 
 export type StreamEvent = {
   type: string;
@@ -30,6 +30,8 @@ export type SessionSummary = {
   parentSessionId?: string;
 };
 
+export type ChatImage = { mimeType: string; data: string };
+
 export type ChatHistoryLine = {
   id: string;
   role: string;
@@ -39,6 +41,21 @@ export type ChatHistoryLine = {
   toolName?: string;
   toolOk?: boolean;
   toolCallId?: string;
+  /** tool_call 参数 description */
+  toolDescription?: string;
+  durationMs?: number;
+  /** 助手消息上的 tool_calls，用来回填工具行意图 */
+  toolCalls?: Array<{ id: string; description: string }>;
+  images?: ChatImage[];
+  usageInput?: number;
+  usageOutput?: number;
+};
+
+export type CommandCatalogItem = {
+  name: string;
+  description: string;
+  usage?: string;
+  source?: "runtime" | "skill" | "local";
 };
 
 export type PendingApproval = {
@@ -85,8 +102,8 @@ async function readJsonBody<T>(r: Response): Promise<T> {
   ) {
     throw new Error(
       r.ok
-        ? "API 返回了 HTML（请先启动后端: pnpm run dev:server 或 maou-web :8787）"
-        : `API ${r.status}：后端未就绪（开发模式需 8787 代理）`,
+        ? "API 返回了 HTML（请用桌面客户端：pnpm --filter @little-house-studio/app dev）"
+        : `API ${r.status}：host 未就绪（请用桌面客户端）`,
     );
   }
   try {
@@ -113,7 +130,7 @@ export async function fetchMeta(): Promise<Meta> {
   if (!r.ok) {
     const hint =
       r.status === 404 || r.status === 502 || r.status === 504
-        ? "（请先启动后端 :8787）"
+        ? "（请用桌面客户端）"
         : "";
     throw new Error(`meta ${r.status}${hint}`);
   }
@@ -213,7 +230,10 @@ export async function fetchRuntimeRunning(): Promise<{
   };
 }
 
-export async function createSession(title?: string): Promise<{
+export async function createSession(
+  title?: string,
+  opts?: { parentSessionId?: string; fork?: boolean },
+): Promise<{
   sessionId: string;
   messages: ChatHistoryLine[];
   meta: Meta;
@@ -221,7 +241,11 @@ export async function createSession(title?: string): Promise<{
   const r = await fetch("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({
+      title,
+      parentSessionId: opts?.parentSessionId,
+      fork: opts?.fork,
+    }),
   });
   const j = await jsonOrThrow<
     { ok: boolean; sessionId: string; messages?: ChatHistoryLine[] } & Meta
@@ -684,6 +708,9 @@ export async function fetchSessionStats(): Promise<{
     inputTokens: number;
     outputTokens: number;
     cacheRead: number;
+    lastInputTokens?: number;
+    lastOutputTokens?: number;
+    contextUsed?: number;
     file?: string;
   } | null;
   text: string;
@@ -700,6 +727,9 @@ export async function fetchSessionStats(): Promise<{
       inputTokens: number;
       outputTokens: number;
       cacheRead: number;
+      lastInputTokens?: number;
+      lastOutputTokens?: number;
+      contextUsed?: number;
       file?: string;
     } | null;
     text?: string;
@@ -915,14 +945,27 @@ export async function stopTerminal(id: string, agent: string): Promise<void> {
   });
 }
 
+export async function fetchCommandCatalog(): Promise<CommandCatalogItem[]> {
+  const r = await fetch("/api/commands");
+  const j = await readJsonBody<{ ok?: boolean; commands?: CommandCatalogItem[] }>(
+    r,
+  );
+  if (!r.ok) return [];
+  return Array.isArray(j.commands) ? j.commands : [];
+}
+
 export async function* streamChat(
   message: string,
   signal?: AbortSignal,
+  images?: ChatImage[],
 ): AsyncGenerator<StreamEvent> {
   const r = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({
+      message,
+      ...(images?.length ? { images } : {}),
+    }),
     signal,
   });
   if (!r.ok || !r.body) {
@@ -930,7 +973,7 @@ export async function* streamChat(
     const trimmed = t.trimStart();
     if (trimmed.startsWith("<!") || trimmed.startsWith("<html")) {
       throw new Error(
-        `chat ${r.status || ""}：后端未就绪（请启动 maou-web / dev:server :8787）`.trim(),
+        `chat ${r.status || ""}：host 未就绪（请用桌面客户端）`.trim(),
       );
     }
     throw new Error(t.slice(0, 200) || `chat ${r.status}`);

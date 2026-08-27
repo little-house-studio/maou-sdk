@@ -6,10 +6,11 @@ import {
   type FileTreeNode,
 } from "../file-tree";
 import { fileMarkKind, hierarchyIndentPx } from "../visual-marks";
-import { ChromeMark, FileMark } from "../icons/Marks";
+import { FileMark } from "../icons/Marks";
 
 export type FilesRailProps = {
   paths: string[];
+  modifiedPaths?: string[];
   rootLabel?: string;
   diff?: { add: number; del: number; file: string };
   /** Optional: file open for live shell (draft ignores). */
@@ -90,11 +91,16 @@ function TreeRow({
 /** 右侧文件栏：顶部 diff 图标摘要 + 类型/修改图标树 */
 export function FilesRail({
   paths,
+  modifiedPaths,
   rootLabel = "文件",
   diff = DEFAULT_DIFF,
   onFileOpen,
 }: FilesRailProps) {
-  const tree = useMemo(() => buildFileTree(paths), [paths]);
+  const marked = useMemo(() => {
+    const mods = new Set(modifiedPaths ?? []);
+    return paths.map((p) => (mods.has(p) ? `${p}\0M` : p));
+  }, [paths, modifiedPaths]);
+  const tree = useMemo(() => buildFileTree(marked), [marked]);
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     defaultExpandedPaths(buildFileTree(paths)),
   );
@@ -143,16 +149,17 @@ export function FilesRail({
   return (
     <div className="panel draft-rail-panel vsc-explorer wire-files-panel">
       <div className="wire-files-head">
-        <div className="wire-files-title wire-pane-title-with-icon">
-          <ChromeMark kind="files" size={12} decorative />
-          {rootLabel}
-        </div>
+        <div className="wire-files-title">{rootLabel}</div>
         <div className="wire-diff-strip" aria-label="diff 信息">
-          <span className="wire-diff-stat add">+{diff.add}</span>
-          <span className="wire-diff-stat del">−{diff.del}</span>
           <span className="wire-diff-file" title={diff.file}>
             {diff.file}
           </span>
+          {diff.add !== 0 || diff.del !== 0 ? (
+            <>
+              <span className="wire-diff-stat add">+{diff.add}</span>
+              <span className="wire-diff-stat del">−{diff.del}</span>
+            </>
+          ) : null}
         </div>
       </div>
       {tree.length === 0 ? (

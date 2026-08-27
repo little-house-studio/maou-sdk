@@ -1,7 +1,7 @@
 /**
  * Pure dock plugin registration — unit-testable without React.
  */
-import { DOCK_CARDS, type DockCardId } from "../drafts/bottom-dock";
+import { DOCK_CARDS, type DockCardId } from "./ids";
 import {
   DEFAULT_DOCK_BOARD_LAYOUT,
   getDefaultDockBoardLayout,

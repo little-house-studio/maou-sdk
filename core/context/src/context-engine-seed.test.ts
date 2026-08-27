@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { ContextEngine } from "./context-engine.js";
 import { HarnessSessionStore, sessionMessageFingerprint } from "./harness-session-store.js";
 import { TaskSessionStore } from "./task-session-store.js";
-import { estimateTokens } from "./token-estimate.js";
 
 function makeSessionMsgs(n: number): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
@@ -68,10 +67,8 @@ describe("ContextEngine.seedWorkingSet (B1)", () => {
     const e1 = engine();
     const msgs1 = makeSessionMsgs(20);
     e1.seedWorkingSet(msgs1);
-    const beforeTok = estimateTokens(e1.getHistory());
-    // force 压缩写入 harness
-    const report = await e1.compress(Math.max(512, Math.floor(beforeTok * 0.3)), {
-      knownTokens: beforeTok,
+    const report = await e1.compress(512, {
+      knownTokens: 20_000,
       force: true,
       sourceSessionMessages: msgs1,
     });

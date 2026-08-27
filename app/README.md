@@ -1,84 +1,33 @@
-# @little-house-studio/webui
+# @little-house-studio/app
 
-Maou **WebUI**（SDK 层）：对话 + **Agent 真实终端** + **Markdown 编辑器**。
+Maou 桌面客户端：对话 + Agent 真实终端 + Markdown。三端：macOS / Windows / Linux。没有浏览器入口。
 
-设计说明见 [DESIGN.md](./DESIGN.md)。
-
-### 终端面板做什么
-
-- 右侧列出 Agent 通过 `use_terminal` 创建的会话（Rust full / 降级 mini）
-- 「新开壳」走 `/ws/terminal`（Rust `openInteractive`）；无 `.node` 时按钮禁用
-- 点击列表项或聊天里带 `terminal_id` 的工具行 → xterm 附着（优先 subscribe）
-- 键盘输入经 `write` 写回；`MAOU_PTY=0` 才是管道（不可交互）
-- 可停止会话
-
-### Markdown 编辑器做什么
-
-- 顶栏 **Markdown** 视图：扫描项目内 `.md` / `.mdx` / `.markdown`
-- **独立大模块** `src/client/markdown/`（`MarkdownWorkbench`），后端 `src/server/markdown/`
-- 文件树 · 需求大纲工作台 / 源码编辑（二选一，默认大纲）
-- 面向 PRD：进度仪表盘、筛选、钻取、`- [ ]` 验收；设计见 `markdown/DESIGN.md`
-- 示例：`webui/docs/sample-prd.md`
+设计见 [DESIGN.md](./DESIGN.md)。
 
 ## 开发
 
 ```bash
-# 在 monorepo 根
+# monorepo 根
 pnpm install
-pnpm --filter @little-house-studio/webui build
-
-# 生产模式启动（需先 build）
-pnpm --filter @little-house-studio/webui start
-# 打开 http://127.0.0.1:8787
-
+pnpm --filter @little-house-studio/app dev
 ```
 
-开发（双进程）：
+`dev` 只开 Electron 窗口。界面热更新走 Vite（仅 Electron UA），业务走进程内 host + IPC，不监听业务 TCP 端口。
+
+## 打包
 
 ```bash
-cd webui
-pnpm run build:server   # 至少一次
-pnpm run dev            # Vite :5173 + API 代理到 :8787
-# 另开：pnpm run dev:server
+pnpm --filter @little-house-studio/app pack        # 当前系统
+pnpm --filter @little-house-studio/app pack:mac
+pnpm --filter @little-house-studio/app pack:win
+pnpm --filter @little-house-studio/app pack:linux
 ```
 
-或：
-
-```bash
-pnpm --filter @little-house-studio/webui exec tsx src/server/cli.ts
-```
-
-## API
-
-| | |
-|--|--|
-| `POST /api/chat` | NDJSON StreamEvent |
-| `POST /api/chat/abort` | 中断 |
-| `GET /api/meta` | session / model / cwd / agentName |
-| `GET/POST /api/sessions` | 列出会话 / 新建 |
-| `POST /api/sessions/switch` | 切换会话并加载历史 |
-| `POST /api/sessions/clear` · `delete` · `rename` | 清空 / 删除 / 重命名 |
-| `GET /api/sessions/active/export` · `stats` · `messages` | 导出 / 用量 / 历史 |
-| `POST /api/model` | 切换 provider/model |
-| `GET /api/models` | 列表 |
-| `GET/POST /api/approval` | 审批模式 normal\|auto\|yolo |
-| `GET /api/approvals/pending` · `POST /api/approvals/:id` | 终端审批 |
-| `POST /api/command` | slash 等价 |
-| `GET /api/fs/md-tree` | 项目内 Markdown 文件树 |
-| `GET /api/fs/file?path=` | 读 `.md` |
-| `PUT /api/fs/file` | 写 `.md` |
-| `POST /api/fs/file` | 新建 `.md` |
-| `GET /api/terminals` | Agent 终端列表（`?agent=` / `?all=1`） |
-| `GET /api/terminals/:id/logs` | 日志快照 |
-| `POST /api/terminals/:id/write` | 写入 stdin |
-| `POST /api/terminals/:id/stop` | 停止 |
-| `WS /ws/agent-terminal?id=&agent=` | 附着实时输出 + 输入 |
-
-默认 **仅绑定 127.0.0.1**（本机工具，非公网）。
+产物在 `app/release/`。
 
 ## 与 CLI
 
-| CLI | WebUI |
-|-----|-------|
-| `maou coding`（Ratatui） | `maou-web` / `node dist/server/cli.js` |
-| 同一 coding-agent + terminal-engine | 同一 coding-agent + terminal-engine |
+| CLI | App |
+|-----|-----|
+| `maou coding`（Ratatui） | 打包客户端 / `pnpm dev` |
+| 同一 coding-agent + terminal-engine | 同一套 runtime |

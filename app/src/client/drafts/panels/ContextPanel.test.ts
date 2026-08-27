@@ -93,6 +93,7 @@ describe("ContextPanel semantic structure", () => {
     // Preview attr (not full body) for jump labels — avoids huge data-* payloads
     assert.match(html, /data-msg-preview=/);
     assert.doesNotMatch(html, /data-msg-body=/);
+    assert.match(html, /data-ask-rail=/);
   });
 
   it("does not paint top TASKS chrome (tasks live in bottom dock)", () => {
@@ -137,6 +138,7 @@ describe("ContextPanel semantic structure", () => {
       draftInput: "",
     });
     assert.match(html, /wire-composer-stop/);
+    assert.match(html, /wire-composer-send/);
   });
 
   it("marks nested vs orphan reply turns distinctly", () => {
@@ -149,6 +151,8 @@ describe("ContextPanel semantic structure", () => {
     assert.match(html, /wire-internal-part role-thinking/);
     assert.match(html, /wire-internal-part role-err/);
     assert.match(html, /wire-tool-title|wire-tool-name/);
+    assert.match(html, /wire-tool-led/);
+    assert.doesNotMatch(html, /msg-avatar-wrap|--:--:--|◈/);
   });
 
   it("renders user block and system telemetry classes", () => {

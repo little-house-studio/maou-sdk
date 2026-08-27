@@ -14,7 +14,7 @@ import {
   tryDrawHtmlElementToCanvas,
 } from "./html-canvas";
 import type { DockContentKind, DockCanvasPaintInput } from "./types";
-import type { DockCardId } from "../drafts/bottom-dock";
+import type { DockCardId } from "./ids";
 
 export type DockCanvasFaceProps = {
   cardId: DockCardId;
@@ -76,12 +76,17 @@ export function DockCanvasFace({
     const { dpr } = sizeCanvasToCss(canvas, width, height);
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    const cssAccent = getComputedStyle(canvas)
+      .getPropertyValue("--dock-fill")
+      .trim();
     const input: DockCanvasPaintInput = {
       id: cardId,
       title,
       lines,
       count,
-      accent,
+      accent:
+        cssAccent ||
+        (accent && !accent.startsWith("var(") ? accent : undefined),
     };
     paintDockCanvasUiFace(ctx, width, height, input, dpr);
   }, [

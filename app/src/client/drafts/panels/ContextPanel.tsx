@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import type { ComposerImage } from "../../composer/images";
 import type {
   DraftAgent,
   DraftApproval,
@@ -6,6 +7,8 @@ import type {
   DraftMeta,
   DraftSession,
 } from "../types";
+import { ConversationPane } from "../../conversation";
+import { AskScrollRail } from "../AskScrollRail";
 import { SessionTreeCrumbs } from "../layout/SessionTreeCrumbs";
 import { ApprovalBanner } from "./ApprovalBanner";
 import { ComposerBar } from "./ComposerBar";
@@ -33,7 +36,7 @@ export type ContextPanelProps = {
   agents: DraftAgent[];
   onApprovalDecision: (d: "once" | "always" | "deny" | "blacklist") => void;
   onDraftInputChange: (v: string) => void;
-  onSend: () => void;
+  onSend: (images?: ComposerImage[], text?: string) => void;
   onRetryLast: () => void;
   onCopyTranscript: () => void;
   onAgentChange: (agentId: string) => void;
@@ -43,6 +46,9 @@ export type ContextPanelProps = {
   sessions?: DraftSession[];
   activeSessionId?: string;
   onSelectSession?: (id: string) => void;
+  onForkSession?: (parentId: string) => void;
+  onNewChildSession?: (parentId: string) => void;
+  filePaths?: readonly string[];
 };
 
 /**
@@ -70,6 +76,9 @@ export function ContextPanel({
   sessions,
   activeSessionId,
   onSelectSession,
+  onForkSession,
+  onNewChildSession,
+  filePaths,
 }: ContextPanelProps) {
   const empty = messages.length === 0;
   const canRetry = messages.some((m) => m.role === "user");
@@ -199,76 +208,84 @@ export function ContextPanel({
         .join(" ")}
       aria-label="上下文"
     >
-      {sessions && onSelectSession ? (
-        <SessionTreeCrumbs
-          sessions={sessions}
-          activeSessionId={activeSessionId ?? null}
-          onSelect={onSelectSession}
-        />
-      ) : null}
-      {showJump ? (
-        <button
-          type="button"
-          className="wire-jump-prev"
-          onClick={jumpPrevUser}
-          title={jumpTargetId ? `跳转到 ${jumpTargetId}` : "上一条用户消息"}
-          aria-label={jumpLabel}
-        >
-          <span className="wire-jump-prev-text">{jumpLabel}</span>
-        </button>
-      ) : null}
-
-      <div className="codex-thread-scroll wire-thread-scroll">
-        <WireThreadView
-          messages={messages}
-          emptyTitle={hasActiveSession ? "还没有消息" : "未选择会话"}
-          emptySub={
-            hasActiveSession
-              ? "在下方输入开始对话。消息只保存在本地。"
-              : "在左侧新建会话，或从场景目录加载假数据。"
-          }
-          scrollRef={scrollRef}
-        />
-      </div>
-
-      {showBack ? (
-        <button
-          type="button"
-          className="wire-jump-bottom"
-          onClick={scrollToBottom}
-          title="回到底部"
-          aria-label="回到底部"
-        >
-          ↓ 回到底部
-        </button>
-      ) : null}
-
-      <div className="wire-float wire-float-bottom">
-        {pendingApproval ? (
-          <ApprovalBanner
-            approval={pendingApproval}
-            onDecision={onApprovalDecision}
+      <ConversationPane
+        trail={
+          sessions && onSelectSession ? (
+            <SessionTreeCrumbs
+              sessions={sessions}
+              activeSessionId={activeSessionId ?? null}
+              onSelect={onSelectSession}
+              onFork={onForkSession}
+              onNewChild={onNewChildSession}
+            />
+          ) : null
+        }
+        jumpPrev={null}
+        scrollRef={scrollRef}
+        empty={empty}
+        rail={
+          empty ? null : (
+            <AskScrollRail
+              scrollRef={scrollRef}
+              revision={`${messages.length}:${messages[messages.length - 1]?.id ?? ""}`}
+            />
+          )
+        }
+        messages={
+          <WireThreadView
+            messages={messages}
+            emptyTitle={hasActiveSession ? "还没有消息" : "未选择会话"}
+            emptySub={
+              hasActiveSession
+                ? "在下方输入开始对话。消息只保存在本地。"
+                : "在左侧新建会话，或从场景目录加载假数据。"
+            }
+            agentBusy={agentBusy}
           />
-        ) : null}
-        <ComposerBar
-          draftInput={draftInput}
-          agentBusy={agentBusy}
-          pendingApproval={Boolean(pendingApproval)}
-          meta={meta}
-          statusHint={statusHint}
-          usageLabel={usageLabel}
-          hasActiveSession={hasActiveSession}
-          agents={agents}
-          canRetry={canRetry}
-          onDraftInputChange={onDraftInputChange}
-          onSend={onSend}
-          onRetryLast={onRetryLast}
-          onCopyTranscript={onCopyTranscript}
-          onAgentChange={onAgentChange}
-          onApprovalModeChange={onApprovalModeChange}
-          onStop={onStop}
-        />
-      </div>
+        }
+        jumpBottom={
+          showBack ? (
+            <button
+              type="button"
+              className="wire-jump-bottom"
+              onClick={scrollToBottom}
+              title="回到底部"
+              aria-label="回到底部"
+            >
+              ↓ 回到底部
+            </button>
+          ) : null
+        }
+        permit={
+          pendingApproval ? (
+            <ApprovalBanner
+              approval={pendingApproval}
+              onDecision={onApprovalDecision}
+            />
+          ) : null
+        }
+        composer={
+          <ComposerBar
+            draftInput={draftInput}
+            agentBusy={agentBusy}
+            pendingApproval={Boolean(pendingApproval)}
+            meta={meta}
+            statusHint={statusHint}
+            usageLabel={usageLabel}
+            hasActiveSession={hasActiveSession}
+            agents={agents}
+            canRetry={canRetry}
+            onDraftInputChange={onDraftInputChange}
+            onSend={onSend}
+            onRetryLast={onRetryLast}
+            onCopyTranscript={onCopyTranscript}
+            onAgentChange={onAgentChange}
+            onApprovalModeChange={onApprovalModeChange}
+            onStop={onStop}
+            filePaths={filePaths}
+          />
+        }
+      />
     </section>
   );
 }

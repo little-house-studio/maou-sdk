@@ -10,25 +10,16 @@ import {
   useRef,
   useState,
 } from "react";
-/** Agent 层 pure 语法；loop 在服务端 ProactiveService（附属驻扎） */
+import { ChromeMark } from "../drafts/icons/Marks";
+import { useAppPorts } from "../ports";
 import {
   PROACTIVE_ZONES,
+  isQueued,
   type ProactiveFrequency,
   type ProactiveItem,
   type ProactiveZone,
-} from "@little-house-studio/agent/proactive/types";
-import { isQueued } from "@little-house-studio/agent/proactive/board-format";
-import { ChromeMark } from "../drafts/icons/Marks";
-import {
-  abortProactive,
-  fetchProactive,
-  patchProactiveItem,
-  putProactiveSettings,
-  startProactiveDispatch,
-  startProactiveScan,
-  streamProactiveChat,
-  type ProactiveSnapshot,
-} from "./proactive-api";
+} from "./proactive-model";
+import type { ProactiveSnapshot } from "./proactive-api";
 
 function jobLabel(job: ProactiveSnapshot["job"]): string {
   if (job.status === "idle") return "空闲";
@@ -50,6 +41,15 @@ export type ProactiveHostProps = {
 };
 
 export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
+  const {
+    abortProactive,
+    fetchProactive,
+    patchProactiveItem,
+    putProactiveSettings,
+    startProactiveDispatch,
+    startProactiveScan,
+    streamProactiveChat,
+  } = useAppPorts().proactive;
   const [snap, setSnap] = useState<ProactiveSnapshot | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [input, setInput] = useState("");

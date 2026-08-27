@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   parsePromptTokensFromUsage,
+  parseUsageTokens,
+  occupancyFromUsage,
   estimateFullPromptTokens,
   resolveContextUsedTokens,
   estimateTokensFromText,
@@ -25,10 +27,17 @@ describe("parsePromptTokensFromUsage", () => {
   });
 });
 
-describe("resolveContextUsedTokens", () => {
-  it("takes max of api and estimate", () => {
+describe("occupancyFromUsage / resolveContextUsedTokens", () => {
+  it("adds last input + output and ignores estimates", () => {
+    expect(occupancyFromUsage({ prompt_tokens: 100, completion_tokens: 20 })).toBe(120);
+    expect(parseUsageTokens({ input_tokens: 80, output_tokens: 5 })).toEqual({
+      input: 80,
+      output: 5,
+    });
     expect(resolveContextUsedTokens({ apiPromptTokens: 180_000, estimatedPromptTokens: 90_000 })).toBe(180_000);
-    expect(resolveContextUsedTokens({ apiPromptTokens: 10_000, estimatedPromptTokens: 50_000 })).toBe(50_000);
+    expect(resolveContextUsedTokens({ apiPromptTokens: 10_000, estimatedPromptTokens: 50_000 })).toBe(10_000);
+    expect(resolveContextUsedTokens({ input: 100, output: 20, estimatedPromptTokens: 9_999 })).toBe(120);
+    expect(resolveContextUsedTokens({})).toBe(0);
   });
 });
 

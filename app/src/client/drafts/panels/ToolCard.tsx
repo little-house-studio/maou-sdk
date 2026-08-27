@@ -2,22 +2,23 @@
  * CLI ToolCard UI — title chip + fold + input/output sections.
  * Logic port of cli/tui-ratatui render_tool_card / tool_title_line.
  */
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import type { DraftMessage } from "../types";
 import {
   isDiffResult,
   isWriteTool,
   resolveToolCard,
   slicePreview,
+  toolDurationLabel,
   toolFoldMark,
-  toolTitleMeta,
+  toolIntentLabel,
 } from "../tool-card";
 
 export type ToolCardProps = {
   message: DraftMessage;
   /** When false, still show fold chevron (CLI always clickable on title). */
   defaultExpanded?: boolean;
-  /** 终端会话 id（有则显示「打开终端」，不自动弹） */
+  /** 终端会话 id（展开后可点「打开终端」） */
   terminalId?: string;
   onOpenTerminal?: () => void;
 };
@@ -29,32 +30,14 @@ export function ToolCard({
   onOpenTerminal,
 }: ToolCardProps) {
   const card = resolveToolCard(message);
-  // Running / error cards open by default so the user sees progress or failure
   const [expanded, setExpanded] = useState(
-    () => defaultExpanded || !card.done || card.isError,
+    () => defaultExpanded || (!card.done && !card.isError),
   );
   const [resultFull, setResultFull] = useState(false);
-  const [spinFrame, setSpinFrame] = useState(0);
-  const meta = toolTitleMeta(card);
-  const mark = toolFoldMark(card, expanded, spinFrame);
-  const nameCls = card.isError
-    ? "wire-tool-name is-error"
-    : "wire-tool-name";
-
-  // Animate CLI spinner while tool is still running
-  useEffect(() => {
-    if (card.done) return;
-    if (typeof window === "undefined") return;
-    const id = window.setInterval(() => {
-      setSpinFrame((f) => f + 1);
-    }, 80);
-    return () => window.clearInterval(id);
-  }, [card.done]);
-
-  // If a card flips to error after mount, expand so the failure is visible
-  useEffect(() => {
-    if (card.isError) setExpanded(true);
-  }, [card.isError]);
+  const intent = toolIntentLabel(card);
+  const dur = toolDurationLabel(card);
+  const mark = toolFoldMark(card, expanded);
+  const led = card.isError ? "err" : card.done ? "ok" : "wait";
 
   const argsPreview = card.args
     ? slicePreview(prettyArgs(card.args), card.name, true)
@@ -72,37 +55,42 @@ export function ToolCard({
       data-tool-done={card.done ? "true" : "false"}
       aria-busy={card.done ? undefined : "true"}
     >
-      <div className="wire-tool-title-row">
-        <button
-          type="button"
-          className="wire-tool-title"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          title={expanded ? "收起工具卡" : "展开工具卡"}
-        >
-          <span className={nameCls}>{card.name}</span>
-          {meta ? <span className="wire-tool-meta">{meta}</span> : null}
-          <span className="wire-tool-mark" aria-hidden>
-            {mark}
-          </span>
-        </button>
-        {terminalId && onOpenTerminal ? (
-          <button
-            type="button"
-            className="wire-tool-open-term"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenTerminal();
-            }}
-            title={`打开终端 ${terminalId}`}
-          >
-            打开终端
-          </button>
-        ) : null}
-      </div>
+      <button
+        type="button"
+        className="wire-tool-title"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        title={expanded ? "收起工具卡" : "展开工具卡"}
+      >
+        <span
+          className={`wire-tool-led is-${led}`}
+          data-tool-led={led}
+          aria-hidden
+        />
+        <span className="wire-tool-name">{card.name}</span>
+        {intent ? <span className="wire-tool-intent">{intent}</span> : null}
+        {dur ? <span className="wire-tool-dur">{dur}</span> : null}
+        <span className="wire-tool-grow" aria-hidden />
+        <span className="wire-tool-mark" aria-hidden>
+          {mark}
+        </span>
+      </button>
 
       {expanded ? (
         <div className="wire-tool-body">
+          {terminalId && onOpenTerminal ? (
+            <button
+              type="button"
+              className="wire-tool-open-term"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenTerminal();
+              }}
+              title={`打开终端 ${terminalId}`}
+            >
+              打开终端
+            </button>
+          ) : null}
           {argsPreview &&
           argsPreview.show &&
           argsPreview.show !== "{}" &&

@@ -9,7 +9,7 @@
  */
 
 import type { ReactNode } from "react";
-import type { DockCardId, DockCardTone } from "../drafts/bottom-dock";
+import type { DockCardId, DockCardTone } from "./ids";
 import type { DockBoardLayout, DockBoardSurface } from "./layout";
 
 /** How the expanded board face paints its interior. */

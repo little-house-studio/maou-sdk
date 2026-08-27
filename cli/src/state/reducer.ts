@@ -519,6 +519,10 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
         // 有后续工具则保留槽位，供 tool_call 挂载
         currentAssistantId: hasFollowOnTools ? slotId : null,
         maxContext: maxContext ?? state.maxContext,
+        lastOccupancy:
+          usage.input > 0 || usage.output > 0
+            ? { input: usage.input, output: usage.output }
+            : state.lastOccupancy,
       };
       // 注意：runtime 同一轮会先发 model.usage 再发 assistant，二者携带同一份 result.usage。
       // model.usage 已累计 token 到 currentRoundUsage；assistant 仅用于刷新消息展示，
@@ -791,6 +795,10 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
       const fromAgent = cacheHistoryFromEventCache(evRec.cache);
       return {
         currentRoundUsage: merged,
+        lastOccupancy:
+          usage.input > 0 || usage.output > 0
+            ? { input: usage.input, output: usage.output }
+            : state.lastOccupancy,
         ...(fromAgent ? { cacheHistory: fromAgent } : {}),
         eventBlock: { ...state.eventBlock, upTokens: merged.input, downTokens: merged.output },
       };
@@ -848,6 +856,7 @@ export function reduce(state: UIState, ev: StreamEvent): Patch {
         // 大压缩：一行系统事件（可点开）+ 短 toast（store 补 timer，约 1.2s 消失）
         return {
           systemEvents: [...state.systemEvents, sysEvent],
+          lastOccupancy: message.includes("失败") ? state.lastOccupancy : null,
           toast: {
             text: message.includes("失败")
               ? clipToast("压缩失败，将稍后重试")

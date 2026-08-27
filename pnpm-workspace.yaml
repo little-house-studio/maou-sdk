@@ -3,5 +3,5 @@ packages:
   - 'core/agent/*-engine'
   - 'example/*'
   - 'cli'
-  - 'webui'
+  - 'app'
   - 'agent-products/*'

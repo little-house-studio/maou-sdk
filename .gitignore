@@ -86,15 +86,16 @@ coverage/
 # ─── Vite / 前端本地缓存 ───
 .vite/
 **/.vite/
-webui/.vite/
+app/.vite/
 
-# ─── WebUI 本地校验 / 抓取产物（勿提交） ───
-webui/verify-out/
+# ─── App 本地校验 / 抓取产物（勿提交） ───
+app/verify-out/
+app/release/
 **/verify-out/
-webui/**/draft-audit*.png
-webui/**/.preview-*.png
-webui/**/composer-*.png
-webui/**/center-*.png
+app/**/draft-audit*.png
+app/**/.preview-*.png
+app/**/composer-*.png
+app/**/center-*.png
 
 # ═══════════════════════════════════════════════════════════
 # 不面向终端用户：实验 / 历史 / 内部文档 / 本地 demo

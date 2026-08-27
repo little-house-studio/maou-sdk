@@ -3,13 +3,36 @@
  * Used by ContextPanel (fixtures) and live ChatPanel (wire chrome) for UI parity.
  */
 import React, { useEffect, useState } from "react";
+import {
+  ASK_PREVIEW_MAX,
+  UserStick,
+  askAnchorProps,
+  clipAskPreview,
+} from "../../conversation";
 import type { DraftMessage } from "../types";
-import { groupThreadBlocks } from "../thread-blocks";
+import {
+  groupLoopTurns,
+  groupThreadBlocks,
+  isPlaceholderAssistantBody,
+  replyTurnVisible,
+} from "../thread-blocks";
+import type { ReplyBlock } from "../thread-blocks";
 import { DraftMarkdown } from "../DraftMarkdown";
 import { ToolCard } from "./ToolCard";
-import { durationStr, formatMessageHead } from "../message-meta";
+import { extractToolCallIntent } from "../tool-card";
+import { InfoHover } from "../InfoHover";
+import {
+  durationStr,
+  formatLoopTip,
+  formatMessageHead,
+  formatRoundTip,
+  loopTipRows,
+  messageHeadEmpty,
+  roundTipRows,
+  summarizeLoop,
+} from "../message-meta";
 import { roleLabelZh, roleMarkKind, roleTone } from "../visual-marks";
-import { RoleAvatar, StatusMark } from "../icons/Marks";
+import { RoleAvatar } from "../icons/Marks";
 
 export type WireThreadViewProps = {
   messages: DraftMessage[];
@@ -19,16 +42,16 @@ export type WireThreadViewProps = {
   /** Open agent terminal from tool card click (optional) */
   onOpenTerminal?: (id: string, agentName?: string) => void;
   className?: string;
-  scrollRef?: React.Ref<HTMLDivElement>;
+  /** 当前用户回合仍在跑时，最后一组 loop 不画完成脚注 */
+  agentBusy?: boolean;
 };
 
 function MessageHeadLine({
   head,
-  fallbackLabel,
 }: {
   head: ReturnType<typeof formatMessageHead>;
-  fallbackLabel: string;
 }) {
+  if (messageHeadEmpty(head)) return null;
   return (
     <div
       className={[
@@ -39,14 +62,14 @@ function MessageHeadLine({
       ]
         .filter(Boolean)
         .join(" ")}
-      title={fallbackLabel}
     >
-      <span className="msg-head-logo" aria-hidden>
-        {head.logo}
-      </span>
-      <span className="msg-head-text">{head.text}</span>
-      {head.live ? <span className="msg-head-live">LIVE</span> : null}
-      {head.queued ? <span className="msg-head-badge">queued</span> : null}
+      {head.who ? <span className="msg-head-who">{head.who}</span> : null}
+      {head.duration ? (
+        <span className="msg-head-meta">{head.duration}</span>
+      ) : null}
+      {head.time ? <span className="msg-head-meta">{head.time}</span> : null}
+      {head.live ? <span className="msg-head-live">进行中</span> : null}
+      {head.queued ? <span className="msg-head-badge">排队</span> : null}
     </div>
   );
 }
@@ -58,13 +81,11 @@ function MessageRow({
   message: DraftMessage;
   onOpenTerminal?: WireThreadViewProps["onOpenTerminal"];
 }) {
-  const rKind = roleMarkKind(message.role);
-  const label = roleLabelZh(rKind, message.tag);
-  const tone = roleTone(rKind);
+  const tone = roleTone(roleMarkKind(message.role));
   const isTool = message.role === "tool";
   const isSystem = message.role === "system";
   const isErr = message.role === "err";
-  const head = formatMessageHead(message);
+  const head = formatMessageHead(message, message.agentName);
   const termId = message.tool?.name === "terminal" ? message.tag : undefined;
 
   return (
@@ -85,17 +106,12 @@ function MessageRow({
       data-msg-role={message.role}
       data-msg-preview={
         message.role === "user"
-          ? message.body.replace(/\s+/g, " ").trim().slice(0, 120)
+          ? message.body.replace(/\s+/g, " ").trim().slice(0, ASK_PREVIEW_MAX)
           : undefined
       }
     >
-      <div className={`msg-avatar-wrap tone-${tone}`} aria-hidden>
-        <RoleAvatar kind={rKind} size={16} title={label} />
-      </div>
       <div className="msg-body">
-        {!isTool ? (
-          <MessageHeadLine head={head} fallbackLabel={label} />
-        ) : null}
+        {!isTool ? <MessageHeadLine head={head} /> : null}
         <div
           className={`bubble-text${isTool ? " is-tool" : ""}${
             isErr ? " is-err" : ""
@@ -112,7 +128,21 @@ function MessageRow({
               }
             />
           ) : (
-            <DraftMarkdown source={message.body} />
+            <>
+              {message.images?.length ? (
+                <div className="wire-msg-images">
+                  {message.images.map((img, i) => (
+                    <img
+                      key={`${message.id}-img-${i}`}
+                      className="wire-msg-image"
+                      src={`data:${img.mimeType};base64,${img.data}`}
+                      alt={img.name || `附图 ${i + 1}`}
+                    />
+                  ))}
+                </div>
+              ) : null}
+              {message.body ? <DraftMarkdown source={message.body} /> : null}
+            </>
           )}
         </div>
       </div>
@@ -234,7 +264,6 @@ function InternalPart({ message }: { message: DraftMessage }) {
         .join(" ")}
     >
       <div className="wire-internal-label">
-        <RoleAvatar kind={rKind} size={14} title={label} />
         <span>{label}</span>
       </div>
       <div className={`wire-internal-body${isErr ? " is-err" : ""}`}>
@@ -247,15 +276,17 @@ function InternalPart({ message }: { message: DraftMessage }) {
 function AssistantTurn({
   assistant,
   internals,
+  round,
 }: {
   assistant: DraftMessage | null;
   internals: DraftMessage[];
+  round: number;
 }) {
   const orphan = !assistant;
   const thinkParts = internals.filter((m) => m.role === "thinking");
   const otherInternals = internals.filter((m) => m.role !== "thinking");
   const head = assistant
-    ? formatMessageHead(assistant)
+    ? formatMessageHead(assistant, assistant.agentName)
     : {
         logo: "·",
         text: "内部步骤",
@@ -264,125 +295,235 @@ function AssistantTurn({
         isError: false,
         queued: false,
       };
+  const startedAt = assistant?.meta?.ts;
+  const [now, setNow] = useState(() => Date.now());
+  const live = Boolean(head.live);
+  useEffect(() => {
+    if (!live || startedAt == null) return;
+    const id = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(id);
+  }, [live, startedAt]);
+  const durationMs =
+    assistant?.meta?.durationMs ??
+    (live && startedAt != null ? Math.max(0, now - startedAt) : undefined);
+  const toolCount = internals.filter((m) => m.role === "tool").length;
+  const tipInput = {
+    round,
+    startedAt,
+    durationMs,
+    toolCount,
+    inputTokens: assistant?.meta?.usageInput,
+    outputTokens: assistant?.meta?.usageOutput,
+    live,
+  };
+  const tip = formatRoundTip(tipInput);
+  const rows = roundTipRows(tipInput);
+  const digits = String(round).length;
+  const showBody =
+    Boolean(assistant) && !isPlaceholderAssistantBody(assistant?.body);
+  const hasColumn =
+    orphan || thinkParts.length > 0 || showBody || otherInternals.length > 0;
+
   return (
     <div
       className={`wire-reply-turn${orphan ? " is-orphan" : ""}${
-        head.live ? " is-live" : ""
-      }`}
+        live ? " is-live" : ""
+      }${hasColumn ? "" : " is-chip-only"}`}
       data-orphan={orphan ? "true" : "false"}
+      data-round={round}
     >
-      <div
-        className={`bubble codex-bubble wire-msg assistant${
-          orphan ? " is-orphan" : ""
-        }${head.live ? " is-live" : ""}`}
-        data-msg-id={assistant?.id}
-        data-msg-role={assistant ? "assistant" : "orphan"}
-      >
-        <div
-          className={`msg-avatar-wrap tone-${orphan ? "muted" : "accent"}`}
-          aria-hidden
+      <InfoHover rows={rows} label={tip}>
+        <span
+          className={`wire-round-chip${live ? " is-live" : ""}`}
+          data-round-chip=""
+          data-digits={digits}
         >
-          {orphan ? (
-            <StatusMark kind="queued" size={14} title="内部步骤" />
-          ) : (
-            <RoleAvatar kind="assistant" size={16} title="助手" />
-          )}
+          {round}
+        </span>
+      </InfoHover>
+      {hasColumn ? (
+        <div
+          className={`bubble codex-bubble wire-msg assistant${
+            orphan ? " is-orphan" : ""
+          }${live ? " is-live" : ""}`}
+          data-msg-id={assistant?.id}
+          data-msg-role={assistant ? "assistant" : "orphan"}
+        >
+          <div className="msg-body wire-reply-body">
+            {orphan ? (
+              <div className="msg-role wire-orphan-label">内部步骤</div>
+            ) : null}
+
+            {thinkParts.length > 0 ? (
+              <div
+                className="wire-reply-internals wire-reply-thinking"
+                data-count={thinkParts.length}
+              >
+                {thinkParts.map((part) => (
+                  <InternalPart key={part.id} message={part} />
+                ))}
+              </div>
+            ) : null}
+
+            {showBody ? (
+              <div className="bubble-text">
+                <DraftMarkdown source={assistant!.body} />
+              </div>
+            ) : null}
+
+            {otherInternals.length > 0 ? (
+              <div
+                className="wire-reply-internals"
+                data-count={otherInternals.length}
+              >
+                {otherInternals.map((part) => (
+                  <InternalPart key={part.id} message={part} />
+                ))}
+              </div>
+            ) : null}
+          </div>
         </div>
-        <div className="msg-body wire-reply-body">
-          {assistant ? (
-            <MessageHeadLine head={head} fallbackLabel="助手" />
-          ) : (
-            <div className="msg-role wire-orphan-label">内部步骤</div>
-          )}
+      ) : null}
+    </div>
+  );
+}
 
-          {/* ① 思考在正文上方，默认折叠 */}
-          {thinkParts.length > 0 ? (
-            <div
-              className="wire-reply-internals wire-reply-thinking"
-              data-count={thinkParts.length}
-            >
-              {thinkParts.map((part) => (
-                <InternalPart key={part.id} message={part} />
-              ))}
-            </div>
-          ) : null}
+function repliesAreLive(replies: ReplyBlock[]): boolean {
+  return replies.some(
+    (block) =>
+      Boolean(block.assistant?.meta?.streaming) ||
+      block.internals.some((part) => part.thinking?.streaming),
+  );
+}
 
-          {/* ② 助手正文 */}
-          {assistant ? (
-            <div className="bubble-text">
-              <DraftMarkdown source={assistant.body} />
-            </div>
-          ) : null}
+function LoopFoot({
+  replies,
+  roundCount,
+}: {
+  replies: ReplyBlock[];
+  roundCount: number;
+}) {
+  const summary = { ...summarizeLoop(replies), roundCount };
+  const tip = formatLoopTip(summary);
+  const dur = durationStr(summary.durationMs);
+  return (
+    <div className="wire-loop-foot" data-loop-foot="">
+      <InfoHover rows={loopTipRows(summary)} label={tip}>
+        <span className="wire-loop-foot-time">用时 {dur || "—"}</span>
+      </InfoHover>
+    </div>
+  );
+}
 
-          {/* ③ 工具等其它内部步骤 */}
-          {otherInternals.length > 0 ? (
-            <div
-              className="wire-reply-internals"
-              data-count={otherInternals.length}
-            >
-              {otherInternals.map((part) => (
-                <InternalPart key={part.id} message={part} />
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </div>
+function LoopBlock({
+  user,
+  replies,
+  complete,
+  onOpenTerminal,
+}: {
+  user: DraftMessage | null;
+  replies: ReplyBlock[];
+  complete: boolean;
+  onOpenTerminal?: WireThreadViewProps["onOpenTerminal"];
+}) {
+  const shown = replies.filter(replyTurnVisible);
+  const showFoot = complete && shown.length > 0;
+  return (
+    <div
+      className="wire-loop"
+      data-loop=""
+      data-loop-complete={showFoot ? "true" : "false"}
+      {...(user ? askAnchorProps(user.id, clipAskPreview(user.body)) : {})}
+    >
+      {user ? (
+        <UserStick>
+          <MessageRow message={user} onOpenTerminal={onOpenTerminal} />
+        </UserStick>
+      ) : null}
+      {shown.map((block, i) => (
+        <AssistantTurn
+          key={block.assistant?.id ?? block.internals[0]?.id ?? `reply-${i}`}
+          assistant={block.assistant}
+          internals={block.internals}
+          round={i + 1}
+        />
+      ))}
+      {showFoot ? (
+        <LoopFoot replies={replies} roundCount={shown.length} />
+      ) : null}
     </div>
   );
 }
 
 /** Shared thread list for draft ContextPanel parity */
-export function WireThreadView({
+export const WireThreadView = React.memo(function WireThreadView({
   messages,
   emptyTitle = "还没有消息",
   emptySub = "在下方输入开始对话。",
   onOpenTerminal,
   className = "",
-  scrollRef,
+  agentBusy = false,
 }: WireThreadViewProps) {
   const blocks = groupThreadBlocks(messages);
+  const segments = groupLoopTurns(blocks);
   const empty = messages.length === 0;
+  const lastLoopIdx = (() => {
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (segments[i]!.kind === "loop") return i;
+    }
+    return -1;
+  })();
+
+  if (empty) {
+    return (
+      <div className={`wire-empty-hero empty-hint ${className}`.trim()}>
+        <p className="wire-empty-k">空单元</p>
+        <h2 className="empty-title">{emptyTitle}</h2>
+        <p className="empty-sub">{emptySub}</p>
+      </div>
+    );
+  }
 
   return (
-    <div
-      ref={scrollRef}
-      className={`wire-context-scroll chat-log codex-log ${className}`.trim()}
-      role="log"
-    >
-      {empty ? (
-        <div className="bubble codex-bubble system empty-hint">
-          <div className="msg-body">
-            <div className="empty-title">{emptyTitle}</div>
-            <div className="empty-sub">{emptySub}</div>
-          </div>
-        </div>
-      ) : (
-        blocks.map((block) => {
-          if (block.kind === "solo") {
+    <>
+      <div className="wire-thread-lead" aria-hidden />
+      {segments.map((seg, i) => {
+        if (seg.kind === "solo") {
+          const m = seg.message;
+          if (m.role === "user") {
             return (
-              <MessageRow
-                key={block.message.id}
-                message={block.message}
-                onOpenTerminal={onOpenTerminal}
-              />
+              <UserStick
+                key={m.id}
+                ask={{ id: m.id, preview: clipAskPreview(m.body) }}
+              >
+                <MessageRow message={m} onOpenTerminal={onOpenTerminal} />
+              </UserStick>
             );
           }
           return (
-            <AssistantTurn
-              key={
-                block.assistant?.id ??
-                block.internals[0]?.id ??
-                "reply"
-              }
-              assistant={block.assistant}
-              internals={block.internals}
+            <MessageRow
+              key={m.id}
+              message={m}
+              onOpenTerminal={onOpenTerminal}
             />
           );
-        })
-      )}
-    </div>
+        }
+        const live =
+          repliesAreLive(seg.replies) || (i === lastLoopIdx && agentBusy);
+        const complete = Boolean(seg.user) && seg.replies.length > 0 && !live;
+        return (
+          <LoopBlock
+            key={seg.user?.id ?? seg.replies[0]?.assistant?.id ?? `loop-${i}`}
+            user={seg.user}
+            replies={seg.replies}
+            complete={complete}
+            onOpenTerminal={onOpenTerminal}
+          />
+        );
+      })}
+    </>
   );
-}
+});
 
 /**
  * 从工具行正文解析工具名（与 ChatPanel.extractToolNameFromText 同语义，避免环依赖）。
@@ -426,15 +567,30 @@ export function chatLinesToDraftMessages(
     agentName?: string;
     toolName?: string;
     toolCallId?: string;
+    toolDescription?: string;
     thinkStartedAt?: number;
     thinkDurationMs?: number;
     thinkOutputTokens?: number;
+    startedAt?: number;
+    durationMs?: number;
+    usageInput?: number;
+    usageOutput?: number;
+    round?: number;
+    images?: Array<{ mimeType: string; data: string; name?: string }>;
   }>,
   opts?: { agentBusy?: boolean; agentName?: string },
 ): DraftMessage[] {
   const busy = Boolean(opts?.agentBusy);
   const agent = opts?.agentName || "coding";
-  return lines.map((l) => {
+  let lastAssistantIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.role === "assistant") {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+  let assistantRound = 0;
+  return lines.map((l, idx) => {
     // Tool rows keep role=tool even when err — badge must show real tool name
     if (l.err && l.role !== "tool") {
       return {
@@ -450,34 +606,26 @@ export function chatLinesToDraftMessages(
         Boolean(l.err) ||
         /^[✗×❌]/.test((l.text || "").trim()) ||
         /缺少必填|失败|error|❌/i.test(l.text || "");
-      // 结果正文首行常是「✓ write_file」或中文摘要；meta 描述用去掉徽章前缀后的摘要
       const body = l.text || "";
-      const descFromBody = body
-        .split("\n")
-        .map((s) => s.trim())
-        .find(
-          (s) =>
-            s &&
-            !/^[▶✓✗×❌]\s*[a-zA-Z_][\w.-]*/.test(s) &&
-            s !== toolName,
-        );
+      const inFlight = /^▶/.test(body.trim()) || (busy && body.trim().length === 0);
+      const description =
+        (l.toolDescription || "").trim() ||
+        extractToolCallIntent(body) ||
+        undefined;
       return {
         id: l.id,
         role: "tool" as const,
         body,
         tag: l.terminalId || toolName || undefined,
-        // 不再整卡 clickable 自动弹终端；有 id 时工具卡上显示「打开终端」
         clickable: false,
         agentName: l.agentName || agent,
         tool: {
-          // 自动用 Agent 实际调用的工具名，禁止硬编码 "tool"
           name: toolName,
           result: body,
-          done: !busy || Boolean(body),
+          done: !inFlight,
           isError: isErr,
-          description: l.terminalId
-            ? `terminal ${l.terminalId}`
-            : descFromBody || undefined,
+          description,
+          durationMs: l.durationMs,
         },
       };
     }
@@ -498,13 +646,22 @@ export function chatLinesToDraftMessages(
       };
     }
     if (l.role === "assistant") {
+      assistantRound += 1;
+      const placeholder = isPlaceholderAssistantBody(l.text);
+      const streaming = busy && placeholder && idx === lastAssistantIdx;
       return {
         id: l.id,
         role: "assistant" as const,
-        body: l.text || (busy ? "…" : ""),
+        body: placeholder ? "" : l.text,
+        agentName: l.agentName || agent,
         meta: {
           authorLabel: `agent:${agent}`,
-          streaming: busy && !l.text,
+          streaming,
+          round: l.round ?? assistantRound,
+          ts: l.startedAt,
+          durationMs: l.durationMs,
+          usageInput: l.usageInput,
+          usageOutput: l.usageOutput,
         },
       };
     }
@@ -514,6 +671,7 @@ export function chatLinesToDraftMessages(
         role: "user" as const,
         body: l.text || "",
         meta: { authorLabel: "user" },
+        ...(l.images?.length ? { images: l.images } : {}),
       };
     }
     return {

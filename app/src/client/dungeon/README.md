@@ -28,6 +28,5 @@
 ## 开发
 
 ```bash
-cd webui && pnpm run dev:client
-# http://127.0.0.1:5173 → Dungeon
+pnpm --filter @little-house-studio/app dev
 ```

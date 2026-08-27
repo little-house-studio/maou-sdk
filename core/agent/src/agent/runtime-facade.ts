@@ -270,6 +270,10 @@ export class Runtime {
     return this.getRuntime().getCacheRebuildGeneration(sessionId);
   }
 
+  getContextSnapshotForSession(sessionId: string) {
+    return this.getRuntime().getContextSnapshotForSession(sessionId);
+  }
+
   setHookUi(ui: HookUi): void {
     if (!this.hooks) this.hooks = new Hooks();
     this.hooks.ui = ui;

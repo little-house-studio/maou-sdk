@@ -28,15 +28,15 @@ function createWireEditorTheme() {
         lineHeight: "1.55",
       },
       ".cm-content": {
-        caretColor: "#c7ff20",
+        caretColor: "var(--n-accent, #0256FF)",
         padding: "8px 0",
       },
       ".cm-cursor, .cm-dropCursor": {
-        borderLeftColor: "#c7ff20",
+        borderLeftColor: "var(--n-accent, #0256FF)",
       },
       "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
         {
-          backgroundColor: "color-mix(in srgb, #c7ff20 22%, transparent) !important",
+          backgroundColor: "color-mix(in srgb, var(--n-accent, #0256FF) 22%, transparent) !important",
         },
       ".cm-activeLine": {
         backgroundColor: "#211e1c",
@@ -59,8 +59,8 @@ function createWireEditorTheme() {
         color: "#8a8278",
       },
       ".cm-matchingBracket, .cm-nonmatchingBracket": {
-        backgroundColor: "color-mix(in srgb, #c7ff20 16%, transparent)",
-        outline: "1px solid color-mix(in srgb, #c7ff20 45%, transparent)",
+        backgroundColor: "color-mix(in srgb, var(--n-accent, #0256FF) 16%, transparent)",
+        outline: "1px solid color-mix(in srgb, var(--n-accent, #0256FF) 45%, transparent)",
       },
       ".cm-tooltip": {
         backgroundColor: "#282522",

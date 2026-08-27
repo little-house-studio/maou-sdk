@@ -185,7 +185,7 @@ export class CopilotHub {
         preset,
         stream: true,
         abortSignal: this.abort.signal,
-        source: "webui-copilot",
+        source: "app-copilot",
         sandboxMode: this.sandboxMode,
       })) {
         yield ev;

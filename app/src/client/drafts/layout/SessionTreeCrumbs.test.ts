@@ -37,6 +37,43 @@ describe("SessionTreeCrumbs", () => {
     assert.match(html, /调研 JS NPC 方法全貌/);
     assert.match(html, /1 个子会话/);
     assert.match(html, /aria-label="会话层级"/);
+    assert.match(html, /data-cascade-menu=/);
+    assert.doesNotMatch(html, /wire-session-tree-menu/);
+    assert.doesNotMatch(html, /aria-haspopup="tree"/);
+  });
+
+  it("ancestor crumb jumps; current crumb is not a control", () => {
+    const html = renderToStaticMarkup(
+      createElement(SessionTreeCrumbs, {
+        sessions,
+        activeSessionId: "s-root::fork::research::a",
+        onSelect: () => {},
+      }),
+    );
+    assert.match(
+      html,
+      /wire-session-tree-crumb(?! is-current)[^>]*>你当前是团队干活吗</,
+    );
+    assert.match(
+      html,
+      /wire-session-tree-crumb is-current[^>]*>调研 JS NPC 方法全貌</,
+    );
+    assert.match(html, /<span class="wire-session-tree-crumb is-current"/);
+  });
+
+  it("catalog can fork and spawn a child session", () => {
+    const html = renderToStaticMarkup(
+      createElement(SessionTreeCrumbs, {
+        sessions,
+        activeSessionId: "s-root::fork::research::a",
+        onSelect: () => {},
+        onFork: () => {},
+        onNewChild: () => {},
+      }),
+    );
+    assert.match(html, />派生</);
+    assert.match(html, /新建子会话/);
+    assert.match(html, /wire-session-tree-acts/);
   });
 
   it("hides when there is no active session", () => {

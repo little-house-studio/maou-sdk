@@ -155,6 +155,8 @@ textarea,
 .wire-project-outline,
 .model-cascade-trigger,
 .model-cascade-panel,
+.wire-cascade-trigger,
+.wire-cascade-panel,
 .tag,
 .msg-role {
   font-family: var(--font-text) !important;

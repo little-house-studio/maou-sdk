@@ -123,35 +123,21 @@ describe("WireTopbar settings mode tab", () => {
         onModeChange: () => {},
         meta: META,
         usageLabel: "1k",
-        showFiles: false,
-        onToggleFiles: () => {},
       }),
     );
     assert.match(html, /wire-mode-tabs/);
+    assert.match(
+      html,
+      /wire-topbar-left[\s\S]*?<\/div>\s*<nav class="wire-mode-tabs"/,
+    );
     assert.match(html, />聊天</);
     assert.match(html, />项目</);
     assert.match(html, />Team</);
     assert.match(html, />设置</);
-    assert.match(html, /data-led-strip="3x18"/);
-    assert.match(html, /data-state="idle"/);
+    assert.doesNotMatch(html, />文件</);
+    assert.doesNotMatch(html, /data-led-strip|wire-led-strip/);
     // gear drawer removed — settings is a mode tab
     assert.doesNotMatch(html, /打开设置|aria-haspopup="dialog"/);
-  });
-
-  it("LED strip turns run when agentBusy", () => {
-    const html = renderToStaticMarkup(
-      createElement(WireTopbar, {
-        mode: "chat",
-        onModeChange: () => {},
-        meta: META,
-        usageLabel: "1k",
-        showFiles: false,
-        onToggleFiles: () => {},
-        agentBusy: true,
-      }),
-    );
-    assert.match(html, /data-state="run"/);
-    assert.match(html, /aria-label="Agent 运行中"/);
   });
 
   it("marks 设置 tab selected when mode is settings", () => {
@@ -161,8 +147,6 @@ describe("WireTopbar settings mode tab", () => {
         onModeChange: () => {},
         meta: META,
         usageLabel: "1k",
-        showFiles: true,
-        onToggleFiles: () => {},
       }),
     );
     assert.match(html, /aria-selected="true"[^>]*>[\s\S]*?设置/);
@@ -172,12 +156,17 @@ describe("WireTopbar settings mode tab", () => {
 });
 
 describe("DraftShell settings mode path (shipped source)", () => {
-  const shellSrc = readFileSync(join(here, "../DraftShell.tsx"), "utf8");
+  const shellSrc = [
+    readFileSync(join(here, "../DraftShell.tsx"), "utf8"),
+    readFileSync(join(here, "../../host/draft-slots.tsx"), "utf8"),
+    readFileSync(join(here, "../../host/draft-state.ts"), "utf8"),
+    readFileSync(join(here, "../../shell/DraftMid.tsx"), "utf8"),
+  ].join("\n");
   const topbarSrc = readFileSync(join(here, "../layout/WireTopbar.tsx"), "utf8");
 
   it("DraftShell mounts SettingsPanel as mode mid content", () => {
-    assert.match(shellSrc, /from\s+["']\.\/panels\/SettingsPanel["']/);
-    assert.match(shellSrc, /from\s+["']\.\/api-settings["']/);
+    assert.match(shellSrc, /from\s+["'][^"']*\/panels\/SettingsPanel["']/);
+    assert.match(shellSrc, /from\s+["'][^"']*\/api-settings["']/);
     assert.match(shellSrc, /apiConfig/);
     assert.match(shellSrc, /defaultApiConfig/);
     assert.match(shellSrc, /mode === ["']settings["']/);
@@ -190,13 +179,13 @@ describe("DraftShell settings mode path (shipped source)", () => {
     assert.match(topbarSrc, /id:\s*["']settings["']/);
     assert.match(topbarSrc, /label:\s*["']设置["']/);
     assert.doesNotMatch(topbarSrc, /onOpenSettings/);
-    assert.match(topbarSrc, /LedStrip/);
-    assert.match(topbarSrc, /agentBusy/);
+    assert.doesNotMatch(topbarSrc, /LedStrip|agentBusy/);
+    assert.doesNotMatch(topbarSrc, /onToggleFiles|showFiles/);
   });
 
   it("mode switch keeps chat/project/team paths", () => {
-    assert.match(shellSrc, /mode === ["']project["']/);
-    assert.match(shellSrc, /mode === ["']team["']/);
+    assert.match(shellSrc, /mode === ["']project["']|key:\s*["']project["']/);
+    assert.match(shellSrc, /mode === ["']team["']|key:\s*["']team["']/);
     assert.match(shellSrc, /wire-mid is-chat|is-chat/);
   });
 });

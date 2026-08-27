@@ -1,11 +1,12 @@
 /**
- * Live right-rail files: FilesRail 树 + 只读 Markdown 预览。
+ * Live right-rail files: FilesRail 树 + 只读文本预览。
  * 完整编辑请走项目模式 ProjectWorkbench。
  */
 import { useCallback, useEffect, useState } from "react";
 import { FilesRail } from "../drafts/panels/FilesRail";
 import { DraftMarkdown } from "../drafts/DraftMarkdown";
-import { fetchMdTree, readFsFile, type FsTreeNode } from "../markdown/api";
+import { useAppPorts } from "../ports";
+import type { FsTreeNode } from "../markdown/api";
 
 function flattenFsPaths(nodes: FsTreeNode[], acc: string[] = []): string[] {
   for (const n of nodes) {
@@ -15,8 +16,20 @@ function flattenFsPaths(nodes: FsTreeNode[], acc: string[] = []): string[] {
   return acc;
 }
 
+const PREVIEW_OK = /\.(md|mdx|markdown|txt|json|jsonc|ts|tsx|js|jsx|mjs|cjs|css|html|yml|yaml|toml|rs|go|py|svg|xml|sh)$/i;
+
+function previewSource(path: string, content: string): string {
+  if (/\.(md|mdx|markdown)$/i.test(path)) return content || "_(空文件)_";
+  const fence = path.split(".").pop() || "text";
+  return `\`\`\`${fence}\n${content || ""}\n\`\`\``;
+}
+
 export function LiveFilesRail() {
+  const { fetchMdTree, fetchProjectTree, fetchGitStatus, readFsFile } =
+    useAppPorts().files;
   const [paths, setPaths] = useState<string[]>([]);
+  const [modifiedPaths, setModifiedPaths] = useState<string[]>([]);
+  const [diff, setDiff] = useState({ add: 0, del: 0, file: "—" });
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [content, setContent] = useState<string>("");
   const [loading, setLoading] = useState(false);
@@ -25,7 +38,12 @@ export function LiveFilesRail() {
 
   const refresh = useCallback(async () => {
     try {
-      const { tree } = await fetchMdTree();
+      let tree;
+      try {
+        ({ tree } = await fetchProjectTree());
+      } catch {
+        ({ tree } = await fetchMdTree());
+      }
       const next = flattenFsPaths(tree);
       setPaths((prev) => {
         if (
@@ -36,12 +54,24 @@ export function LiveFilesRail() {
         }
         return next;
       });
+      try {
+        const st = await fetchGitStatus();
+        setModifiedPaths(st.files.map((f) => f.path));
+        setDiff({
+          add: st.add,
+          del: st.del,
+          file: st.files[0]?.path || next[0] || "—",
+        });
+      } catch {
+        setModifiedPaths([]);
+        setDiff({ add: 0, del: 0, file: next[0] || "—" });
+      }
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setPaths((prev) => (prev.length === 0 ? prev : []));
     }
-  }, []);
+  }, [fetchMdTree, fetchProjectTree, fetchGitStatus]);
 
   useEffect(() => {
     void refresh();
@@ -49,7 +79,6 @@ export function LiveFilesRail() {
     return () => window.clearInterval(t);
   }, [refresh]);
 
-  // 打开路径变化 → 拉正文做只读预览
   useEffect(() => {
     if (!openPath) {
       setContent("");
@@ -79,22 +108,18 @@ export function LiveFilesRail() {
     return () => {
       cancelled = true;
     };
-  }, [openPath]);
+  }, [openPath, readFsFile]);
 
   return (
     <div className="live-files-rail-stack" data-live-files-rail="true">
       <div className="live-files-tree">
         <FilesRail
           paths={paths}
+          modifiedPaths={modifiedPaths}
           rootLabel="文件"
-          diff={
-            err
-              ? { add: 0, del: 0, file: "offline" }
-              : { add: 0, del: 0, file: paths[0] || "—" }
-          }
+          diff={err ? { add: 0, del: 0, file: "offline" } : diff}
           onFileOpen={(p) => {
-            // 仅 md 开只读预览；文件夹只展开
-            if (/\.(md|mdx|markdown)$/i.test(p)) setOpenPath(p);
+            if (PREVIEW_OK.test(p)) setOpenPath(p);
           }}
         />
       </div>
@@ -125,7 +150,7 @@ export function LiveFilesRail() {
             </div>
           ) : (
             <div className="live-files-preview-body wire-project-preview">
-              <DraftMarkdown source={content || "_(空文件)_"} />
+              <DraftMarkdown source={previewSource(openPath, content)} />
             </div>
           )}
         </div>

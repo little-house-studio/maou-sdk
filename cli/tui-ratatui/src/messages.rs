@@ -557,7 +557,7 @@ pub fn render_messages(
                 out.push(Line::from(""));
             }
             "assistant" => {
-                // ◈ ↺N | agent:coding | HH:MM:SS | (dur) | ↓tok · LIVE
+                // ◈ ↺N | agent:coding | HH:MM:SS | (dur) | ↑in ↓out · LIVE
                 let logo = if m.streaming {
                     spinner_char(spinner_frame)
                 } else {
@@ -576,6 +576,11 @@ pub fn render_messages(
                 let dur = duration_str(m.duration_ms);
                 if !dur.is_empty() {
                     head.push_str(&format!(" | ({dur})"));
+                }
+                if let Some(up) = m.usage_input {
+                    if up > 0 {
+                        head.push_str(&format!(" | ↑{}", compact(up)));
+                    }
                 }
                 if let Some(dn) = m.usage_output {
                     if dn > 0 {

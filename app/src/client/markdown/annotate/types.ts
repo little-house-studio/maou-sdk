@@ -20,12 +20,11 @@ export type AnnotationGroup = {
 };
 
 export const ANNOT_COLORS = [
-  "#c7ff20",
-  "#5eead4",
-  "#a8c8ff",
-  "#f0abfc",
-  "#fbbf24",
-  "#ff6b4a",
+  "#0256FF",
+  "#0291FF",
+  "#FF261F",
+  "#FF6600",
+  "#FFAE00",
 ];
 
 export const QUICK_NOTES = [
