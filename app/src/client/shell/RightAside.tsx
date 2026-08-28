@@ -1,20 +1,22 @@
-import { SlotOutlet } from "../slots";
 import { ResizeHandle } from "../drafts/layout/ResizeHandle";
+import { ASIDE_RIGHT_PANE } from "../slots/map";
+import { ActivityBar } from "./ActivityBar";
 import { AsidePane } from "./AsidePane";
+import { AsidePaneStack } from "./aside-tab";
 import { useShellRegion } from "./focus";
 import type { WireHostBag } from "./types";
 
-/** Files rail + activity icon as one right unit, below the topbar. */
+/** Activity icons + the open right pane, below the topbar. */
 export function RightAside(bag: WireHostBag) {
-  const filesOpen = bag.mode === "chat" && bag.showFiles;
+  const open = bag.mode === "chat" && bag.rightTab != null;
   return (
     <aside
       className="wire-aside"
-      data-files={filesOpen ? "open" : "closed"}
+      data-files={open ? "open" : "closed"}
       aria-label="右侧栏"
       {...useShellRegion("right")}
     >
-      {filesOpen ? (
+      {open ? (
         <ResizeHandle
           edge="left"
           size={bag.railW}
@@ -24,15 +26,23 @@ export function RightAside(bag: WireHostBag) {
           label="拖动调整文件栏宽度"
         />
       ) : null}
-      <AsidePane open={filesOpen} width={bag.railW} stick="end">
+      <AsidePane open={open} width={bag.railW} stick="end">
         <div
           className={`wire-right${bag.variant === "live" ? " live-files-rail" : ""}`}
           data-live-region={bag.variant === "live" ? "files" : undefined}
         >
-          <SlotOutlet name="shell.files" props={bag} />
+          <AsidePaneStack
+            name={ASIDE_RIGHT_PANE}
+            activeId={bag.rightTab}
+            props={bag}
+          />
         </div>
       </AsidePane>
-      <SlotOutlet name="shell.activity" props={bag} />
+      <ActivityBar
+        edge="right"
+        activeId={open ? bag.rightTab : null}
+        onSelect={bag.onRightTab}
+      />
     </aside>
   );
 }

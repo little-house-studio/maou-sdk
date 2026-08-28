@@ -1,6 +1,7 @@
 import { BrowserWindow } from "electron";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { resolveAppIcon } from "./icon.js";
 import type { AppPlatform } from "./platforms/types.js";
 
 export function createAppWindow(opts: {
@@ -16,6 +17,7 @@ export function createAppWindow(opts: {
     minWidth: 880,
     minHeight: 560,
     backgroundColor: "#ededed",
+    icon: resolveAppIcon(),
     show: false,
     frame: chrome.frame,
     autoHideMenuBar: chrome.autoHideMenuBar,

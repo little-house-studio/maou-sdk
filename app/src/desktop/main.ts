@@ -1,8 +1,9 @@
-import { app, BrowserWindow, Menu, dialog } from "electron";
+import { app, BrowserWindow, Menu, dialog, nativeImage } from "electron";
 import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAppServer } from "../server/create-server.js";
+import { resolveAppIcon } from "./icon.js";
 import { bindAppHttpIpc } from "./ipc-http.js";
 import { bindAppWsIpc } from "./ipc-ws.js";
 import { appPlatform } from "./platforms/index.js";
@@ -50,9 +51,18 @@ function openWindow() {
   });
 }
 
+function applyDockIcon() {
+  const path = resolveAppIcon();
+  if (!path) return;
+  const image = nativeImage.createFromPath(path);
+  if (image.isEmpty()) return;
+  app.dock?.setIcon(image);
+}
+
 async function boot() {
   const platform = appPlatform();
   await app.whenReady();
+  applyDockIcon();
 
   const socketPath = platform.ipcPath(app.getPath("userData"), process.pid);
   if (!socketPath.startsWith("\\\\.\\pipe\\")) {

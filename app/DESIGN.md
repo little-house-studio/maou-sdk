@@ -106,6 +106,7 @@ list / logs 轮询 / write 键盘输入 / stop。
 app/
   package.json          @little-house-studio/app
   electron-builder.yml  darwin / win32 / linux
+  resources/            桌面图标（方印，scripts/build-icon.mjs）
   src/desktop/          Electron 主进程 + preload
     platforms/          darwin.ts / win32.ts / linux.ts
   src/server/           AgentHub + Express（桌面走 socket）

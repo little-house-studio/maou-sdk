@@ -1,9 +1,14 @@
 import type { SlotChildren } from "./types";
 
+export const ASIDE_LEFT_TAB = "aside.left.tab";
+export const ASIDE_LEFT_PANE = "aside.left.pane";
+export const ASIDE_RIGHT_TAB = "aside.right.tab";
+export const ASIDE_RIGHT_PANE = "aside.right.pane";
+
 /**
  * Seats that match the current product chrome.
  * Declaring a seat here is the only way a plugin may register into it.
- * Visible layout stays: topbar / left agents+sessions / center mode / files+activity / bottom.
+ * Visible layout stays: topbar / left+right aside tabs / center mode / bottom.
  */
 export const SHELL_CHILDREN = {
   "shell.topbar": { kind: "single", scope: "root" },
@@ -13,10 +18,11 @@ export const SHELL_CHILDREN = {
 } as const satisfies SlotChildren;
 
 export const BODY_CHILDREN = {
-  "shell.sidebar": { kind: "single", scope: "root" },
   "shell.center": { kind: "keyed", scope: "root" },
-  "shell.files": { kind: "single", scope: "root" },
-  "shell.activity": { kind: "single", scope: "root" },
+  [ASIDE_LEFT_TAB]: { kind: "list", scope: "root" },
+  [ASIDE_LEFT_PANE]: { kind: "keyed", scope: "root" },
+  [ASIDE_RIGHT_TAB]: { kind: "list", scope: "root" },
+  [ASIDE_RIGHT_PANE]: { kind: "keyed", scope: "root" },
 } as const satisfies SlotChildren;
 
 export const SIDEBAR_CHILDREN = {

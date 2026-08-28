@@ -9,6 +9,13 @@ const windowSrc = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "../window.ts"),
   "utf8",
 );
+const iconSrc = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../icon.ts"),
+  "utf8",
+);
+const iconPng = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../../../resources/icon.png"),
+);
 
 describe("app platforms", () => {
   it("darwin uses hiddenInset chrome and a unix socket", () => {
@@ -36,5 +43,11 @@ describe("app platforms", () => {
 
   it("desktop window paints paper before first frame", () => {
     assert.match(windowSrc, /backgroundColor:\s*"#ededed"/);
+  });
+
+  it("desktop window uses the Maou seal icon", () => {
+    assert.match(windowSrc, /icon:\s*resolveAppIcon\(\)/);
+    assert.match(iconSrc, /resources\/icon\.png/);
+    assert.equal(iconPng.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), true);
   });
 });

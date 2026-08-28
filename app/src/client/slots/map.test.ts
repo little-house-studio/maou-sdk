@@ -63,11 +63,16 @@ describe("shell SlotMap", () => {
       "shell.topbar",
     ]);
     assert.deepEqual(Object.keys(BODY_CHILDREN).sort(), [
-      "shell.activity",
+      "aside.left.pane",
+      "aside.left.tab",
+      "aside.right.pane",
+      "aside.right.tab",
       "shell.center",
-      "shell.files",
-      "shell.sidebar",
     ]);
+    assert.equal(BODY_CHILDREN["aside.left.tab"].kind, "list");
+    assert.equal(BODY_CHILDREN["aside.left.pane"].kind, "keyed");
+    assert.equal(BODY_CHILDREN["aside.right.tab"].kind, "list");
+    assert.equal(BODY_CHILDREN["aside.right.pane"].kind, "keyed");
     assert.deepEqual(Object.keys(SIDEBAR_CHILDREN).sort(), [
       "sidebar.agents",
       "sidebar.sessions",

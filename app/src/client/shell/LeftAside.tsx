@@ -1,13 +1,14 @@
-import { SlotOutlet } from "../slots";
 import { ResizeHandle } from "../drafts/layout/ResizeHandle";
+import { ASIDE_LEFT_PANE } from "../slots/map";
 import { ActivityBar } from "./ActivityBar";
 import { AsidePane } from "./AsidePane";
+import { AsidePaneStack } from "./aside-tab";
 import { useShellRegion } from "./focus";
 import type { WireHostBag } from "./types";
 
-/** Activity icon + agents/sessions stack as one left unit, below the topbar. */
+/** Activity icons + the open left pane, below the topbar. */
 export function LeftAside(bag: WireHostBag) {
-  const open = bag.mode === "chat" && bag.showLeft;
+  const open = bag.mode === "chat" && bag.leftTab != null;
   return (
     <aside
       className="wire-aside is-left"
@@ -15,10 +16,18 @@ export function LeftAside(bag: WireHostBag) {
       aria-label="左侧栏"
       {...useShellRegion("left")}
     >
-      <ActivityBar {...bag.leftActivity} edge="left" />
+      <ActivityBar
+        edge="left"
+        activeId={open ? bag.leftTab : null}
+        onSelect={bag.onLeftTab}
+      />
       <AsidePane open={open} width={bag.leftW}>
         <div className="wire-left">
-          <SlotOutlet name="shell.sidebar" props={bag} />
+          <AsidePaneStack
+            name={ASIDE_LEFT_PANE}
+            activeId={bag.leftTab}
+            props={bag}
+          />
         </div>
       </AsidePane>
       {open ? (

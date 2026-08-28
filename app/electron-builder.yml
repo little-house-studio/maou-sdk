@@ -12,10 +12,12 @@ files:
   - dist/client/**/*
   - dist/server/**/*
   - dist/desktop/**/*
+  - resources/icon.png
   - package.json
 extraMetadata:
   main: dist/desktop/main.js
 mac:
+  icon: resources/icon.png
   category: public.app-category.developer-tools
   target:
     - target: dmg
@@ -28,6 +30,7 @@ mac:
         - x64
   artifactName: maou-app-${version}-darwin-${arch}.${ext}
 win:
+  icon: resources/icon.png
   target:
     - target: nsis
       arch:
@@ -37,6 +40,7 @@ win:
         - x64
   artifactName: maou-app-${version}-win32-${arch}.${ext}
 linux:
+  icon: resources/icon.png
   target:
     - target: AppImage
       arch:

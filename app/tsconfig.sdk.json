@@ -18,7 +18,9 @@
     "src/client/slots/**/*.ts",
     "src/client/slots/**/*.tsx",
     "src/client/ports/public.ts",
-    "src/client/shell/public.ts"
+    "src/client/shell/public.ts",
+    "src/client/shell/activity.ts",
+    "src/client/shell/aside-tab.tsx"
   ],
   "exclude": ["**/*.test.ts", "**/*.test.tsx"]
 }

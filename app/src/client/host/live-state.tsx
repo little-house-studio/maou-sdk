@@ -22,9 +22,8 @@ import {
 import { SHELL_LEFT, LIVE_FILES_RAIL } from "../shell/metrics";
 import {
   FILES_ACTIVITY_ID,
-  LEFT_ACTIVITY_TABS,
-  RIGHT_ACTIVITY_TABS,
   SIDEBAR_ACTIVITY_ID,
+  toggleAsideTab,
 } from "../shell/activity";
 import type { WireHostBag } from "../shell/types";
 
@@ -52,8 +51,8 @@ export function useLiveHostBag(): WireHostBag {
     tab: DockCardId;
     nonce: number;
   } | null>(null);
-  const [showFiles, setShowFiles] = useState(true);
-  const [showLeft, setShowLeft] = useState(true);
+  const [rightTab, setRightTab] = useState<string | null>(FILES_ACTIVITY_ID);
+  const [leftTab, setLeftTab] = useState<string | null>(SIDEBAR_ACTIVITY_ID);
   const [agentBusy, setAgentBusy] = useState(false);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [leftW, setLeftW] = useState<number>(SHELL_LEFT.default);
@@ -207,7 +206,7 @@ export function useLiveHostBag(): WireHostBag {
       if (e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
         setMode("chat");
-        setShowFiles((v) => !v);
+        setRightTab((cur) => toggleAsideTab(cur, FILES_ACTIVITY_ID));
       }
     };
     window.addEventListener("keydown", onKey);
@@ -362,11 +361,33 @@ export function useLiveHostBag(): WireHostBag {
     setMode("chat");
   }, []);
 
+  const onLeftTab = useCallback((id: string) => {
+    if (mode !== "chat") {
+      setMode("chat");
+      setLeftTab(id);
+      return;
+    }
+    setLeftTab((cur) => toggleAsideTab(cur, id));
+  }, [mode]);
+
+  const onRightTab = useCallback((id: string) => {
+    if (mode !== "chat") {
+      setMode("chat");
+      setRightTab(id);
+      return;
+    }
+    setRightTab((cur) => toggleAsideTab(cur, id));
+  }, [mode]);
+
   return {
     variant: "live",
     mode,
-    showFiles,
-    showLeft,
+    leftTab,
+    rightTab,
+    onLeftTab,
+    onRightTab,
+    showFiles: rightTab != null,
+    showLeft: leftTab != null,
     leftW,
     agentPct,
     railW,
@@ -385,32 +406,6 @@ export function useLiveHostBag(): WireHostBag {
       usageLabel: sessionTitle
         ? `${usageLabel} · ${sessionTitle.slice(0, 24)}`
         : usageLabel,
-    },
-    leftActivity: {
-      tabs: LEFT_ACTIVITY_TABS,
-      activeId: showLeft && mode === "chat" ? SIDEBAR_ACTIVITY_ID : null,
-      onSelect: (id) => {
-        if (id !== SIDEBAR_ACTIVITY_ID) return;
-        if (mode !== "chat") {
-          setMode("chat");
-          setShowLeft(true);
-          return;
-        }
-        setShowLeft((v) => !v);
-      },
-    },
-    activity: {
-      tabs: RIGHT_ACTIVITY_TABS,
-      activeId: showFiles && mode === "chat" ? FILES_ACTIVITY_ID : null,
-      onSelect: (id) => {
-        if (id !== FILES_ACTIVITY_ID) return;
-        if (mode !== "chat") {
-          setMode("chat");
-          setShowFiles(true);
-          return;
-        }
-        setShowFiles((v) => !v);
-      },
     },
     agentList: {
       agents,

@@ -7,7 +7,7 @@ import { ProjectWorkbench } from "../drafts/panels/ProjectWorkbench";
 import { SettingsPanel } from "../drafts/panels/SettingsPanel";
 import { TeamBoard } from "../drafts/panels/TeamBoard";
 import { BottomInfoBar } from "../drafts/panels/BottomInfoBar";
-import { SlotRegistry } from "../slots";
+import { applySlotPlugins, SlotRegistry, type SlotPlugin } from "../slots";
 import {
   ApprovalToolSeat,
   ComposerBarSeat,
@@ -30,7 +30,12 @@ import {
   SHELL_CHILDREN,
   SIDEBAR_CHILDREN,
 } from "../slots/map";
-import { ActivityBar } from "../shell/ActivityBar";
+import { Bot, FolderTree } from "lucide-react";
+import { registerAsideTab } from "../shell/aside-tab";
+import {
+  FILES_ACTIVITY_ID,
+  SIDEBAR_ACTIVITY_ID,
+} from "../shell/activity";
 import { DraftMid } from "../shell/DraftMid";
 import { SidebarFrame } from "../shell/SidebarFrame";
 import { WireShell } from "../shell/WireShell";
@@ -38,10 +43,6 @@ import type { WireHostBag } from "../shell/types";
 
 function TopbarSeat(bag: WireHostBag) {
   return <WireTopbar {...bag.topbar} />;
-}
-
-function ActivitySeat(bag: WireHostBag) {
-  return <ActivityBar {...bag.activity} edge="right" />;
 }
 
 function AgentsSeat(bag: WireHostBag) {
@@ -99,7 +100,9 @@ function BottomSeat(bag: WireHostBag) {
   return <BottomInfoBar {...bag.dock} />;
 }
 
-export function createDraftHostSlots(): SlotRegistry {
+export function createDraftHostSlots(
+  plugins?: readonly SlotPlugin[],
+): SlotRegistry {
   const slots = new SlotRegistry();
   slots.register(
     { name: "root", registrant: "wire-shell", children: SHELL_CHILDREN },
@@ -110,14 +113,16 @@ export function createDraftHostSlots(): SlotRegistry {
     { name: "shell.body", registrant: "draft-body", children: BODY_CHILDREN },
     DraftMid,
   );
-  slots.register(
-    {
-      name: "shell.sidebar",
-      registrant: "sidebar",
-      children: SIDEBAR_CHILDREN,
-    },
-    SidebarFrame,
-  );
+  registerAsideTab(slots, {
+    edge: "left",
+    id: SIDEBAR_ACTIVITY_ID,
+    label: "侧栏",
+    icon: Bot,
+    order: 10,
+    registrant: "sidebar",
+    pane: SidebarFrame,
+    paneChildren: SIDEBAR_CHILDREN,
+  });
   slots.register({ name: "sidebar.agents", registrant: "agents" }, AgentsSeat);
   slots.register(
     { name: "sidebar.sessions", registrant: "sessions" },
@@ -205,14 +210,19 @@ export function createDraftHostSlots(): SlotRegistry {
     { name: "shell.center", key: "settings", registrant: "settings" },
     DraftSettingsSeat,
   );
-  slots.register({ name: "shell.files", registrant: "files" }, DraftFilesSeat);
-  slots.register(
-    { name: "shell.activity", registrant: "activity" },
-    ActivitySeat,
-  );
+  registerAsideTab(slots, {
+    edge: "right",
+    id: FILES_ACTIVITY_ID,
+    label: "文件",
+    icon: FolderTree,
+    order: 10,
+    registrant: "files",
+    pane: DraftFilesSeat,
+  });
   slots.register(
     { name: "shell.bottom", registrant: "bottom", children: BOTTOM_CHILDREN },
     BottomSeat,
   );
+  applySlotPlugins(slots, plugins);
   return slots;
 }

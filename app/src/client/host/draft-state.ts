@@ -20,9 +20,8 @@ import type { DraftApiConfig, DraftShellProps, UiMode } from "../drafts/types";
 import { DRAFT_FILES_RAIL, SHELL_LEFT } from "../shell/metrics";
 import {
   FILES_ACTIVITY_ID,
-  LEFT_ACTIVITY_TABS,
-  RIGHT_ACTIVITY_TABS,
   SIDEBAR_ACTIVITY_ID,
+  toggleAsideTab,
 } from "../shell/activity";
 import type { WireHostBag } from "../shell/types";
 
@@ -33,7 +32,12 @@ export function useDraftHostBag({
   const [mode, setMode] = useState<UiMode>(() =>
     initialSettingsOpen ? "settings" : "chat",
   );
-  const [showLeft, setShowLeft] = useState(true);
+  const [leftTab, setLeftTab] = useState<string | null>(SIDEBAR_ACTIVITY_ID);
+  const [rightTab, setRightTab] = useState<string | null>(() =>
+    hydrateFromScenario(initialScenarioId).showFiles !== false
+      ? FILES_ACTIVITY_ID
+      : null,
+  );
   const [leftW, setLeftW] = useState<number>(SHELL_LEFT.default);
   const [agentPct, setAgentPct] = useState<number>(SHELL_LEFT.agentPct);
   const [railW, setRailW] = useState<number>(DRAFT_FILES_RAIL.default);
@@ -220,11 +224,44 @@ export function useDraftHostBag({
     setAgentPct(pct);
   }, []);
 
+  const onLeftTab = useCallback(
+    (id: string) => {
+      if (mode !== "chat") {
+        setMode("chat");
+        setLeftTab(id);
+        return;
+      }
+      setLeftTab((cur) => toggleAsideTab(cur, id));
+    },
+    [mode],
+  );
+
+  const onRightTab = useCallback(
+    (id: string) => {
+      if (mode !== "chat") {
+        setMode("chat");
+        setRightTab(id);
+        setState((p) => ({ ...p, showFiles: true }));
+        return;
+      }
+      setRightTab((cur) => {
+        const next = toggleAsideTab(cur, id);
+        setState((p) => ({ ...p, showFiles: next != null }));
+        return next;
+      });
+    },
+    [mode],
+  );
+
   return {
     variant: "draft",
     mode,
-    showFiles: state.showFiles,
-    showLeft,
+    leftTab,
+    rightTab,
+    onLeftTab,
+    onRightTab,
+    showFiles: rightTab != null,
+    showLeft: leftTab != null,
     leftW,
     agentPct,
     railW,
@@ -241,32 +278,6 @@ export function useDraftHostBag({
       onModeChange: setMode,
       meta: state.meta,
       usageLabel: state.usageLabel,
-    },
-    leftActivity: {
-      tabs: LEFT_ACTIVITY_TABS,
-      activeId: showLeft && mode === "chat" ? SIDEBAR_ACTIVITY_ID : null,
-      onSelect: (id) => {
-        if (id !== SIDEBAR_ACTIVITY_ID) return;
-        if (mode !== "chat") {
-          setMode("chat");
-          setShowLeft(true);
-          return;
-        }
-        setShowLeft((v) => !v);
-      },
-    },
-    activity: {
-      tabs: RIGHT_ACTIVITY_TABS,
-      activeId: state.showFiles && mode === "chat" ? FILES_ACTIVITY_ID : null,
-      onSelect: (id) => {
-        if (id !== FILES_ACTIVITY_ID) return;
-        if (mode !== "chat") {
-          setMode("chat");
-          setState((p) => ({ ...p, showFiles: true }));
-          return;
-        }
-        setState((p) => ({ ...p, showFiles: !p.showFiles }));
-      },
     },
     agentList: {
       agents: state.agents,

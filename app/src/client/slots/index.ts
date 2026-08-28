@@ -1,6 +1,11 @@
 export { SlotCore } from "./core";
 export { SlotRegistry, type SlotPlugin } from "./registry";
 export {
+  registerSlotPlugin,
+  slotPlugins,
+  applySlotPlugins,
+} from "./plugins";
+export {
   SlotOutlet,
   PassSlot,
   SlotsProvider,
@@ -19,6 +24,10 @@ export {
   COMPOSER_CHILDREN,
   COMPOSER_BAR_CHILDREN,
   CENTER_MODE_KEYS,
+  ASIDE_LEFT_TAB,
+  ASIDE_LEFT_PANE,
+  ASIDE_RIGHT_TAB,
+  ASIDE_RIGHT_PANE,
   type CenterModeKey,
 } from "./map";
 export {

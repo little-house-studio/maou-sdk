@@ -5,12 +5,11 @@ export { DraftMid } from "./DraftMid";
 export { LeftAside } from "./LeftAside";
 export { RightAside } from "./RightAside";
 export { ActivityBar } from "./ActivityBar";
+export { registerAsideTab, AsidePaneStack } from "./aside-tab";
 export {
-  DEFAULT_ACTIVITY_TABS,
-  RIGHT_ACTIVITY_TABS,
-  LEFT_ACTIVITY_TABS,
   FILES_ACTIVITY_ID,
   SIDEBAR_ACTIVITY_ID,
+  toggleAsideTab,
 } from "./activity";
 export {
   SHELL_LEFT,
@@ -26,4 +25,5 @@ export {
 } from "./focus";
 export type { ShellFocusRegion } from "./focus";
 export type { WireHostBag, WireShellVariant, LiveChatBag } from "./types";
-export type { ActivityTab, ActivityBarProps } from "./activity";
+export type { ActivityBarProps } from "./activity";
+export type { AsideEdge, AsideTabIcon, RegisterAsideTabSpec } from "./aside-tab";

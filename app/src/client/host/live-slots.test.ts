@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { registerAsideTab } from "../shell/aside-tab";
+import { registerSlotPlugin } from "../slots";
 import { createLiveHostSlots } from "./live-slots";
 
 describe("live host slots", () => {
@@ -17,12 +19,13 @@ describe("live host slots", () => {
       "root",
       "shell.topbar",
       "shell.body",
-      "shell.sidebar",
+      "aside.left.tab",
+      "aside.left.pane",
+      "aside.right.tab",
+      "aside.right.pane",
       "sidebar.agents",
       "sidebar.sessions",
       "shell.center",
-      "shell.files",
-      "shell.activity",
       "shell.bottom",
       "conversation.composer",
       "conversation.messages",
@@ -38,6 +41,63 @@ describe("live host slots", () => {
       center.map((e) => e.options.key).sort(),
       ["chat", "project", "settings", "team"],
     );
+    assert.deepEqual(
+      slots.entriesOfSlot("aside.left.tab").map((e) => e.options.id),
+      ["sidebar"],
+    );
+    assert.deepEqual(
+      slots.entriesOfSlot("aside.right.tab").map((e) => e.options.id),
+      ["files"],
+    );
     slots.dispose();
+  });
+
+  it("applies an extra aside tab from a plugin", () => {
+    const Search = () => null;
+    const slots = createLiveHostSlots([
+      {
+        id: "search",
+        apply: (s) =>
+          registerAsideTab(s, {
+            edge: "right",
+            id: "search",
+            label: "搜索",
+            icon: Search,
+            order: 20,
+            pane: Search,
+          }),
+      },
+    ]);
+    assert.deepEqual(
+      slots.entriesOfSlot("aside.right.tab").map((e) => e.options.id),
+      ["files", "search"],
+    );
+    slots.dispose();
+  });
+
+  it("picks up registerSlotPlugin before the host table is built", () => {
+    const Search = () => null;
+    const off = registerSlotPlugin({
+      id: "search-global",
+      apply: (s) =>
+        registerAsideTab(s, {
+          edge: "left",
+          id: "search",
+          label: "搜索",
+          icon: Search,
+          order: 20,
+          pane: Search,
+        }),
+    });
+    try {
+      const slots = createLiveHostSlots();
+      assert.deepEqual(
+        slots.entriesOfSlot("aside.left.tab").map((e) => e.options.id),
+        ["sidebar", "search"],
+      );
+      slots.dispose();
+    } finally {
+      off();
+    }
   });
 });

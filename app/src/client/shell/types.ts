@@ -7,8 +7,6 @@ import type { ContextPanelProps } from "../drafts/panels/ContextPanel";
 import type { DraftApiConfig, UiMode } from "../drafts/types";
 import type { ChatPanelProps } from "../ChatPanel";
 import type { LiveSettingsPanelProps } from "../live/LiveSettingsPanel";
-import type { ActivityBarProps } from "./activity";
-
 export type WireShellVariant = "draft" | "live";
 
 export type LiveChatBag = ChatPanelProps & { remountKey: string };
@@ -30,6 +28,10 @@ export type ProjectBag = {
 export type WireHostBag = {
   variant: WireShellVariant;
   mode: UiMode;
+  leftTab: string | null;
+  rightTab: string | null;
+  onLeftTab: (id: string) => void;
+  onRightTab: (id: string) => void;
   showFiles: boolean;
   showLeft: boolean;
   leftW: number;
@@ -44,8 +46,6 @@ export type WireHostBag = {
   onAgentSplitDrag: (clientY: number, rect: DOMRect) => void;
   sessionRailId: string;
   topbar: WireTopbarProps;
-  leftActivity: ActivityBarProps;
-  activity: ActivityBarProps;
   agentList: AgentListProps;
   sessionList?: SessionListProps;
   files?: FilesRailProps;
