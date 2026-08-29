@@ -7,6 +7,10 @@ export {
   stickHomeScrollTop,
   scrollStickHome,
   stackFlowOffset,
+  STICK_BOTTOM_GAP,
+  gapFromBottom,
+  isStickBottom,
+  followStickBottom,
 } from "./scroll-offset";
 export {
   ASK_ANCHOR_SEL,

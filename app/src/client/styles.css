@@ -238,7 +238,8 @@ button {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  height: 100%;
+  height: auto;
+  flex: 1;
   gap: 0;
 }
 
@@ -278,6 +279,77 @@ button {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-subtle);
+}
+
+.thread-search {
+  padding: 0 8px 8px;
+}
+
+.thread-search input {
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border, var(--n-line));
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-subtle, var(--n-bg));
+  color: var(--fg, var(--n-label));
+  font: inherit;
+  font-size: 12px;
+}
+
+.wire-session-search {
+  padding: 0 0.5em 0.35em;
+}
+
+.wire-session-qwrap {
+  border: 1px solid var(--n-line, var(--border));
+  background: var(--n-bg, var(--bg));
+}
+
+.wire-session-qwrap:focus-within {
+  border-color: var(--n-label, var(--fg));
+}
+
+.wire-session-qwrap input {
+  width: 100%;
+  min-height: calc(1.3125em * 1.35);
+  padding: 0 0.45em;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--n-label, var(--fg));
+  font: inherit;
+  font-size: 12px;
+}
+
+.thread-search-hits,
+.wire-session-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.thread-search-hit,
+.wire-session-hit {
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--fg, var(--n-secondary));
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.thread-search-hit mark,
+.wire-session-hit mark {
+  background: color-mix(in srgb, var(--accent, #c7ff20) 35%, transparent);
+  color: inherit;
+  padding: 0 1px;
 }
 
 .thread-list {
@@ -1289,6 +1361,66 @@ button.queue-badge:hover {
 .approval-actions button.ghost {
   background: transparent;
   color: var(--muted);
+}
+
+.plan-review-card {
+  margin: 10px 16px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.plan-review-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.plan-review-title {
+  flex-shrink: 0;
+}
+
+.plan-review-objective {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.plan-review-body {
+  max-height: 40vh;
+  overflow: auto;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.plan-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.plan-review-start {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.plan-review-start:disabled {
+  opacity: 0.45;
 }
 
 /* ── Terminal in rail ── */

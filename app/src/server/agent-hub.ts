@@ -2,9 +2,10 @@
  * AgentHub —— Web 侧会话 / 模型 / 审批 / 流式 run（复用 coding-agent）。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { addProject } from "@little-house-studio/types";
 import {
   createStandardAgentDeps,
   getRolePresetFromMaouConfig,
@@ -27,6 +28,7 @@ import {
   type WebhookSessionInfo,
   type WebhookStatusInfo,
   type WebhookTarget,
+  jobLamp,
 } from "@little-house-studio/agent";
 import type {
   Message,
@@ -36,7 +38,13 @@ import type {
 } from "@little-house-studio/types";
 import { stripTaskCompletionMarkup } from "@little-house-studio/types";
 import { createCodingAgent } from "@little-house-studio/coding-agent";
-import { type SessionStore } from "@little-house-studio/context";
+import {
+  type SessionStore,
+  exportSessionZip,
+  preflightSessionExport,
+  sessionZipFilename,
+  type ExportPreflight,
+} from "@little-house-studio/context";
 import {
   setTerminalPolicyRoot,
   setTerminalApprover,
@@ -44,7 +52,16 @@ import {
   setTerminalMode,
   type TerminalMode,
   type TerminalApprover,
+  bindAskUserHost,
+  resolvePermissionPreset,
+  isPermissionPresetId,
+  listPermissionPresets,
+  DEFAULT_PERMISSION_PRESET,
+  type AskUserRequest,
+  type AskUserResult,
 } from "@little-house-studio/tools";
+import { ConfigStore } from "@little-house-studio/types";
+import { sessionPlan, sessionPlanFile, sessionGoals } from "@little-house-studio/context";
 import {
   buildCommandCatalog,
   scanSkillCommandNames,
@@ -59,6 +76,10 @@ import {
   type SessionStats,
 } from "./session-stats.js";
 import {
+  collectTodayTokenTotals,
+  type TodayTokenTotals,
+} from "./today-tokens.js";
+import {
   listLiveAgents,
   parseAgentSwitchId,
   resolveDefaultSwitchId,
@@ -66,8 +87,11 @@ import {
 } from "./agent-list.js";
 import { listAgentTerminals, rebindAgentTerminalPersist } from "./agent-terminals.js";
 import {
+  backfillUserLoopDuration,
   collectToolCallIntents,
   readHistoryToolMeta,
+  readLoopDurationMs,
+  readRoleDurationMs,
   slimAssistantToolCalls,
 } from "./tool-history.js";
 export { resolveWorkspaceForSwitch } from "@little-house-studio/agent";
@@ -85,9 +109,8 @@ function readLastSessionPointer(projectRoot: string): string | null {
     };
     const id = String(raw.sessionId ?? "").trim();
     if (!id) return null;
-    const jsonl = join(projectRoot, ".maou", "sessions", `${id}.jsonl`);
-    const meta = join(projectRoot, ".maou", "sessions", `${id}.meta.json`);
-    if (existsSync(jsonl) || existsSync(meta)) return id;
+    const header = join(projectRoot, ".maou", "sessions", id, "session.json");
+    if (existsSync(header)) return id;
   } catch {
     /* ignore */
   }
@@ -132,6 +155,15 @@ export interface AgentHubOpts {
   agentName?: string;
 }
 
+export type SessionLamp =
+  | "running"
+  | "helpers"
+  | "await_approval"
+  | "plan_review"
+  | "await_ask"
+  | "done"
+  | "idle";
+
 export type SessionSummary = {
   id: string;
   title: string;
@@ -139,6 +171,8 @@ export type SessionSummary = {
   messageCount: number;
   lastMsgAt?: string;
   parentSessionId?: string;
+  lamp?: SessionLamp;
+  helperCount?: number;
 };
 
 export type ChatHistoryLine = {
@@ -153,8 +187,10 @@ export type ChatHistoryLine = {
   /** tool_call 参数 description */
   toolDescription?: string;
   durationMs?: number;
+  loopDurationMs?: number;
   toolCalls?: Array<{ id: string; description: string }>;
   images?: Message["images"];
+  artifacts?: Array<{ path: string; delta: string }>;
   source?: string;
   usageInput?: number;
   usageOutput?: number;
@@ -182,6 +218,7 @@ export type PendingApproval = {
   id: string;
   command: string;
   agentName: string;
+  sessionId?: string;
   cwd?: string;
   risk?: "low" | "high";
   summary?: string;
@@ -209,6 +246,12 @@ function genApprovalId(): string {
 function asApprovalMode(v: string | undefined): ApprovalMode {
   if (v === "normal" || v === "auto" || v === "yolo") return v;
   return "yolo";
+}
+
+function remainingSessionId(
+  store: { list: () => { id: string }[] } | null | undefined,
+): string | null {
+  return store?.list()[0]?.id ?? null;
 }
 
 /**
@@ -260,6 +303,12 @@ export class AgentHub implements WebhookHost {
   /** run() sandboxMode — 与 terminal policy 同步 */
   private sandboxMode: ApprovalMode;
   private pendingApprovals = new Map<string, PendingEntry>();
+  private pendingAsks = new Map<string, {
+    payload: AskUserRequest;
+    resolve: (r: AskUserResult) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   private approverInstalled = false;
   private restoredSession = false;
 
@@ -323,6 +372,47 @@ export class AgentHub implements WebhookHost {
   /** Effective workspace (sessions + agent run). */
   get projectRoot(): string {
     return this._projectRoot;
+  }
+
+  openProjectRoot(folder: string): { projectRoot: string } {
+    const next = resolve(folder);
+    if (!existsSync(next) || !statSync(next).isDirectory()) {
+      throw new Error("不是文件夹");
+    }
+    try {
+      addProject(basename(next), next);
+    } catch {
+      /* 名册失败不挡打开 */
+    }
+    this.setActiveAgent(`project:${next}:${this._agentName || "coding"}`);
+    return { projectRoot: this._projectRoot };
+  }
+
+  browseFolders(dir?: string): {
+    path: string;
+    parent: string | null;
+    entries: Array<{ name: string; path: string; dir: boolean }>;
+  } {
+    const home = homedir();
+    const raw = dir?.trim() ? resolve(dir) : home;
+    if (!existsSync(raw) || !statSync(raw).isDirectory()) {
+      throw new Error("打不开这层");
+    }
+    const entries = readdirSync(raw, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith("."))
+      .map((e) => ({ name: e.name, path: join(raw, e.name), dir: true }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const parent = raw === home ? null : dirname(raw);
+    return { path: raw, parent, entries };
+  }
+
+  mkdirInBrowse(dir: string, name: string): { path: string } {
+    const parent = resolve(dir);
+    const folder = name.replace(/[\\/]/g, "").trim();
+    if (!folder) throw new Error("名字空");
+    const dest = join(parent, folder);
+    mkdirSync(dest, { recursive: true });
+    return { path: dest };
   }
 
   get agentName(): string {
@@ -417,7 +507,7 @@ export class AgentHub implements WebhookHost {
     this.syncActiveIntoSlots();
   }
 
-  /** CLI 对齐：last-session.json → 否则 mtime 最新 jsonl */
+  /** CLI 对齐：last-session.json → 否则 mtime 最新 session.json */
   private restoreLastSessionIfNeeded() {
     if (this.restoredSession || this.sessionId) {
       this.restoredSession = true;
@@ -519,6 +609,7 @@ export class AgentHub implements WebhookHost {
           id,
           command,
           agentName: ctx.agentName || this.agentName,
+          sessionId: this.sessionId ?? undefined,
           cwd: ctx.cwd,
           risk: ctx.risk === "high" ? "high" : "low",
           summary: ctx.summary,
@@ -531,10 +622,29 @@ export class AgentHub implements WebhookHost {
     };
 
     setTerminalApprover(approver);
+    bindAskUserHost({
+      request: (payload) =>
+        new Promise<AskUserResult>((resolve, reject) => {
+          const prev = this.pendingAsks.get(payload.sessionId);
+          if (prev) {
+            clearTimeout(prev.timer);
+            prev.reject(new Error("replaced"));
+          }
+          const timer = setTimeout(() => {
+            this.pendingAsks.delete(payload.sessionId);
+            reject(new Error("ask_user timeout"));
+          }, 10 * 60 * 1000);
+          this.pendingAsks.set(payload.sessionId, { payload, resolve, reject, timer });
+        }),
+    });
   }
 
   getMeta() {
     this.ensureAgent();
+    const meta = this.sessionId ? this.sessionStore?.readMeta(this.sessionId) : null;
+    const pin = typeof meta?.permission_preset === "string" ? meta.permission_preset : undefined;
+    const sendMode = meta?.send_mode === "insert" ? "insert" : meta?.send_mode === "queue" ? "queue" : undefined;
+    const preset = resolvePermissionPreset(pin);
     return {
       sessionId: this.sessionId,
       provider: this.provider,
@@ -542,9 +652,18 @@ export class AgentHub implements WebhookHost {
       projectRoot: this.projectRoot,
       sandboxMode: this.sandboxMode,
       approvalMode: this.sandboxMode,
+      permissionPreset: preset.id,
+      permissionPresetLabel: preset.label,
+      sendMode,
       agentName: this.agentName,
       providers: listProvidersForCli(),
       models: this.provider ? listModelsForCli(this.provider) : [],
+      jobLamp: this.sessionId ? jobLamp(this.sessionId) : undefined,
+      descendants: this.sessionId ? this.sessionStore?.listDescendents(this.sessionId) ?? [] : [],
+      parentSessionId: typeof meta?.parent_session_id === "string" ? meta.parent_session_id : undefined,
+      oneshot: meta?.oneshot === true || meta?.agent_name === "helper",
+      plan: this.sessionId ? sessionPlan.get(this.sessionStore!.sessionDir, this.sessionId) : undefined,
+      goal: this.sessionId ? sessionGoals.get(this.sessionStore!.sessionDir, this.sessionId) : undefined,
     };
   }
 
@@ -646,44 +765,213 @@ export class AgentHub implements WebhookHost {
     return m;
   }
 
+  setDefaultPermissionPreset(id: string, confirm?: string): { id: string; label: string } {
+    if (!isPermissionPresetId(id)) throw new Error("unknown permission preset");
+    const preset = resolvePermissionPreset(id);
+    if (preset.confirmRisk && confirm !== preset.confirmRisk) {
+      throw new Error(`open+yolo requires confirm: ${preset.confirmRisk}`);
+    }
+    const store = new ConfigStore(this.projectRoot, this.maouRoot);
+    const raw = store.getUserRaw();
+    const security = (raw.security && typeof raw.security === "object" ? raw.security : {}) as Record<string, unknown>;
+    store.saveUserConfig({ ...raw, security: { ...security, permissionPreset: preset.id } });
+    return { id: preset.id, label: preset.label };
+  }
+
+  setSessionPermissionPreset(id: string, confirm?: string): { id: string; label: string } {
+    if (!isPermissionPresetId(id)) throw new Error("unknown permission preset");
+    const preset = resolvePermissionPreset(id);
+    if (preset.confirmRisk && confirm !== preset.confirmRisk) {
+      throw new Error(`open+yolo requires confirm: ${preset.confirmRisk}`);
+    }
+    this.ensureAgent();
+    if (!this.sessionId) throw new Error("no session");
+    this.sessionStore!.setPermissionPreset(this.sessionId, preset.id);
+    this.setApprovalMode(preset.approval);
+    return { id: preset.id, label: preset.label };
+  }
+
+  setSessionSendMode(mode: "queue" | "insert"): "queue" | "insert" {
+    this.ensureAgent();
+    if (!this.sessionId) throw new Error("no session");
+    this.sessionStore!.setSendMode(this.sessionId, mode);
+    return mode;
+  }
+
+  listPendingAsks(): AskUserRequest[] {
+    return [...this.pendingAsks.values()].map((e) => e.payload);
+  }
+
+  answerAsk(sessionId: string, result: AskUserResult): boolean {
+    const pending = this.pendingAsks.get(sessionId);
+    if (!pending) return false;
+    clearTimeout(pending.timer);
+    this.pendingAsks.delete(sessionId);
+    pending.resolve(result);
+    return true;
+  }
+
+  forkFromMessage(sessionId: string, entryId: string, title?: string): { sessionId: string } {
+    this.ensureAgent();
+    const child = this.sessionStore!.forkFromEntry(sessionId, entryId, { title });
+    this.rememberSession(child.id);
+    return { sessionId: child.id };
+  }
+
+  setMessageFeedback(
+    sessionId: string,
+    messageId: string,
+    vote: "up" | "down",
+    note?: string,
+  ): { conflict: boolean } {
+    this.ensureAgent();
+    const text = (note ?? "").trim().slice(0, 500);
+    return this.sessionStore!.noteFeedback(sessionId, messageId, vote, {
+      note: text,
+    });
+  }
+
+  readSessionPlan(): {
+    plan?: ReturnType<typeof sessionPlan.get>;
+    markdown: string;
+    planFile?: string;
+  } {
+    this.ensureAgent();
+    if (!this.sessionId || !this.sessionStore) return { markdown: "" };
+    const dir = this.sessionStore.sessionDir;
+    const id = this.sessionId;
+    return {
+      plan: sessionPlan.get(dir, id),
+      markdown: sessionPlan.readPlan(dir, id) ?? "",
+      planFile: sessionPlanFile(dir, id),
+    };
+  }
+
+  togglePlanActive(): unknown {
+    this.ensureAgent();
+    if (!this.sessionId) throw new Error("no session");
+    const dir = this.sessionStore!.sessionDir;
+    const current = sessionPlan.get(dir, this.sessionId);
+    if (current?.active) return sessionPlan.off(dir, this.sessionId);
+    return sessionPlan.enter(dir, this.sessionId);
+  }
+
+  mutateGoal(action: "pause" | "resume" | "clear" | "edit", objective?: string): unknown {
+    this.ensureAgent();
+    if (!this.sessionId) throw new Error("no session");
+    const dir = this.sessionStore!.sessionDir;
+    const current = sessionGoals.get(dir, this.sessionId);
+    if (!current && action !== "edit") return null;
+    if (action === "clear" && current) return sessionGoals.clear(dir, this.sessionId, current);
+    if (action === "pause" && current) return sessionGoals.pause(dir, this.sessionId, current);
+    if (action === "resume" && current) return sessionGoals.resume(dir, this.sessionId, current);
+    if (action === "edit" && current && objective) return sessionGoals.edit(dir, this.sessionId, current, { objective });
+    return current;
+  }
+
+  searchSessions(opts: {
+    query: string;
+    limit?: number;
+    cursor?: string;
+    sessionId?: string;
+  }): {
+    items: Array<{
+      sessionId: string;
+      seq: number;
+      absSeq: number;
+      type: string;
+      messageId?: string;
+      snippet: string;
+      rank: number;
+    }>;
+    nextCursor?: string;
+  } {
+    this.ensureAgent();
+    return this.sessionStore!.search(opts);
+  }
+
   listSessions(agent?: string): SessionSummary[] {
     const store = agent
       ? this.slotFor(agent).sessionStore
       : (this.ensureAgent(), this.sessionStore);
     if (!store) return [];
     try {
-      return store.list().map((s) => ({
-        id: s.id,
-        title: s.title || "新对话",
-        updatedAt: s.updatedAt,
-        messageCount: s.messageCount ?? 0,
-        lastMsgAt: s.lastMsgAt,
-        ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
-      }));
+      const running = new Set(this.listRunningSessions());
+      const approvalSessions = new Set(
+        this.listPendingApprovals().map((p) => p.sessionId).filter(Boolean) as string[],
+      );
+      const askBySession = new Map(this.listPendingAsks().map((a) => [a.sessionId, a.kind] as const));
+      return store.list().map((s) => {
+        const kids = store.listDescendents(s.id);
+        const helperCount = kids.filter((k) => running.has(k.id)).length;
+        let lamp: SessionLamp = "idle";
+        if (approvalSessions.has(s.id) || (approvalSessions.size > 0 && running.has(s.id))) {
+          lamp = "await_approval";
+        } else if (askBySession.get(s.id) === "plan_review") {
+          lamp = "plan_review";
+        } else if (askBySession.get(s.id) === "questions") {
+          lamp = "await_ask";
+        } else if (running.has(s.id)) {
+          lamp = "running";
+        } else if (helperCount > 0) {
+          lamp = "helpers";
+        } else if ((s.messageCount ?? 0) > 0) {
+          lamp = "done";
+        }
+        return {
+          id: s.id,
+          title: s.title || "新对话",
+          updatedAt: s.updatedAt,
+          messageCount: s.messageCount ?? 0,
+          lastMsgAt: s.lastMsgAt,
+          lamp,
+          ...(helperCount ? { helperCount } : {}),
+          ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
+        };
+      });
     } catch {
       return [];
     }
   }
 
-  /** 清空会话消息（保留会话 id / 元数据） */
+  /** 清空 = 删除整卷，再开一个新会话 */
   clearSessionMessages(sessionId?: string | null): { sessionId: string } {
     this.ensureAgent();
     const id = sessionId || this.sessionId;
     if (!id) throw new Error("no active session");
     this.abortRun(id);
-    this.sessionStore!.clearSession(id);
-    this.rememberSession(id);
+    this.sessionStore!.deleteSession(id);
+    if (this.sessionId === id) this.sessionId = null;
     void this.handle?.runtime.atCacheRebuildPoint({
       reason: "session_clear",
       sessionId: id,
       agentName: this.handle.agentName,
     });
-    return { sessionId: id };
+    return this.newSession();
   }
 
-  /** 导出当前会话纯文本 transcript */
+  previewDelete(sessionId: string): {
+    sessionId: string;
+    dependents: { id: string; title: string }[];
+    warning?: string;
+  } {
+    this.ensureAgent();
+    const preview = this.sessionStore!.previewDelete(sessionId);
+    return {
+      sessionId: preview.sessionId,
+      dependents: preview.dependents.map((d) => ({ id: d.id, title: d.title })),
+      warning: preview.warning,
+    };
+  }
+
+  /** 导出当前会话纯文本 transcript（全卷 fold，不截尾页） */
   exportTranscript(sessionId?: string | null): string {
-    const msgs = this.loadSessionMessages(sessionId);
+    this.ensureAgent();
+    const id = sessionId || this.sessionId;
+    if (!id || !this.sessionStore) return "(empty session)\n";
+    this.sessionStore.flush(id);
+    const folded = this.sessionStore.foldBranch(id);
+    const msgs = folded?.messages ?? [];
     if (msgs.length === 0) return "(empty session)\n";
     return (
       msgs
@@ -695,15 +983,59 @@ export class AgentHub implements WebhookHost {
     );
   }
 
+  preflightExport(sessionId?: string | null): ExportPreflight {
+    this.ensureAgent();
+    const id = sessionId || this.sessionId;
+    if (!id || !this.sessionStore) {
+      return { sessionId: id ?? "", ok: false, error: "no session", files: 0, dependents: [] };
+    }
+    return preflightSessionExport(this.sessionStore, id);
+  }
+
+  exportSessionZip(sessionId?: string | null): Buffer {
+    this.ensureAgent();
+    const id = sessionId || this.sessionId;
+    if (!id || !this.sessionStore) throw new Error("no session");
+    return exportSessionZip(this.sessionStore, id);
+  }
+
+  sessionExportFilename(sessionId?: string | null): string {
+    const id = sessionId || this.sessionId || "session";
+    return sessionZipFilename(id);
+  }
+
+  loadSessionPage(
+    sessionId?: string | null,
+    opts?: { limit?: number; beforeSeq?: number },
+  ): { messages: ChatHistoryLine[]; oldestSeq: number | null; hasMore: boolean } {
+    this.ensureAgent();
+    const id = sessionId || this.sessionId;
+    if (!id) return { messages: [], oldestSeq: null, hasMore: false };
+    const page = this.sessionStore!.loadRecent(id, {
+      limit: opts?.limit ?? 80,
+      beforeSeq: opts?.beforeSeq,
+    });
+    return {
+      messages: this.linesFromMessages(id, (page?.messages ?? []) as Array<Record<string, unknown>>),
+      oldestSeq: page?.oldestSeq ?? null,
+      hasMore: page?.hasMore ?? false,
+    };
+  }
+
   /** 加载会话消息供 WebUI 渲染历史 */
   loadSessionMessages(sessionId?: string | null): ChatHistoryLine[] {
     this.ensureAgent();
     const id = sessionId || this.sessionId;
     if (!id) return [];
-    const data = this.sessionStore!.load(id);
-    const msgs = (data?.messages ?? []) as Array<Record<string, unknown>>;
+    return this.loadSessionPage(id).messages;
+  }
+
+  private linesFromMessages(
+    id: string,
+    msgs: Array<Record<string, unknown>>,
+  ): ChatHistoryLine[] {
     const callIntents = collectToolCallIntents(msgs);
-    return msgs.map((m, i) => {
+    const mapped = msgs.map((m, i) => {
       const raw = m.content;
       let content = "";
       if (typeof raw === "string") content = raw;
@@ -746,8 +1078,11 @@ export class AgentHub implements WebhookHost {
         role === "tool" ? readHistoryToolMeta(m, callIntents) : {};
       const toolCalls =
         role === "assistant" ? slimAssistantToolCalls(m) : [];
+      const durationMs =
+        role === "tool" ? toolMeta.durationMs : readRoleDurationMs(m);
+      const loopDurationMs = readLoopDurationMs(m);
       return {
-        id: `${id}-${i}`,
+        id: String(m.id ?? `${id}-${i}`),
         role,
         content: role === "assistant" ? stripTaskCompletionMarkup(content) : content,
         ts: String(m.createdAt ?? m.created_at ?? ""),
@@ -757,14 +1092,18 @@ export class AgentHub implements WebhookHost {
         ...(toolMeta.toolDescription
           ? { toolDescription: toolMeta.toolDescription }
           : {}),
-        ...(toolMeta.durationMs != null ? { durationMs: toolMeta.durationMs } : {}),
+        ...(durationMs != null ? { durationMs } : {}),
+        ...(loopDurationMs != null ? { loopDurationMs } : {}),
         ...(toolCalls.length ? { toolCalls } : {}),
         ...(images?.length ? { images } : {}),
+        ...(Array.isArray(m.artifacts) ? { artifacts: m.artifacts as ChatHistoryLine["artifacts"] } : {}),
         ...(source ? { source } : {}),
         ...(Number.isFinite(usageInput) && usageInput > 0 ? { usageInput } : {}),
         ...(Number.isFinite(usageOutput) && usageOutput > 0 ? { usageOutput } : {}),
+        ...(typeof m.seq === "number" ? { seq: m.seq } : {}),
       };
     });
+    return backfillUserLoopDuration(mapped);
   }
 
   listPendingApprovals(): PendingApproval[] {
@@ -903,6 +1242,20 @@ export class AgentHub implements WebhookHost {
         contextUsed: snap.used,
         lastInputTokens: snap.lastInput,
         lastOutputTokens: snap.lastOutput,
+        lastCacheRead: snap.lastCacheRead ?? stats.lastCacheRead,
+        lastCacheWrite: snap.lastCacheWrite ?? stats.lastCacheWrite,
+        contextBreakdown: snap.breakdown ?? {
+          ...stats.contextBreakdown,
+          window: snap.max,
+          used: snap.used,
+          promptTotal: snap.lastInput,
+          output: snap.lastOutput,
+          free: Math.max(0, snap.max - snap.used),
+          occupancyPct:
+            snap.max > 0
+              ? Math.min(100, Math.max(0, Math.round((snap.used / snap.max) * 100)))
+              : 0,
+        },
       };
     } catch {
       return stats;
@@ -913,6 +1266,20 @@ export class AgentHub implements WebhookHost {
     const s = this.getSessionStats(sessionId);
     if (!s) return "Usage\n  暂无活动会话。";
     return formatSessionStats(s);
+  }
+
+  /** 本机日历日 in/out：TokenTracker 日桶加总 */
+  getTodayTokenTotals(): TodayTokenTotals {
+    return collectTodayTokenTotals(this.maouRoot);
+  }
+
+  /** 用量事件带上日桶快照，顶栏跟着这一轮写盘后的合计走。 */
+  private stampTodayOnUsage(ev: StreamEvent): StreamEvent {
+    const t = String((ev as { type?: string }).type ?? "");
+    if (t !== "usage" && t !== "model.usage" && t !== "assistant.usage") {
+      return ev;
+    }
+    return { ...ev, today: this.getTodayTokenTotals() } as StreamEvent;
   }
 
   analyzeSession(sessionId?: string | null): string {
@@ -931,6 +1298,7 @@ export class AgentHub implements WebhookHost {
     const skills = scanSkillCommandNames({
       projectRoot: this.projectRoot,
       maouRoot: this.maouRoot,
+      agentName: this.agentName,
     });
     return buildCommandCatalog(runtime, skills);
   }
@@ -976,7 +1344,7 @@ export class AgentHub implements WebhookHost {
         sandboxMode: this.sandboxMode,
         ...(images.length ? { images } : {}),
       })) {
-        yield ev;
+        yield this.stampTodayOnUsage(ev);
         if (ev.type === "done" || ev.type === "error") break;
       }
     } finally {
@@ -1050,6 +1418,7 @@ export class AgentHub implements WebhookHost {
       mode: queueMode,
       source: "app",
       metadata: { uiMode: mode },
+      sessionDir: this.sessionStore?.sessionDir,
     });
     return {
       ok: true,
@@ -1360,8 +1729,8 @@ export class AgentHub implements WebhookHost {
       this.ensureAgent();
       const id = String(sessionIdOrOpts || "").trim();
       if (!id) throw new Error("sessionId required");
-      const data = this.sessionStore!.load(id);
-      if (!data) throw new Error(`session not found: ${id}`);
+      if (!this.sessionStore!.exists(id)) throw new Error(`session not found: ${id}`);
+      this.sessionStore!.recoverCold(id);
       this.rememberSession(id);
       return { sessionId: id };
     }
@@ -1377,13 +1746,14 @@ export class AgentHub implements WebhookHost {
     const id = slot.sessionId;
     if (!id || !slot.sessionStore) throw new Error("no active session");
     this.abort({ agent: opts.agent, session: id });
-    slot.sessionStore.clearSession(id);
+    slot.sessionStore.deleteSession(id);
     void slot.handle?.runtime.atCacheRebuildPoint({
       reason: "session_clear",
       sessionId: id,
       agentName: slot.agentName,
     });
-    return { sessionId: id };
+    if (slot.sessionId === id) slot.sessionId = null;
+    return this.newSession({ agent: opts.agent });
   }
 
   deleteSession(
@@ -1394,17 +1764,27 @@ export class AgentHub implements WebhookHost {
       const id = String(sessionIdOrOpts || "").trim();
       if (!id) throw new Error("sessionId required");
       this.abortRun(id);
+      const wasActive = this.sessionId === id;
       const deleted = this.sessionStore!.delete(id);
-      if (this.sessionId === id) this.sessionId = null;
+      if (wasActive) {
+        const next = remainingSessionId(this.sessionStore);
+        if (next) this.rememberSession(next);
+        else this.sessionId = null;
+      }
       return { deleted, sessionId: this.sessionId };
     }
     const slot = this.slotFor(sessionIdOrOpts.agent);
     const id = sessionIdOrOpts.session.trim();
     this.abort({ agent: sessionIdOrOpts.agent, session: id });
+    const wasActive = slot.sessionId === id;
     const deleted = slot.sessionStore?.delete(id) ?? false;
-    if (slot.sessionId === id) {
-      slot.sessionId = null;
-      if (slot.switchId === this._activeSwitchId) this.sessionId = null;
+    if (wasActive) {
+      const next = remainingSessionId(slot.sessionStore);
+      slot.sessionId = next;
+      if (slot.switchId === this._activeSwitchId) {
+        if (next) this.rememberSession(next);
+        else this.sessionId = null;
+      }
     }
     return { deleted, sessionId: slot.sessionId };
   }
@@ -1414,18 +1794,12 @@ export class AgentHub implements WebhookHost {
     titleArg?: string,
   ): { sessionId: string; title: string } {
     if (typeof sessionIdOrOpts === "string") {
-      return this.renameSessionOnRoot(
-        this.projectRoot,
-        sessionIdOrOpts,
-        String(titleArg ?? ""),
-      );
+      this.ensureAgent();
+      return this.renameOnStore(this.sessionStore!, sessionIdOrOpts, String(titleArg ?? ""));
     }
     const slot = this.slotFor(sessionIdOrOpts.agent, sessionIdOrOpts.session);
-    return this.renameSessionOnRoot(
-      slot.projectRoot,
-      sessionIdOrOpts.session,
-      sessionIdOrOpts.title,
-    );
+    if (!slot.sessionStore) throw new Error("session store missing");
+    return this.renameOnStore(slot.sessionStore, sessionIdOrOpts.session, sessionIdOrOpts.title);
   }
 
   sessionMessages(opts: {
@@ -1542,8 +1916,8 @@ export class AgentHub implements WebhookHost {
     return MESSAGE_QUEUE.remove(id, opts.queueId);
   }
 
-  private renameSessionOnRoot(
-    projectRoot: string,
+  private renameOnStore(
+    store: { setTitle(id: string, title: string): boolean },
     sessionId: string,
     title: string,
   ): { sessionId: string; title: string } {
@@ -1551,19 +1925,8 @@ export class AgentHub implements WebhookHost {
     const t = String(title || "").trim();
     if (!id) throw new Error("sessionId required");
     if (!t) throw new Error("title required");
-    const metaPath = join(projectRoot, ".maou", "sessions", `${id}.meta.json`);
-    if (!existsSync(metaPath)) throw new Error(`session not found: ${id}`);
-    let meta: Record<string, unknown> = {};
-    try {
-      meta = JSON.parse(readFileSync(metaPath, "utf8")) as Record<string, unknown>;
-    } catch {
-      meta = { id };
-    }
-    meta.id = id;
-    meta.title = t.slice(0, 80);
-    meta.updated_at = new Date().toISOString();
-    writeFileSync(metaPath, JSON.stringify(meta, null, 2) + "\n", "utf8");
-    return { sessionId: id, title: String(meta.title) };
+    if (!store.setTitle(id, t)) throw new Error(`session not found: ${id}`);
+    return { sessionId: id, title: t.slice(0, 80) };
   }
 
   private slotFor(agent?: string, session?: string): AgentRuntimeSlot {
@@ -1654,12 +2017,14 @@ export class AgentHub implements WebhookHost {
     const store = slot.sessionStore;
     if (!store) return;
     const fromPtr = readLastSessionPointer(slot.projectRoot);
-    if (fromPtr && store.load(fromPtr)) {
+    if (fromPtr && store.exists(fromPtr)) {
+      store.recoverCold(fromPtr);
       slot.sessionId = fromPtr;
       return;
     }
     const latest = latestSessionId(slot.projectRoot);
-    if (latest && store.load(latest)) {
+    if (latest && store.exists(latest)) {
+      store.recoverCold(latest);
       slot.sessionId = latest;
       writeLastSessionPointer(slot.projectRoot, latest, slot.agentName);
     }
@@ -1717,7 +2082,7 @@ export class AgentHub implements WebhookHost {
         initAgentName: slot.agentName,
         sandboxMode: this.sandboxMode,
       })) {
-        yield ev;
+        yield this.stampTodayOnUsage(ev);
         if (ev.type === "done" || ev.type === "error") break;
       }
     } finally {

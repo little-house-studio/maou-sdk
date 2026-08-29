@@ -16,17 +16,9 @@ import {
   maskApiKey,
   updateApiPreset,
 } from "../api-settings";
-import type { DraftApiConfig, DraftMeta } from "../types";
+import type { DraftApiConfig } from "../types";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const META: DraftMeta = {
-  projectPath: "~/x",
-  projectLabel: "x",
-  agentName: "coding",
-  sandboxMode: "ask",
-  provider: "openai",
-  model: "gpt-5",
-};
 
 describe("SettingsPanel API 设置", () => {
   it("renders as page presentation with connection + window + capability fields", () => {
@@ -121,8 +113,8 @@ describe("WireTopbar settings mode tab", () => {
       createElement(WireTopbar, {
         mode: "chat",
         onModeChange: () => {},
-        meta: META,
-        usageLabel: "1k",
+        todayInput: 0,
+        todayOutput: 0,
       }),
     );
     assert.match(html, /wire-mode-tabs/);
@@ -145,8 +137,8 @@ describe("WireTopbar settings mode tab", () => {
       createElement(WireTopbar, {
         mode: "settings",
         onModeChange: () => {},
-        meta: META,
-        usageLabel: "1k",
+        todayInput: 0,
+        todayOutput: 0,
       }),
     );
     assert.match(html, /aria-selected="true"[^>]*>[\s\S]*?设置/);

@@ -26,6 +26,7 @@ export type GoalErrorCode =
   | "GOAL_INVALID_BLOCK_REASON"
   | "GOAL_INVALID_EDIT"
   | "GOAL_INVALID_TRANSITION"
+  | "GOAL_BLOCK_TOO_EARLY"
 
 export class GoalError extends Error {
   readonly code: GoalErrorCode

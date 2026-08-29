@@ -94,6 +94,7 @@ export interface CommandRuntimeRef {
     droppedSummary?: string;
     taskBlocks?: string[];
     error?: string;
+    code?: string;
   }>;
   /** /cost 粗算 */
   getUsageStats?: (sessionId: string) => {
@@ -118,7 +119,27 @@ export interface CommandRuntimeRef {
     archiveAt: number;
     lastInput: number;
     lastOutput: number;
+    usedIsEstimate?: boolean;
+    windowSource?: string;
+    windowModel?: string;
   } | null;
+}
+
+/** 窗口这个数是哪来的 —— 让用户看得出它是查到的还是猜的。 */
+export function describeWindowSource(source?: string, model?: string): string {
+  const via = model ? ` · ${model}` : "";
+  switch (source) {
+    case "preset":
+      return `预设写死${via}`;
+    case "catalog":
+      return `模型目录${via}`;
+    case "max_tokens":
+      return `旧 max_tokens 推的，可能不准${via}`;
+    case "fallback":
+      return `目录里没有这个模型，用的保守兜底${via}`;
+    default:
+      return `未知${via}`;
+  }
 }
 
 // ── 注册表 ──────────────────────────────────────────────────────────────
@@ -228,6 +249,25 @@ export function defineCommand(config: DefineCommandConfig): CommandDefinition {
 
 // ── 内置指令 ────────────────────────────────────────────────────────────
 
+export function compactFailHuman(code?: string, error?: string): string {
+  switch (code) {
+    case "busy":
+      return "正忙：当前会话还在跑，空闲后再压。";
+    case "content_changed":
+      return "内容已变，请再试一次。";
+    case "summary_failed":
+      return "摘要失败，上下文未改写。";
+    case "commit_failed":
+      return "提交压缩结果失败。";
+    case "not_written":
+      return "压缩结果没有写上盘。";
+    case "no_range":
+      return "没有可压缩的区间。";
+    default:
+      return error?.trim() || "未知原因";
+  }
+}
+
 export function registerBuiltinCommands(registry: CommandRegistry): void {
   // /new：新建会话
   registry.register(defineCommand({
@@ -320,6 +360,7 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
           droppedSummary?: string;
           taskBlocks?: string[];
           error?: string;
+          code?: string;
         }>;
       }).forceCompress;
       if (!force) {
@@ -328,8 +369,9 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
       try {
         const r = await force(ctx.sessionId);
         if (!r.ok) {
+          const why = compactFailHuman(r.code, r.error);
           return {
-            content: `△ 压缩未执行：${r.error ?? "未知原因"}`,
+            content: `△ 压缩未执行：${why}`,
             meta: { compressFailed: true, ...r },
           };
         }
@@ -434,12 +476,18 @@ export function registerBuiltinCommands(registry: CommandRegistry): void {
         const f = Math.round(Math.min(1, pct / 100) * w);
         return "█".repeat(f) + "░".repeat(Math.max(0, w - f));
       };
+      const tilde = snap.usedIsEstimate ? "~" : "";
+      const windowFrom = describeWindowSource(snap.windowSource, snap.windowModel);
       return {
         content:
           `Context window\n` +
-          `  ${bar(snap.pct)} ${snap.pct.toFixed(1)}%\n` +
-          `  Used:      ${snap.used.toLocaleString()} / ${snap.max.toLocaleString()} (last in ${snap.lastInput.toLocaleString()} + out ${snap.lastOutput.toLocaleString()})\n` +
+          `  ${bar(snap.pct)} ${tilde}${snap.pct.toFixed(1)}%\n` +
+          `  Used:      ${tilde}${snap.used.toLocaleString()} / ${snap.max.toLocaleString()} (last in ${snap.lastInput.toLocaleString()} + out ${snap.lastOutput.toLocaleString()})\n` +
           `  Remaining: ${snap.remaining.toLocaleString()}\n` +
+          `  Window:    ${windowFrom}\n` +
+          (snap.usedIsEstimate
+            ? `  占用含本地估算（还没有厂商回报，或回报之后又加了消息）\n`
+            : "") +
           `  Thresholds: compact ${snap.compactAt}% · summary ${snap.summaryAt}% · archive ${snap.archiveAt}%`,
         meta: { context: true, ...snap },
       };

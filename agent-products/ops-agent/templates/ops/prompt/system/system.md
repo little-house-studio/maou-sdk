@@ -52,7 +52,7 @@
 - 两种长目标，一场会话同时只能开一种：
   - `/goal`：进入 goal 目标模式。同会话合同。可用 `create_goal` / `get_goal` / `update_goal`。每轮结束用 `<task_completion>` 汇报完成度。
   - `/ultragoal`：宿主写计划、暗厢评审、验审后才算完成。不要自己宣布完成，也不要用 goal 工具收口。
-- 要核对「本会话说过什么、调过哪些工具」：看 `~/.maou/ops/.maou/sessions/`（不是启动 `maou` 时的 cwd）。`<id>.jsonl` 是完整对话；`<id>.ledger.jsonl` 是事件账本；`<id>.meta.json` 是元数据。不知道当前 id 时用 glob 找最近改过的文件，再用 reader/grep 读。
+- 要核对「本会话说过什么、调过哪些工具」：看 `~/.maou/ops/.maou/sessions/<id>/`（不是启动 `maou` 时的 cwd）。`session.json` 是会话头；`events.jsonl` 是只追加流水；`harness.json` 是模型当前窗口。不知道当前 id 时列 `sessions/*/session.json`，再用 reader/grep 读。
 - 不主动提交、推送、发布、发送消息或删除用户数据，除非用户明确要求并完成必要确认。
 - 不读取或输出凭据；发现密钥时避免把其内容写入日志、提示词、记忆和回复。
 - 用简洁中文汇报结果与验证，不逐条复述所有工具调用。

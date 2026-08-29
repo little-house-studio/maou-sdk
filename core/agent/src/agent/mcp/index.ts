@@ -79,6 +79,8 @@ export {
 } from "./strategy.js";
 export type { McpToolExposureStrategy } from "./strategy.js";
 
+export { formatMcpUnavailableMessage } from "./status-text.js";
+
 export { createMcpGatewayTool } from "./gateway-tool.js";
 export type { McpGatewayBackend } from "./gateway-tool.js";
 

@@ -188,6 +188,15 @@ export const SUBAGENT_KIND_DEFAULTS: Record<SubagentKind, SubagentKindDefaults> 
  *   4. defaults.tools 数组
  *   5. 继承 parentTools / ["*"]
  */
+export const SUBAGENT_OWN_TOOLS = ["report_to_parent"] as const;
+
+export function ensureSubagentOwnTools(tools: string[]): string[] {
+  if (tools.includes("*")) return tools;
+  const set = new Set(tools);
+  for (const name of SUBAGENT_OWN_TOOLS) set.add(name);
+  return [...set];
+}
+
 export function resolveSubagentTools(opts: {
   kind: SubagentKind;
   enableLoop?: boolean;
@@ -198,31 +207,31 @@ export function resolveSubagentTools(opts: {
   const defaults = SUBAGENT_KIND_DEFAULTS[opts.kind];
   const loop = opts.enableLoop ?? defaults.enableLoop;
 
-  // 辅助 + 单轮：禁止把 tool 交给 AI
+  // 辅助 + 单轮：禁止把工作工具交给 AI，汇报通道仍保留
   if (opts.kind === "helper" && !loop) {
-    return [];
+    return ensureSubagentOwnTools([]);
   }
 
   // 显式白名单数组
   if (Array.isArray(opts.tools)) {
-    return [...opts.tools];
+    return ensureSubagentOwnTools(opts.tools);
   }
 
   // 预设（tools === null 表示强制继承母，跳过预设）
   if (opts.tools !== null) {
     const presetName = opts.toolPreset ?? defaults.toolPreset;
     if (presetName && TASK_TOOL_PRESETS[presetName]) {
-      return [...TASK_TOOL_PRESETS[presetName]];
+      return ensureSubagentOwnTools([...TASK_TOOL_PRESETS[presetName]]);
     }
   }
 
   // kind 默认固定列表
   if (Array.isArray(defaults.tools)) {
-    return [...defaults.tools];
+    return ensureSubagentOwnTools([...defaults.tools]);
   }
 
   // 继承母（defaults.tools === null 或显式 tools === null）
-  return opts.parentTools ? [...opts.parentTools] : ["*"];
+  return ensureSubagentOwnTools(opts.parentTools ? [...opts.parentTools] : ["*"]);
 }
 
 /** helper 是否应进入 SubagentExecutor / 管理列表 */
@@ -366,7 +375,7 @@ export function resolveForkKindPolicy(
   if (auditPaths.length) configOverrides.audit_paths = auditPaths;
   // helper 单轮：明确清空 tools，防止 overrides 回写
   if (stripTools) {
-    configOverrides.tools = [];
+    configOverrides.tools = ensureSubagentOwnTools([]);
     configOverrides.enable_loop = false;
   }
 
@@ -376,7 +385,7 @@ export function resolveForkKindPolicy(
     persistContext,
     inheritFullContext,
     stripTools,
-    tools: stripTools ? [] : tools,
+    tools: stripTools ? ensureSubagentOwnTools([]) : tools,
     permission,
     roundLimit,
     overRoundPolicy: base.overRoundPolicy,

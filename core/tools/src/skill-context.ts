@@ -5,7 +5,7 @@
  * 0. 系统 / NPM 全局（可选，默认开）：~/.agents/skills、~/.claude/skills
  * 1. 全局 maou：~/.maou/skills
  * 2. 项目：skills/、.agents/skills/、.maou/skills、.maou/skill
- * 3. Agent：project/.maou/agents/<agent>/{skill,skills}、~/.maou/agents/<agent>/{skill,skills}
+ * 3. Agent：先扫 ~/.maou/agents/<agent>/{skills,skill}，最后扫项目 .maou/agents/<agent>/
  *
  * 功能：
  * - 文件缓存区：首轮将 skill 索引（name+description）写入稳定前缀（缓存断点之前）
@@ -29,6 +29,10 @@ export interface SkillEntry {
   content: string;
   sourcePath: string;
   source: SkillSource;
+  /** 仅用户菜单可点，模型 use_skill 拒 */
+  userInvocableOnly?: boolean;
+  /** 缺其中任一可用工具则说明书不进模型目录 */
+  requiredTools?: string[];
 }
 
 export interface SkillChange {
@@ -36,6 +40,26 @@ export interface SkillChange {
   removed: string[];
   updated: string[];
 }
+
+/**
+ * 单条技能描述进目录时的上限。
+ *
+ * 目录本身是稳定前缀里的常驻开销，几十个技能各写几千字就把窗口吃光了；
+ * 完整正文由 use_skill 按需加载。
+ */
+export const SKILL_DESCRIPTION_MAX_CHARS = 500;
+
+export function clipSkillDescription(desc: string): string {
+  const text = desc.replace(/\s+/g, " ").trim();
+  if (text.length <= SKILL_DESCRIPTION_MAX_CHARS) return text;
+  return `${text.slice(0, SKILL_DESCRIPTION_MAX_CHARS)}…（描述已截断，use_skill 加载可看全文）`;
+}
+
+/** 目录变空时的作废声明：没有它，模型历史里的旧名单永远有效。 */
+export const EMPTY_SKILL_CATALOG_LINE =
+  "当前没有可用技能。本条整份替换旧名单，请勿使用早前名单里的任何技能名。";
+
+export const EMPTY_SKILL_CATALOG = `<available_skills>\n${EMPTY_SKILL_CATALOG_LINE}\n</available_skills>`;
 
 export interface SkillContextResult {
   /** 文件缓存区（首轮写入稳定前缀，缓存断点之前） */
@@ -73,6 +97,7 @@ const DEFAULT_SCAN_OPTIONS: Required<Pick<SkillScanOptions, "includeSystemNpmSki
 
 /** 模块级默认（Agent 层 createSkillManager / setDefaultSkillScanOptions 写入；use_skill 读取） */
 let _defaultScanOptions: SkillScanOptions = { ...DEFAULT_SCAN_OPTIONS };
+let _defaultAvailableTools: Set<string> | null = null;
 
 /** Agent / bootstrap 设置全局默认扫描选项（影响后续 new SkillContextManager 与 use_skill） */
 export function setDefaultSkillScanOptions(opts: SkillScanOptions): void {
@@ -107,6 +132,52 @@ export function resolveSkillScanOptions(opts?: SkillScanOptions): Required<Skill
     includeSystemNpmSkills: includeSystem,
     extraDirs: [...(base.extraDirs ?? []), ...(opts?.extraDirs ?? [])],
   };
+}
+
+export type SkillScanRoot = { dir: string; source: SkillSource };
+
+/** CLI / App 菜单与 SkillScanner 同一套目录、同一先后（后扫覆盖）。 */
+export function listSkillScanRoots(opts: {
+  projectRoot: string;
+  maouRoot?: string;
+  agentName?: string;
+  home?: string;
+  includeSystemNpmSkills?: boolean;
+  extraDirs?: string[];
+}): SkillScanRoot[] {
+  const home = opts.home ?? homedir();
+  const resolved = resolveSkillScanOptions({
+    includeSystemNpmSkills: opts.includeSystemNpmSkills,
+    extraDirs: opts.extraDirs,
+  });
+  const maouRoot = opts.maouRoot || join(home, ".maou");
+  const roots: SkillScanRoot[] = [];
+  for (const dir of resolved.extraDirs) {
+    if (dir) roots.push({ dir, source: "system" });
+  }
+  if (resolved.includeSystemNpmSkills) {
+    for (const dir of getSystemNpmSkillDirs(home)) {
+      roots.push({ dir, source: "system" });
+    }
+  }
+  roots.push({ dir: join(maouRoot, "skills"), source: "global" });
+  roots.push({ dir: join(opts.projectRoot, "skills"), source: "project" });
+  roots.push({ dir: join(opts.projectRoot, ".agents", "skills"), source: "project" });
+  roots.push({ dir: join(opts.projectRoot, ".maou", "skills"), source: "project" });
+  roots.push({ dir: join(opts.projectRoot, ".maou", "skill"), source: "project" });
+  const agent = (opts.agentName ?? "").trim();
+  if (agent) {
+    for (const sub of ["skills", "skill"] as const) {
+      roots.push({ dir: join(maouRoot, "agents", agent, sub), source: "agent" });
+    }
+    for (const sub of ["skills", "skill"] as const) {
+      roots.push({
+        dir: join(opts.projectRoot, ".maou", "agents", agent, sub),
+        source: "agent",
+      });
+    }
+  }
+  return roots;
 }
 
 // ─── SkillScanner ─────────────────────────────────────────────────────────
@@ -144,51 +215,15 @@ export class SkillScanner {
   scanAll(agentName?: string): Map<string, SkillEntry> {
     const skills = new Map<string, SkillEntry>();
     const agent = agentName ?? this.agentName;
-    const home = homedir();
-
-    // ── 0. 额外目录（最低）──
-    for (const dir of this.scanOptions.extraDirs) {
-      if (dir) this.scanDirectory(dir, "system", skills);
+    for (const { dir, source } of listSkillScanRoots({
+      projectRoot: this.projectRoot,
+      maouRoot: this.maouRoot,
+      agentName: agent,
+      includeSystemNpmSkills: this.scanOptions.includeSystemNpmSkills,
+      extraDirs: this.scanOptions.extraDirs,
+    })) {
+      this.scanDirectory(dir, source, skills);
     }
-
-    // ── 1. 系统 / NPM 全局（npx skills -g）──
-    if (this.scanOptions.includeSystemNpmSkills) {
-      this.scanDirectory(join(home, ".agents", "skills"), "system", skills);
-      // ~/.claude/skills 常为 symlink 到 .agents；按 realpath 去重，避免重复解析
-      this.scanDirectory(join(home, ".claude", "skills"), "system", skills);
-    }
-
-    // ── 2. maou 全局 ~/.maou/skills ──
-    this.scanDirectory(join(this.maouRoot, "skills"), "global", skills);
-
-    // ── 3. 项目级 ──
-    this.scanDirectory(join(this.projectRoot, "skills"), "project", skills);
-    // npx skills 项目安装常见路径
-    this.scanDirectory(join(this.projectRoot, ".agents", "skills"), "project", skills);
-    // find_skill 安装目标：.maou/skills（复数）；兼容历史 .maou/skill（单数）
-    this.scanDirectory(join(this.projectRoot, ".maou", "skills"), "project", skills);
-    this.scanDirectory(join(this.projectRoot, ".maou", "skill"), "project", skills);
-
-    // ── 4. Agent 级（最高）──
-    if (agent) {
-      // 项目物化 agent：.maou/agents/<name>/
-      for (const sub of ["skills", "skill"] as const) {
-        this.scanDirectory(
-          join(this.projectRoot, ".maou", "agents", agent, sub),
-          "agent",
-          skills,
-        );
-      }
-      // 全局 agent：~/.maou/agents/<name>/
-      for (const sub of ["skills", "skill"] as const) {
-        this.scanDirectory(
-          join(this.maouRoot, "agents", agent, sub),
-          "agent",
-          skills,
-        );
-      }
-    }
-
     return skills;
   }
 
@@ -237,6 +272,12 @@ export class SkillScanner {
 
       const name = (meta.name || this.extractNameFromPath(path) || "").trim();
       if (!name) return null;
+      const userInvocableOnly =
+        parseFrontmatterFlag(meta["user_invocable"]) ||
+        parseFrontmatterFlag(meta["disable-model-invocation"]);
+      const requiredTools = parseFrontmatterList(
+        meta["required-tools"] ?? meta["requiredTools"] ?? meta["allowed-tools"],
+      );
 
       return {
         name,
@@ -245,6 +286,8 @@ export class SkillScanner {
         content: body.trim(),
         sourcePath: path,
         source,
+        userInvocableOnly: userInvocableOnly || undefined,
+        requiredTools: requiredTools.length ? requiredTools : undefined,
       };
     } catch {
       return null;
@@ -301,7 +344,10 @@ export class SkillContextManager {
   private scanner: SkillScanner;
   private previousSkills: Map<string, SkillEntry> = new Map();
   private enabledSkills: Set<string> = new Set();
+  private availableTools: Set<string> | null = _defaultAvailableTools;
   private isFirstRound = true;
+  /** 是否已经给模型报过一份非空名单（决定要不要显式作废） */
+  private announcedSkills = false;
   private agentName: string;
   private projectRoot: string;
   private maouRoot: string;
@@ -342,6 +388,12 @@ export class SkillContextManager {
     this.enabledSkills = new Set(skillNames);
   }
 
+  /** 当前模型可见工具。设了之后缺 required-tools 的技能退出说明书。 */
+  setAvailableTools(names: string[] | null | undefined): void {
+    this.availableTools = names && names.length ? new Set(names) : null;
+    _defaultAvailableTools = this.availableTools;
+  }
+
   /** 编译 skill 上下文（文件缓存区首轮 + 上下文动态区增量） */
   compile(): SkillContextResult {
     const allSkills = this.scanner.scanAll(this.agentName);
@@ -349,12 +401,14 @@ export class SkillContextManager {
     const currentSkills = new Map<string, SkillEntry>();
     for (const [name, entry] of allSkills) {
       if (
-        this.enabledSkills.size === 0 ||
-        this.enabledSkills.has(name) ||
-        this.enabledSkills.has("*")
+        this.enabledSkills.size > 0 &&
+        !this.enabledSkills.has(name) &&
+        !this.enabledSkills.has("*")
       ) {
-        currentSkills.set(name, entry);
+        continue;
       }
+      if (!skillVisibleToModel(entry, this.availableTools)) continue;
+      currentSkills.set(name, entry);
     }
 
     const changes = this.detectChanges(currentSkills);
@@ -408,7 +462,9 @@ export class SkillContextManager {
 
   /** 生成文件缓存区 skill 索引（稳定前缀，缓存断点之前） */
   private generateBakedContent(skills: Map<string, SkillEntry>): string {
-    if (skills.size === 0) return "";
+    // 从没报过名单就不必声明"没有技能"——历史里没有旧名单要作废
+    if (skills.size === 0) return this.announcedSkills ? EMPTY_SKILL_CATALOG : "";
+    this.announcedSkills = true;
 
     const parts: string[] = ["<available_skills>"];
     parts.push(
@@ -419,7 +475,7 @@ export class SkillContextManager {
     // 稳定排序，避免顺序抖动改写文件缓存区（= 缓存破坏）
     const sorted = [...skills.entries()].sort((a, b) => a[0].localeCompare(b[0]));
     for (const [name, entry] of sorted) {
-      const desc = entry.description ? entry.description : "(无描述)";
+      const desc = entry.description ? clipSkillDescription(entry.description) : "(无描述)";
       parts.push(`- **${name}** — ${desc} [${entry.source}]`);
     }
 
@@ -438,7 +494,8 @@ export class SkillContextManager {
       for (const name of changes.added) {
         const entry = current.get(name);
         if (entry) {
-          parts.push(`    - ${name}: ${entry.description || "无描述"} [${entry.source}]`);
+          const desc = entry.description ? clipSkillDescription(entry.description) : "无描述";
+          parts.push(`    - ${name}: ${desc} [${entry.source}]`);
         }
       }
       parts.push("  </added>");
@@ -457,15 +514,19 @@ export class SkillContextManager {
       for (const name of changes.updated) {
         const entry = current.get(name);
         if (entry) {
-          parts.push(
-            `    - ${name}: ${entry.description || "无描述"} (v${entry.version})`,
-          );
+          const desc = entry.description ? clipSkillDescription(entry.description) : "无描述";
+          parts.push(`    - ${name}: ${desc} (v${entry.version})`);
         }
       }
       parts.push("  </updated>");
     }
 
     parts.push("");
+    if (current.size === 0) {
+      parts.push(EMPTY_SKILL_CATALOG_LINE);
+    } else {
+      parts.push("本目录整份替换旧名单。请勿继续使用已移除的技能名。");
+    }
     parts.push("</skill_update>");
     return parts.join("\n");
   }
@@ -474,26 +535,52 @@ export class SkillContextManager {
    * 获取指定 skill 的完整内容（始终带 agentName，与列表扫描同口径）
    */
   getSkillContent(name: string): string | null {
-    const skills = this.scanner.scanAll(this.agentName);
-    const entry = skills.get(name);
+    const entry = this.getSkillEntry(name);
     return entry ? entry.content : null;
   }
 
-  /** 按名取完整 entry（含 sourcePath） */
+  /** 按名取完整 entry（含 sourcePath）。模型侧走同一过滤。 */
   getSkillEntry(name: string): SkillEntry | null {
     const skills = this.scanner.scanAll(this.agentName);
-    return skills.get(name) ?? null;
+    const entry = skills.get(name);
+    if (!entry) return null;
+    if (
+      this.enabledSkills.size > 0 &&
+      !this.enabledSkills.has(name) &&
+      !this.enabledSkills.has("*")
+    ) {
+      return null;
+    }
+    if (!skillVisibleToModel(entry, this.availableTools)) return null;
+    return entry;
   }
 
-  /** 列出所有可用 skill（与 bake 过滤规则一致时由调用方再滤 enabled） */
+  /** 未过滤的原条目（use_skill 用来区分「仅用户可点」） */
+  peekSkillEntry(name: string): SkillEntry | null {
+    return this.scanner.scanAll(this.agentName).get(name) ?? null;
+  }
+
+  /** 列出模型可用 skill */
   listAvailableSkills(): SkillEntry[] {
     const skills = this.scanner.scanAll(this.agentName);
-    const list = [...skills.values()];
-    if (this.enabledSkills.size === 0 || this.enabledSkills.has("*")) {
-      return list.sort((a, b) => a.name.localeCompare(b.name));
-    }
-    return list
-      .filter((s) => this.enabledSkills.has(s.name))
+    const list = [...skills.values()].filter((s) => {
+      if (
+        this.enabledSkills.size > 0 &&
+        !this.enabledSkills.has(s.name) &&
+        !this.enabledSkills.has("*")
+      ) {
+        return false;
+      }
+      return skillVisibleToModel(s, this.availableTools);
+    });
+    return list.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** 菜单：含仅用户可点，不含缺工具的说明书 */
+  listMenuSkills(): SkillEntry[] {
+    const skills = this.scanner.scanAll(this.agentName);
+    return [...skills.values()]
+      .filter((s) => !skillMissingRequiredTools(s, this.availableTools))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
@@ -501,12 +588,43 @@ export class SkillContextManager {
   reset(): void {
     this.previousSkills = new Map();
     this.isFirstRound = true;
+    this.announcedSkills = false;
   }
 }
 
 /** 系统 NPM 全局 skill 的默认目录列表（供文档 / CLI 展示） */
 export function getSystemNpmSkillDirs(home = homedir()): string[] {
   return [join(home, ".agents", "skills"), join(home, ".claude", "skills")];
+}
+
+function parseFrontmatterFlag(raw: string | undefined): boolean {
+  const v = (raw ?? "").trim().toLowerCase();
+  return v === "true" || v === "yes" || v === "1" || v === "on";
+}
+
+function parseFrontmatterList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(/[,[\]\s]+/)
+    .map((s) => s.trim())
+    .filter((s) => s && s !== "-" && !s.startsWith("["));
+}
+
+export function skillMissingRequiredTools(
+  entry: SkillEntry,
+  available: ReadonlySet<string> | null | undefined,
+): boolean {
+  if (!entry.requiredTools?.length || !available || available.size === 0) return false;
+  return entry.requiredTools.some((t) => !available.has(t));
+}
+
+export function skillVisibleToModel(
+  entry: SkillEntry,
+  availableTools?: ReadonlySet<string> | null,
+): boolean {
+  if (entry.userInvocableOnly) return false;
+  if (skillMissingRequiredTools(entry, availableTools)) return false;
+  return true;
 }
 
 /** 从 SKILL.md 路径解析目录名（测试与工具共用） */

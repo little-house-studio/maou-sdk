@@ -78,6 +78,20 @@ export {
   rebindTerminalPersist,
 } from './terminal/resolve-backend.js'
 export { isHumanTerminal } from './terminal/backend.js'
+export {
+  applyOutputLimit,
+  inferPromptWaitState,
+  peekOverflow,
+  peekWaitState,
+  rememberOverflow,
+  rememberWaitState,
+} from './terminal/overflow.js'
+export type { TerminalWaitState } from './terminal/overflow.js'
+export {
+  TOOL_OUTPUT_SPILL_LIMIT,
+  applySpillGuard,
+  isSpillExempt,
+} from './spill-guard.js'
 export type {
   TerminalBackend,
   TerminalKind,
@@ -117,6 +131,14 @@ export {
   consultPermissionHook,
   notifyPermissionDenied,
 } from './security/index.js'
+export {
+  DEFAULT_PERMISSION_PRESET,
+  PERMISSION_PRESETS,
+  resolvePermissionPreset,
+  isPermissionPresetId,
+  listPermissionPresets,
+} from './security/permission-preset.js'
+export type { PermissionPreset, PermissionPresetId } from './security/permission-preset.js'
 export type { HardCheckResult, HardCheckOptions } from './security/index.js'
 export type {
   PermissionDecision,
@@ -156,13 +178,21 @@ export {
   getDefaultSkillScanOptions,
   resolveSkillScanOptions,
   getSystemNpmSkillDirs,
+  listSkillScanRoots,
   skillNameFromPath,
+  skillVisibleToModel,
+  skillMissingRequiredTools,
+  clipSkillDescription,
+  EMPTY_SKILL_CATALOG,
+  EMPTY_SKILL_CATALOG_LINE,
+  SKILL_DESCRIPTION_MAX_CHARS,
 } from './skill-context.js'
 export type {
   SkillEntry,
   SkillChange,
   SkillContextResult,
   SkillScanOptions,
+  SkillScanRoot,
   SkillSource,
 } from './skill-context.js'
 
@@ -246,3 +276,24 @@ export { collectDiff, formatDiffForReport } from './agent_team/diff-collector.js
 export type { DiffSummary, DiffEntry } from './agent_team/diff-collector.js'
 export { ProjectAgentTool } from './project/project_agent/tool.js'
 export { ChangeSelfTool } from './agent_team/change_self/tool.js'
+export {
+  bindReportWake,
+  takeQuietReports,
+  formatQuietReports,
+  resetQuietReportsForTest,
+} from './agent_team/report_to_parent/host.js'
+export { installToolsContracts } from './security/contracts.js'
+
+// ask_user 宿主桥：app / cli 用它把提问交给人（barrel 之前漏接）
+export { bindAskUserHost, getAskUserHost, requestAskUser } from './ask_user/host.js'
+export type {
+  AskUserAnswers,
+  AskUserHost,
+  AskUserKind,
+  AskUserOption,
+  AskUserPlanDecision,
+  AskUserQuestion,
+  AskUserRequest,
+  AskUserResult,
+} from './ask_user/host.js'
+

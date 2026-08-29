@@ -12,7 +12,9 @@
 
 import type { BuildMessagesParams, UserMessageOptions } from "./types.js";
 import type { LLMToolCall } from "./types/message.js";
+import { noteContextStructure } from "./context-assert.js";
 import { compileProjectContext } from "./project-context.js";
+import { compileWorkspaceInstructions } from "./workspace-instructions.js";
 import { contentWithThinkingForLlm } from "./thinking-context.js";
 
 /**
@@ -29,6 +31,8 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
     structuredMemory,
     projectRoot,
     compressedHistory,
+    workspaceInstructions,
+    replaceWorkspaceBaseline,
   } = params;
 
   const messages: Record<string, unknown>[] = [];
@@ -66,6 +70,14 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
     if (projectContext) {
       messages.push({ role: "system", content: projectContext });
     }
+    if (workspaceInstructions !== false) {
+      const instructions = compileWorkspaceInstructions(projectRoot, {
+        replaceBaseline: replaceWorkspaceBaseline,
+      });
+      if (instructions) {
+        messages.push({ role: "system", content: instructions });
+      }
+    }
   }
 
   // 6. 平台上下文注入（由插件提供，仅在该平台会话中生效）
@@ -94,6 +106,9 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
         `</prior_context_summary>`,
     });
   }
+
+  // 稳定前缀到此为止：往后是随轮次生长的历史与用户消息
+  const prefixCount = messages.length;
 
   // ── 历史消息 ──
   // 传入 compressedHistory（来自 ContextEngine.toLLMHistory）时用它做历史段，
@@ -259,6 +274,7 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
   // ── 动态上下文注入 ──
   injectUserContext(messages, roundCount, userOpts);
 
+  noteContextStructure(messages, prefixCount);
   return messages;
 }
 

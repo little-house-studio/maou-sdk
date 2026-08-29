@@ -193,6 +193,16 @@ export {
 export { normalizeCacheUsage, cacheHitPct } from './cache-usage.js'
 export type { NormalizedCacheUsage } from './cache-usage.js'
 
+// ─── 上下文窗口（压缩 / 计量 / UI 共用同一个数）───────────────────────────────
+export {
+  FALLBACK_CONTEXT_WINDOW,
+  backfillContextWindow,
+  contextWindowOf,
+  describeContextWindowSource,
+  resolveContextWindow,
+} from './context-window.js'
+export type { ContextWindowSource, ResolvedContextWindow } from './context-window.js'
+
 // ─── 模型注册表（内置目录 + 定价 + 能力）────────────────────────────────────
 export {
   getProviders,
@@ -422,9 +432,11 @@ export {
   pickPrimaryModel,
   MODEL_LIST_TIMEOUT_MS,
   MODELS_DEV_URL,
+} from './paste-parse/index.js'
+export {
   llmPresetFromFields,
   applyLlmPresetToConfig,
-} from './paste-parse/index.js'
+} from './paste-parse/apply-preset.js'
 export type {
   ExtractorId,
   FieldSource,

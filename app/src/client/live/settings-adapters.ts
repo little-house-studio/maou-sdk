@@ -12,7 +12,7 @@ export type LiveModelOpt = { id: string; name?: string };
  * Settings page sections (nav).
  * 「方案与审批」置顶：Agent 方案 + 模板默认 + 终端审批合一。
  */
-export type LiveSettingsSectionId = "appearance" | "runtime_defaults" | "llm";
+export type LiveSettingsSectionId = "appearance" | "runtime_defaults" | "llm" | "plugins";
 
 export const LIVE_SETTINGS_SECTIONS: ReadonlyArray<{
   id: LiveSettingsSectionId;
@@ -21,6 +21,7 @@ export const LIVE_SETTINGS_SECTIONS: ReadonlyArray<{
   { id: "appearance", label: "外观" },
   { id: "runtime_defaults", label: "方案与审批" },
   { id: "llm", label: "LLM 模型" },
+  { id: "plugins", label: "插件" },
 ];
 
 /** Backend-backed terminal approval modes (POST /api/approval). */
@@ -47,6 +48,58 @@ export function approvalModeLabel(mode: string): string {
   }
 }
 
+export const PERMISSION_PRESET_IDS = [
+  "workspace+ask",
+  "workspace+auto",
+  "open+yolo",
+] as const;
+
+export type PermissionPresetId = (typeof PERMISSION_PRESET_IDS)[number];
+
+export function isPermissionPresetId(v: string): v is PermissionPresetId {
+  return (PERMISSION_PRESET_IDS as readonly string[]).includes(v);
+}
+
+/** 短名：ask / auto / yolo。权限座位不是斜杠指令，不要加 /。 */
+export function permissionPresetName(id: string): string {
+  switch (id) {
+    case "workspace+ask":
+      return "ask";
+    case "workspace+auto":
+      return "auto";
+    case "open+yolo":
+      return "yolo";
+    default:
+      return id;
+  }
+}
+
+export function permissionPresetLabel(id: string): string {
+  switch (id) {
+    case "workspace+ask":
+      return "询问";
+    case "workspace+auto":
+      return "审核";
+    case "open+yolo":
+      return "放开";
+    default:
+      return approvalModeLabel(id);
+  }
+}
+
+export function permissionPresetHint(id: string): string {
+  switch (id) {
+    case "workspace+ask":
+      return "新会话默认：终端写在工作区；非白名单询问。改这里不影响已开跑会话。";
+    case "workspace+auto":
+      return "新会话默认：终端写在工作区；非白名单先由辅助模型审核。";
+    case "open+yolo":
+      return "新会话默认：不收紧写范围，也不再问终端审批。致命 DCG 仍硬拦。";
+    default:
+      return approvalModeHint(id);
+  }
+}
+
 export function approvalModeHint(mode: string): string {
   switch (mode) {
     case "normal":
@@ -69,6 +122,7 @@ export type LiveSettingsSnapshot = {
   projectRoot: string;
   sandboxMode: string;
   approvalMode: string;
+  permissionPreset?: string;
   agentName: string;
   offline: boolean;
   /** One-line status for the settings header */
@@ -86,6 +140,7 @@ export function emptyLiveSettingsSnapshot(
     projectRoot: "",
     sandboxMode: "—",
     approvalMode: "—",
+    permissionPreset: undefined,
     agentName: "coding",
     offline,
     statusLabel: offline ? "后端离线" : "未配置",
@@ -135,6 +190,7 @@ export function buildLiveSettingsSnapshot(
     projectRoot: meta.projectRoot || "",
     sandboxMode: meta.sandboxMode || "—",
     approvalMode,
+    permissionPreset: meta.permissionPreset,
     agentName: meta.agentName || "coding",
     offline,
     statusLabel: offline

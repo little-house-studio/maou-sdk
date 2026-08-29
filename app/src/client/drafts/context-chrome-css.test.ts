@@ -44,6 +44,25 @@ describe("context chrome CSS coexistence", () => {
     assert.match(css, /--user-extend:\s*calc\(var\(--round-gutter\) \/ 2\)/);
     assert.match(css, /\.wire-loop-spine\s*\{[^}]*width:\s*var\(--spine/s);
     assert.doesNotMatch(css, /\.wire-user-stick[\s\S]*?\.msg-body::after/);
+    assert.match(
+      css,
+      /@media \(hover: hover\) and \(pointer: fine\)[\s\S]*?\.wire-loop-spine\s*\{[^}]*opacity:\s*0/,
+    );
+    assert.match(
+      css,
+      /\.wire-loop:hover \.wire-loop-spine/,
+    );
+    assert.match(
+      css,
+      /\.wire-loop\.is-live \.wire-loop-spine\s*\{[^}]*background:\s*var\(--n-accent/s,
+    );
+  });
+
+  it("earlier reply turns fold to one line; hover spine selector stays", () => {
+    assert.match(css, /\.wire-turn-fold\s*\{/);
+    assert.match(css, /\.wire-reply-turn\.is-folded\s*\{/);
+    assert.match(css, /\.wire-reply-turn\.has-fold > \.wire-turn-fold/);
+    assert.match(css, /\.wire-loop:hover \.wire-loop-spine/);
   });
 
   it("user question rows stick to the thread top", () => {
@@ -124,3 +143,40 @@ describe("context chrome CSS coexistence", () => {
     );
   });
 });
+
+describe("ask mark CSS", () => {
+  it("the ask square sits on the spine, the same column as the round chip", () => {
+    // 轮次圆：沟槽列居中 → 列心 = -gutter/2
+    assert.match(
+      css,
+      /\.wire-reply-turn > \.wire-info-hover,[\s\S]*?\{[^}]*justify-self:\s*center/s,
+    );
+    // 脊线同样在 -user-extend( = gutter/2 ) 上
+    assert.match(css, /\.wire-loop-spine\s*\{[^}]*left:\s*calc\(-1 \* var\(--user-extend/s);
+    // 方块贴用户框左沿并 translateX(-50%) → 同一条线
+    assert.match(
+      css,
+      /\.wire-user-chip-hover\s*\{[^}]*position:\s*absolute[^}]*transform:\s*translateX\(-50%\)/s,
+    );
+    // absolute 量 padding box，1px 边框要补回来，否则整体偏 1px
+    assert.match(
+      css,
+      /\.wire-user-chip-hover\s*\{[^}]*left:\s*calc\(-1 \* var\(--user-box-border, 0px\)\)/s,
+    );
+    assert.match(
+      css,
+      /\.user \.msg-body\s*\{[^}]*border:\s*1px solid[^}]*--user-box-border:\s*1px/s,
+    );
+  });
+
+  it("square vs circle: same size token, filled vs outlined", () => {
+    assert.match(css, /\.wire-user-chip\s*\{[^}]*width:\s*var\(--chip, 14px\)/s);
+    assert.match(css, /\.wire-user-chip\s*\{[^}]*border-radius:\s*0/s);
+    assert.match(css, /\.wire-user-chip\s*\{[^}]*background:\s*var\(--n-label/s);
+    assert.match(css, /\.wire-round-chip\s*\{[^}]*border-radius:\s*50%/s);
+    // 只有可点时才给 pointer，纯展示态不骗手
+    assert.match(css, /\.wire-user-chip\.is-inspectable\s*\{[^}]*cursor:\s*pointer/s);
+    assert.match(css, /\.wire-round-chip\.is-inspectable\s*\{[^}]*cursor:\s*pointer/s);
+  });
+});
+

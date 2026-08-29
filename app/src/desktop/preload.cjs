@@ -34,4 +34,7 @@ contextBridge.exposeInMainWorld("maouApp", {
     ipcRenderer.on(ch, fn);
     return () => ipcRenderer.removeListener(ch, fn);
   },
+  pickFolder: () => ipcRenderer.invoke("app:pick-folder"),
+  revealInFolder: (p) => ipcRenderer.invoke("app:reveal-in-folder", p),
+  openPath: (p) => ipcRenderer.invoke("app:open-path", p),
 });

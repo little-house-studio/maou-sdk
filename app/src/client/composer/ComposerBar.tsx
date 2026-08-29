@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ChromeMark } from "../drafts/icons/Marks";
+import { CommandFlyout } from "./CommandFlyout";
 import { CommandLauncher } from "./CommandLauncher";
 import { OptionalOutlet } from "./OptionalOutlet";
 import { SlashMenu } from "./SlashMenu";
@@ -9,7 +10,12 @@ import {
   ModelSeat,
   UsageSeat,
 } from "./ComposerTools";
-import { mentionQuery, slashPrefixAtCursor } from "./commands";
+import {
+  filterCommandHits,
+  mentionQuery,
+  overlayKeyAction,
+  slashPrefixAtCursor,
+} from "./commands";
 import { imageDataUrl } from "./images";
 import { fitComposerHeight } from "./fit-height";
 import type { ComposerProps } from "./types";
@@ -18,9 +24,12 @@ export function ComposerBar(props: ComposerProps) {
   const [draft, setDraft] = useState(props.input);
   const [cursor, setCursor] = useState(() => props.input.length);
   const [menuDismissed, setMenuDismissed] = useState(false);
+  const [swapOpen, setSwapOpen] = useState(false);
+  const [swapIdx, setSwapIdx] = useState(0);
   const draftRef = useRef(props.input);
   const sentRef = useRef(props.input);
   const flushRaf = useRef(0);
+  const chipRef = useRef<HTMLDivElement>(null);
   const tokenLive =
     !props.commandBlock && slashPrefixAtCursor(draft, cursor) != null;
   const liveSlash = tokenLive && !menuDismissed;
@@ -32,9 +41,34 @@ export function ComposerBar(props: ComposerProps) {
   const sendMode = props.sendMode;
   const sendModeLabel = sendMode === "insert" ? "插入" : "队列";
   const wrapRef = useRef<HTMLDivElement>(null);
-  const overlayOpen = Boolean(
-    liveSlash || props.paletteOpen || props.mentionOpen,
+  const swapItems = useMemo(
+    () =>
+      filterCommandHits("", props.commandCatalog, 24, { surface: "slash" }),
+    [props.commandCatalog],
   );
+  const overlayOpen = Boolean(
+    liveSlash || props.paletteOpen || props.mentionOpen || swapOpen,
+  );
+
+  const clearCommand = () => {
+    setSwapOpen(false);
+    props.onCommandBlockChange?.(null);
+    props.onCommandBlockSelect?.(false);
+    props.inputRef.current?.focus();
+  };
+
+  const openCommandSwap = () => {
+    if (swapOpen) {
+      setSwapOpen(false);
+      props.inputRef.current?.focus();
+      return;
+    }
+    const idx = swapItems.findIndex((c) => c.name === props.commandBlock);
+    setSwapIdx(idx >= 0 ? idx : 0);
+    setSwapOpen(true);
+    props.onCommandBlockSelect?.(true);
+    props.inputRef.current?.focus();
+  };
 
   const cancelFlush = () => {
     if (!flushRaf.current) return;
@@ -77,19 +111,28 @@ export function ComposerBar(props: ComposerProps) {
   }, [draft, props.inputRef]);
 
   useEffect(() => {
+    if (!props.commandBlock || props.paletteOpen) setSwapOpen(false);
+  }, [props.commandBlock, props.paletteOpen]);
+
+  useEffect(() => {
     if (!overlayOpen) return;
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node;
-    const overlay = document.querySelector("[data-composer-overlay]");
-    const launch = wrapRef.current?.querySelector("[data-composer-launch]");
-      if (overlay?.contains(t) || launch?.contains(t)) return;
+      const overlay = document.querySelector("[data-composer-overlay]");
+      const launch = wrapRef.current?.querySelector("[data-composer-launch]");
+      const chip = chipRef.current;
+      if (overlay?.contains(t) || launch?.contains(t) || chip?.contains(t)) {
+        return;
+      }
       setMenuDismissed(true);
+      setSwapOpen(false);
       props.onOverlayDismiss?.();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
       setMenuDismissed(true);
+      setSwapOpen(false);
       props.onOverlayDismiss?.();
     };
     document.addEventListener("pointerdown", onDown, true);
@@ -124,6 +167,7 @@ export function ComposerBar(props: ComposerProps) {
                   type="button"
                   className="composer-attach-chip"
                   title="移除此图"
+                  aria-label={`移除附图 ${img.name || `图${i + 1}`}`}
                   onClick={() =>
                     props.onImagesChange?.(
                       (props.images ?? []).filter((_, j) => j !== i),
@@ -138,20 +182,51 @@ export function ComposerBar(props: ComposerProps) {
           ) : null}
           <div className="composer-input-row">
             {props.commandBlock ? (
-              <button
-                type="button"
-                className={`composer-cmd-block${
+              <div
+                ref={chipRef}
+                className={`composer-cmd-chip${
                   props.commandBlockSelected ? " is-selected" : ""
                 }`}
+                data-composer-cmd-chip=""
+                role="group"
                 aria-label={`指令 /${props.commandBlock}`}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  props.onCommandBlockSelect?.(true);
-                  props.inputRef.current?.focus();
-                }}
               >
-                /{props.commandBlock}
-              </button>
+                <button
+                  type="button"
+                  className="composer-cmd-chip-name"
+                  aria-haspopup="listbox"
+                  aria-expanded={swapOpen}
+                  aria-pressed={Boolean(props.commandBlockSelected)}
+                  title="换指令"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => openCommandSwap()}
+                >
+                  /{props.commandBlock}
+                </button>
+                <button
+                  type="button"
+                  className="composer-cmd-chip-clear"
+                  aria-label={`去掉指令 /${props.commandBlock}`}
+                  title="去掉指令"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => clearCommand()}
+                >
+                  ×
+                </button>
+                <CommandFlyout
+                  open={swapOpen}
+                  anchor={chipRef.current}
+                  items={swapItems}
+                  activeIdx={swapIdx}
+                  onPick={(name) => {
+                    props.onCommandBlockChange?.(name);
+                    props.onCommandBlockSelect?.(false);
+                    setSwapOpen(false);
+                    props.inputRef.current?.focus();
+                  }}
+                  onHighlight={setSwapIdx}
+                />
+              </div>
             ) : null}
             <textarea
               ref={props.inputRef}
@@ -168,6 +243,7 @@ export function ComposerBar(props: ComposerProps) {
                 setDraft(v);
                 setCursor(at);
                 setMenuDismissed(false);
+                setSwapOpen(false);
                 props.onCommandBlockSelect?.(false);
                 props.onCursorChange?.(at);
                 fitComposerHeight(e.target);
@@ -207,6 +283,37 @@ export function ComposerBar(props: ComposerProps) {
                 ) {
                   cancelFlush();
                 }
+                if (swapOpen) {
+                  const act = overlayKeyAction(e, true, swapItems.length);
+                  if (act === "nav-down") {
+                    e.preventDefault();
+                    setSwapIdx((i) => (i + 1) % swapItems.length);
+                    return;
+                  }
+                  if (act === "nav-up") {
+                    e.preventDefault();
+                    setSwapIdx(
+                      (i) => (i - 1 + swapItems.length) % swapItems.length,
+                    );
+                    return;
+                  }
+                  if (act === "pick") {
+                    e.preventDefault();
+                    const pick =
+                      swapItems[Math.min(swapIdx, swapItems.length - 1)];
+                    if (pick) {
+                      props.onCommandBlockChange?.(pick.name);
+                      props.onCommandBlockSelect?.(false);
+                      setSwapOpen(false);
+                    }
+                    return;
+                  }
+                  if (act === "close") {
+                    e.preventDefault();
+                    setSwapOpen(false);
+                    return;
+                  }
+                }
                 if (props.commandBlock) {
                   const edge =
                     start === 0 &&
@@ -219,8 +326,7 @@ export function ComposerBar(props: ComposerProps) {
                       (start === 0 && end === 0 && e.key === "Backspace"))
                   ) {
                     e.preventDefault();
-                    props.onCommandBlockChange?.(null);
-                    props.onCommandBlockSelect?.(false);
+                    clearCommand();
                     return;
                   }
                   if (edge && e.key === "ArrowLeft") {

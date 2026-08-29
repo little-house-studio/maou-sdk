@@ -116,7 +116,9 @@ export function createOpsAgent(opts: OpsAgentOptions): OpsAgent {
     agentName: name,
     agentScope: "global",
     // Ops 的 ContextEngine/任务状态也固定在 <MAOU_HOME>/ops，避免混入全局 coding 会话。
-    harnessStore: new HarnessSessionStore({ maouRoot: opsRoot }),
+    harnessStore: new HarnessSessionStore({
+      sessionsDir: opts.sessionStore.sessionDir,
+    }),
     taskStore: new TaskSessionStore(opsRoot, name),
     enableCompression: opts.enableCompression,
     summarizer: opts.summarizer,

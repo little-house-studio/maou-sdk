@@ -10,7 +10,12 @@ import {
   detectRepeatedToolLoop,
   findSameRoundResourceConflicts,
   extractToolResourceKey,
+  shouldNudgeToolStreak,
+  consecutiveToolStreak,
   TRUNCATION_MARKER,
+  toolActsExclusive,
+  CANCELLED_NOT_STARTED,
+  groupToolSchedule,
 } from "./runtime-recovery.js";
 
 describe("isOutputTruncatedByLength", () => {
@@ -131,5 +136,46 @@ describe("findSameRoundResourceConflicts", () => {
 describe("TRUNCATION_MARKER constant", () => {
   it("is non-empty", () => {
     expect(TRUNCATION_MARKER.length).toBeGreaterThan(10);
+  });
+});
+
+describe("tool streak nudge", () => {
+  it("nudges on the 3rd identical signature, not the 2nd", () => {
+    const sig = toolCallSignature({ name: "reader", parameters: { path: "a.ts" } });
+    const two = consecutiveToolStreak([sig, sig]);
+    expect(two.count).toBe(2);
+    expect(shouldNudgeToolStreak(two.count)).toBe(false);
+    const three = consecutiveToolStreak([sig, sig, sig]);
+    expect(three.count).toBe(3);
+    expect(shouldNudgeToolStreak(three.count)).toBe(true);
+    expect(shouldNudgeToolStreak(4)).toBe(false);
+    expect(shouldNudgeToolStreak(5)).toBe(true);
+    expect(shouldNudgeToolStreak(8)).toBe(true);
+  });
+});
+
+describe("toolActsExclusive", () => {
+  it("treats unmarked non-parallel tools as exclusive", () => {
+    expect(toolActsExclusive(undefined)).toBe(true);
+    expect(toolActsExclusive({ parallelSafe: true })).toBe(false);
+    expect(toolActsExclusive({ exclusive: true, parallelSafe: true })).toBe(true);
+    expect(toolActsExclusive({ exclusive: false })).toBe(false);
+    expect(CANCELLED_NOT_STARTED).toBe("cancelled_not_started");
+  });
+});
+
+describe("groupToolSchedule", () => {
+  it("reads in parallel, write splits the later group", () => {
+    const batches = groupToolSchedule([
+      { parallelSafe: true },
+      { parallelSafe: true },
+      { exclusive: true },
+      { parallelSafe: true },
+    ]);
+    expect(batches).toEqual([
+      { kind: "parallel", indices: [0, 1] },
+      { kind: "exclusive", index: 2 },
+      { kind: "parallel", indices: [3] },
+    ]);
   });
 });

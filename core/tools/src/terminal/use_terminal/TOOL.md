@@ -7,7 +7,7 @@
 - 等某行日志再返回：`return_when=until` + `match`/`expr`。
 - 仍在跑时可用 `manage stop` 打断。
 - 每次 use_terminal 返回末尾会附带 **── 终端状态 ──** 快照（运行中 / 已结束），不必先 manage list。
-- command 中的路径含空格时必须用引号包裹。
+- command 中的路径含空格时必须用引号包裹。Unix 用 `$HOME`、`/tmp`；Windows 上本工具走原生 PowerShell，用 `$env:USERPROFILE`、`C:\Users\…`，不要调用 `wsl.exe`。
 - result_limit 控制返回内容长度，大输出建议设小值（如 2000），避免 token 浪费。
 - manage_action=list 查看全表；logs / stop / rm 操作指定 id。
 - 列表为空时仍会说明原因（临时任务销毁、其它 agent 终端等）。

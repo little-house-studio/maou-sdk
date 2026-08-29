@@ -17,13 +17,23 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 describe("subagent kinds", () => {
+  it("keeps report_to_parent when parent whitelist omits it", () => {
+    const tools = resolveSubagentTools({
+      kind: "task",
+      tools: null,
+      parentTools: ["reader", "write_file"],
+    });
+    expect(tools).toContain("report_to_parent");
+    expect(tools).toContain("reader");
+  });
+
   it("helper 单轮强制无 tools", () => {
     const tools = resolveSubagentTools({
       kind: "helper",
       enableLoop: false,
       tools: ["reader", "grep"],
     });
-    expect(tools).toEqual([]);
+    expect(tools).toEqual(["report_to_parent"]);
   });
 
   it("helper 开 loop 才可用 tools", () => {
@@ -32,7 +42,7 @@ describe("subagent kinds", () => {
       enableLoop: true,
       tools: ["reader"],
     });
-    expect(tools).toEqual(["reader"]);
+    expect(tools).toEqual(["reader", "report_to_parent"]);
   });
 
   it("task 预设 explore", () => {
@@ -111,7 +121,7 @@ describe("subagent kinds", () => {
     expect(p).not.toBeNull();
     expect(p!.useExecutor).toBe(false);
     expect(p!.stripTools).toBe(true);
-    expect(p!.tools).toEqual([]);
+    expect(p!.tools).toEqual(["report_to_parent"]);
     expect(p!.softRequestBudget).toBe(1);
   });
 
@@ -120,7 +130,7 @@ describe("subagent kinds", () => {
     expect(p!.useExecutor).toBe(true);
     expect(p!.listInManager).toBe(true);
     expect(p!.stripTools).toBe(true);
-    expect(p!.tools).toEqual([]);
+    expect(p!.tools).toEqual(["report_to_parent"]);
   });
 
   it("resolveForkKindPolicy: fork 完整上下文 + wrap-up", () => {

@@ -14,7 +14,9 @@ describe("deps-check", () => {
     expect(root.length).toBeGreaterThan(0);
   });
 
-  it("开发态核心依赖可解析", async () => {
+  // 这条要探一圈外部二进制（node / rg / sqry / dcg …），机器一忙 5s 默认值就超；
+  // 探测本身没有慢的理由，放宽超时而不是改探测逻辑。
+  it("开发态核心依赖可解析", { timeout: 30_000 }, async () => {
     const r = await ensureDependencies({ autoInstall: false, quiet: true });
     expect(r.nodeOk).toBe(true);
     // monorepo 下核心包应已 link

@@ -63,6 +63,10 @@ export interface BuildMessagesParams {
   structuredMemory?: string;
   /** 项目根目录（用于加载 .maou/project/） */
   projectRoot?: string;
+  /** 注入仓库根 AGENTS.md / CLAUDE.md */
+  workspaceInstructions?: boolean;
+  /** 压缩后整份重组并声明替换旧基线 */
+  replaceWorkspaceBaseline?: boolean;
   /**
    * 压缩后的历史段（来自 ContextEngine.toLLMHistory）。
    * 传入时用它做历史段，替代 sessionMessages 下放循环；
@@ -171,6 +175,8 @@ export interface CheckpointMeta {
   createdAt: string;
   autoCheckpoint: boolean;
   triggerReason?: string;
+  leafSeq?: number;
+  leafId?: string;
 }
 
 /** 快照差异 */

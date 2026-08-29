@@ -31,6 +31,8 @@ import { ChangeSelfTool } from "../agent_team/change_self/tool.js";
 import { TodoManageTool } from "../todo/task_manage/tool.js";
 import { TodoFinishTool } from "../todo/task_finish/tool.js";
 import { YieldTool } from "../yield/tool.js";
+import { ReportToParentTool } from "../agent_team/report_to_parent/tool.js";
+import { AskUserTool } from "../ask_user/tool.js";
 import { GetGoalTool } from "../goal/get_goal/tool.js";
 import { CreateGoalTool } from "../goal/create_goal/tool.js";
 import { UpdateGoalTool } from "../goal/update_goal/tool.js";
@@ -92,6 +94,16 @@ export { ChangeSelfTool } from "../agent_team/change_self/tool.js";
 export { TodoManageTool, TaskManageTool } from "../todo/task_manage/tool.js";
 export { TodoFinishTool, TaskFinishTool } from "../todo/task_finish/tool.js";
 export { YieldTool } from "../yield/tool.js";
+export { ReportToParentTool } from "../agent_team/report_to_parent/tool.js";
+export { AskUserTool } from "../ask_user/tool.js";
+export { bindAskUserHost, getAskUserHost } from "../ask_user/host.js";
+export type { AskUserRequest, AskUserResult, AskUserHost } from "../ask_user/host.js";
+export {
+  bindReportWake,
+  takeQuietReports,
+  formatQuietReports,
+  resetQuietReportsForTest,
+} from "../agent_team/report_to_parent/host.js";
 export { GetGoalTool } from "../goal/get_goal/tool.js";
 export { CreateGoalTool } from "../goal/create_goal/tool.js";
 export { UpdateGoalTool } from "../goal/update_goal/tool.js";
@@ -145,6 +157,8 @@ export function registerBuiltins(registry: ToolRegistry): void {
   registry.register(new TodoFinishTool());
 
   registry.register(new YieldTool());
+  registry.register(new ReportToParentTool());
+  registry.register(new AskUserTool());
   registry.register(new GetGoalTool());
   registry.register(new CreateGoalTool());
   registry.register(new UpdateGoalTool());

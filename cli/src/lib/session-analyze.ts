@@ -1,5 +1,5 @@
 /**
- * Session 诊断 —— 从 .maou/sessions/<id>.jsonl 生成逐步 timeline。
+ * Session 诊断 —— 从 .maou/sessions/<id>/events.jsonl 生成逐步 timeline。
  *
  * 对齐 Harness 优化计划 P0：
  *   - 每步 purpose / tool / tokens / cache_read
@@ -115,6 +115,9 @@ export function analyzeSessionJsonl(sessionId: string, raw: string, sessionFile 
     } catch {
       continue;
     }
+    if (ev.data && typeof ev.data === "object") {
+      ev = { ...ev, ...(ev.data as Record<string, unknown>) };
+    }
 
     const type = String(ev.type ?? "message");
     const role = String(ev.role ?? "");
@@ -131,9 +134,11 @@ export function analyzeSessionJsonl(sessionId: string, raw: string, sessionFile 
         : undefined;
 
     // raw tool_call / tool_result 条目（部分 session 会写）
-    if (type === "tool_call") {
-      const data = (ev.data ?? {}) as Record<string, unknown>;
-      const name = String(data.name ?? "tool");
+    if (type === "tool_call" || type === "tool/call") {
+      const data = (
+        ev.data && typeof ev.data === "object" ? ev.data : ev
+      ) as Record<string, unknown>;
+      const name = String(data.name ?? ev.name ?? "tool");
       const args = argsPreviewFromCall(data);
       const fp = fingerprintTool(name, args);
       if (fp === prevToolFp) consecutiveSame++;
@@ -166,7 +171,18 @@ export function analyzeSessionJsonl(sessionId: string, raw: string, sessionFile 
       continue;
     }
 
-    if (type !== "message") continue;
+    const isChat =
+      type === "message" ||
+      type === "user/message" ||
+      type === "user/queued" ||
+      type === "assistant/message" ||
+      type === "tool/result" ||
+      type === "tool/async" ||
+      type === "system/notice" ||
+      role === "user" ||
+      role === "assistant" ||
+      role === "tool";
+    if (!isChat) continue;
 
     if (role === "user") {
       const content = String(ev.content ?? "").slice(0, 60).replace(/\s+/g, " ");
@@ -398,11 +414,12 @@ export function resolveLatestSessionId(cwd = process.cwd()): string | null {
   const dir = projectSessionsDir(cwd);
   if (!existsSync(dir)) return null;
   const files = readdirSync(dir)
-    .filter((f) => f.endsWith(".jsonl"))
-    .map((f) => ({
-      id: f.replace(/\.jsonl$/, ""),
-      mtime: statSync(join(dir, f)).mtimeMs,
-    }))
+    .map((id) => {
+      const header = join(dir, id, "session.json");
+      if (!existsSync(header)) return null;
+      return { id, mtime: statSync(header).mtimeMs };
+    })
+    .filter((x): x is { id: string; mtime: number } => x != null)
     .sort((a, b) => b.mtime - a.mtime);
   return files[0]?.id ?? null;
 }

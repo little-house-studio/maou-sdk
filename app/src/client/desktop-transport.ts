@@ -20,6 +20,9 @@ export type DesktopAppBridge = {
   wsSend: (id: string, data: string) => void;
   wsClose: (id: string) => void;
   onWsMessage: (id: string, cb: (data: string) => void) => () => void;
+  pickFolder?: () => Promise<{ path: string | null }>;
+  revealInFolder?: (path: string) => Promise<{ ok: boolean }>;
+  openPath?: (path: string) => Promise<{ ok: boolean; error?: string }>;
 };
 
 declare global {

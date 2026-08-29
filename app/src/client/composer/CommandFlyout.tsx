@@ -1,9 +1,14 @@
-import React, { useLayoutEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { CaretBox } from "./caret";
 import type { AppCommand } from "./commands";
 
 type Pos = { left: number; top: number };
+
+/** 斜杠指令默认带 `/`；权限座位等不是指令的调用方传空串。 */
+export function flyoutItemName(name: string, prefix = "/"): string {
+  return `${prefix}${name}`;
+}
 
 export function CommandFlyout({
   open,
@@ -12,6 +17,8 @@ export function CommandFlyout({
   items,
   activeIdx,
   onPick,
+  onHighlight,
+  namePrefix = "/",
 }: {
   open: boolean;
   anchor: HTMLElement | null;
@@ -19,6 +26,8 @@ export function CommandFlyout({
   items: readonly AppCommand[];
   activeIdx: number;
   onPick: (name: string) => void;
+  onHighlight?: (index: number) => void;
+  namePrefix?: string;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<Pos | null>(null);
@@ -45,11 +54,32 @@ export function CommandFlyout({
     place();
     const id = requestAnimationFrame(place);
     return () => cancelAnimationFrame(id);
-  }, [open, anchor, caret, items, activeIdx]);
+  }, [open, anchor, caret, items]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    const row = panel?.querySelector<HTMLElement>("[aria-selected='true']");
+    row?.scrollIntoView({ block: "nearest" });
+  }, [open, activeIdx, items]);
+
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!open || !el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.stopPropagation();
+      if (el.scrollHeight <= el.clientHeight) return;
+      e.preventDefault();
+      el.scrollTop += e.deltaY;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [open, items.length]);
 
   if (!open || items.length === 0 || typeof document === "undefined") return null;
 
-  const sel = items[Math.min(Math.max(0, activeIdx), items.length - 1)] ?? items[0];
+  const sel =
+    items[Math.min(Math.max(0, activeIdx), items.length - 1)] ?? items[0];
 
   return createPortal(
     <div
@@ -64,7 +94,7 @@ export function CommandFlyout({
           : { position: "fixed", left: -9999, top: 0, visibility: "hidden", zIndex: 10060 }
       }
     >
-      {items.map((cmd) => {
+      {items.map((cmd, i) => {
         const active = cmd.name === sel?.name;
         return (
           <button
@@ -74,12 +104,15 @@ export function CommandFlyout({
             aria-selected={active}
             className={`composer-cmd-flyout-item${active ? " is-active" : ""}`}
             title={cmd.description}
+            onMouseEnter={() => onHighlight?.(i)}
             onMouseDown={(e) => {
               e.preventDefault();
               onPick(cmd.name);
             }}
           >
-            <span className="composer-cmd-flyout-name">/{cmd.name}</span>
+            <span className="composer-cmd-flyout-name">
+              {flyoutItemName(cmd.name, namePrefix)}
+            </span>
             <span className="composer-cmd-flyout-label">{cmd.label}</span>
           </button>
         );

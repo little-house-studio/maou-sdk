@@ -17,8 +17,8 @@ import {
   metaToDraftMeta,
   terminalsToBgTasks,
   terminalsToTermLines,
-  usageLabelFromMeta,
 } from "../live/adapters";
+import { localDayKey } from "../drafts/layout/today-tokens";
 import { SHELL_LEFT, LIVE_FILES_RAIL } from "../shell/metrics";
 import {
   FILES_ACTIVITY_ID,
@@ -41,7 +41,8 @@ const ProactiveHostLazy = lazy(() =>
 
 export function useLiveHostBag(): WireHostBag {
   const ports = useAppPorts();
-  const { fetchMeta, fetchAgents, setActiveAgent, fetchTerminals } = ports.shell;
+  const { fetchMeta, fetchAgents, setActiveAgent, fetchTerminals, fetchTodayUsage } =
+    ports.shell;
 
   const [mode, setMode] = useState<UiMode>("chat");
   const [meta, setMeta] = useState<Meta | null>(null);
@@ -54,7 +55,9 @@ export function useLiveHostBag(): WireHostBag {
   const [rightTab, setRightTab] = useState<string | null>(FILES_ACTIVITY_ID);
   const [leftTab, setLeftTab] = useState<string | null>(SIDEBAR_ACTIVITY_ID);
   const [agentBusy, setAgentBusy] = useState(false);
-  const [sessionTitle, setSessionTitle] = useState<string | null>(null);
+  const [todayInput, setTodayInput] = useState(0);
+  const [todayOutput, setTodayOutput] = useState(0);
+  const [todayDate, setTodayDate] = useState(() => localDayKey());
   const [leftW, setLeftW] = useState<number>(SHELL_LEFT.default);
   const [agentPct, setAgentPct] = useState<number>(SHELL_LEFT.agentPct);
   const [railW, setRailW] = useState<number>(LIVE_FILES_RAIL.default);
@@ -331,10 +334,40 @@ export function useLiveHostBag(): WireHostBag {
     [agents, activeSwitchId, setActiveAgent],
   );
 
-  const usageLabel = useMemo(
-    () => usageLabelFromMeta(meta, agentBusy),
-    [meta, agentBusy],
+  const applyTodayUsage = useCallback(
+    (t: { date?: string; inputTokens: number; outputTokens: number }) => {
+      const day = t.date || localDayKey();
+      setTodayDate(day);
+      setTodayInput(Number.isFinite(t.inputTokens) ? t.inputTokens : 0);
+      setTodayOutput(Number.isFinite(t.outputTokens) ? t.outputTokens : 0);
+    },
+    [],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = async () => {
+      const day = localDayKey();
+      if (day !== todayDate) {
+        setTodayDate(day);
+        setTodayInput(0);
+        setTodayOutput(0);
+      }
+      try {
+        const t = await fetchTodayUsage();
+        if (cancelled) return;
+        applyTodayUsage(t);
+      } catch {
+        /* keep last totals */
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [applyTodayUsage, fetchTodayUsage, todayDate]);
 
   const onAgentSplitDrag = useCallback((clientY: number, rect: DOMRect) => {
     const y = clientY - rect.top;
@@ -402,10 +435,8 @@ export function useLiveHostBag(): WireHostBag {
     topbar: {
       mode,
       onModeChange,
-      meta: draftMeta,
-      usageLabel: sessionTitle
-        ? `${usageLabel} · ${sessionTitle.slice(0, 24)}`
-        : usageLabel,
+      todayInput,
+      todayOutput,
     },
     agentList: {
       agents,
@@ -437,7 +468,7 @@ export function useLiveHostBag(): WireHostBag {
       onMetaChange: onChatMetaChange,
       threadRailId: LIVE_SESSION_RAIL_ID,
       onBusyChange: setAgentBusy,
-      onSessionTitleChange: setSessionTitle,
+      onTodayUsageChange: applyTodayUsage,
       onDockLogLines: setChatLogLines,
     },
     liveSettings: {

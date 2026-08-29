@@ -43,6 +43,34 @@ describe("session-analyze", () => {
     expect(line).toContain("断点");
   });
 
+  it("reads v1 events.jsonl envelopes", () => {
+    const raw = [
+      JSON.stringify({
+        seq: 1,
+        type: "user/message",
+        data: { role: "user", content: "hello v1" },
+      }),
+      JSON.stringify({
+        seq: 2,
+        type: "assistant/message",
+        data: {
+          role: "assistant",
+          content: "ok",
+          usage: { prompt_tokens: 80, completion_tokens: 10, cached_tokens: 20 },
+        },
+      }),
+      JSON.stringify({
+        seq: 3,
+        type: "tool/call",
+        data: { name: "reader", arguments: { path: "a.md" } },
+      }),
+    ].join("\n");
+    const report = analyzeSessionJsonl("v1-sess", raw);
+    expect(report.steps.some((s) => s.kind === "user" && s.purpose.includes("hello v1"))).toBe(true);
+    expect(report.steps.some((s) => s.kind === "assistant" && s.inputTokens === 80)).toBe(true);
+    expect(report.steps.some((s) => s.kind === "tool" && s.toolName === "reader")).toBe(true);
+  });
+
   it("reads prompt_tokens_details.cached_tokens", () => {
     const raw = `{"type":"message","role":"assistant","content":"hi","usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_tokens_details":{"cached_tokens":50}}}`;
     const report = analyzeSessionJsonl("s", raw);

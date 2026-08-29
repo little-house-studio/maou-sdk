@@ -15,7 +15,7 @@
       "start_line": {
         "type": "integer",
         "minimum": 1,
-        "description": "起始行号。默认 1。"
+        "description": "起始行号。默认 1。返回体尾部的页脚会给出续读用的 start_line。"
       },
       "end_line": {
         "type": "integer",
@@ -26,7 +26,12 @@
         "type": "integer",
         "minimum": 500,
         "maximum": 100000,
-        "description": "最大返回字符数。默认 50000。"
+        "description": "最大返回字符数。不传则不限（由通用输出收口兜底）。"
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["full", "signatures"],
+        "description": "full=按行读全文（默认）；signatures=只给函数/类/接口签名，剥掉函数体，省 token。抽不到签名会自动回落 full。"
       },
       "description": {
         "type": "string",

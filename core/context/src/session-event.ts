@@ -277,7 +277,7 @@ export function defaultWireRole(kind: SessionEventKind): "user" | "assistant" | 
 
 /**
  * 统一写入会话事件：始终带 kind + author + source。
- * 账本 sidecar 由 SessionStore.appendMessage 自动镜像（见 session-ledger.ts）。
+ * 写入 events.jsonl（见 session-ledger.ts）。
  */
 export function appendSessionEvent(
   sessions: SessionStore,

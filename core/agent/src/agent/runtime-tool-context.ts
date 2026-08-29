@@ -12,6 +12,10 @@ import { join } from "node:path";
 
 export interface BuildToolContextInput {
   sessionId: string;
+  /** 子会话的父 session id（fork / report_to_parent） */
+  parentSessionId?: string;
+  /** 会话权限套餐（session meta.permission_preset） */
+  permissionPreset?: string;
   projectRoot: string;
   promptRoot: string;
   maouRoot: string;
@@ -89,6 +93,8 @@ export function buildToolContext(input: BuildToolContextInput): ToolContext {
 
   return {
     sessionId,
+    ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+    ...(input.permissionPreset ? { permissionPreset: input.permissionPreset } : {}),
     projectRoot: input.projectRoot,
     promptRoot: input.promptRoot,
     sandboxRoot: join(input.maouRoot, "sandbox", sessionId),

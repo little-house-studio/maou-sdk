@@ -11,6 +11,6 @@
     "isolatedModules": true,
     "types": ["vite/client"]
   },
-  "include": ["src/client/**/*"],
+  "include": ["src/client/**/*", "../locales/**/*"],
   "exclude": ["src/client/**/*.test.ts"]
 }

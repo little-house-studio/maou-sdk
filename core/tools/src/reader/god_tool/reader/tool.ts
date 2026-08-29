@@ -9,6 +9,7 @@ import type { ToolContext, ToolResponse, ToolDefinition } from "../../../base.js
 import { createToolResponse, toolFail } from "../../../base.js";
 import { toolFailFromThrown } from "../../../errors.js";
 import { errToString } from "../../../util/common.js";
+import { formatRetentionNotice } from "@little-house-studio/types";
 import { resolveToolPath } from "../../../path-guard.js";
 import { markRead } from "../../../file/read-registry.js";
 import { extractSignatures } from "../../../compress/output-compressor.js";
@@ -23,6 +24,45 @@ const IMAGE_MIMES: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
 };
+
+/** 单行上限：minified 单行文件不能原样进上下文。 */
+const MAX_LINE_CHARS = 2000;
+
+/**
+ * 分页页脚：说清看到哪儿了、下一段怎么取。
+ * 没有这一句，start_line/end_line 造成的分页对模型是无声的。
+ */
+function readPaginationFooter(opts: {
+  from: number;
+  to: number;
+  totalLines: number;
+  charTruncated: boolean;
+  maxChars: number;
+  segmentChars: number;
+  longLinesCut: number;
+}): string {
+  const parts: string[] = [];
+  if (opts.charTruncated) {
+    parts.push(
+      `Cut at max_chars=${opts.maxChars} (this range is ${opts.segmentChars} chars).`,
+    );
+  }
+  if (opts.to < opts.totalLines) {
+    parts.push(
+      `Showing lines ${opts.from}-${opts.to} of ${opts.totalLines}. Use start_line=${opts.to + 1} to continue.`,
+    );
+  } else if (opts.from > 1 || opts.charTruncated) {
+    parts.push(`Showing lines ${opts.from}-${opts.to} of ${opts.totalLines}. End of file.`);
+  } else {
+    parts.push(`End of file - total ${opts.totalLines} lines.`);
+  }
+  if (opts.longLinesCut > 0) {
+    parts.push(
+      `${opts.longLinesCut} long line(s) cut at ${MAX_LINE_CHARS} chars; read the raw file if you need the rest.`,
+    );
+  }
+  return `(${parts.join(" ")})`;
+}
 
 /**
  * 判断是否是 URL
@@ -168,38 +208,57 @@ export class ReadTool extends Tool {
       const clampedEnd = Math.max(clampedStart, Math.min(endLine, totalLines));
 
       const selectedLines = lines.slice(clampedStart - 1, clampedEnd);
+      let longLinesCut = 0;
       const formatted = selectedLines
-        .map((line, i) => `${String(clampedStart + i).padStart(4)}→${line}`)
+        .map((line, i) => {
+          let body = line;
+          if (body.length > MAX_LINE_CHARS) {
+            longLinesCut++;
+            body = `${body.slice(0, MAX_LINE_CHARS)} …[line cut at ${MAX_LINE_CHARS} chars of ${line.length}]`;
+          }
+          return `${String(clampedStart + i).padStart(4)}→${body}`;
+        })
         .join("\n");
 
       let result = formatted;
+      let charTruncated = false;
+      let lastShownLine = clampedEnd;
       if (maxChars > 0 && result.length > maxChars) {
-        // 截断带"可继续"提示：估算已显示到第几行 + 如何读取后续
+        charTruncated = true;
         const shownText = result.slice(0, maxChars);
-        const shownLineCount = shownText.split("\n").length;
-        const nextLine = clampedStart + shownLineCount;
-        result =
-          shownText +
-          `\n... [输出按 ${maxChars} 字符截断，本段共 ${clampedEnd - clampedStart + 1} 行 / ${formatted.length} 字符；` +
-          `如需后续内容用 read start_line=${Math.min(nextLine, totalLines)} end_line=${clampedEnd}]`;
+        // 已完整显示的行数（最后一行可能被切一半，不算它已读完）
+        const shownLineCount = Math.max(1, shownText.split("\n").length - 1);
+        lastShownLine = Math.min(clampedStart + shownLineCount - 1, clampedEnd);
+        result = shownText;
       }
 
-      const isTruncated =
-        (maxChars > 0 && formatted.length > maxChars) || clampedStart > 1 || clampedEnd < totalLines;
+      const isTruncated = charTruncated || clampedStart > 1 || clampedEnd < totalLines;
+      const footer = readPaginationFooter({
+        from: clampedStart,
+        to: lastShownLine,
+        totalLines,
+        charTruncated,
+        maxChars,
+        segmentChars: formatted.length,
+        longLinesCut,
+      });
+
       const metaParts = [
         `path=${fullPath}`,
         `total_lines=${totalLines}`,
-        `shown=${clampedStart}-${clampedEnd}`,
+        `shown=${clampedStart}-${lastShownLine}`,
       ];
       if (isTruncated) metaParts.push("truncated=true");
       const header = `[${metaParts.join(" | ")}]`;
 
-      return createToolResponse(true, `${header}\n${result}`, {
+      return createToolResponse(true, `${header}\n${result}\n${footer}`, {
         payload: {
           path: fullPath,
           total_lines: totalLines,
           start_line: clampedStart,
-          end_line: clampedEnd,
+          end_line: lastShownLine,
+          truncated: isTruncated,
+          next_start_line: lastShownLine < totalLines ? lastShownLine + 1 : null,
         },
       });
     } catch (err: unknown) {
@@ -227,7 +286,16 @@ export class ReadTool extends Tool {
       const originalLen = text.length;
       const wasTruncated = originalLen > URL_LIMIT;
       if (wasTruncated) {
-        text = text.slice(0, URL_LIMIT) + `\n\n... [URL 内容已截断，原长度 ${originalLen} 字符]`;
+        // 出路：URL 内容无法分页，只能说清剩多少 + 换 bash curl 取全文
+        text =
+          text.slice(0, URL_LIMIT) +
+          `\n\n... ${formatRetentionNotice(
+            { kind: "exact", count: originalLen - URL_LIMIT, unit: "chars" },
+            {
+              retrieveHint:
+                "Fetch the full body with use_terminal (curl) and read it from disk if you need the rest.",
+            },
+          )}`;
       }
 
       // 简单 HTML 正文提取

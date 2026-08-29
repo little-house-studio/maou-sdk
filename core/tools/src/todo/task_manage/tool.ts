@@ -116,6 +116,17 @@ export class TaskScheduler {
   }
 }
 
+/** 整表最多一条 in_progress：先出现的留下，其余打回 pending。 */
+export function enforceSingleInProgress(tasks: Task[]): Task[] {
+  let seen = false;
+  for (const t of tasks) {
+    if (t.status !== "in_progress") continue;
+    if (seen) t.status = "pending";
+    else seen = true;
+  }
+  return tasks;
+}
+
 export class TaskManager {
   private state: Map<string, Task[]> = new Map();
   /** 持久化回调（注入后，每次 CRUD 自动同步到 task_plan.json） */
@@ -238,9 +249,8 @@ export class TaskManager {
 
     // 低层路径：自动 in_progress 第一层（兼容旧调用）；编排器会 replaceTasks 覆盖
     const layer = TaskScheduler.selectLayer(validated);
-    for (const t of layer) {
-      t.status = "in_progress";
-    }
+    if (layer[0]) layer[0].status = "in_progress";
+    enforceSingleInProgress(validated);
     this.state.set(sessionId, validated);
     this.persistCallback?.(sessionId, validated);
 
@@ -285,9 +295,10 @@ export class TaskManager {
     if (status === "completed") {
       TaskScheduler.onTaskFinished(tasks, taskId);
       const newReady = TaskScheduler.selectLayer(tasks);
-      for (const t of newReady) {
-        t.status = "in_progress";
+      if (newReady[0] && !tasks.some((t) => t.status === "in_progress")) {
+        newReady[0].status = "in_progress";
       }
+      enforceSingleInProgress(tasks);
     }
     // failed：不解锁、不自动 in_progress 下游
     this.state.set(sessionId, tasks);
@@ -297,13 +308,13 @@ export class TaskManager {
     const allDone =
       tasks.length > 0 &&
       tasks.every((t) => t.status === "completed" || t.status === "failed" || t.status === "cancelled");
-    const inProgressCount = tasks.filter((t) => t.status === "in_progress").length;
+    const current = tasks.find((t) => t.status === "in_progress");
     const nextHint = allDone
       ? "\n\n🎉 全部 todo 已终态，可回复用户收尾"
       : status === "failed"
         ? `\n\n❌ ${taskId} failed（下游不会因此自动解锁）`
-        : inProgressCount > 1
-          ? `\n\n⚡ 当前 ${inProgressCount} 个 todo 并行执行中`
+        : current
+          ? `\n\n▶ 当前执行: ${current.id} — ${current.desc}`
           : next
             ? `\n\n▶ 下一步: ${next}（依赖已解锁，可继续；完成后调用 todo_finish）`
             : "\n\n⏳ 下一步被阻塞，等待依赖完成";
@@ -349,10 +360,8 @@ export class TaskManager {
     }
 
     const inProgress = tasks.filter((t) => t.status === "in_progress");
-    if (inProgress.length === 1) {
+    if (inProgress.length >= 1) {
       lines.push(`\n▶ 当前执行: ${inProgress[0].id} — ${inProgress[0].desc}`);
-    } else if (inProgress.length > 1) {
-      lines.push(`⚡ 并行执行中 (${inProgress.length}): ${inProgress.map((t) => t.id).join(", ")}`);
     }
 
     const blocked = tasks.filter(
@@ -374,7 +383,7 @@ export class TaskManager {
 
     const plan = TaskScheduler.getExecutionPlan(tasks);
     if (plan.length > 0) {
-      lines.push("\n📊 执行计划（同层可并行）:");
+      lines.push("\n📊 执行计划:");
       plan.forEach((layer, idx) => {
         const ids = layer.map((t) => t.id).join(", ");
         lines.push(`  L${idx + 1}: ${ids}`);

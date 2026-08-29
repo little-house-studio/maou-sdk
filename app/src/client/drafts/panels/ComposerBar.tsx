@@ -7,7 +7,11 @@ import {
   filterPaletteHits,
   filterSlashHits,
   mentionQuery,
+  overlayIdxAfterPrefix,
+  overlayKeyAction,
   slashPrefixAtCursor,
+  stripSlashToken,
+  composeCommandInput,
 } from "../../composer/commands";
 import { fitComposerHeight } from "../../composer/fit-height";
 import {
@@ -67,7 +71,10 @@ export function ComposerBar({
   const [paletteIdx, setPaletteIdx] = useState(0);
   const [mentionIdx, setMentionIdx] = useState(0);
   const [overlayDismissed, setOverlayDismissed] = useState(false);
+  const [commandBlock, setCommandBlock] = useState<string | null>(null);
+  const [commandBlockSelected, setCommandBlockSelected] = useState(false);
   const [cursor, setCursor] = useState(0);
+  const slashPrefixRef = useRef<string | null>(null);
   const [images, setImages] = useState<ComposerImage[]>([]);
   const statusError =
     statusHint.includes("拒绝") ||
@@ -113,6 +120,7 @@ export function ComposerBar({
     [draftInput],
   );
   const slashOpen =
+    !commandBlock &&
     !overlayDismissed &&
     !paletteOpen &&
     slashPrefixAtCursor(draftInput, cursor) != null &&
@@ -121,17 +129,26 @@ export function ComposerBar({
     !overlayDismissed && !paletteOpen && !slashOpen && mentionQ != null;
 
   const applySlash = (cmd: string) => {
-    onDraftInputChange(`/${cmd} `);
+    const live = inputRef.current?.value ?? draftInput;
+    const at = inputRef.current?.selectionStart ?? live.length;
+    const rest = commandBlock ? live : stripSlashToken(live, at);
+    setCommandBlock(cmd);
+    setCommandBlockSelected(false);
+    onDraftInputChange(rest);
     setInputEpoch((n) => n + 1);
     setPaletteOpen(false);
+    setOverlayDismissed(true);
     inputRef.current?.focus();
   };
 
   const sendDraft = () => {
     const live = inputRef.current?.value ?? draftInput;
-    if (!live.trim() && !images.length) return;
-    onSend(images, live);
+    const text = composeCommandInput(commandBlock, live);
+    if (!text.trim() && !images.length) return;
+    onSend(images, text);
     onDraftInputChange("");
+    setCommandBlock(null);
+    setCommandBlockSelected(false);
     setInputEpoch((n) => n + 1);
     setImages([]);
   };
@@ -188,11 +205,20 @@ export function ComposerBar({
     agents,
     agentName: meta.agentName,
     usageLabel,
+    commandBlock,
+    commandBlockSelected,
+    onCommandBlockChange: setCommandBlock,
+    onCommandBlockSelect: setCommandBlockSelected,
     onCursorChange: (n) => setCursor(n),
     onInputChange: (v) => {
       onDraftInputChange(v);
-      setCursor(inputRef.current?.selectionStart ?? v.length);
-      setSlashIdx(0);
+      const at = inputRef.current?.selectionStart ?? v.length;
+      setCursor(at);
+      const prefix = slashPrefixAtCursor(v, at);
+      setSlashIdx((idx) =>
+        overlayIdxAfterPrefix(slashPrefixRef.current, prefix, idx),
+      );
+      slashPrefixRef.current = prefix;
       setMentionIdx(0);
       setOverlayDismissed(false);
       if (
@@ -219,17 +245,22 @@ export function ComposerBar({
           ? setMentionIdx
           : setSlashIdx;
       if ((slashOpen || paletteOpen || mentionOpen) && hits.length > 0) {
-        if (e.key === "ArrowDown") {
+        const act = overlayKeyAction(
+          e,
+          true,
+          hits.length,
+        );
+        if (act === "nav-down") {
           e.preventDefault();
           setIdx((i) => (i + 1) % hits.length);
           return;
         }
-        if (e.key === "ArrowUp") {
+        if (act === "nav-up") {
           e.preventDefault();
           setIdx((i) => (i - 1 + hits.length) % hits.length);
           return;
         }
-        if (e.key === "Tab" && !e.shiftKey) {
+        if (act === "pick") {
           e.preventDefault();
           const pick = hits[Math.min(idx, hits.length - 1)];
           if (pick) {
@@ -242,7 +273,7 @@ export function ComposerBar({
           }
           return;
         }
-        if (e.key === "Escape") {
+        if (act === "close") {
           e.preventDefault();
           setPaletteOpen(false);
           setOverlayDismissed(true);
@@ -251,7 +282,8 @@ export function ComposerBar({
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if ((inputRef.current?.value ?? draftInput).trim() || images.length) {
+        const live = inputRef.current?.value ?? draftInput;
+        if (composeCommandInput(commandBlock, live).trim() || images.length) {
           sendDraft();
         }
       }
@@ -276,7 +308,9 @@ export function ComposerBar({
     onImagesChange: setImages,
     onStop,
     onSlashPick: applySlash,
+    onSlashHighlight: setSlashIdx,
     onPalettePick: applySlash,
+    onPaletteHighlight: setPaletteIdx,
     onMentionPick: (path) => {
       onDraftInputChange(
         applyMentionPick(inputRef.current?.value ?? draftInput, path),

@@ -5,25 +5,20 @@
 
 import {
   readFileSync,
-  writeFileSync,
   existsSync,
   mkdirSync,
-  renameSync,
 } from "node:fs";
 import { join } from "node:path";
 import type { SessionStore, SessionListItem } from "./session-store.js";
 import type { ActiveSession, SwitchResult } from "./types.js";
+import { durableAtomicWriteJson } from "./durable-write.js";
 
 function nowIso(): string {
   return new Date().toISOString();
 }
 
 function atomicWriteJson(filePath: string, data: unknown): void {
-  const dir = join(filePath, "..");
-  mkdirSync(dir, { recursive: true });
-  const tmp = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
-  renameSync(tmp, filePath);
+  durableAtomicWriteJson(filePath, data);
 }
 
 interface ManagerState {

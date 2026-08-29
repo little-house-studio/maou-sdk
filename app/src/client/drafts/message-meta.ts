@@ -27,6 +27,42 @@ export function formatUsageLine(
   return parts.join(" · ");
 }
 
+/**
+ * 缓存命中率 = cacheRead / promptTotal（口径见 core/llm cache-usage.ts）。
+ * 模型不上报 cache 字段时返回 null —— 显示 “—”，不能写成假 0%。
+ */
+export function cacheHitRate(input: {
+  promptTotal?: number | null;
+  cacheRead?: number | null;
+  reported?: boolean;
+}): number | null {
+  if (input.reported === false) return null;
+  const total = input.promptTotal ?? 0;
+  const read = input.cacheRead ?? 0;
+  if (!Number.isFinite(total) || total <= 0) return null;
+  if (!Number.isFinite(read) || read < 0) return null;
+  return Math.min(1, read / total);
+}
+
+/** 0.6234 → "62.3%"；无口径 → "—" */
+export function formatCacheRate(rate: number | null): string {
+  if (rate == null) return "—";
+  const pct = Math.round(rate * 1000) / 10;
+  return `${pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1)}%`;
+}
+
+/** 缓存行的值：命中率 + 命中量，例如 "62.3% · 8.1k" */
+export function formatCacheCell(input: {
+  promptTotal?: number | null;
+  cacheRead?: number | null;
+  reported?: boolean;
+}): string {
+  const rate = formatCacheRate(cacheHitRate(input));
+  const read = input.cacheRead ?? 0;
+  if (rate === "—") return "—";
+  return read > 0 ? `${rate} · ${compactCount(read)}` : rate;
+}
+
 /** None → ""; 0 → "0ms" (must not look like missing). */
 export function durationStr(ms: number | undefined | null): string {
   if (ms == null || !Number.isFinite(ms) || ms < 0) return "";
@@ -204,6 +240,11 @@ export type RoundTipInput = {
   toolCount?: number;
   inputTokens?: number;
   outputTokens?: number;
+  /** 本轮 prompt 里命中缓存的部分 */
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** usage 是否报了 cache 字段；false → 缓存行显示 “—” */
+  cacheReported?: boolean;
   live?: boolean;
 };
 
@@ -240,6 +281,16 @@ export function roundTipRows(input: RoundTipInput): InfoHoverRow[] {
       value: `${compactCount((input.inputTokens ?? 0) + (input.outputTokens ?? 0))} tok`,
     });
   }
+  if (input.cacheReported !== undefined || (input.cacheRead ?? 0) > 0) {
+    rows.push({
+      label: "缓存",
+      value: formatCacheCell({
+        promptTotal: input.inputTokens,
+        cacheRead: input.cacheRead,
+        reported: input.cacheReported,
+      }),
+    });
+  }
   return rows;
 }
 
@@ -269,6 +320,15 @@ export function formatRoundTip(input: RoundTipInput): string {
       `占用 ${compactCount((input.inputTokens ?? 0) + (input.outputTokens ?? 0))} tok`,
     );
   }
+  if (input.cacheReported !== undefined || (input.cacheRead ?? 0) > 0) {
+    lines.push(
+      `缓存 ${formatCacheCell({
+        promptTotal: input.inputTokens,
+        cacheRead: input.cacheRead,
+        reported: input.cacheReported,
+      })}`,
+    );
+  }
   return lines.join("\n");
 }
 
@@ -279,13 +339,25 @@ export type LoopReplyInput = {
       durationMs?: number;
       usageInput?: number;
       usageOutput?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      cacheReported?: boolean;
     };
   } | null;
   internals: Array<{
     role: string;
     tool?: { durationMs?: number };
-    meta?: { durationMs?: number };
+    meta?: { durationMs?: number; ts?: number };
+    thinking?: { durationMs?: number; startedAt?: number };
   }>;
+};
+
+/** 用户发出这条提问 → loop 终止。ChatPanel / LoopFoot 读写。 */
+export type SummarizeLoopOpts = {
+  sentAt?: number;
+  /** 已落住的墙钟（用户行 durationMs / 账本 loopDurationMs） */
+  durationMs?: number;
+  endedAt?: number;
 };
 
 export type LoopSummary = {
@@ -294,59 +366,110 @@ export type LoopSummary = {
   durationMs?: number;
   toolCount: number;
   outputTokens: number;
+  /** 本轮所有 round 的 prompt 总量（缓存命中率的分母） */
+  inputTokens: number;
   lastInputTokens: number;
   lastOutputTokens: number;
   occupancy: number;
+  /** 本轮所有 round 的缓存命中读取总量 */
+  cacheRead: number;
+  cacheWrite: number;
+  /** 任一 round 报过 cache 字段才为 true；否则命中率显示 “—” */
+  cacheReported: boolean;
 };
 
 function finitePositive(n: number | undefined | null): n is number {
   return n != null && Number.isFinite(n) && n > 0;
 }
 
-/** Wall-clock of a finished user-turn: start of first round → end of last round. */
-export function summarizeLoop(replies: LoopReplyInput[]): LoopSummary {
+function finiteMs(n: number | undefined | null): n is number {
+  return n != null && Number.isFinite(n);
+}
+
+/** 发出 → 终止的墙钟。缺一端或 end < start 则无值。 */
+export function loopWallMs(
+  sentAt?: number | null,
+  endedAt?: number | null,
+): number | undefined {
+  if (!finiteMs(sentAt) || !finiteMs(endedAt)) return undefined;
+  if (endedAt < sentAt) return undefined;
+  return endedAt - sentAt;
+}
+
+function bumpEnd(cur: number | undefined, next: number | undefined): number | undefined {
+  if (!finiteMs(next)) return cur;
+  return cur == null ? next : Math.max(cur, next);
+}
+
+function markEnd(ts?: number, dur?: number): number | undefined {
+  if (!finitePositive(ts)) return undefined;
+  return ts + (finiteMs(dur) && dur >= 0 ? dur : 0);
+}
+
+/**
+ * Loop 用时 = 用户发出 → 本 loop 终止的墙钟。
+ * 起点优先 sentAt（用户行 ts）；终点是最后一条回复的 ts[+duration] 或 endedAt。
+ */
+export function summarizeLoop(
+  replies: LoopReplyInput[],
+  opts?: SummarizeLoopOpts,
+): LoopSummary {
   let toolCount = 0;
   let outputTokens = 0;
+  let inputTokens = 0;
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  let cacheReported = false;
   let lastInputTokens = 0;
   let lastOutputTokens = 0;
-  let startedAt: number | undefined;
+  let replyStart: number | undefined;
   let lastEnd: number | undefined;
-  let durationSum = 0;
-  let toolDurSum = 0;
 
   for (const block of replies) {
     const meta = block.assistant?.meta;
     const ts = meta?.ts;
     const dur = meta?.durationMs;
     if (finitePositive(ts)) {
-      startedAt = startedAt == null ? ts : Math.min(startedAt, ts);
-      const end = ts + (finitePositive(dur) ? dur : 0);
-      lastEnd = lastEnd == null ? end : Math.max(lastEnd, end);
+      replyStart = replyStart == null ? ts : Math.min(replyStart, ts);
     }
-    if (dur != null && Number.isFinite(dur) && dur >= 0) durationSum += dur;
+    lastEnd = bumpEnd(lastEnd, markEnd(ts, dur));
     const inTok = meta?.usageInput;
     const outTok = meta?.usageOutput;
-    if (finitePositive(inTok)) lastInputTokens = inTok;
+    if (finitePositive(inTok)) {
+      inputTokens += inTok;
+      lastInputTokens = inTok;
+    }
     if (finitePositive(outTok)) {
       outputTokens += outTok;
       lastOutputTokens = outTok;
     }
+    if (meta?.cacheReported) cacheReported = true;
+    if (finitePositive(meta?.cacheRead)) cacheRead += meta!.cacheRead!;
+    if (finitePositive(meta?.cacheWrite)) cacheWrite += meta!.cacheWrite!;
     for (const part of block.internals) {
-      if (part.role !== "tool") continue;
-      toolCount += 1;
-      const td = part.tool?.durationMs ?? part.meta?.durationMs;
-      if (finitePositive(td)) toolDurSum += td;
+      if (part.role === "tool") toolCount += 1;
+      const partTs = part.meta?.ts ?? part.thinking?.startedAt;
+      const partDur =
+        part.tool?.durationMs ?? part.meta?.durationMs ?? part.thinking?.durationMs;
+      lastEnd = bumpEnd(lastEnd, markEnd(partTs, partDur));
     }
   }
 
-  let durationMs: number | undefined;
-  if (startedAt != null && lastEnd != null && lastEnd > startedAt) {
-    durationMs = lastEnd - startedAt;
-  } else if (durationSum > 0) {
-    durationMs = durationSum;
-  } else if (toolDurSum > 0) {
-    durationMs = toolDurSum;
-  }
+  lastEnd = bumpEnd(lastEnd, opts?.endedAt);
+  const startedAt = finitePositive(opts?.sentAt) ? opts.sentAt : replyStart;
+  const stamped =
+    opts?.durationMs != null && Number.isFinite(opts.durationMs) && opts.durationMs >= 0
+      ? opts.durationMs
+      : undefined;
+  const wall = stamped ?? loopWallMs(startedAt, lastEnd);
+  const durationMs =
+    wall == null
+      ? undefined
+      : wall > 0
+        ? wall
+        : stamped != null || opts?.sentAt != null || opts?.endedAt != null
+          ? wall
+          : undefined;
 
   return {
     roundCount: replies.length,
@@ -354,10 +477,71 @@ export function summarizeLoop(replies: LoopReplyInput[]): LoopSummary {
     durationMs,
     toolCount,
     outputTokens,
+    inputTokens,
     lastInputTokens,
     lastOutputTokens,
     occupancy: lastInputTokens + lastOutputTokens,
+    cacheRead,
+    cacheWrite,
+    cacheReported,
   };
+}
+
+export type UserTurnTipInput = LoopSummary & {
+  /** 本会话第几条用户消息（1 基） */
+  ordinal: number;
+  /** 该轮仍在跑 */
+  live?: boolean;
+  /** 落盘账本里能取到完整 POST 请求 */
+  hasRequest?: boolean;
+};
+
+/**
+ * 用户方块 InfoHover：这条提问带出来的整轮账单。
+ * 工作时间 = 用户发出 → loop 终止（summarizeLoop 已算好）。
+ */
+export function userTurnTipRows(input: UserTurnTipInput): InfoHoverRow[] {
+  const rows: InfoHoverRow[] = [
+    { label: "提问", value: `#${Math.max(1, Math.floor(input.ordinal) || 1)}` },
+  ];
+  const start = timecode(input.startedAt);
+  if (start) rows.push({ label: "开始", value: start });
+  const dur = durationStr(input.durationMs);
+  rows.push({ label: "工作时间", value: input.live ? "…" : dur || "—" });
+  rows.push({
+    label: "轮次",
+    value: `${Math.max(0, Math.floor(input.roundCount) || 0)}${input.live ? " …" : ""}`,
+  });
+  rows.push({ label: "工具", value: String(input.toolCount) });
+  rows.push({
+    label: "总输入",
+    value: input.inputTokens > 0 ? `${compactCount(input.inputTokens)} tok` : "—",
+  });
+  rows.push({
+    label: "总输出",
+    value: input.outputTokens > 0 ? `${compactCount(input.outputTokens)} tok` : "—",
+  });
+  rows.push({
+    label: "平均缓存率",
+    value: formatCacheCell({
+      promptTotal: input.inputTokens,
+      cacheRead: input.cacheRead,
+      reported: input.cacheReported || input.cacheRead > 0,
+    }),
+  });
+  if (input.occupancy > 0) {
+    rows.push({ label: "占用", value: `${compactCount(input.occupancy)} tok` });
+  }
+  rows.push({
+    label: "请求体",
+    value: input.hasRequest ? "点击查看" : input.live ? "待落盘" : "不可用",
+  });
+  return rows;
+}
+
+/** 纯文本回退（aria-label / 测试）。 */
+export function formatUserTurnTip(input: UserTurnTipInput): string {
+  return formatInfoHoverLabel(userTurnTipRows(input));
 }
 
 /** Label/value rows for the loop-footer InfoHover. */
@@ -375,6 +559,16 @@ export function loopTipRows(input: LoopSummary): InfoHoverRow[] {
     rows.push({
       label: "占用",
       value: `${compactCount(input.occupancy)} tok`,
+    });
+  }
+  if (input.cacheReported || input.cacheRead > 0) {
+    rows.push({
+      label: "缓存",
+      value: formatCacheCell({
+        promptTotal: input.inputTokens,
+        cacheRead: input.cacheRead,
+        reported: input.cacheReported,
+      }),
     });
   }
   return rows;

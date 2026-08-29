@@ -27,8 +27,11 @@ export function UserStick({
       tabIndex={0}
       aria-label="跳到这条提问"
       onClickCapture={(e) => {
+        // 行内交互件（链接 / 编号方块等按钮）自己处理点击，不抢成“跳回提问”
         const t = e.target;
-        if (t instanceof Element && t.closest("a")) return;
+        if (t instanceof Element && t.closest('a, button, [role="button"]')) {
+          return;
+        }
         goHome(e.currentTarget);
       }}
       onKeyDown={onKeyDown}

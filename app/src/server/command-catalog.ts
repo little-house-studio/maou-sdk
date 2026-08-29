@@ -3,8 +3,8 @@
  * 谁写：AgentHub.listCommandCatalog；谁读：GET /api/commands。
  */
 import { existsSync, readdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { listSkillScanRoots } from "@little-house-studio/tools";
 
 export type CommandCatalogItem = {
   name: string;
@@ -17,18 +17,15 @@ export function scanSkillCommandNames(opts: {
   projectRoot: string;
   maouRoot: string;
   home?: string;
+  agentName?: string;
 }): string[] {
-  const home = opts.home ?? homedir();
-  const dirs = [
-    join(home, ".agents", "skills"),
-    join(opts.projectRoot, ".agents", "skills"),
-    join(opts.projectRoot, "skills"),
-    join(opts.projectRoot, ".maou", "skills"),
-    join(opts.maouRoot, "skills"),
-  ];
-  const seen = new Set<string>();
-  const names: string[] = [];
-  for (const dir of dirs) {
+  const byName = new Map<string, string>();
+  for (const { dir } of listSkillScanRoots({
+    projectRoot: opts.projectRoot,
+    maouRoot: opts.maouRoot,
+    home: opts.home,
+    agentName: opts.agentName,
+  })) {
     if (!existsSync(dir)) continue;
     try {
       for (const ent of readdirSync(dir, { withFileTypes: true })) {
@@ -43,15 +40,14 @@ export function scanSkillCommandNames(opts: {
         } else if (ent.name.endsWith(".md")) {
           name = basename(ent.name, ".md");
         }
-        if (!name || seen.has(name)) continue;
-        seen.add(name);
-        names.push(name);
+        if (!name) continue;
+        byName.set(name, name);
       }
     } catch {
       /* ignore */
     }
   }
-  return names;
+  return [...byName.values()];
 }
 
 export function buildCommandCatalog(

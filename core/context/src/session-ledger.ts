@@ -1,22 +1,30 @@
 /**
- * 会话事件源账本（Session Ledger）
+ * 会话事件源（v1）
  *
- * 事件词表可扩展 + 只追加；未知 type 拒写。
- * sidecar `<id>.ledger.jsonl`，
- * 不塞进主 jsonl（SessionStore.save() 会丢掉非 message/trace）。
+ * 词表可扩展 + 只追加；未知 type 拒写。
+ * 落在 `<sessionDir>/<sessionId>/events.jsonl`。
  *
- * 新功能只需：
- *   registerLedgerEvent({ type: "域/动作", surface, description?, describe? })
- *   appendLedgerEvent(sessionDir, sessionId, type, data)
- * sidecar 落在 \`<sessionDir>/<id>.ledger.jsonl\`，用阅读工具即可查看。
- *
- * 自动接入（不必每个功能手写）：
- *   - SessionStore.appendMessage / appendTrace 镜像
- *   - ToolExecutor 每条执行记 tool/exec（surface=log）
+ * 新功能：registerLedgerEvent + appendLedgerEvent。
  */
 
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { crc32of, durableAppend } from "./durable-write.js";
+import {
+  appendOffsetRecs,
+  isMessageOffsetType,
+  lastOffsetRec,
+  readFileTail,
+} from "./jsonl-offset.js";
+import {
+  enqueueWrite,
+  listPendingBatchKeys,
+  peekPendingWrites,
+  pendingLastSeq,
+  pendingTailSize,
+  takeBatch,
+  type SessionWriteBatch,
+} from "./write-coordinator.js";
 import type {
   SessionLedgerAppendOpts,
   SessionLedgerCatalogEntry,
@@ -30,7 +38,43 @@ import {
   type SessionEventKind,
 } from "./session-event.js";
 
-export const LEDGER_FILE_SUFFIX = ".ledger.jsonl";
+export const EVENTS_FILE = "events.jsonl";
+/** @deprecated 现为 events.jsonl 文件名 */
+export const LEDGER_FILE_SUFFIX = EVENTS_FILE;
+
+/**
+ * 屏障事件：写不进盘就不许继续做不可逆的事（花钱的模型请求、改世界的工具、改写历史的压缩）。
+ * 崩了之后冷恢复靠这几条判断"这一步到底有没有发生"，缺一条就只能猜。
+ */
+export const LEDGER_BARRIER_TYPES = new Set([
+  "turn/start",
+  "model/request",
+  "tool/dispatch",
+  "compact/start",
+  "compact/summary",
+  "compact/end",
+]);
+
+export function isLedgerBarrier(type: string): boolean {
+  return LEDGER_BARRIER_TYPES.has(type);
+}
+
+const MESSAGE_DATA_TYPES = new Set([
+  "user/message",
+  "user/queued",
+  "assistant/message",
+  "tool/call",
+  "tool/result",
+  "tool/async",
+  "system/notice",
+  "runtime/control",
+  "agent/message",
+  "session/custom",
+]);
+
+export function isMessageEventType(type: string): boolean {
+  return MESSAGE_DATA_TYPES.has(type);
+}
 
 export interface LedgerEventSpec {
   type: string;
@@ -47,7 +91,7 @@ const coreTypes = new Set<string>();
 let coreInstalled = false;
 
 export function ledgerPath(sessionDir: string, sessionId: string): string {
-  return join(sessionDir, `${sessionId}${LEDGER_FILE_SUFFIX}`);
+  return join(sessionDir, sessionId, EVENTS_FILE);
 }
 
 export function isLedgerEventType(type: string): boolean {
@@ -134,6 +178,7 @@ const CORE_SPECS: LedgerEventSpec[] = [
   { type: "user/queued", surface: "model", description: "排队用户消息" },
   { type: "assistant/message", surface: "model", description: "助手回合" },
   { type: "tool/call", surface: "model", description: "工具调用（模型发出）" },
+  { type: "tool/dispatch", surface: "log", description: "工具即将执行（flush 之后）" },
   { type: "tool/result", surface: "model", description: "工具结果（已落会话）" },
   { type: "tool/async", surface: "model", description: "工具异步通知" },
   {
@@ -145,8 +190,10 @@ const CORE_SPECS: LedgerEventSpec[] = [
   { type: "system/notice", surface: "model", description: "系统通知" },
   { type: "runtime/control", surface: "model", description: "运行时控制" },
   { type: "agent/message", surface: "model", description: "Agent 间消息" },
-  { type: "compact/start", surface: "model", description: "压缩开始" },
-  { type: "compact/end", surface: "model", description: "压缩结束" },
+  { type: "compact/start", surface: "log", description: "压缩开始" },
+  { type: "compact/summary", surface: "log", description: "压缩摘要（尚未盖住）" },
+  { type: "compact/end", surface: "log", description: "压缩结束" },
+  { type: "session/title", surface: "log", description: "会话标题（不进模型历史）" },
   { type: "hook/invoked", surface: "log", description: "钩子触发" },
   { type: "todo/write", surface: "model", description: "todo 清单变更" },
   {
@@ -167,6 +214,29 @@ const CORE_SPECS: LedgerEventSpec[] = [
     description: "会话计划模式的状态迁移",
     describe: (d) => `plan/change ${d.operation ?? "?"} ${d.id ?? ""} ${d.status ?? ""}`,
   },
+  { type: "session/fork", surface: "log", description: "分叉（共享母前缀）" },
+  { type: "session/rollback", surface: "log", description: "回滚当前叶（后悔轮次仍在文件里）" },
+  { type: "session/branch", surface: "log", description: "改当前分支头" },
+  { type: "message/pin", surface: "log", description: "钉住一条消息" },
+  { type: "message/unpin", surface: "log", description: "取消钉住" },
+  { type: "message/label", surface: "log", description: "给条目加标签" },
+  { type: "message/feedback", surface: "log", description: "助手消息赞踩（不进模型历史）" },
+  { type: "permission/upgrade", surface: "log", description: "本轮笼子升级（只准这一次）" },
+  { type: "inbox/enqueue", surface: "log", description: "用户话入队" },
+  { type: "inbox/claim", surface: "log", description: "队列消息被领走" },
+  { type: "inbox/cancel", surface: "log", description: "队列消息取消或丢弃" },
+  { type: "inbox/deliver", surface: "log", description: "队列消息投递" },
+  { type: "job/register", surface: "log", description: "后台任务登记" },
+  { type: "job/complete", surface: "log", description: "后台任务结束" },
+  { type: "job/wake", surface: "log", description: "后台完成叫醒会话" },
+  { type: "turn/start", surface: "log", description: "一轮开始（不进模型历史）" },
+  { type: "turn/end", surface: "log", description: "一轮结束（冷打开可合成）" },
+  {
+    type: "model/request",
+    surface: "log",
+    description: "本轮要向模型开口了（花钱的一步，落盘屏障）",
+    describe: (d) => `model/request round=${d.round ?? "?"} msgs=${d.messages ?? "?"}`,
+  },
 ];
 
 export function installCoreLedgerCatalog(): void {
@@ -176,12 +246,37 @@ export function installCoreLedgerCatalog(): void {
     registerLedgerEvent(spec);
     coreTypes.add(spec.type);
   }
+  installExitFlush();
 }
 
-function nextLedgerSeq(filePath: string): number {
+export interface LedgerAppendInfo {
+  sessionDir: string;
+  sessionId: string;
+  rec: SessionLedgerEvent;
+  byteOffset: number;
+  fileSize: number;
+  n: number;
+  isMessage: boolean;
+}
+
+const appendListeners = new Map<string, (info: LedgerAppendInfo) => void>();
+
+export function setLedgerAppendListener(
+  sessionDir: string,
+  fn: ((info: LedgerAppendInfo) => void) | null,
+): void {
+  if (fn) appendListeners.set(sessionDir, fn);
+  else appendListeners.delete(sessionDir);
+}
+
+function nextLedgerSeq(sessionDir: string, sessionId: string, filePath: string, sessionRoot: string): number {
+  const pending = pendingLastSeq(sessionDir, sessionId);
+  if (pending != null) return pending + 1;
+  const last = lastOffsetRec(sessionRoot);
+  if (last) return last.seq + 1;
   if (!existsSync(filePath)) return 1;
-  const raw = readFileSync(filePath, "utf-8");
-  const lines = raw.trimEnd().split("\n");
+  const tail = readFileTail(filePath, 8192);
+  const lines = tail.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     if (!line?.trim()) continue;
@@ -197,22 +292,99 @@ function nextLedgerSeq(filePath: string): number {
   return 1;
 }
 
+function parseLedgerEventLine(line: string): SessionLedgerEvent | null {
+  try {
+    const rec = JSON.parse(line) as SessionLedgerEvent;
+    if (typeof rec.seq !== "number" || typeof rec.type !== "string") return null;
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
 export function readLedgerRecords(sessionDir: string, sessionId: string): SessionLedgerEvent[] {
   installCoreLedgerCatalog();
   const filePath = ledgerPath(sessionDir, sessionId);
-  if (!existsSync(filePath)) return [];
   const out: SessionLedgerEvent[] = [];
-  for (const line of readFileSync(filePath, "utf-8").split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const rec = JSON.parse(line) as SessionLedgerEvent;
-      if (typeof rec.seq !== "number" || typeof rec.type !== "string") continue;
-      out.push(rec);
-    } catch {
-      continue;
+  if (existsSync(filePath)) {
+    for (const line of readFileSync(filePath, "utf-8").split("\n")) {
+      if (!line.trim()) continue;
+      const rec = parseLedgerEventLine(line);
+      if (rec) out.push(rec);
     }
   }
+  for (const item of peekPendingWrites(sessionDir, sessionId)) {
+    out.push(item.rec);
+  }
   return out;
+}
+
+function flushBatchNow(batch: SessionWriteBatch): void {
+  if (batch.items.length === 0) return;
+  const filePath = ledgerPath(batch.sessionDir, batch.sessionId);
+  const sessionRoot = dirname(filePath);
+  mkdirSync(sessionRoot, { recursive: true });
+  const body = batch.items.map((item) => item.line).join("");
+  durableAppend(filePath, body);
+  appendOffsetRecs(
+    sessionRoot,
+    batch.items.map((item) => ({
+      seq: item.rec.seq,
+      off: item.byteOffset,
+      n: item.n,
+      t: item.rec.type,
+      end: item.fileSize,
+      crc: crc32of(item.line.replace(/\n$/, "")),
+    })),
+  );
+  const listener = appendListeners.get(batch.sessionDir);
+  for (const item of batch.items) {
+    try {
+      listener?.({
+        sessionDir: batch.sessionDir,
+        sessionId: batch.sessionId,
+        rec: item.rec,
+        byteOffset: item.byteOffset,
+        fileSize: item.fileSize,
+        n: item.n,
+        isMessage: item.isMessage,
+      });
+    } catch {
+      /* 派生索引失败不影响账本 */
+    }
+  }
+  batch.items.length = 0;
+}
+
+/** 取消等待并立刻把该会话队列写盘。 */
+export function flushLedger(sessionDir: string, sessionId: string): void {
+  const batch = takeBatch(sessionDir, sessionId);
+  if (!batch) return;
+  flushBatchNow(batch);
+}
+
+export function flushAllLedgers(): void {
+  for (const key of listPendingBatchKeys()) {
+    const i = key.indexOf("\0");
+    if (i < 0) continue;
+    flushLedger(key.slice(0, i), key.slice(i + 1));
+  }
+}
+
+const EXIT_FLUSH = Symbol.for("maou.ledger.exitFlush");
+
+function installExitFlush(): void {
+  const g = process as NodeJS.Process & { [EXIT_FLUSH]?: boolean };
+  if (g[EXIT_FLUSH]) return;
+  g[EXIT_FLUSH] = true;
+  const run = (): void => {
+    try {
+      flushAllLedgers();
+    } catch {
+      /* 退出刷盘失败不再抛 */
+    }
+  };
+  process.once("beforeExit", run);
 }
 
 export function appendLedgerEvent(
@@ -221,14 +393,19 @@ export function appendLedgerEvent(
   eventType: string,
   data: Record<string, unknown>,
   opts?: SessionLedgerAppendOpts,
-): { seq: number } | { error: string } {
+): { seq: number; byteOffset: number } | { error: string } {
   installCoreLedgerCatalog();
   const spec = catalog.get(eventType);
   if (!spec) {
     return { error: `未登记的账本事件: ${eventType}（先 registerLedgerEvent）` };
   }
-  const payload = sanitizeData(data);
-  const seq = nextLedgerSeq(ledgerPath(sessionDir, sessionId));
+  const payload = sanitizeData(data, eventType);
+  const filePath = ledgerPath(sessionDir, sessionId);
+  const sessionRoot = dirname(filePath);
+  mkdirSync(sessionRoot, { recursive: true });
+  const diskSize = pendingTailSize(sessionDir, sessionId) ?? (existsSync(filePath) ? statSync(filePath).size : 0);
+  const byteOffset = diskSize;
+  const seq = nextLedgerSeq(sessionDir, sessionId, filePath, sessionRoot);
   const rec: SessionLedgerEvent = {
     seq,
     type: eventType,
@@ -239,11 +416,28 @@ export function appendLedgerEvent(
     summary: describeEvent(spec, eventType, payload),
   };
   if (opts?.messageId) rec.messageId = opts.messageId;
-  appendFileSync(ledgerPath(sessionDir, sessionId), `${JSON.stringify(rec)}\n`, "utf-8");
-  return { seq };
+  const line = `${JSON.stringify(rec)}\n`;
+  const fileSize = byteOffset + Buffer.byteLength(line, "utf-8");
+  const pending = peekPendingWrites(sessionDir, sessionId);
+  const prevN =
+    pending.length > 0
+      ? pending[pending.length - 1]!.n
+      : (lastOffsetRec(sessionRoot)?.n ?? 0);
+  const isMessage = isMessageOffsetType(eventType);
+  const n = prevN + (isMessage ? 1 : 0);
+  enqueueWrite(
+    sessionDir,
+    sessionId,
+    { rec, line, byteOffset, fileSize, n, isMessage },
+    flushBatchNow,
+  );
+  return { seq, byteOffset };
 }
 
-function sanitizeData(data: Record<string, unknown>): Record<string, unknown> {
+function sanitizeData(data: Record<string, unknown>, eventType?: string): Record<string, unknown> {
+  if (eventType && MESSAGE_DATA_TYPES.has(eventType)) {
+    return { ...data };
+  }
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data ?? {})) {
     if (value == null) continue;
@@ -321,7 +515,7 @@ export function emitSessionLedger(
   eventType: string,
   data: Record<string, unknown>,
   opts?: SessionLedgerAppendOpts,
-): { seq: number } | { error: string } {
+): { seq: number; byteOffset: number } | { error: string } {
   return appendLedgerEvent(store.sessionDir, sessionId, eventType, data, opts);
 }
 

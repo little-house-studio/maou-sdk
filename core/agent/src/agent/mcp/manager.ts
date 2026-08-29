@@ -11,6 +11,7 @@
  */
 
 import type { ToolRegistry } from "@little-house-studio/tools";
+import { createToolResponse } from "@little-house-studio/tools";
 import type { McpToolDescriptor, McpToolInvoker } from "@little-house-studio/types";
 import type { ToolResponse } from "@little-house-studio/tools";
 import type { DefinedConnection } from "../define-connection.js";
@@ -75,6 +76,7 @@ export interface McpConnectionState {
   name: string;
   status: McpSession["status"];
   lastError: string | null;
+  reconnecting?: boolean;
   toolCount: number;
   serverName?: string;
   serverVersion?: string;
@@ -175,6 +177,7 @@ export class McpConnectionManager {
         name: s.name,
         status: s.status,
         lastError: s.lastError,
+        reconnecting: s.reconnecting,
         toolCount: this.descriptors.filter((d) => d.connectionName === s.name).length,
         serverName: ver?.name,
         serverVersion: ver?.version,
@@ -627,11 +630,14 @@ export class McpConnectionManager {
   createHandler(): McpToolCallHandler {
     return async (connectionName, toolName, args): Promise<string | ToolResponse> => {
       const session = this.sessions.get(connectionName);
-      if (!session || !session.connected) {
-        throw new Error(
-          `MCP connection "${connectionName}" is not connected` +
-            (session?.lastError ? ` (${session.lastError})` : ""),
+      if (!session) {
+        return createToolResponse(
+          false,
+          `MCP server 「${connectionName}」不在连接表里。工具表仍保留。`,
         );
+      }
+      if (!session.connected) {
+        return session.unavailableResponse(toolName);
       }
       return session.callToolAsResponse(toolName, args);
     };
@@ -642,7 +648,11 @@ export class McpConnectionManager {
   private async rebuildDescriptors(): Promise<void> {
     const all: McpToolDescriptor[] = [];
     for (const session of this.sessions.values()) {
-      if (!session.connected) continue;
+      const cached = this.descriptors.filter((d) => d.connectionName === session.name);
+      if (!session.connected) {
+        all.push(...cached);
+        continue;
+      }
       try {
         const descs = await session.listToolDescriptors({ force: false });
         all.push(...descs);

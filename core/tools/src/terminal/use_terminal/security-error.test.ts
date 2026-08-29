@@ -15,6 +15,8 @@ import {
   setTerminalPolicyRoot,
   setMode,
   setTerminalApprover,
+  setCageOverride,
+  resetCageForTest,
 } from "../../security/index.js";
 
 function stubCtx(agentName: string, sandboxMode?: string): ToolContext {
@@ -33,6 +35,7 @@ describe("use_terminal security → tool error category", () => {
   const tool = new TerminalTool();
 
   afterEach(() => {
+    resetCageForTest();
     setDcgEvaluatorForTest(null);
     resetDcgBinaryCache();
     setTerminalApprover(null);
@@ -46,6 +49,7 @@ describe("use_terminal security → tool error category", () => {
   });
 
   it("deny_fatal under yolo → policy_denied (real execute + gate)", async () => {
+    setCageOverride("passthrough");
     tmp = mkdtempSync(join(tmpdir(), "maou-term-sec-"));
     setTerminalPolicyRoot(tmp);
     setMode("term-sec-ag", "yolo");
@@ -74,6 +78,7 @@ describe("use_terminal security → tool error category", () => {
   });
 
   it("user reject on dangerous path → user_rejected", async () => {
+    setCageOverride("passthrough");
     tmp = mkdtempSync(join(tmpdir(), "maou-term-ask-"));
     setTerminalPolicyRoot(tmp);
     // Fresh agent name so double-confirm window does not auto-allow

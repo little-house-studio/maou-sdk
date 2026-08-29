@@ -102,3 +102,23 @@ export type {
   PermissionHookHost,
   PermissionConsult,
 } from "./permission-hook-host.js";
+
+// OS 隔离笼（sandbox-exec / bwrap 等）：模块已就位，barrel 之前漏接
+export {
+  detectCageBackend,
+  isolationFromSandboxMode,
+  isWiderIsolation,
+  resetCageForTest,
+  setCageBackendForTest,
+  setCageOverride,
+  shQuote,
+  wrapCommandInCage,
+} from "./os-cage.js";
+export type {
+  CageBackend,
+  CageIsolation,
+  CageOverride,
+  CageWrapFail,
+  CageWrapOk,
+  CageWrapResult,
+} from "./os-cage.js";

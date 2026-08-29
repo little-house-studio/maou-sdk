@@ -1,6 +1,6 @@
 /**
  * 宿主编排长目标的 sidecar 状态。
- * 目录：`<sessionDir>/<sessionId>.goal/`
+ * 目录：`<sessionDir>/<sessionId>/goal-harness/`
  */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -21,7 +21,7 @@ import {
 import { appendLedgerEvent } from "./session-ledger.js";
 
 export function goalHarnessDir(sessionDir: string, sessionId: string): string {
-  return join(sessionDir, `${sessionId}.goal`);
+  return join(sessionDir, sessionId, "goal-harness");
 }
 
 function statePath(dir: string): string {

@@ -1,6 +1,6 @@
 /**
  * 会话计划 sidecar。
- * 目录：`<sessionDir>/<sessionId>.plan/`
+ * 目录：`<sessionDir>/<sessionId>/plan/`
  */
 
 import { randomUUID } from "node:crypto";
@@ -10,7 +10,7 @@ import type { SessionPlanPort, SessionPlanSnapshot, SessionPlanStatus } from "@l
 import { appendLedgerEvent } from "./session-ledger.js";
 
 export function sessionPlanDir(sessionDir: string, sessionId: string): string {
-  return join(sessionDir, `${sessionId}.plan`);
+  return join(sessionDir, sessionId, "plan");
 }
 
 export function sessionPlanFile(sessionDir: string, sessionId: string): string {
@@ -194,6 +194,7 @@ export function bindSessionPlanPort(sessionDir: string, sessionId: string): Sess
     writePlan: (markdown) => sessionPlan.writePlan(sessionDir, sessionId, markdown),
     readPlan: () => sessionPlan.readPlan(sessionDir, sessionId),
     planFile: () => sessionPlanFile(sessionDir, sessionId),
+    approve: () => sessionPlan.approve(sessionDir, sessionId),
   };
 }
 

@@ -182,7 +182,12 @@ describe("llm-config load/save persist (temp path)", () => {
     };
     assert.equal(disk.api.roles?.main, "primary");
     assert.equal(disk.api.roles?.fast, "cheap");
-    assert.equal(disk.api.presets[0]!.key, "sk-test-secret-value-9999");
+    assert.equal(disk.api.presets[0]!.key, undefined);
+    assert.equal(disk.api.presets[0]!.keyRef, "file:primary");
+    const vault = JSON.parse(readFileSync(join(dir, "secrets.json"), "utf8")) as {
+      keys?: Record<string, string>;
+    };
+    assert.equal(vault.keys?.primary, "sk-test-secret-value-9999");
     // 磁盘为 models[] 嵌套；模型级字段在 models[0]
     const diskModels = disk.api.presets[0]!.models as Array<Record<string, unknown>>;
     assert.ok(Array.isArray(diskModels) && diskModels.length >= 1);
@@ -233,7 +238,8 @@ describe("llm-config load/save persist (temp path)", () => {
     const disk2 = JSON.parse(readFileSync(configPath, "utf8")) as {
       api: { presets: { key?: string }[] };
     };
-    assert.equal(disk2.api.presets[0]!.key, "sk-test-secret-value-9999");
+    assert.equal(disk2.api.presets[0]!.key, undefined);
+    assert.equal(disk2.api.presets[0]!.keyRef, "file:primary");
 
     const snap = loadLlmConfigSnapshot(configPath);
     assert.equal(snap.roles.main, "primary");

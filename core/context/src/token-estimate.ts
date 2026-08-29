@@ -1,6 +1,6 @@
 /**
- * 上下文占用：只认上一条 API usage 的 input + output。
- * 不估算正文、不算历史增量。
+ * 上下文占用的 token 解析：厂商 usage 是唯一权威来源。
+ * 启发式估算只用于两处 —— 锚点之后新增消息的增量、剪裁前后的比值。
  */
 
 import { estimateTokensFromText } from "@little-house-studio/types";
@@ -72,37 +72,13 @@ export function contextRemainingRatio(used: number, max: number): number {
   return Math.max(0, Math.min(1, 1 - used / max));
 }
 
-/** 决策用占用：上一条 input + output。忽略任何估算字段。 */
-export function resolveContextUsedTokens(opts: {
-  input?: number;
-  output?: number;
-  apiPromptTokens?: number;
-  apiOutputTokens?: number;
-  estimatedPromptTokens?: number;
-}): number {
-  void opts.estimatedPromptTokens;
-  const input = Math.max(0, Math.trunc(opts.input ?? opts.apiPromptTokens ?? 0));
-  const output = Math.max(0, Math.trunc(opts.output ?? opts.apiOutputTokens ?? 0));
-  return input + output;
-}
-
-/** @deprecated 占用不再估算正文。保留给非占用的文本长度探测。 */
 const MSG_OVERHEAD = 4;
 const TOOL_CALL_OVERHEAD = 8;
 
-/** @deprecated */
-export function estimateTokensFromStrings(
-  parts: Array<{ role?: string; content?: string }>,
-): number {
-  let total = 0;
-  for (const p of parts) {
-    total += MSG_OVERHEAD;
-    total += estimateTokensFromText(String(p.content ?? ""));
-  }
-  return total;
-}
-
-/** @deprecated */
+/**
+ * 启发式估算一组 MaouMessage 的 token 数（含 microCompact 摘要替换后的形态）。
+ * 与厂商 usage 不可直接比绝对值，只能比同一批消息剪裁前后的比值。
+ */
 export function estimateTokens(messages: MaouMessage[]): number {
   let total = 0;
   for (const m of messages) {
@@ -128,26 +104,4 @@ export function estimateTokens(messages: MaouMessage[]): number {
     }
   }
   return Math.max(total, 0);
-}
-
-/** @deprecated 占用不再估算整包 prompt。 */
-export function estimateFullPromptTokens(parts: {
-  historyTokens?: number;
-  systemPrompt?: string;
-  toolSchemas?: unknown;
-  extras?: string[];
-}): number {
-  let total = Math.max(0, Math.trunc(parts.historyTokens ?? 0));
-  if (parts.systemPrompt) total += estimateTokensFromText(parts.systemPrompt);
-  for (const e of parts.extras ?? []) {
-    if (e) total += estimateTokensFromText(e);
-  }
-  if (parts.toolSchemas != null) {
-    try {
-      total += estimateTokensFromText(JSON.stringify(parts.toolSchemas));
-    } catch {
-      total += 2048;
-    }
-  }
-  return total;
 }

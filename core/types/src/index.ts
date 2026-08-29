@@ -30,7 +30,12 @@ export type MessageRole = 'user' | 'assistant' | 'system' | 'tool'
 /** 用户消息附图（与 SessionMessage.images / LLM ImageContent 同形） */
 export interface MessageImage {
   mimeType: string
-  data: string
+  data?: string
+  hash?: string
+  name?: string
+  bytes?: number
+  width?: number
+  height?: number
 }
 /**
  * 会话历史里的一条（user / assistant / system）。
@@ -160,12 +165,16 @@ export function resolveToolRuntimePorts(ctx: ToolContext): ToolRuntimePorts {
 
 export interface ToolContext {
   sessionId: string
+  /** 子会话的父 session id（fork / report_to_parent） */
+  parentSessionId?: string
   projectRoot: string
   promptRoot: string
   sandboxRoot: string
   sandboxMode: string
   agentName: string
   agentMode: string
+  /** 本会话的权限套餐（session meta.permission_preset），审批面用 */
+  permissionPreset?: string
   pluginSettings: Record<string, unknown>
   workingDir: string
   /**
@@ -954,6 +963,8 @@ export interface AppConfig {
   security?: SecurityConfig
   ui?: Record<string, unknown>
   terminal?: TerminalConfig
+  /** 是否注入仓库根 AGENTS.md / CLAUDE.md。默认 true；与 MAOU_PROJECT_CONTEXT 并列。 */
+  workspaceInstructions?: boolean
 }
 export interface HealthResponse {
   ok: boolean
@@ -996,6 +1007,7 @@ export {
   resolveUserAgentsDir,
   resolveUserHistoryPath,
   resolveUserLastSessionPath,
+  resolveUserAttachmentsDir,
   resolveUserProjectsPath,
   resolveUserOpsRoot,
   resolveUserOpsSessionsDir,
@@ -1050,6 +1062,16 @@ export { Profiler } from './profiler.js'
 export type { SpanRecord, SpanSummary, ProfileReport } from './profiler.js'
 // 共享 token 文本启发式（llm / context 共用，避免双公式）
 export { estimateTokensFromText } from './token-estimate.js'
+// 省略/截断的统一文案（context 与 tools 共用，出路参数在这一层）
+export {
+  TOOL_RESULT_OMIT_MARKER,
+  buildRetentionNotice,
+  describeOmitted,
+  formatRetentionNotice,
+  omissionFromCounts,
+  spillRetrieveHint,
+} from './omission.js'
+export type { Omission, OmissionUnit, RetentionNotice } from './omission.js'
 export { toToolMessage } from './agent-message.js'
 export type {
   AgentSendMode,
@@ -1134,3 +1156,41 @@ export type {
   SessionPlanPort,
 } from './session-plan.js'
 export { sessionPlanIsOpen } from './session-plan.js'
+export {
+  registerContract,
+  listContracts,
+  resetContractsForTest,
+} from './runtime-contract.js'
+export type { RuntimeContract, ContractReport } from './runtime-contract.js'
+export {
+  parseKeyRef,
+  formatKeyRef,
+  secretsPath,
+  putSecret,
+  hasSecret,
+  resolveKeyRef,
+  migratePlainKeyToVault,
+  vaultNameFromPreset,
+  migratePresetPlainKey,
+  stripPresetPlainKey,
+} from './secrets-store.js'
+export type { KeyRef } from './secrets-store.js'
+export { resolveAnonFeedbackId, anonIdPath } from './anon-id.js'
+
+// 插件契约 / 工具卡预设：模块已就位，barrel 之前漏接（浏览器侧仍走 ./tool-card 子路径）
+export { pluginColorsOk } from './plugin-contract.js'
+export type {
+  PluginColorSet,
+  PluginManifest,
+  PluginPhase,
+  PluginRecord,
+} from './plugin-contract.js'
+export {
+  BUILTIN_TOOL_CARD_PRESETS,
+  listToolCardPresets,
+  registerToolCardPreset,
+  resetToolCardPresetsForTest,
+  resolveToolCardDress,
+} from './tool-card.js'
+export type { ToolCardDress, ToolCardPreset } from './tool-card.js'
+

@@ -12,7 +12,7 @@
  */
 
 import type { MaouMessage, LLMMessage } from "./types/message.js";
-import { maouToLLMMessage, sessionToMaouMessage } from "./types/message.js";
+import { maouToLLMMessage, removedSeqRange, sessionToMaouMessage } from "./types/message.js";
 import {
   isHarnessMetaAligned,
   sessionMessageFingerprint,
@@ -42,6 +42,9 @@ export interface CompressReport {
   compressedTokens: number;
   taskBlocks: string[];
   droppedSummary: string;
+  /** 被这次压缩顶掉的 seqId 闭区间；没顶掉任何整条消息时缺省 */
+  seqFrom?: number;
+  seqTo?: number;
 }
 
 /** seedWorkingSet 结果：供 Runtime 决定是否用 harness 历史替代全量 session */
@@ -67,6 +70,7 @@ export class ContextEngine {
   /** 与 SessionStore 对齐：已覆盖的 messages 前缀长度 + 尾指纹 */
   private sourceSessionMessageCount = 0;
   private sourceTailFingerprint = "";
+  private absorbedSeq = 0;
   /** 本轮 seed 是否来自 harness */
   private seededFromHarness = false;
 
@@ -93,6 +97,7 @@ export class ContextEngine {
       this.nextSeqId = Math.max(...record.context.map((m) => m.seqId), -1) + 1;
       this.sourceSessionMessageCount = record.sourceSessionMessageCount;
       this.sourceTailFingerprint = record.sourceTailFingerprint ?? "";
+      this.absorbedSeq = record.absorbedSeq ?? 0;
       this.seededFromHarness = true;
     }
     return this.history;
@@ -131,6 +136,7 @@ export class ContextEngine {
       ? {
           sourceSessionMessageCount: record.sourceSessionMessageCount,
           sourceTailFingerprint: record.sourceTailFingerprint,
+          absorbedSeq: record.absorbedSeq,
         }
       : null;
     const aligned =
@@ -200,6 +206,7 @@ export class ContextEngine {
     this.sourceSessionMessageCount = sessionMessages.length;
     const last = sessionMessages[sessionMessages.length - 1];
     this.sourceTailFingerprint = sessionMessageFingerprint(last);
+    this.absorbedSeq = typeof last?.seq === "number" ? last.seq : sessionMessages.length;
   }
 
   /**
@@ -272,12 +279,14 @@ export class ContextEngine {
     }
 
     // 4. 保存压缩后上下文 + 对齐 meta（B1 关键）
+    const beforeHistory = this.history;
+    const removed = removedSeqRange(beforeHistory, result.history);
     this.history = result.history;
     if (opts?.sourceSessionMessages) {
       this.markSourceCoverage(opts.sourceSessionMessages);
     }
     if (result.compressed) {
-      this.harnessStore.backupBeforeCompress(this.sessionId);
+      this.harnessStore.backupBeforeCompress(this.sessionId, beforeHistory);
       this.seededFromHarness = true;
       this.persistWorkingSet();
     } else if (this.seededFromHarness) {
@@ -299,6 +308,7 @@ export class ContextEngine {
       compressedTokens: result.compressedTokens,
       taskBlocks: result.taskBlocks,
       droppedSummary: result.droppedSummary,
+      ...(removed ? { seqFrom: removed.start, seqTo: removed.end } : {}),
     };
 
     return this.lastCompressReport;
@@ -352,6 +362,15 @@ export class ContextEngine {
   }
 
   /**
+   * 取回被摘要顶掉的那段原文（CompactMessage.seqRange / CompressReport.seqFrom..seqTo）。
+   *
+   * 读的是压缩前的全量备份；备份不在了就返回 null，而不是拿压缩后的历史充数。
+   */
+  getCompactedRange(from: number, to: number): MaouMessage[] | null {
+    return this.harnessStore.getSeqRange(this.sessionId, from, to);
+  }
+
+  /**
    * 持久化当前工作上下文（含 session 对齐 meta）。
    */
   save(): void {
@@ -362,6 +381,7 @@ export class ContextEngine {
     this.harnessStore.saveCurrent(this.sessionId, this.history, {
       sourceSessionMessageCount: this.sourceSessionMessageCount,
       sourceTailFingerprint: this.sourceTailFingerprint || undefined,
+      absorbedSeq: this.absorbedSeq || undefined,
     });
   }
 }

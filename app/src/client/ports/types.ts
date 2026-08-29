@@ -9,6 +9,8 @@ import type {
   clearSession,
   createSession,
   deleteSession,
+  loadOlderMessages,
+  previewDeleteSession,
   enqueueChat,
   exportTranscript,
   fetchAgents,
@@ -19,7 +21,9 @@ import type {
   fetchMeta,
   fetchModels,
   fetchSessionStats,
+  fetchTodayUsage,
   fetchSessions,
+  searchSessions,
   fetchSvgProbeGallery,
   fetchTerminalCapabilities,
   fetchTerminals,
@@ -31,6 +35,15 @@ import type {
   saveLlmConfig,
   setActiveAgent,
   setApprovalMode,
+  setPermissionPreset,
+  setSessionSendMode,
+  fetchPendingAsk,
+  answerAsk,
+  forkFromMessage,
+  sendMessageFeedback,
+  fetchSessionPlan,
+  togglePlan,
+  mutateGoal,
   setModel,
   setSvgProbeReference,
   stopTerminal,
@@ -60,14 +73,26 @@ import type {
 export type ChatPorts = {
   fetchMeta: typeof fetchMeta;
   fetchSessions: typeof fetchSessions;
+  searchSessions: typeof searchSessions;
   createSession: typeof createSession;
   switchSession: typeof switchSession;
   clearSession: typeof clearSession;
   deleteSession: typeof deleteSession;
+  previewDeleteSession: typeof previewDeleteSession;
+  loadOlderMessages: typeof loadOlderMessages;
   renameSession: typeof renameSession;
   exportTranscript: typeof exportTranscript;
   fetchApproval: typeof fetchApproval;
   setApprovalMode: typeof setApprovalMode;
+  setPermissionPreset: typeof setPermissionPreset;
+  setSessionSendMode: typeof setSessionSendMode;
+  fetchPendingAsk: typeof fetchPendingAsk;
+  answerAsk: typeof answerAsk;
+  forkFromMessage: typeof forkFromMessage;
+  sendMessageFeedback: typeof sendMessageFeedback;
+  fetchSessionPlan: typeof fetchSessionPlan;
+  togglePlan: typeof togglePlan;
+  mutateGoal: typeof mutateGoal;
   answerApproval: typeof answerApproval;
   fetchModels: typeof fetchModels;
   setModel: typeof setModel;
@@ -88,6 +113,7 @@ export type ShellPorts = {
   fetchAgents: typeof fetchAgents;
   setActiveAgent: typeof setActiveAgent;
   fetchTerminals: typeof fetchTerminals;
+  fetchTodayUsage: typeof fetchTodayUsage;
 };
 
 export type SettingsPorts = {
@@ -95,6 +121,7 @@ export type SettingsPorts = {
   fetchModels: typeof fetchModels;
   setModel: typeof setModel;
   setApprovalMode: typeof setApprovalMode;
+  setPermissionPreset: typeof setPermissionPreset;
   fetchLlmConfig: typeof fetchLlmConfig;
   saveLlmConfig: typeof saveLlmConfig;
   parseLlmClipboard: typeof parseLlmClipboard;

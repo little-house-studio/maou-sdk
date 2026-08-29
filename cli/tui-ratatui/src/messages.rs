@@ -1321,6 +1321,28 @@ mod tests {
         assert!(lab.contains("字") && lab.contains("tok"), "{lab}");
     }
 
+    /// 与 core/types/src/token-estimate.test.ts 的 golden 同值。
+    /// 两边公式必须一致，否则 TUI 上的 tok 数和占用条对不上。
+    #[test]
+    fn tok_count_matches_sdk_golden() {
+        for (text, want) in [
+            ("abcd", 1u64),
+            ("abcde", 2),
+            ("字", 1),
+            ("上下文压缩", 5),
+            ("读 file.ts 的第 10 行", 8),
+            ("🙂", 1),
+            ("a\nb\nc\nd", 2),
+            ("{\"path\":\"/tmp/a.txt\"}", 6),
+        ] {
+            let label = tool_result_size_label(Some(text)).unwrap();
+            assert!(
+                label.contains(&format!("~{want} tok")),
+                "{text:?} → {label} (want ~{want} tok)"
+            );
+        }
+    }
+
     #[test]
     fn collapsed_tool_header_includes_result_size() {
         let theme = Theme::default();

@@ -74,6 +74,74 @@
   box-shadow: none !important;
 }
 
+[data-composer] .composer-input-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+[data-composer] .composer-cmd-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin: 10px 0 0 10px;
+  height: 28px;
+  border: 1px solid var(--composer-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--composer-ink);
+}
+
+[data-composer] .composer-cmd-chip.is-selected {
+  border-color: var(--composer-ink);
+}
+
+[data-composer] .composer-cmd-chip-name,
+[data-composer] .composer-cmd-chip-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  height: auto;
+  margin: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: inherit !important;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+[data-composer] .composer-cmd-chip-clear {
+  padding: 0 7px;
+  border-left: 1px solid var(--composer-line);
+  color: var(--composer-muted) !important;
+  font-weight: 500;
+}
+
+[data-composer] .composer-cmd-chip-name:hover,
+[data-composer] .composer-cmd-chip-clear:hover {
+  color: var(--n-info, #0291FF) !important;
+}
+
+[data-composer] .composer-input-row > .composer-input,
+[data-composer] .composer-input-row > textarea.wire-composer-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+[data-composer] .composer-input-row:has(.composer-cmd-chip) .composer-input,
+[data-composer] .composer-input-row:has(.composer-cmd-chip) textarea.wire-composer-input {
+  padding-left: 4px !important;
+}
+
 [data-composer] .composer-input,
 .wire-context [data-composer] textarea.wire-composer-input,
 .wire-shell [data-composer] textarea.wire-composer-input {
@@ -94,6 +162,14 @@
   line-height: 1.5;
   letter-spacing: 0;
   outline: none;
+}
+
+[data-composer] .composer-input-row > .composer-input,
+.wire-context [data-composer] .composer-input-row > textarea.wire-composer-input,
+.wire-shell [data-composer] .composer-input-row > textarea.wire-composer-input {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 [data-composer] .composer-input::placeholder,
@@ -177,30 +253,128 @@
   color: var(--composer-accent);
 }
 
+[data-composer] .composer-approval {
+  position: relative;
+  display: inline-flex;
+}
+
+[data-composer] .composer-approval-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--composer-line);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--composer-ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+[data-composer] .composer-approval-trigger:hover,
+[data-composer] .composer-approval-trigger[aria-expanded="true"] {
+  border-color: var(--composer-accent);
+}
+
+[data-composer] .composer-approval-name {
+  font-weight: 600;
+}
+
 [data-composer] .composer-meter,
 .wire-shell.draft-shell [data-composer] .usage-chip.wire-composer-usage,
 .wire-shell.draft-shell [data-composer] .wire-composer-usage.usage-chip {
   display: inline-flex !important;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   height: 28px;
-  padding: 0 8px 0 6px !important;
-  border: 1px solid var(--composer-line) !important;
-  border-radius: 2px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
   background: transparent !important;
+  box-shadow: none !important;
   color: var(--composer-muted) !important;
   font-size: 11px;
   letter-spacing: 0.04em;
-  cursor: pointer;
+  cursor: default;
   clip-path: none !important;
   -webkit-clip-path: none !important;
 }
 
 [data-composer] .composer-meter:hover,
 .wire-shell.draft-shell [data-composer] .usage-chip.wire-composer-usage:hover {
-  border-color: var(--composer-line-strong) !important;
+  border: 0 !important;
   color: var(--composer-ink) !important;
   background: transparent !important;
+  box-shadow: none !important;
+}
+
+.wire-hover-tip-panel .composer-meter-panel {
+  min-width: 196px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wire-hover-tip-panel .composer-meter-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.wire-hover-tip-panel .composer-meter-panel-kicker {
+  font-weight: 600;
+}
+.wire-hover-tip-panel .composer-meter-panel-fig,
+.wire-hover-tip-panel .composer-meter-muted {
+  color: var(--n-tertiary, #828282);
+}
+.wire-hover-tip-panel .composer-meter-bar {
+  display: flex;
+  height: 4px;
+  overflow: hidden;
+  background: #cfcfcf;
+}
+.wire-hover-tip-panel .composer-meter-seg.is-system { background: #0291ff; }
+.wire-hover-tip-panel .composer-meter-seg.is-tools { background: #7a5cff; }
+.wire-hover-tip-panel .composer-meter-seg.is-messages { background: #111; }
+.wire-hover-tip-panel .composer-meter-seg.is-overhead { background: #9b9b9b; }
+.wire-hover-tip-panel .composer-meter-seg.is-free { background: #d8d8d8; }
+.wire-hover-tip-panel .composer-meter-rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wire-hover-tip-panel .composer-meter-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.wire-hover-tip-panel .composer-meter-row dt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.wire-hover-tip-panel .composer-meter-row dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.wire-hover-tip-panel .composer-meter-swatch {
+  width: 6px;
+  height: 6px;
+}
+.wire-hover-tip-panel .composer-meter-swatch.is-system { background: #0291ff; }
+.wire-hover-tip-panel .composer-meter-swatch.is-tools { background: #7a5cff; }
+.wire-hover-tip-panel .composer-meter-swatch.is-messages { background: #111; }
+.wire-hover-tip-panel .composer-meter-swatch.is-overhead { background: #9b9b9b; }
+.wire-hover-tip-panel .composer-meter-swatch.is-free { background: #d8d8d8; }
+.wire-hover-tip-panel .composer-meter-note {
+  color: var(--n-tertiary, #828282);
+  font-size: 11px;
 }
 
 [data-composer] .composer-meter-track {
@@ -549,8 +723,10 @@
   box-sizing: border-box;
   min-width: 200px;
   max-width: 260px;
-  max-height: min(320px, calc(100vh - 24px));
-  overflow: auto;
+  max-height: min(240px, calc(100vh - 24px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0;
   border: 1px solid #9b9b9b;
   background: #ededed;

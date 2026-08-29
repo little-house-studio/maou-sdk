@@ -13,6 +13,7 @@ import { resolveUserConfigPath } from './maou-paths.js'
 import { resolveApiRolePreset, type ApiModelRole } from './api-roles.js'
 import { expandAllPresets } from './preset-models.js'
 import { normalizeRuntimePreset } from './preset-normalize.js'
+import { migratePresetPlainKey } from './secrets-store.js'
 
 export { normalizeRuntimePreset, normalizeLoadedPreset } from './preset-normalize.js'
 
@@ -178,6 +179,7 @@ const AppConfigSchema = z.object({
   security: SecurityConfigSchema.optional(),
   ui: z.record(z.unknown()).optional(),
   terminal: TerminalConfigSchema.optional(),
+  workspaceInstructions: z.boolean().optional(),
 }).passthrough()
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -382,6 +384,20 @@ export class ConfigStore {
 
   /** 保存用户配置（全局 API 等）；尽量 chmod 0600 保护 key */
   saveUserConfig(data: Record<string, unknown>): void {
+    const userRoot = dirname(this.userPath)
+    const api = data.api && typeof data.api === 'object' ? (data.api as Record<string, unknown>) : null
+    if (api && Array.isArray(api.presets)) {
+      for (const raw of api.presets) {
+        if (!raw || typeof raw !== 'object') continue
+        const preset = raw as Record<string, unknown>
+        migratePresetPlainKey(preset, userRoot)
+        if (Array.isArray(preset.models)) {
+          for (const m of preset.models) {
+            if (m && typeof m === 'object') migratePresetPlainKey(m as Record<string, unknown>, userRoot)
+          }
+        }
+      }
+    }
     mkdirSync(dirname(this.userPath), { recursive: true })
     writeFileSync(this.userPath, JSON.stringify(data, null, 2), 'utf-8')
     try {

@@ -39,4 +39,25 @@ describe("command catalog", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("project agent skill dir is scanned last (near wins the name)", () => {
+    const root = join(tmpdir(), `maou-skills-agent-${process.pid}`);
+    const far = join(root, "maou", "agents", "coding", "skills", "dup");
+    const near = join(root, "proj", ".maou", "agents", "coding", "skills", "dup");
+    mkdirSync(far, { recursive: true });
+    mkdirSync(near, { recursive: true });
+    writeFileSync(join(far, "SKILL.md"), "# far\n");
+    writeFileSync(join(near, "SKILL.md"), "# near\n");
+    try {
+      const names = scanSkillCommandNames({
+        projectRoot: join(root, "proj"),
+        maouRoot: join(root, "maou"),
+        home: join(root, "home"),
+        agentName: "coding",
+      });
+      assert.ok(names.includes("dup"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

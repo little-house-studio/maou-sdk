@@ -52,6 +52,41 @@ export function readToolElapsed(m: Record<string, unknown>): number | undefined 
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+/** 用户 / 助手行上的 durationMs（含 0）。linesFromMessages 读写。 */
+export function readRoleDurationMs(m: Record<string, unknown>): number | undefined {
+  const n = Number(m.durationMs ?? m.duration_ms ?? m.elapsed);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/** 账本里「发出 → 终止」墙钟。runtime appendMessage / abort 写入。 */
+export function readLoopDurationMs(m: Record<string, unknown>): number | undefined {
+  const n = Number(m.loopDurationMs ?? m.loop_duration_ms);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/** 把本 loop 最后一条 loopDurationMs 写到对应用户行。 */
+export function backfillUserLoopDuration<
+  T extends { role: string; durationMs?: number; loopDurationMs?: number },
+>(lines: T[]): T[] {
+  let user: T | undefined;
+  let lastLoop: number | undefined;
+  const apply = () => {
+    if (!user || lastLoop == null || user.durationMs != null) return;
+    user.durationMs = lastLoop;
+  };
+  for (const line of lines) {
+    if (line.role === "user") {
+      apply();
+      user = line;
+      lastLoop = line.loopDurationMs;
+    } else if (line.loopDurationMs != null && Number.isFinite(line.loopDurationMs)) {
+      lastLoop = line.loopDurationMs;
+    }
+  }
+  apply();
+  return lines;
+}
+
 export function slimAssistantToolCalls(
   m: Record<string, unknown>,
 ): Array<{ id: string; description: string }> {

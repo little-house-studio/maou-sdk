@@ -10,6 +10,8 @@
  * 注：有损压缩。配合 TaskSessionStore 原文落盘 + restoreTask，可在需要时恢复。
  */
 
+import { formatRetentionNotice, spillRetrieveHint } from "@little-house-studio/types";
+
 const ANSI_RE = /\[[0-9;]*[a-zA-Z]/g;
 // 进度条/回车覆盖行常见噪声（npm/pip/cargo 下载进度等）
 const CARRIAGE_RE = /^.*\r(?=.)/gm;
@@ -75,13 +77,26 @@ export function dedupeConsecutive(text: string): string {
 }
 
 /** 截断长文本：保留头 headLines + 尾 tailLines，中间省略。 */
-export function truncateMiddle(text: string, headLines: number, tailLines: number): string {
+export function truncateMiddle(
+  text: string,
+  headLines: number,
+  tailLines: number,
+  opts?: { locator?: string; retrieveHint?: string },
+): string {
   const lines = text.split("\n");
   if (lines.length <= headLines + tailLines + 1) return text;
   const omitted = lines.length - headLines - tailLines;
+  const notice = formatRetentionNotice(
+    { kind: "exact", count: omitted, unit: "lines" },
+    {
+      locator: opts?.locator,
+      retrieveHint:
+        opts?.retrieveHint ?? (opts?.locator ? spillRetrieveHint({ unit: "lines" }) : undefined),
+    },
+  );
   return [
     ...lines.slice(0, headLines),
-    `… [省略 ${omitted} 行，如需完整内容请缩小范围重查] …`,
+    `… ${notice} …`,
     ...lines.slice(lines.length - tailLines),
   ].join("\n");
 }

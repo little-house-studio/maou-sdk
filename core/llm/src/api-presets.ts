@@ -17,6 +17,7 @@ import {
   expandAllPresets,
   collapsePresetsToNested,
   migratePresetsToNested,
+  migratePresetPlainKey,
   type ApiModelRole,
 } from "@little-house-studio/types";
 import type { APIPreset } from "./adapters/types.js";
@@ -45,15 +46,63 @@ function diskPresetsToNested(rawList: unknown[]): Array<Record<string, unknown>>
   return migratePresetsToNested(rawList);
 }
 
+function userRootFromConfigPath(configPath: string): string {
+  return dirname(configPath);
+}
+
+function migratePresetTree(
+  preset: Record<string, unknown>,
+  userRoot: string,
+): boolean {
+  let dirty = migratePresetPlainKey(preset, userRoot);
+  if (Array.isArray(preset.models)) {
+    for (const m of preset.models) {
+      if (!m || typeof m !== "object") continue;
+      const rec = m as Record<string, unknown>;
+      if (!rec.name) {
+        rec.name = `${String(preset.name ?? "preset")}/${String(rec.id ?? rec.name ?? "model")}`;
+      }
+      if (migratePresetPlainKey(rec, userRoot)) dirty = true;
+    }
+  }
+  return dirty;
+}
+
+function migrateAndMaybeRewriteDisk(
+  path: string,
+  nested: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const userRoot = userRootFromConfigPath(path);
+  let dirty = false;
+  for (const p of nested) {
+    if (migratePresetTree(p, userRoot)) dirty = true;
+  }
+  if (!dirty || !existsSync(path)) return nested;
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    const api =
+      raw.api && typeof raw.api === "object"
+        ? (raw.api as Record<string, unknown>)
+        : {};
+    api.presets = nested;
+    raw.api = api;
+    writeFileSync(path, JSON.stringify(raw, null, 2), "utf-8");
+  } catch {
+    /* 迁匣已完成，回写失败不挡运行时解析 */
+  }
+  return nested;
+}
+
 export function loadPresetsFromMaouConfig(configPath?: string): APIPreset[] {
   const path = configPath ?? resolveUserConfigPath();
   const raw = readApiPresetsArray(path);
   let fromFile: APIPreset[] = [];
   if (raw.length > 0) {
     try {
-      const nested = diskPresetsToNested(raw);
+      const nested = migrateAndMaybeRewriteDisk(path, diskPresetsToNested(raw));
+      const userRoot = userRootFromConfigPath(path);
       fromFile = expandAllPresets(nested).map((p) =>
-        normalizeApiPreset(p as unknown as APIPreset),
+        normalizeApiPreset(p as unknown as APIPreset, { userRoot }),
       );
     } catch {
       fromFile = [];
@@ -251,6 +300,11 @@ export function saveGlobalApiConfig(opts: GlobalApiWriteOptions): string {
     incoming = [...byName.values()];
   } else {
     incoming = expandAllPresets(incoming);
+  }
+
+  const userRoot = userRootFromConfigPath(path);
+  for (const p of incoming) {
+    migratePresetTree(p, userRoot);
   }
 
   const nextPresets = collapsePresetsToNested(incoming);

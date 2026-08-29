@@ -1,25 +1,31 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
-import { MAX_CHAT_IMAGES, sanitizeChatImages } from "./chat-images.js";
+import { AttachmentRejectError, ingestImageBatch } from "@little-house-studio/context";
 
-describe("sanitizeChatImages", () => {
-  it("keeps image/* base64 and strips data URLs", () => {
-    const out = sanitizeChatImages([
-      { mimeType: "image/png", data: "data:image/png;base64,AAA" },
-      { mimeType: "text/plain", data: "nope" },
-      { mimeType: "image/jpeg", data: "  BBB  " },
-    ]);
-    assert.equal(out.length, 2);
-    assert.equal(out[0]!.data, "AAA");
-    assert.equal(out[1]!.data, "BBB");
+const PNG_1X1 = Buffer.from(
+  "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082",
+  "hex",
+).toString("base64");
+
+describe("sanitizeChatImages / ingest", () => {
+  const dir = mkdtempSync(join(tmpdir(), "maou-chat-img-"));
+  it("ingests a valid png", () => {
+    const out = ingestImageBatch([{ mimeType: "image/png", data: `data:image/png;base64,${PNG_1X1}` }], {
+      root: dir,
+    });
+    assert.equal(out.length, 1);
+    assert.ok(out[0]!.hash);
+    assert.equal(out[0]!.data, undefined);
   });
 
-  it("caps count and rejects empty", () => {
-    const raw = Array.from({ length: MAX_CHAT_IMAGES + 3 }, (_, i) => ({
-      mimeType: "image/png",
-      data: `x${i}`,
-    }));
-    assert.equal(sanitizeChatImages(raw).length, MAX_CHAT_IMAGES);
-    assert.deepEqual(sanitizeChatImages(null), []);
+  it("rejects a bad mime for the whole batch", () => {
+    assert.throws(
+      () => ingestImageBatch([{ mimeType: "text/plain", data: "QQ==" }], { root: dir }),
+      AttachmentRejectError,
+    );
+    rmSync(dir, { recursive: true, force: true });
   });
 });

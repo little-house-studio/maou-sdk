@@ -144,6 +144,7 @@ export {
   roundTipRows,
   loopTipRows,
   summarizeLoop,
+  loopWallMs,
 } from "./message-meta";
 export type { InfoHoverRow } from "./message-meta";
 export { InfoHover } from "./InfoHover";

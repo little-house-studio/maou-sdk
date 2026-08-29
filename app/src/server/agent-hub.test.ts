@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { sessionPlan } from "@little-house-studio/context";
 import { AgentHub, resolveWorkspaceForSwitch } from "./agent-hub.js";
 
 const root = join(tmpdir(), `maou-hub-test-${process.pid}`);
@@ -110,6 +111,57 @@ describe("AgentHub sessions model approval", () => {
     const sw = hub.switchSession(a.sessionId);
     assert.equal(sw.sessionId, a.sessionId);
     assert.equal(hub.getMeta().sessionId, a.sessionId);
+  });
+
+  it("searchSessions finds appended message text", () => {
+    const hub = new AgentHub({
+      projectRoot: project,
+      maouRoot: maou,
+      sandboxMode: "yolo",
+    });
+    const created = hub.newSession("searchable");
+    const store = (
+      hub as unknown as {
+        sessionStore: {
+          appendMessage: (id: string, role: string, content: string) => void;
+        };
+      }
+    ).sessionStore;
+    store.appendMessage(created.sessionId, "user", "hub-search-needle-zz");
+    const page = hub.searchSessions({ query: "hub-search-needle-zz" });
+    assert.ok(page.items.some((h) => h.sessionId === created.sessionId));
+    assert.ok(page.items[0]?.snippet);
+    assert.equal(typeof page.items[0]?.absSeq, "number");
+  });
+
+  it("loadSessionMessages maps loopDurationMs onto the user line", () => {
+    const hub = new AgentHub({
+      projectRoot: project,
+      maouRoot: maou,
+      sandboxMode: "yolo",
+    });
+    const created = hub.newSession("loop-dur");
+    const store = (
+      hub as unknown as {
+        sessionStore: {
+          appendMessage: (
+            id: string,
+            role: string,
+            content: string,
+            meta?: Record<string, unknown>,
+          ) => void;
+        };
+      }
+    ).sessionStore;
+    store.appendMessage(created.sessionId, "user", "咕咕嘎嘎");
+    store.appendMessage(created.sessionId, "assistant", "ok", {
+      loopDurationMs: 1500,
+    });
+    const lines = hub.loadSessionMessages(created.sessionId);
+    const user = lines.find((l) => l.role === "user");
+    const asst = lines.find((l) => l.role === "assistant");
+    assert.equal(user?.durationMs, 1500);
+    assert.equal(asst?.loopDurationMs, 1500);
   });
 
   it("setModel updates meta for next turn preset path", () => {
@@ -254,12 +306,32 @@ describe("AgentHub sessions model approval", () => {
     const a = hub.newSession("to-delete");
     const b = hub.newSession("keep");
     hub.switchSession(a.sessionId);
-    hub.clearSessionMessages(a.sessionId);
-    assert.equal(hub.loadSessionMessages(a.sessionId).length, 0);
-    const del = hub.deleteSession(a.sessionId);
-    assert.equal(del.deleted, true);
+    const cleared = hub.clearSessionMessages(a.sessionId);
+    assert.notEqual(cleared.sessionId, a.sessionId);
     assert.ok(!hub.listSessions().some((s) => s.id === a.sessionId));
     assert.ok(hub.listSessions().some((s) => s.id === b.sessionId));
+    const extra = hub.newSession("gone");
+    const del = hub.deleteSession(extra.sessionId);
+    assert.equal(del.deleted, true);
+    assert.ok(!hub.listSessions().some((s) => s.id === extra.sessionId));
+  });
+
+  it("deleting the active session sits on a remaining one, does not spawn a twin", () => {
+    const hub = new AgentHub({
+      projectRoot: project,
+      maouRoot: maou,
+      sandboxMode: "yolo",
+    });
+    const keep = hub.newSession("keep");
+    const gone = hub.newSession("gone");
+    hub.switchSession(gone.sessionId);
+    const before = hub.listSessions().length;
+    const del = hub.deleteSession(gone.sessionId);
+    assert.equal(del.deleted, true);
+    assert.equal(del.sessionId, keep.sessionId);
+    assert.equal(hub.listSessions().length, before - 1);
+    assert.ok(!hub.listSessions().some((s) => s.id === gone.sessionId));
+    assert.ok(hub.listSessions().some((s) => s.id === keep.sessionId));
   });
 
   it("restores last-session pointer across hub instances", () => {
@@ -296,6 +368,11 @@ describe("AgentHub sessions model approval", () => {
     );
     const text = hub.exportTranscript(s.sessionId);
     assert.ok(typeof text === "string");
+    const zip = hub.exportSessionZip(s.sessionId);
+    assert.ok(Buffer.isBuffer(zip));
+    assert.equal(zip.subarray(0, 2).toString("utf8"), "PK");
+    const pre = hub.preflightExport(s.sessionId);
+    assert.equal(pre.ok, true);
   });
 });
 
@@ -360,5 +437,24 @@ describe("AgentHub.deliverWebhook", () => {
     } finally {
       hub.abortAllRuns();
     }
+  });
+
+  it("readSessionPlan returns submitted markdown", () => {
+    const hub = new AgentHub({
+      projectRoot: project,
+      maouRoot: maou,
+      sandboxMode: "yolo",
+    });
+    const s = hub.newSession("plan-review");
+    const dir = (
+      hub as unknown as { sessionStore: { sessionDir: string } }
+    ).sessionStore.sessionDir;
+    sessionPlan.enter(dir, s.sessionId, "当前位置分析");
+    sessionPlan.writePlan(dir, s.sessionId, "# 实施计划\n- 一步");
+    const view = hub.readSessionPlan();
+    assert.equal(view.plan?.status, "review");
+    assert.equal(view.plan?.active, true);
+    assert.match(view.markdown, /实施计划/);
+    assert.ok(view.planFile);
   });
 });

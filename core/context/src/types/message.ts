@@ -61,19 +61,52 @@ export interface MaouMessage {
 
 /**
  * 压缩消息 — 替换原始消息集群的产出物
- * 通过 sourceIds 可回溯到原始消息
+ * 通过 seqRange 可在压缩前全量备份里取回原文
  */
 export interface CompactMessage {
   /** 压缩类型 */
   type: "micro" | "major" | "dead";
   /** 压缩后的摘要文本 */
   summary: string;
-  /** 被压缩的原始消息 ID 列表（回溯用） */
-  sourceIds: string[];
-  /** 被压缩的原始范围（大压缩/死区用） */
-  sourceRange?: { startId: string; endId: string };
+  /** 被这条摘要顶掉的 MaouMessage.seqId 闭区间 */
+  seqRange?: { start: number; end: number };
   /** 死区指向的 task_block ID（可回溯完整内容） */
   taskBlockRef?: string;
+}
+
+/**
+ * 这批消息占据的 seqId 闭区间；没有可用 seqId 时返回 null。
+ *
+ * 摘要靠这个区间指回被它顶掉的原文（原文在压缩前的全量备份里），
+ * 没有它就只剩一段无从核对的文字。
+ */
+export function seqRangeOf(msgs: MaouMessage[]): { start: number; end: number } | null {
+  let start = Number.POSITIVE_INFINITY;
+  let end = Number.NEGATIVE_INFINITY;
+  for (const m of msgs) {
+    const s = m.seqId;
+    if (typeof s !== "number" || !Number.isFinite(s) || s < 0) continue;
+    if (s < start) start = s;
+    if (s > end) end = s;
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return { start, end };
+}
+
+/**
+ * 压缩掉的 seqId 区间：压缩前有、压缩后没了的那些。
+ *
+ * 不依赖各阶段自己上报——谁产出摘要都躲不过 seqId 消失这件事。
+ */
+export function removedSeqRange(
+  before: MaouMessage[],
+  after: MaouMessage[],
+): { start: number; end: number } | null {
+  const kept = new Set<number>();
+  for (const m of after) {
+    if (typeof m.seqId === "number") kept.add(m.seqId);
+  }
+  return seqRangeOf(before.filter((m) => !kept.has(m.seqId)));
 }
 
 /**

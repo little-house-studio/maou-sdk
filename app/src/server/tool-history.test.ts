@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  backfillUserLoopDuration,
   collectToolCallIntents,
   readHistoryToolMeta,
+  readLoopDurationMs,
+  readRoleDurationMs,
   readToolElapsed,
   readToolIntent,
   slimAssistantToolCalls,
@@ -74,5 +77,16 @@ describe("tool-history", () => {
     assert.deepEqual(slimAssistantToolCalls(m), [
       { id: "c3", description: "打开 DeepSeek" },
     ]);
+  });
+
+  it("reads role / loop duration and backfills the user row", () => {
+    assert.equal(readRoleDurationMs({ durationMs: 0 }), 0);
+    assert.equal(readLoopDurationMs({ loopDurationMs: 1500 }), 1500);
+    const lines = [
+      { role: "user" as const },
+      { role: "assistant" as const, loopDurationMs: 1500 },
+    ];
+    backfillUserLoopDuration(lines);
+    assert.equal(lines[0]!.durationMs, 1500);
   });
 });

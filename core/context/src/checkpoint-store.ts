@@ -1,21 +1,22 @@
 /**
- * 会话快照存储 —— checkpoint 创建、回滚、差异比较。
+ * 会话快照 —— 记 leaf，回滚只改当前叶，不覆盖 events.jsonl。
  */
 
 import {
-  readFileSync,
-  writeFileSync,
   existsSync,
   mkdirSync,
-  unlinkSync,
   readdirSync,
-  statSync,
-  copyFileSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
-import { join, basename } from "node:path";
-import type { SessionStore, SessionData, SessionMessage, SessionTrace } from "./session-store.js";
+import { copyFileSync } from "node:fs";
+import { join } from "node:path";
+import type { SessionStore, SessionData, SessionMessage } from "./session-store.js";
+import { SESSION_JSON } from "./session-store.js";
 import type { CheckpointMeta, CheckpointDiff } from "./types.js";
 import { MAX_AUTO_CHECKPOINTS } from "./constants.js";
+import { isMessageEventType } from "./session-ledger.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -34,19 +35,16 @@ export class CheckpointStore {
     this.sessionStore = sessionStore;
   }
 
-  // ─── 快照目录 ──────────────────────────────────────────────────────────────
-
   private checkpointDir(sessionId: string): string {
-    const dir = join(this.sessionStore.sessionDir, `${sessionId}.checkpoints`);
+    const dir = join(this.sessionStore.sessionRoot(sessionId), "checkpoints");
     mkdirSync(dir, { recursive: true });
     return dir;
   }
 
-  // ─── 创建快照 ──────────────────────────────────────────────────────────────
+  private cpRoot(sessionId: string, checkpointId: string): string {
+    return join(this.checkpointDir(sessionId), checkpointId);
+  }
 
-  /**
-   * 创建会话快照
-   */
   createCheckpoint(
     sessionId: string,
     label?: string,
@@ -57,14 +55,11 @@ export class CheckpointStore {
     if (!session) {
       throw new Error(`会话不存在: ${sessionId}`);
     }
-
+    const header = this.sessionStore.readMeta(sessionId);
     const cpId = genId();
-    const cpDir = this.checkpointDir(sessionId);
-    const metaFile = join(cpDir, `${cpId}.meta.json`);
-    const dataFile = join(cpDir, `${cpId}.jsonl`);
-    const ledgerFile = join(cpDir, `${cpId}.ledger.jsonl`);
+    const dest = this.cpRoot(sessionId, cpId);
+    mkdirSync(dest, { recursive: true });
 
-    // 元信息
     const meta: CheckpointMeta = {
       id: cpId,
       sessionId,
@@ -73,26 +68,22 @@ export class CheckpointStore {
       createdAt: nowIso(),
       autoCheckpoint: autoCheckpoint ?? false,
       triggerReason,
+      leafSeq: typeof header?.leaf_seq === "number" ? header.leaf_seq : undefined,
+      leafId: header?.leaf_id,
     };
+    writeFileSync(join(dest, "meta.json"), JSON.stringify(meta, null, 2), "utf-8");
 
-    // 写入元信息
-    writeFileSync(metaFile, JSON.stringify(meta, null, 2), "utf-8");
-
-    // 写入数据：完整拷贝会话 JSONL
-    const jsonlPath = this.sessionStore.jsonlPath(sessionId);
-    if (existsSync(jsonlPath)) {
-      copyFileSync(jsonlPath, dataFile);
+    const eventsPath = this.sessionStore.jsonlPath(sessionId);
+    if (existsSync(eventsPath)) {
+      copyFileSync(eventsPath, join(dest, "events.jsonl"));
     } else {
-      // 如果没有 JSONL（空会话），创建空文件
-      writeFileSync(dataFile, "", "utf-8");
+      writeFileSync(join(dest, "events.jsonl"), "", "utf-8");
+    }
+    const sessionJson = this.sessionStore.metaPath(sessionId);
+    if (existsSync(sessionJson)) {
+      copyFileSync(sessionJson, join(dest, SESSION_JSON));
     }
 
-    const ledgerPath = this.sessionStore.ledgerPath(sessionId);
-    if (existsSync(ledgerPath)) {
-      copyFileSync(ledgerPath, ledgerFile);
-    }
-
-    // 自动快照：只保留最近 N 个，避免每 tool 全量拷导致数百 MB
     if (autoCheckpoint) {
       try {
         this.pruneAutoCheckpoints(sessionId, MAX_AUTO_CHECKPOINTS);
@@ -100,124 +91,76 @@ export class CheckpointStore {
         /* 清理失败不影响主流程 */
       }
     }
-
     return meta;
   }
 
-  // ─── 回滚 ──────────────────────────────────────────────────────────────────
-
-  /**
-   * 回滚到指定快照
-   */
   rollbackToCheckpoint(sessionId: string, checkpointId: string): SessionData {
-    const cpDir = this.checkpointDir(sessionId);
-    const metaFile = join(cpDir, `${checkpointId}.meta.json`);
-    const dataFile = join(cpDir, `${checkpointId}.jsonl`);
-
-    if (!existsSync(metaFile) || !existsSync(dataFile)) {
+    const dest = this.cpRoot(sessionId, checkpointId);
+    const metaFile = join(dest, "meta.json");
+    if (!existsSync(metaFile)) {
       throw new Error(`快照不存在: ${checkpointId}`);
     }
-
-    // 恢复 JSONL + 账本 sidecar
-    const targetJsonl = this.sessionStore.jsonlPath(sessionId);
-    copyFileSync(dataFile, targetJsonl);
-    const ledgerSrc = join(cpDir, `${checkpointId}.ledger.jsonl`);
-    const ledgerDst = this.sessionStore.ledgerPath(sessionId);
-    if (existsSync(ledgerSrc)) {
-      copyFileSync(ledgerSrc, ledgerDst);
+    const meta = JSON.parse(readFileSync(metaFile, "utf-8")) as CheckpointMeta;
+    const leafId = meta.leafId ?? this._loadCheckpointMessages(sessionId, checkpointId).at(-1)?.id;
+    if (!leafId) {
+      return this.sessionStore.load(sessionId) ?? this.sessionStore.create({ sessionId });
     }
-
-    // 更新 meta 的 updated_at
-    const sessionMeta = this.sessionStore.load(sessionId);
-    if (sessionMeta) {
-      // 重新读取以触发 meta 文件更新
-      this.sessionStore.save(sessionMeta);
-    }
-
-    return this.sessionStore.load(sessionId) ?? this.sessionStore.create();
+    this.sessionStore.rollbackTo(sessionId, leafId, meta.leafSeq);
+    return this.sessionStore.load(sessionId) ?? this.sessionStore.create({ sessionId });
   }
 
-  // ─── 差异 ──────────────────────────────────────────────────────────────────
-
-  /**
-   * 比较两个快照的差异
-   */
   diffCheckpoints(sessionId: string, fromCheckpointId: string, toCheckpointId: string): CheckpointDiff {
-    const from = this._loadCheckpointMessages(sessionId, fromCheckpointId);
-    const to = this._loadCheckpointMessages(sessionId, toCheckpointId);
-
-    return this._computeDiff(from, to);
+    return this._computeDiff(
+      this._loadCheckpointMessages(sessionId, fromCheckpointId),
+      this._loadCheckpointMessages(sessionId, toCheckpointId),
+    );
   }
 
-  /**
-   * 比较快照与当前会话的差异
-   */
   diffFromCheckpoint(sessionId: string, checkpointId: string): CheckpointDiff {
-    const from = this._loadCheckpointMessages(sessionId, checkpointId);
     const session = this.sessionStore.load(sessionId);
-    const to = session?.messages ?? [];
-
-    return this._computeDiff(from, to);
+    return this._computeDiff(
+      this._loadCheckpointMessages(sessionId, checkpointId),
+      session?.messages ?? [],
+    );
   }
 
-  // ─── 列表/删除 ─────────────────────────────────────────────────────────────
-
-  /** 列出会话所有快照 */
   listCheckpoints(sessionId: string): CheckpointMeta[] {
     const cpDir = this.checkpointDir(sessionId);
-    const files = readdirSync(cpDir).filter(f => f.endsWith(".meta.json"));
-
     const metas: CheckpointMeta[] = [];
-    for (const f of files) {
+    for (const name of readdirSync(cpDir)) {
+      const metaFile = join(cpDir, name, "meta.json");
+      const legacy = join(cpDir, name);
       try {
-        const meta = JSON.parse(readFileSync(join(cpDir, f), "utf-8")) as CheckpointMeta;
-        metas.push(meta);
+        if (existsSync(metaFile)) {
+          metas.push(JSON.parse(readFileSync(metaFile, "utf-8")) as CheckpointMeta);
+          continue;
+        }
+        if (name.endsWith(".meta.json")) {
+          metas.push(JSON.parse(readFileSync(legacy, "utf-8")) as CheckpointMeta);
+        }
       } catch {
         continue;
       }
     }
-
     return metas.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  /** 删除快照 */
   deleteCheckpoint(sessionId: string, checkpointId: string): boolean {
-    const cpDir = this.checkpointDir(sessionId);
-    const metaFile = join(cpDir, `${checkpointId}.meta.json`);
-    const dataFile = join(cpDir, `${checkpointId}.jsonl`);
-    const ledgerFile = join(cpDir, `${checkpointId}.ledger.jsonl`);
-
-    if (!existsSync(metaFile)) return false;
-
-    unlinkSync(metaFile);
-    if (existsSync(dataFile)) unlinkSync(dataFile);
-    if (existsSync(ledgerFile)) unlinkSync(ledgerFile);
-    return true;
-  }
-
-  // ─── 自动快照触发 ──────────────────────────────────────────────────────────
-
-  /**
-   * 判断是否需要自动快照。
-   *
-   * 历史问题：tool_call 每次全量拷贝 session → 长会话 checkpoint 目录数百 MB。
-   * 现策略：
-   *   - compression：压前快照（可能丢信息，值得）
-   *   - tool_call：不再每次快照（写文件风险改由终端审批/沙箱承担）
-   *   - round_start：仍关
-   */
-  shouldAutoCheckpoint(eventType: "tool_call" | "compression" | "round_start"): boolean {
-    if (eventType === "compression") return true;
-    if (eventType === "tool_call") return false;
-    if (eventType === "round_start") return false;
+    const dest = this.cpRoot(sessionId, checkpointId);
+    if (existsSync(dest)) {
+      rmSync(dest, { recursive: true, force: true });
+      return true;
+    }
     return false;
   }
 
-  /** 只保留最近 keep 个 autoCheckpoint，删最旧 */
+  shouldAutoCheckpoint(eventType: "tool_call" | "compression" | "round_start"): boolean {
+    return eventType === "compression";
+  }
+
   pruneAutoCheckpoints(sessionId: string, keep: number = MAX_AUTO_CHECKPOINTS): number {
     const all = this.listCheckpoints(sessionId).filter((m) => m.autoCheckpoint);
     if (all.length <= keep) return 0;
-    // list 已按 createdAt 降序；删掉尾部旧的
     const toDelete = all.slice(keep);
     let n = 0;
     for (const m of toDelete) {
@@ -226,50 +169,49 @@ export class CheckpointStore {
     return n;
   }
 
-  // ─── 内部 ──────────────────────────────────────────────────────────────────
-
   private _loadCheckpointMessages(sessionId: string, checkpointId: string): SessionMessage[] {
-    const cpDir = this.checkpointDir(sessionId);
-    const dataFile = join(cpDir, `${checkpointId}.jsonl`);
-
+    const dest = this.cpRoot(sessionId, checkpointId);
+    const dataFile = existsSync(join(dest, "events.jsonl"))
+      ? join(dest, "events.jsonl")
+      : join(this.checkpointDir(sessionId), `${checkpointId}.jsonl`);
     if (!existsSync(dataFile)) return [];
-
-    const lines = readFileSync(dataFile, "utf-8").split("\n");
     const messages: SessionMessage[] = [];
-
-    for (const line of lines) {
+    for (const line of readFileSync(dataFile, "utf-8").split("\n")) {
       if (!line.trim()) continue;
       try {
-        const event = JSON.parse(line);
-        if (event.type === "message") {
-          const { type: _, ...msg } = event;
-          messages.push(msg);
+        const event = JSON.parse(line) as Record<string, unknown>;
+        if (typeof event.type === "string" && isMessageEventType(event.type)) {
+          const data = (event.data ?? event) as SessionMessage;
+          if (data.role != null || data.content != null) {
+            messages.push({
+              ...data,
+              role: String(data.role ?? "user"),
+              content: String(data.content ?? ""),
+              createdAt: String(data.createdAt ?? event.ts ?? ""),
+              id: (event.messageId as string | undefined) ?? data.id,
+            });
+          }
         }
       } catch {
         continue;
       }
     }
-
     return messages;
   }
 
   private _computeDiff(from: SessionMessage[], to: SessionMessage[]): CheckpointDiff {
-    // 用 createdAt + role 作为粗略匹配键
-    const fromKeys = new Set(from.map(m => `${m.createdAt}|${m.role}`));
-    const toKeys = new Set(to.map(m => `${m.createdAt}|${m.role}`));
-
-    const added = to.filter(m => !fromKeys.has(`${m.createdAt}|${m.role}`));
-    const removed = from.filter(m => !toKeys.has(`${m.createdAt}|${m.role}`));
-
-    const snippets = added.slice(0, 10).map(m => {
+    const fromKeys = new Set(from.map((m) => `${m.createdAt}|${m.role}`));
+    const toKeys = new Set(to.map((m) => `${m.createdAt}|${m.role}`));
+    const added = to.filter((m) => !fromKeys.has(`${m.createdAt}|${m.role}`));
+    const removed = from.filter((m) => !toKeys.has(`${m.createdAt}|${m.role}`));
+    const snippets = added.slice(0, 10).map((m) => {
       const content = String(m.content ?? "").trim();
       return content.length > 100 ? content.slice(0, 100) + "…" : content;
     });
-
     return {
       addedMessages: added.length,
       removedMessages: removed.length,
-      addedTraces: 0,  // 不追踪 trace
+      addedTraces: 0,
       removedTraces: 0,
       messageSnippets: snippets,
     };

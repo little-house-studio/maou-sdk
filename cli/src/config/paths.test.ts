@@ -48,7 +48,7 @@ describe("paths", () => {
     expect(projectMaouRoot("/proj")).toBe(join("/proj", ".maou"));
     expect(projectSessionsDir("/proj")).toBe(join("/proj", ".maou", "sessions"));
     expect(projectSessionFile("abc", "/proj")).toBe(
-      join("/proj", ".maou", "sessions", "abc.jsonl"),
+      join("/proj", ".maou", "sessions", "abc", "events.jsonl"),
     );
     expect(projectLastSessionPath("/proj")).toBe(
       join("/proj", ".maou", "last-session.json"),

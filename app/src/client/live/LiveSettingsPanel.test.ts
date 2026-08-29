@@ -40,7 +40,7 @@ describe("LiveSettingsPanel structure", () => {
     assert.match(src, /主模型/);
     assert.match(src, /小模型/);
     assert.match(src, /多模态/);
-    assert.match(src, /终端审批/);
+    assert.match(src, /权限套餐|终端审批/);
   });
 
   it("LLM section: vendor + model + multimodal + price + advanced", () => {

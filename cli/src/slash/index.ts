@@ -45,7 +45,9 @@ export {
   syncRuntimeCommands,
   syncSkillCommands,
   refreshDynamicCommands,
+  setSkillScanContext,
   type RuntimeCommandListItem,
+  type SkillScanContext,
 } from "./sync.js";
 
 import { registerBuiltinCliCommands } from "./builtins.js";

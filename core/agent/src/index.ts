@@ -239,3 +239,18 @@ export type {
   PreviewRequestSection,
   GlobalApiWriteOptions,
 } from "./bootstrap/index.js";
+
+// 会话任务灯（后台跑批状态）：app 顶栏读它，barrel 之前漏接
+export {
+  DEFAULT_WAKE_STREAK_LIMIT,
+  completeJob,
+  jobLamp,
+  listSessionJobs,
+  markJobStopping,
+  noteAutoWake,
+  registerJob,
+  resetJobRegistryForTest,
+  resetWakeStreak,
+  takeSettledJobs,
+} from "./agent/job-registry.js";
+export type { JobLamp, JobStatus, SessionJob } from "./agent/job-registry.js";

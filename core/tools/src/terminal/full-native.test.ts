@@ -79,7 +79,9 @@ async function waitLogs(
   throw new Error(`timeout waiting ${re} in logs:\n${last}`);
 }
 
-describe.skipIf(!engine)("rust full backend (native)", () => {
+// 整个 describe 都在驱动真的 PTY 子进程：单条 waitLogs 就允许等 5s，
+// tty 那条要等两次，run 那条内部给了 8s —— vitest 默认 5s 是结构性不够。
+describe.skipIf(!engine)("rust full backend (native)", { timeout: 30_000 }, () => {
   const agent = `full-native-${Date.now()}`;
   const temps: string[] = [];
   const live: Array<{ id: string; agent: string }> = [];

@@ -33,11 +33,14 @@ export function SidebarFrame(bag: WireHostBag) {
   );
 
   return (
-    <div className="wire-left-stack" ref={stackRef}>
-      <div
-        className="wire-left-agents"
-        style={{ flex: `0 0 ${bag.agentPct}%` }}
-      >
+    <div
+      className="wire-left-stack"
+      ref={stackRef}
+      style={{
+        gridTemplateRows: `minmax(0, ${bag.agentPct}fr) 3px minmax(0, ${100 - bag.agentPct}fr)`,
+      }}
+    >
+      <div className="wire-left-agents">
         <SlotOutlet name="sidebar.agents" props={bag} />
       </div>
       <div

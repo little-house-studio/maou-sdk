@@ -17,7 +17,7 @@ const root = join(tmpdir(), `maou-sess-stats-${process.pid}`);
 const sid = "test-session-1";
 
 before(() => {
-  const dir = join(root, ".maou", "sessions");
+  const dir = join(root, ".maou", "sessions", sid);
   mkdirSync(dir, { recursive: true });
   const lines = [
     JSON.stringify({
@@ -33,7 +33,7 @@ before(() => {
     }),
     JSON.stringify({ type: "tool_call", name: "reader" }),
   ];
-  writeFileSync(join(dir, `${sid}.jsonl`), lines.join("\n") + "\n", "utf8");
+  writeFileSync(join(dir, "events.jsonl"), lines.join("\n") + "\n", "utf8");
 });
 
 after(() => {
@@ -51,14 +51,19 @@ describe("session-stats", () => {
     assert.equal(s.cacheRead, 40);
     assert.equal(s.lastInputTokens, 100);
     assert.equal(s.lastOutputTokens, 20);
+    assert.equal(s.lastCacheRead, 40);
     assert.equal(s.contextUsed, 120);
+    assert.ok(s.contextBreakdown.messages > 0);
+    assert.equal(s.contextBreakdown.used, 120);
+    assert.equal(s.contextBreakdown.cacheHitPct, 40);
   });
 
   it("clears occupancy after a later compress event", () => {
-    const dir = join(root, ".maou", "sessions");
     const sid2 = "test-session-compact";
+    const dir = join(root, ".maou", "sessions", sid2);
+    mkdirSync(dir, { recursive: true });
     writeFileSync(
-      join(dir, `${sid2}.jsonl`),
+      join(dir, "events.jsonl"),
       [
         JSON.stringify({
           type: "message",
@@ -75,6 +80,10 @@ describe("session-stats", () => {
     assert.equal(s.contextUsed, 0);
     assert.equal(s.lastInputTokens, 0);
     assert.equal(s.lastOutputTokens, 0);
+    assert.equal(s.contextBreakdown.used, 0);
+    assert.equal(s.contextBreakdown.messages, 0);
+    assert.equal(s.lifetime.inputTokens, 100);
+    assert.equal(s.lifetime.outputTokens, 20);
   });
 
   it("formats readable text", () => {

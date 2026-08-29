@@ -13,6 +13,8 @@ describe("windows-shell", () => {
     expect(classifyWindowsShell("pwsh")).toBe("powershell");
     expect(classifyWindowsShell(String.raw`C:\Windows\System32\cmd.exe`)).toBe("cmd");
     expect(classifyWindowsShell(String.raw`C:\Program Files\Git\bin\bash.exe`)).toBe("unix-like");
+    expect(classifyWindowsShell("wsl.exe")).toBe("cmd");
+    expect(classifyWindowsShell(String.raw`C:\Windows\System32\wsl.exe`)).toBe("cmd");
   });
 
   it("PowerShell agent 用 -Command，不用 /c", () => {

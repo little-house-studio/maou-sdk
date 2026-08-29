@@ -9,6 +9,7 @@ import {
   isWriteTool,
   resolveToolCard,
   slicePreview,
+  toolCardInitiallyExpanded,
   toolDurationLabel,
   toolFoldMark,
   toolIntentLabel,
@@ -16,7 +17,7 @@ import {
 
 export type ToolCardProps = {
   message: DraftMessage;
-  /** When false, still show fold chevron (CLI always clickable on title). */
+  /** 标题行初始展开（默认折叠） */
   defaultExpanded?: boolean;
   /** 终端会话 id（展开后可点「打开终端」） */
   terminalId?: string;
@@ -30,8 +31,8 @@ export function ToolCard({
   onOpenTerminal,
 }: ToolCardProps) {
   const card = resolveToolCard(message);
-  const [expanded, setExpanded] = useState(
-    () => defaultExpanded || (!card.done && !card.isError),
+  const [expanded, setExpanded] = useState(() =>
+    toolCardInitiallyExpanded(defaultExpanded),
   );
   const [resultFull, setResultFull] = useState(false);
   const intent = toolIntentLabel(card);

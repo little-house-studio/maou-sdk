@@ -11,6 +11,20 @@ export type SessionToolMetaMaps = {
   durations: Record<string, number>;
 };
 
+function isMessageType(type: string): boolean {
+  return (
+    type === "user/message" ||
+    type === "user/queued" ||
+    type === "assistant/message" ||
+    type === "tool/result" ||
+    type === "tool/async" ||
+    type === "system/notice" ||
+    type === "runtime/control" ||
+    type === "agent/message" ||
+    type === "session/custom"
+  );
+}
+
 export function findSessionJsonl(
   sessionId: string,
   projectRoot: string,
@@ -19,9 +33,9 @@ export function findSessionJsonl(
   if (!id || id.includes("/") || id.includes("\\")) return null;
   const root = (projectRoot || "").trim();
   const candidates = [
-    root ? join(root, ".maou", "sessions", `${id}.jsonl`) : "",
-    join(homedir(), ".maou", "ops", ".maou", "sessions", `${id}.jsonl`),
-    join(homedir(), ".maou", "sessions", `${id}.jsonl`),
+    root ? join(root, ".maou", "sessions", id, "events.jsonl") : "",
+    join(homedir(), ".maou", "ops", ".maou", "sessions", id, "events.jsonl"),
+    join(homedir(), ".maou", "sessions", id, "events.jsonl"),
   ].filter(Boolean);
   return candidates.find((p) => existsSync(p)) ?? null;
 }
@@ -32,8 +46,9 @@ export function parseSessionToolMeta(jsonl: string): SessionToolMetaMaps {
     if (!line.trim()) continue;
     try {
       const ev = JSON.parse(line) as Record<string, unknown>;
-      if (ev.type === "message" || typeof ev.role === "string") {
-        const { type: _t, ...rest } = ev;
+      const data = ev.data && typeof ev.data === "object" ? ev.data as Record<string, unknown> : ev;
+      if (ev.type === "message" || isMessageType(String(ev.type ?? "")) || typeof data.role === "string") {
+        const { type: _t, ...rest } = data;
         msgs.push(rest);
       }
     } catch {

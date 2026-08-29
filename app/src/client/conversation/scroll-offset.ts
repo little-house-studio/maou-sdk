@@ -1,5 +1,8 @@
 import { THREAD_SCROLL_ATTR } from "./contract";
 
+/** 距底小于此值视为贴底。ChatPanel 滚动监听 / followStickBottom 读写。 */
+export const STICK_BOTTOM_GAP = 96;
+
 export type StackPrev = {
   height: number;
   marginTop: number;
@@ -76,7 +79,7 @@ export function offsetInScroll(el: HTMLElement, root: HTMLElement): number {
   let n: HTMLElement | null = el;
   while (n && n !== root) {
     if (isStickyPosition(n)) {
-      const parent = n.parentElement;
+      const parent: HTMLElement | null = n.parentElement;
       if (!parent) break;
       y += inFlowOffsetInParent(n, parent);
       if (parent === root) break;
@@ -106,6 +109,31 @@ export function stickHomeScrollTop(
   const y = Math.max(0, Math.round(flowTop));
   const max = Math.max(0, Math.round(maxScrollTop));
   return Math.max(0, Math.min(max, y));
+}
+
+export function gapFromBottom(box: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+}): number {
+  return box.scrollHeight - box.scrollTop - box.clientHeight;
+}
+
+export function isStickBottom(
+  gap: number,
+  threshold = STICK_BOTTOM_GAP,
+): boolean {
+  return gap < threshold;
+}
+
+/** 仅 stick 时把 scrollTop 接到末尾。返回是否写了 scrollTop。 */
+export function followStickBottom(
+  el: { scrollTop: number; scrollHeight: number },
+  stick: boolean,
+): boolean {
+  if (!stick) return false;
+  el.scrollTop = el.scrollHeight;
+  return true;
 }
 
 export function scrollStickHome(stick: HTMLElement): void {

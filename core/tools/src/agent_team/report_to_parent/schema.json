@@ -1,0 +1,27 @@
+{
+  "name": "report_to_parent",
+  "description": "子会话向父会话汇报。wake=true 写入父 inbox 并可叫醒父循环；wake=false 只写入父动态区。不结束本子会话。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "description": "汇报正文。"
+      },
+      "wake": {
+        "type": "boolean",
+        "description": "true=投递父 inbox；false=只写入父动态区。默认 false。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次汇报。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么现在向父汇报。"
+      }
+    },
+    "required": ["message", "description", "reason"],
+    "additionalProperties": false
+  }
+}

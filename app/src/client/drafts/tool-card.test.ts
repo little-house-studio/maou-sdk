@@ -8,9 +8,11 @@ import {
   durationStr,
   isDiffResult,
   isWriteTool,
+  todoSummary,
   readToolIntent,
   resolveToolCard,
   slicePreview,
+  toolCardInitiallyExpanded,
   toolFoldMark,
   toolResultSizeLabel,
   toolTitleMeta,
@@ -38,6 +40,18 @@ describe("tool-card CLI helpers", () => {
     assert.equal(durationStr(undefined), "");
     assert.equal(durationStr(350), "350ms");
     assert.match(durationStr(1200), /1\.2s/);
+  });
+
+  it("todoSummary reads table plus current item", () => {
+    const result = [
+      "| # | Todo | 状态 | 依赖 |",
+      "|---|------|------|------|",
+      "| 1 | write tests | [>] | — |",
+      "| 2 | ship | [ ] | — |",
+      "",
+      "▶ 当前执行: 1 — write tests",
+    ].join("\n");
+    assert.equal(todoSummary(result), "0/2 · write tests");
   });
 
   it("toolResultSizeLabel reports chars and tok", () => {
@@ -172,5 +186,67 @@ describe("tool-card CLI helpers", () => {
     );
     assert.match(wait, /data-tool-led="wait"/);
     assert.match(wait, /is-wait/);
+  });
+
+  it("success and failure tools default collapsed; expand is defaultExpanded or click", () => {
+    assert.equal(toolCardInitiallyExpanded(), false);
+    assert.equal(toolCardInitiallyExpanded(false), false);
+    assert.equal(toolCardInitiallyExpanded(true), true);
+
+    const ok: DraftMessage = {
+      id: "t-ok",
+      role: "tool",
+      body: '{"ok":true}',
+      tool: {
+        name: "reader",
+        description: "读取当前会话头信息",
+        result: '{"ok":true,"id":"abc"}',
+        done: true,
+        isError: false,
+        durationMs: 78,
+      },
+    };
+    const err: DraftMessage = {
+      id: "t-err",
+      role: "tool",
+      body: "缺少必填",
+      tool: {
+        name: "project_manage",
+        description: "创建项目",
+        result: "缺少必填字段 name",
+        done: true,
+        isError: true,
+        durationMs: 41,
+      },
+    };
+    const wait: DraftMessage = {
+      id: "t-wait",
+      role: "tool",
+      body: "▶ glob",
+      tool: {
+        name: "glob",
+        description: "列 json",
+        result: "",
+        done: false,
+        isError: false,
+      },
+    };
+
+    for (const message of [ok, err, wait]) {
+      const html = renderToStaticMarkup(createElement(ToolCard, { message }));
+      assert.match(html, /is-collapsed/);
+      assert.doesNotMatch(html, /is-expanded/);
+      assert.doesNotMatch(html, /▸ 输出/);
+      assert.match(html, /aria-expanded="false"/);
+      assert.match(html, /展开工具卡/);
+    }
+
+    const opened = renderToStaticMarkup(
+      createElement(ToolCard, { message: ok, defaultExpanded: true }),
+    );
+    assert.match(opened, /is-expanded/);
+    assert.match(opened, /▸ 输出/);
+    assert.match(opened, /aria-expanded="true"/);
+    assert.match(opened, /收起工具卡/);
   });
 });

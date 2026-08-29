@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, after } from "node:test";
+import { afterAll, describe, it } from "vitest";
 import {
   readBoard,
   readSettings,
@@ -19,7 +19,7 @@ import {
 
 describe("proactive board-store", () => {
   const dir = mkdtempSync(join(tmpdir(), "maou-proactive-"));
-  after(() => {
+  afterAll(() => {
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {

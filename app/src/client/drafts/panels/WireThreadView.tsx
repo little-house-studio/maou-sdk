@@ -14,8 +14,14 @@ import type { DraftMessage } from "../types";
 import {
   groupLoopTurns,
   groupThreadBlocks,
+  isModelCallProgressText,
   isPlaceholderAssistantBody,
+  replyBlockLive,
+  pinReleasedLastTurn,
+  replyTurnFoldable,
+  replyTurnOpen,
   replyTurnVisible,
+  summarizeReplyTurn,
 } from "../thread-blocks";
 import type { ReplyBlock } from "../thread-blocks";
 import { DraftMarkdown } from "../DraftMarkdown";
@@ -27,13 +33,27 @@ import {
   formatLoopTip,
   formatMessageHead,
   formatRoundTip,
+  formatUserTurnTip,
   loopTipRows,
   messageHeadEmpty,
   roundTipRows,
   summarizeLoop,
+  userTurnTipRows,
 } from "../message-meta";
 import { roleLabelZh, roleMarkKind, roleTone } from "../visual-marks";
 import { RoleAvatar } from "../icons/Marks";
+
+/** 调试面板打开哪一份账本内容。 */
+export type PayloadRequest = {
+  /** request = 这一轮发出去的 POST；response = 这一轮收回来的内容（含 tool） */
+  view: "request" | "response";
+  /** 落盘 entry id（新会话有） */
+  payloadId?: string;
+  /** id 缺失时的回落定位：助手轮在全会话里的 0 基下标 */
+  payloadIndex?: number;
+  /** 面板标题用：#3 提问 / 第 2 轮 */
+  title: string;
+};
 
 export type WireThreadViewProps = {
   messages: DraftMessage[];
@@ -45,6 +65,8 @@ export type WireThreadViewProps = {
   className?: string;
   /** 当前用户回合仍在跑时，最后一组 loop 不画完成脚注 */
   agentBusy?: boolean;
+  /** 打开 POST 请求 / 返回内容调试面板；不传时编号只做展示不可点 */
+  onInspectPayload?: (req: PayloadRequest) => void;
 };
 
 function MessageHeadLine({
@@ -78,9 +100,12 @@ function MessageHeadLine({
 function MessageRow({
   message,
   onOpenTerminal,
+  lead,
 }: {
   message: DraftMessage;
   onOpenTerminal?: WireThreadViewProps["onOpenTerminal"];
+  /** 贴在气泡左上角的角标（用户提问编号方块） */
+  lead?: React.ReactNode;
 }) {
   const tone = roleTone(roleMarkKind(message.role));
   const isTool = message.role === "tool";
@@ -112,6 +137,7 @@ function MessageRow({
       }
     >
       <div className="msg-body">
+        {lead}
         {!isTool ? <MessageHeadLine head={head} /> : null}
         <div
           className={`bubble-text${isTool ? " is-tool" : ""}${
@@ -278,10 +304,20 @@ function AssistantTurn({
   assistant,
   internals,
   round,
+  onInspectPayload,
+  expanded,
+  foldable,
+  onToggleFold,
 }: {
   assistant: DraftMessage | null;
   internals: DraftMessage[];
   round: number;
+  onInspectPayload?: WireThreadViewProps["onInspectPayload"];
+  /** 本轮是否展开（最后一轮 / live / 用户点过）。LoopBlock 写。 */
+  expanded: boolean;
+  /** 更早轮次才出折叠行。 */
+  foldable: boolean;
+  onToggleFold?: () => void;
 }) {
   const orphan = !assistant;
   const thinkParts = internals.filter((m) => m.role === "thinking");
@@ -315,34 +351,95 @@ function AssistantTurn({
     toolCount,
     inputTokens: assistant?.meta?.usageInput,
     outputTokens: assistant?.meta?.usageOutput,
+    cacheRead: assistant?.meta?.cacheRead,
+    cacheWrite: assistant?.meta?.cacheWrite,
+    cacheReported: assistant?.meta?.cacheReported,
     live,
   };
   const tip = formatRoundTip(tipInput);
-  const rows = roundTipRows(tipInput);
+  const payloadId = assistant?.meta?.payloadId;
+  const payloadIndex = assistant?.meta?.payloadIndex;
+  const inspectable =
+    Boolean(onInspectPayload) && (Boolean(payloadId) || payloadIndex != null);
+  const rows = [
+    ...roundTipRows(tipInput),
+    {
+      label: "返回体",
+      value: inspectable ? "点击查看" : live ? "待落盘" : "不可用",
+    },
+  ];
   const digits = String(round).length;
+  const chipProps = {
+    className: `wire-round-chip${live ? " is-live" : ""}${
+      inspectable ? " is-inspectable" : ""
+    }`,
+    "data-round-chip": "",
+    "data-digits": digits,
+  } as const;
   const showBody =
     Boolean(assistant) && !isPlaceholderAssistantBody(assistant?.body);
   const hasColumn =
     orphan || thinkParts.length > 0 || showBody || otherInternals.length > 0;
+  const folded = foldable && !expanded;
+  const chipOnly = !hasColumn && expanded && !foldable;
+  const summary = summarizeReplyTurn({
+    kind: "reply",
+    assistant,
+    internals,
+  });
 
   return (
     <div
       className={`wire-reply-turn${orphan ? " is-orphan" : ""}${
         live ? " is-live" : ""
-      }${hasColumn ? "" : " is-chip-only"}`}
+      }${chipOnly ? " is-chip-only" : ""}${foldable ? " has-fold" : ""}${
+        folded ? " is-folded" : ""
+      }`}
       data-orphan={orphan ? "true" : "false"}
       data-round={round}
+      data-turn-folded={folded ? "true" : "false"}
     >
       <InfoHover rows={rows} label={tip}>
-        <span
-          className={`wire-round-chip${live ? " is-live" : ""}`}
-          data-round-chip=""
-          data-digits={digits}
-        >
-          {round}
-        </span>
+        {inspectable ? (
+          <button
+            type="button"
+            {...chipProps}
+            aria-label={`第 ${round} 轮 · 查看本轮返回体`}
+            title="查看本轮返回内容（含工具调用）"
+            onClick={() =>
+              onInspectPayload!({
+                view: "response",
+                ...(payloadId ? { payloadId } : {}),
+                ...(payloadIndex != null ? { payloadIndex } : {}),
+                title: `第 ${round} 轮`,
+              })
+            }
+          >
+            {round}
+          </button>
+        ) : (
+          <span {...chipProps}>{round}</span>
+        )}
       </InfoHover>
-      {hasColumn ? (
+      {foldable ? (
+        <button
+          type="button"
+          className="wire-turn-fold"
+          data-turn-fold=""
+          aria-expanded={!folded}
+          aria-label={
+            folded ? `展开第 ${round} 轮` : `收起第 ${round} 轮`
+          }
+          title={folded ? "展开此轮" : "收起此轮"}
+          onClick={onToggleFold}
+        >
+          <span className="wire-turn-fold-text">{summary}</span>
+          <span className="wire-turn-fold-mark" aria-hidden>
+            {folded ? "▶" : "▼"}
+          </span>
+        </button>
+      ) : null}
+      {expanded && hasColumn ? (
         <div
           className={`bubble codex-bubble wire-msg assistant${
             orphan ? " is-orphan" : ""
@@ -389,22 +486,96 @@ function AssistantTurn({
   );
 }
 
-function repliesAreLive(replies: ReplyBlock[]): boolean {
-  return replies.some(
-    (block) =>
-      Boolean(block.assistant?.meta?.streaming) ||
-      block.internals.some((part) => part.thinking?.streaming),
+/**
+ * 用户提问的方块编号 —— 与下方轮次圆做法对齐（同一列、同一 InfoHover 语汇），
+ * 方 vs 圆区分「我发出去的」与「模型跑的每一轮」。点开是本轮完整 POST 请求。
+ */
+function UserTurnMark({
+  ordinal,
+  summary,
+  live,
+  payloadId,
+  payloadIndex,
+  onInspectPayload,
+}: {
+  ordinal: number;
+  summary: ReturnType<typeof summarizeLoop>;
+  live: boolean;
+  payloadId?: string;
+  payloadIndex?: number;
+  onInspectPayload?: WireThreadViewProps["onInspectPayload"];
+}) {
+  const inspectable =
+    Boolean(onInspectPayload) && (Boolean(payloadId) || payloadIndex != null);
+  const tipInput = {
+    ...summary,
+    ordinal,
+    live,
+    hasRequest: inspectable,
+  };
+  const rows = userTurnTipRows(tipInput);
+  const label = formatUserTurnTip(tipInput);
+  const digits = String(ordinal).length;
+  const markProps = {
+    className: `wire-user-chip${live ? " is-live" : ""}${
+      inspectable ? " is-inspectable" : ""
+    }`,
+    "data-user-chip": "",
+    "data-digits": digits,
+  } as const;
+  return (
+    <InfoHover rows={rows} label={label} className="wire-user-chip-hover">
+      {inspectable ? (
+        <button
+          type="button"
+          {...markProps}
+          aria-label={`第 ${ordinal} 条提问 · 查看本轮 POST 请求`}
+          title="查看本轮发送的完整 POST 请求"
+          onClick={(e) => {
+            // 捕获阶段由 UserStick 放行 button；这里再挡一次冒泡，
+            // 免得外层把「看请求体」当成「跳回提问」
+            e.stopPropagation();
+            onInspectPayload!({
+              view: "request",
+              ...(payloadId ? { payloadId } : {}),
+              ...(payloadIndex != null ? { payloadIndex } : {}),
+              title: `#${ordinal} 提问`,
+            });
+          }}
+        >
+          {ordinal}
+        </button>
+      ) : (
+        <span {...markProps}>{ordinal}</span>
+      )}
+    </InfoHover>
   );
+}
+
+function repliesAreLive(replies: ReplyBlock[]): boolean {
+  return replies.some(replyBlockLive);
+}
+
+function loopOpts(user: DraftMessage | null): {
+  sentAt?: number;
+  durationMs?: number;
+} {
+  return {
+    ...(user?.meta?.ts != null ? { sentAt: user.meta.ts } : {}),
+    ...(user?.meta?.durationMs != null ? { durationMs: user.meta.durationMs } : {}),
+  };
 }
 
 function LoopFoot({
   replies,
   roundCount,
+  user,
 }: {
   replies: ReplyBlock[];
   roundCount: number;
+  user: DraftMessage | null;
 }) {
-  const summary = { ...summarizeLoop(replies), roundCount };
+  const summary = { ...summarizeLoop(replies, loopOpts(user)), roundCount };
   const tip = formatLoopTip(summary);
   const dur = durationStr(summary.durationMs);
   return (
@@ -466,17 +637,57 @@ function LoopBlock({
   replies,
   complete,
   onOpenTerminal,
+  userOrdinal,
+  live,
+  onInspectPayload,
+  foldOpen,
+  setFoldOpen,
 }: {
   user: DraftMessage | null;
   replies: ReplyBlock[];
   complete: boolean;
   onOpenTerminal?: WireThreadViewProps["onOpenTerminal"];
+  /** 本会话第几条用户消息（1 基） */
+  userOrdinal: number;
+  live: boolean;
+  onInspectPayload?: WireThreadViewProps["onInspectPayload"];
+  foldOpen: Record<string, boolean>;
+  setFoldOpen: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
 }) {
   const shown = replies.filter(replyTurnVisible);
   const showFoot = complete && shown.length > 0;
+  const lastIdx = shown.length - 1;
+  const foldPrefix = user?.id ?? "loop";
+  const lastFoldKey =
+    lastIdx >= 0
+      ? `${foldPrefix}::${
+          shown[lastIdx]!.assistant?.id ??
+          shown[lastIdx]!.internals[0]?.id ??
+          `reply-${lastIdx}`
+        }`
+      : null;
+  const prevLastFoldKey = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const prev = prevLastFoldKey.current;
+    prevLastFoldKey.current = lastFoldKey;
+    if (!prev || prev === lastFoldKey) return;
+    setFoldOpen((m) => pinReleasedLastTurn(m, prev, lastFoldKey));
+  }, [lastFoldKey]);
+  // 用户发的那一份 POST 就是本轮首个 round 的请求体
+  const firstAssistant = replies.find((r) => r.assistant)?.assistant ?? null;
+  const mark = user ? (
+    <UserTurnMark
+      ordinal={userOrdinal}
+      summary={summarizeLoop(replies, loopOpts(user))}
+      live={live}
+      payloadId={firstAssistant?.meta?.payloadId}
+      payloadIndex={firstAssistant?.meta?.payloadIndex}
+      onInspectPayload={onInspectPayload}
+    />
+  ) : null;
   return (
     <div
-      className="wire-loop"
+      className={`wire-loop${live ? " is-live" : ""}`}
       data-loop=""
       data-loop-complete={showFoot ? "true" : "false"}
       {...(user ? askAnchorProps(user.id, clipAskPreview(user.body)) : {})}
@@ -484,26 +695,76 @@ function LoopBlock({
       <LoopSpine />
       {user ? (
         <UserStick>
-          <MessageRow message={user} onOpenTerminal={onOpenTerminal} />
+          <MessageRow
+            message={user}
+            onOpenTerminal={onOpenTerminal}
+            lead={mark}
+          />
         </UserStick>
       ) : null}
       {shown.length > 0 ? (
         <div className="wire-loop-rounds">
-          {shown.map((block, i) => (
-            <AssistantTurn
-              key={block.assistant?.id ?? block.internals[0]?.id ?? `reply-${i}`}
-              assistant={block.assistant}
-              internals={block.internals}
-              round={i + 1}
-            />
-          ))}
+          {shown.map((block, i) => {
+            const key =
+              `${foldPrefix}::${
+                block.assistant?.id ?? block.internals[0]?.id ?? `reply-${i}`
+              }`;
+            const isLast = i === lastIdx;
+            const turnLive = replyBlockLive(block);
+            const expanded = replyTurnOpen({
+              isLastVisible: isLast,
+              turnLive,
+              loopLive: live,
+              userOpen: key in foldOpen ? foldOpen[key] : undefined,
+            });
+            return (
+              <AssistantTurn
+                key={key}
+                assistant={block.assistant}
+                internals={block.internals}
+                round={i + 1}
+                onInspectPayload={onInspectPayload}
+                expanded={expanded}
+                foldable={replyTurnFoldable({
+                  isLastVisible: isLast,
+                  turnLive,
+                })}
+                onToggleFold={() =>
+                  setFoldOpen((prev) => ({ ...prev, [key]: !expanded }))
+                }
+              />
+            );
+          })}
         </div>
       ) : null}
       {showFoot ? (
-        <LoopFoot replies={replies} roundCount={shown.length} />
+        <LoopFoot replies={replies} roundCount={shown.length} user={user} />
       ) : null}
     </div>
   );
+}
+
+/**
+ * 用户提问编号：账本回填了 meta.ordinal 就用真值（分页只加载末尾也不会串号），
+ * 没有回填时按可见 transcript 顺延，并从已知真值处对齐。
+ */
+export function userOrdinalMap(
+  messages: readonly DraftMessage[],
+): Map<string, number> {
+  const users = messages.filter((m) => m.role === "user");
+  let offset = 0;
+  for (let i = 0; i < users.length; i++) {
+    const known = users[i]!.meta?.ordinal;
+    if (known != null && known > 0) {
+      offset = known - (i + 1);
+      break;
+    }
+  }
+  const out = new Map<string, number>();
+  users.forEach((m, i) => {
+    out.set(m.id, Math.max(1, i + 1 + offset));
+  });
+  return out;
 }
 
 /** Shared thread list for draft ContextPanel parity */
@@ -514,10 +775,13 @@ export const WireThreadView = React.memo(function WireThreadView({
   onOpenTerminal,
   className = "",
   agentBusy = false,
+  onInspectPayload,
 }: WireThreadViewProps) {
   const blocks = groupThreadBlocks(messages);
   const segments = groupLoopTurns(blocks);
   const empty = messages.length === 0;
+  const userOrdinals = userOrdinalMap(messages);
+  const [foldOpen, setFoldOpen] = useState<Record<string, boolean>>({});
   const lastLoopIdx = (() => {
     for (let i = segments.length - 1; i >= 0; i--) {
       if (segments[i]!.kind === "loop") return i;
@@ -547,7 +811,18 @@ export const WireThreadView = React.memo(function WireThreadView({
                 key={m.id}
                 ask={{ id: m.id, preview: clipAskPreview(m.body) }}
               >
-                <MessageRow message={m} onOpenTerminal={onOpenTerminal} />
+                <MessageRow
+                  message={m}
+                  onOpenTerminal={onOpenTerminal}
+                  lead={
+                    <UserTurnMark
+                      ordinal={userOrdinals.get(m.id) ?? 1}
+                      summary={summarizeLoop([], loopOpts(m))}
+                      live={false}
+                      onInspectPayload={onInspectPayload}
+                    />
+                  }
+                />
               </UserStick>
             );
           }
@@ -569,6 +844,13 @@ export const WireThreadView = React.memo(function WireThreadView({
             replies={seg.replies}
             complete={complete}
             onOpenTerminal={onOpenTerminal}
+            userOrdinal={
+              seg.user ? (userOrdinals.get(seg.user.id) ?? 1) : 1
+            }
+            live={live}
+            onInspectPayload={onInspectPayload}
+            foldOpen={foldOpen}
+            setFoldOpen={setFoldOpen}
           />
         );
       })}
@@ -627,21 +909,36 @@ export function chatLinesToDraftMessages(
     usageInput?: number;
     usageOutput?: number;
     round?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    cacheReported?: boolean;
+    payloadId?: string;
+    payloadIndex?: number;
+    ordinal?: number;
     images?: Array<{ mimeType: string; data: string; name?: string }>;
   }>,
   opts?: { agentBusy?: boolean; agentName?: string },
 ): DraftMessage[] {
   const busy = Boolean(opts?.agentBusy);
   const agent = opts?.agentName || "coding";
+  const visible = lines.filter(
+    (l) =>
+      !(l.role === "system" && isModelCallProgressText(l.text || "")),
+  );
   let lastAssistantIdx = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]!.role === "assistant") {
+  for (let i = visible.length - 1; i >= 0; i--) {
+    if (visible[i]!.role === "assistant") {
       lastAssistantIdx = i;
       break;
     }
   }
+  let lastThinkingAfterAsst = -1;
+  const thinkFrom = lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0;
+  for (let i = thinkFrom; i < visible.length; i++) {
+    if (visible[i]!.role === "thinking") lastThinkingAfterAsst = i;
+  }
   let assistantRound = 0;
-  return lines.map((l, idx) => {
+  return visible.map((l, idx) => {
     // Tool rows keep role=tool even when err — badge must show real tool name
     if (l.err && l.role !== "tool") {
       return {
@@ -678,11 +975,14 @@ export function chatLinesToDraftMessages(
           description,
           durationMs: l.durationMs,
         },
+        meta: {
+          ...(l.startedAt != null ? { ts: l.startedAt } : {}),
+          ...(l.durationMs != null ? { durationMs: l.durationMs } : {}),
+        },
       };
     }
     if (l.role === "thinking") {
-      // 默认折叠；流式中仅头栏动画，正文仍隐藏直到用户点开
-      const streaming = Boolean(busy);
+      const streaming = Boolean(busy && idx === lastThinkingAfterAsst);
       return {
         id: l.id,
         role: "thinking" as const,
@@ -699,7 +999,7 @@ export function chatLinesToDraftMessages(
     if (l.role === "assistant") {
       assistantRound += 1;
       const placeholder = isPlaceholderAssistantBody(l.text);
-      const streaming = busy && placeholder && idx === lastAssistantIdx;
+      const streaming = busy && idx === lastAssistantIdx;
       return {
         id: l.id,
         role: "assistant" as const,
@@ -713,6 +1013,13 @@ export function chatLinesToDraftMessages(
           durationMs: l.durationMs,
           usageInput: l.usageInput,
           usageOutput: l.usageOutput,
+          ...(l.cacheRead != null ? { cacheRead: l.cacheRead } : {}),
+          ...(l.cacheWrite != null ? { cacheWrite: l.cacheWrite } : {}),
+          ...(l.cacheReported != null
+            ? { cacheReported: l.cacheReported }
+            : {}),
+          ...(l.payloadId ? { payloadId: l.payloadId } : {}),
+          ...(l.payloadIndex != null ? { payloadIndex: l.payloadIndex } : {}),
         },
       };
     }
@@ -721,7 +1028,12 @@ export function chatLinesToDraftMessages(
         id: l.id,
         role: "user" as const,
         body: l.text || "",
-        meta: { authorLabel: "user" },
+        meta: {
+          authorLabel: "user",
+          ...(l.startedAt != null ? { ts: l.startedAt } : {}),
+          ...(l.durationMs != null ? { durationMs: l.durationMs } : {}),
+          ...(l.ordinal != null ? { ordinal: l.ordinal } : {}),
+        },
         ...(l.images?.length ? { images: l.images } : {}),
       };
     }

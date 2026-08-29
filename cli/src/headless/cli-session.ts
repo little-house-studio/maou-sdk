@@ -143,8 +143,13 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
         maxTokens?: number;
       } | undefined;
       if (main?.name && main?.model) {
-        const maxContext = main.maxContext ?? main.maxTokens ?? 0;
-        store.setAgentMeta(config.name, main.name, main.model, maxContext);
+        const { resolveContextWindow } = await import("@little-house-studio/llm");
+        store.setAgentMeta(
+          config.name,
+          main.name,
+          main.model,
+          resolveContextWindow(main as Record<string, unknown>).window,
+        );
         return;
       }
     } catch {
@@ -154,12 +159,14 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
     if (ps.length > 0) {
       const ms = config.getModels?.(ps[0]!.id) ?? [];
       if (ms.length > 0) {
-        const preset = config.getPreset(ps[0]!.id, ms[0]!.id) as {
-          maxContext?: number;
-          maxTokens?: number;
-        };
-        const maxContext = preset.maxContext ?? preset.maxTokens ?? 0;
-        store.setAgentMeta(config.name, ps[0]!.id, ms[0]!.id, maxContext);
+        const preset = config.getPreset(ps[0]!.id, ms[0]!.id) as Record<string, unknown>;
+        const { resolveContextWindow } = await import("@little-house-studio/llm");
+        store.setAgentMeta(
+          config.name,
+          ps[0]!.id,
+          ms[0]!.id,
+          resolveContextWindow({ model: ms[0]!.id, provider: ps[0]!.id, ...preset }).window,
+        );
       } else {
         store.setAgentMeta(config.name, ps[0]!.id, "", 0);
       }

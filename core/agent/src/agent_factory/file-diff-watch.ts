@@ -46,6 +46,8 @@ interface WatchEntry {
   baseline: FileBaseline;
   /** 本轮是否已被触碰（round end 时清零计数用） */
   touchedThisRound: boolean;
+  pinned?: boolean;
+  kind?: "file" | "instruction";
 }
 
 // ─── gitignore 简化匹配（与 tools/diff-collector 同口径）──────────────────
@@ -197,6 +199,9 @@ export class FileDiffWatch {
 
   /** sessionId → relPath → entry */
   private sessions = new Map<string, Map<string, WatchEntry>>();
+  /** sessionId → relPath → 触碰时快照（属主 / 产物） */
+  private projectTouches = new Map<string, Map<string, FileBaseline>>();
+  private foreignSeen = new Map<string, Set<string>>();
   private gitignoreCache: { root: string; mtime: number; patterns: string[] } | null = null;
 
   constructor(cfg: FileDiffWatchConfig) {
@@ -285,6 +290,12 @@ export class FileDiffWatch {
           touchedThisRound: true,
         });
       }
+      let touches = this.projectTouches.get(sessionId);
+      if (!touches) {
+        touches = new Map();
+        this.projectTouches.set(sessionId, touches);
+      }
+      touches.set(resolved.relPath, baseline);
     }
   }
 
@@ -296,6 +307,10 @@ export class FileDiffWatch {
     if (!map || map.size === 0) return;
     const toRemove: string[] = [];
     for (const [rel, e] of map) {
+      if (e.pinned) {
+        e.touchedThisRound = false;
+        continue;
+      }
       if (e.touchedThisRound) {
         e.touchedThisRound = false;
         e.roundsSinceTouch = 0;
@@ -323,6 +338,7 @@ export class FileDiffWatch {
     const removeAfter: string[] = [];
 
     for (const [rel, e] of map) {
+      if (e.kind === "instruction") continue;
       if (isIgnoredPath(rel, gi)) {
         removeAfter.push(rel);
         continue;
@@ -340,7 +356,7 @@ export class FileDiffWatch {
       // 通知发出后刷新 baseline，避免同一改动重复报
       e.baseline = cur;
       e.changeNoticesSinceTouch += 1;
-      if (e.changeNoticesSinceTouch >= this.maxChangeNoticesWithoutTouch) {
+      if (!e.pinned && e.changeNoticesSinceTouch >= this.maxChangeNoticesWithoutTouch) {
         removeAfter.push(rel);
       }
     }
@@ -349,16 +365,120 @@ export class FileDiffWatch {
 
     if (lines.length === 0) return "";
 
-    // 可选、可忽略；不敦促 agent 必须打开
     return [
-      `<file_change_notice optional="true">`,
-      `<!-- optional: ignore if not relevant; no action required -->`,
-      `Informational only (you may ignore): since the last user message, some files you previously read/edited appear changed on disk.`,
+      `<file_change_notice>`,
+      `Since the last user message, some files you previously read/edited appear changed on disk.`,
       `Paths are project-relative. .gitignore-matched paths are excluded.`,
       ``,
       ...lines,
       `</file_change_notice>`,
     ].join("\n");
+  }
+
+  consumeForeignDiffs(sessionId: string): string {
+    const map = this.sessions.get(sessionId);
+    if (!map || map.size === 0) return "";
+    const seen = this.foreignSeen.get(sessionId) ?? new Set<string>();
+    const lines: string[] = [];
+    for (const [rel, e] of map) {
+      if (e.kind === "instruction") continue;
+      const cur = snapshotFile(e.absPath);
+      if (!baselineChanged(e.baseline, cur)) continue;
+      let foreign = false;
+      for (const [otherId, otherMap] of this.sessions) {
+        if (otherId === sessionId) continue;
+        if (otherMap.has(rel)) {
+          foreign = true;
+          break;
+        }
+      }
+      if (!foreign) {
+        for (const [otherId, touches] of this.projectTouches) {
+          if (otherId === sessionId) continue;
+          if (touches.has(rel)) {
+            foreign = true;
+            break;
+          }
+        }
+      }
+      if (!foreign) continue;
+      const key = `${rel}@${cur.mtimeMs}@${cur.size}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lines.push(`- ${rel} · ${formatLineDelta(e.baseline, cur)}`);
+    }
+    this.foreignSeen.set(sessionId, seen);
+    if (lines.length === 0) return "";
+    return [`<foreign_file_notice>`, ...lines, `</foreign_file_notice>`].join("\n");
+  }
+
+  listSessionArtifacts(sessionId: string): Array<{ path: string; delta: string }> {
+    const touches = this.projectTouches.get(sessionId);
+    if (!touches || touches.size === 0) return [];
+    const out: Array<{ path: string; delta: string }> = [];
+    for (const [rel, snap] of touches) {
+      const entry = this.sessions.get(sessionId)?.get(rel);
+      const cur = snapshotFile(entry?.absPath ?? join(this.projectRoot, rel));
+      out.push({ path: rel, delta: formatLineDelta(snap, cur) });
+    }
+    return out;
+  }
+
+  clearRoundTouches(sessionId: string): void {
+    this.projectTouches.delete(sessionId);
+  }
+
+  /**
+   * 常驻钉住路径（仓库根 AGENTS.md / CLAUDE.md）。
+   * 不必等 reader 先摸过；不因空闲移出。
+   */
+  pinPaths(sessionId: string, relPaths: string[], kind: "file" | "instruction" = "file"): void {
+    const map = this.sessionMap(sessionId);
+    const now = Date.now();
+    for (const rel of relPaths) {
+      const resolved = this.resolveRel(rel);
+      if (!resolved) continue;
+      const baseline = snapshotFile(resolved.absPath);
+      const prev = map.get(resolved.relPath);
+      if (prev) {
+        prev.pinned = true;
+        prev.kind = kind;
+        if (!prev.baseline.exists && baseline.exists) prev.baseline = baseline;
+        continue;
+      }
+      map.set(resolved.relPath, {
+        absPath: resolved.absPath,
+        relPath: resolved.relPath,
+        lastTouchAt: now,
+        roundsSinceTouch: 0,
+        changeNoticesSinceTouch: 0,
+        baseline,
+        touchedThisRound: false,
+        pinned: true,
+        kind,
+      });
+    }
+  }
+
+  consumeInstructionNotices(sessionId: string): string {
+    const map = this.sessions.get(sessionId);
+    if (!map || map.size === 0) return "";
+    const lines: string[] = [];
+    for (const [, e] of map) {
+      if (e.kind !== "instruction") continue;
+      const cur = snapshotFile(e.absPath);
+      if (!baselineChanged(e.baseline, cur)) continue;
+      const name = e.relPath.split("/").pop() ?? e.relPath;
+      if (e.baseline.exists && !cur.exists) {
+        lines.push(`Instructions removed: ${name}`);
+        lines.push("The previously loaded instructions from this file no longer apply.");
+      } else {
+        lines.push(`Updated instructions from: ${name}`);
+      }
+      e.baseline = cur;
+    }
+    if (lines.length === 0) return "";
+    return ["<workspace_instruction_notice>", ...lines, "</workspace_instruction_notice>"].join("\n");
   }
 
   /** 测试/调试：名单大小 */

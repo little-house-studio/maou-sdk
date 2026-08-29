@@ -5,6 +5,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -21,9 +22,11 @@ import type {
   ChatSendMode,
   Meta,
   PendingApproval,
+  PendingAsk,
   SessionSummary,
   StreamEvent,
 } from "./api";
+import { searchSessions, type SessionSearchHit } from "./api";
 import { formatModelErrorForUi } from "./model-error-ui";
 import { stripTaskCompletionMarkup } from "./strip-task-completion";
 import {
@@ -39,15 +42,35 @@ import {
   chatLinesToDraftMessages,
 } from "./drafts/panels/WireThreadView";
 import {
+  isModelCallProgressText,
+  isPlaceholderAssistantBody,
+} from "./drafts/thread-blocks";
+import type { PayloadRequest } from "./drafts/panels/WireThreadView";
+import {
   asToolParams,
   extractToolCallIntent,
   readToolIntent,
 } from "./drafts/tool-card";
 import {
+  applySessionPayloadIndex,
+  fetchSessionPayloadDetail,
+  fetchSessionPayloadIndex,
+} from "./session-payloads";
+import type { PayloadDetail } from "./session-payloads";
+import { PayloadInspector } from "./PayloadInspector";
+import {
   applySessionToolMeta,
   fetchSessionToolMeta,
 } from "./session-intents";
 import { ApprovalBanner } from "./drafts/panels/ApprovalBanner";
+import { PlanReviewCard } from "./drafts/panels/PlanReviewCard";
+import type { PlanDecision } from "./drafts/panels/PlanReviewCard";
+import {
+  pickPlanAsk,
+  resolvePlanReview,
+  isPlanWriteTool,
+  type SessionPlanView,
+} from "./session-plan-review";
 import { ApprovalPhysicsSwitch } from "./drafts/panels/ApprovalPhysicsSwitch";
 import {
   ModelCascadeMenu,
@@ -55,10 +78,10 @@ import {
 } from "./drafts/panels/ModelCascadeMenu";
 import { ChromeMark } from "./drafts/icons/Marks";
 import { SessionTreeCrumbs } from "./drafts/layout/SessionTreeCrumbs";
+import { SessionList } from "./drafts/panels/SessionList";
 import { flattenSessionForest } from "./drafts/session-ancestry";
-import { hierarchyIndentPx } from "./drafts/visual-marks";
-import type { DraftApproval } from "./drafts/types";
-import { Composer, type ComposerProps } from "./composer";
+import type { DraftApproval, DraftSession } from "./drafts/types";
+import { Composer, type ComposerProps, type ContextBreakdown } from "./composer";
 import {
   applyMentionPick,
   commandByName,
@@ -69,6 +92,8 @@ import {
   filterSlashHits,
   mergeCommandCatalog,
   mentionQuery,
+  overlayIdxAfterPrefix,
+  overlayKeyAction,
   slashPrefixAtCursor,
   stripSlashToken,
 } from "./composer/commands";
@@ -79,7 +104,13 @@ import {
   type ComposerImage,
 } from "./composer/images";
 import { OptionalOutlet } from "./composer/OptionalOutlet";
-import { ConversationPane } from "./conversation";
+import { isPermissionPresetId } from "./live/settings-adapters";
+import {
+  ConversationPane,
+  followStickBottom,
+  gapFromBottom,
+  isStickBottom,
+} from "./conversation";
 import { AskScrollRail } from "./drafts/AskScrollRail";
 
 export type ChatLine = {
@@ -110,9 +141,22 @@ export type ChatLine = {
   /** 本轮助手气泡开始（epoch ms） */
   startedAt?: number;
   durationMs?: number;
+  /** 账本「发出 → 终止」墙钟；hydrate 时回填到用户行 */
+  loopDurationMs?: number;
   usageInput?: number;
   usageOutput?: number;
   round?: number;
+  /** prompt 里命中缓存的部分（落盘账本回填） */
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** usage 是否报过 cache 字段；false → 命中率显示 “—” */
+  cacheReported?: boolean;
+  /** 落盘 entry id —— 调试面板据此拉本轮 POST */
+  payloadId?: string;
+  /** id 缺失时的定位口径：同类消息里的 0 基下标 */
+  payloadIndex?: number;
+  /** 该会话里的第几条（用户消息 / 助手轮），1 基 */
+  ordinal?: number;
 };
 
 /**
@@ -198,7 +242,7 @@ function historyTsMs(ts?: string): number | undefined {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
-function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
+export function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
   const intents = new Map<string, string>();
   for (const m of msgs) {
     if (!Array.isArray(m.toolCalls)) continue;
@@ -239,11 +283,14 @@ function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
           undefined
         : undefined;
     const durationMs =
-      role === "tool" &&
-      m.durationMs != null &&
-      Number.isFinite(m.durationMs) &&
-      m.durationMs > 0
+      m.durationMs != null && Number.isFinite(m.durationMs) && m.durationMs >= 0
         ? m.durationMs
+        : undefined;
+    const loopDurationMs =
+      m.loopDurationMs != null &&
+      Number.isFinite(m.loopDurationMs) &&
+      m.loopDurationMs >= 0
+        ? m.loopDurationMs
         : undefined;
     return {
       id: m.id || uid(),
@@ -253,6 +300,7 @@ function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
       toolCallId: callId || undefined,
       ...(toolDescription ? { toolDescription } : {}),
       ...(durationMs != null ? { durationMs } : {}),
+      ...(loopDurationMs != null ? { loopDurationMs } : {}),
       ...(m.images?.length ? { images: m.images } : {}),
       ...(startedAt ? { startedAt } : {}),
       ...(asstRound ? { round: asstRound } : {}),
@@ -266,7 +314,235 @@ function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
     };
   });
   inferToolDurationsFromStartGaps(lines);
+  backfillUserLoopDuration(lines);
   return lines;
+}
+
+/** 把本 loop 最后一条 loopDurationMs 写到对应用户行。historyToLines 调用。 */
+export function backfillUserLoopDuration(lines: ChatLine[]): void {
+  let user: ChatLine | undefined;
+  let lastLoop: number | undefined;
+  const apply = () => {
+    if (!user || lastLoop == null || user.durationMs != null) return;
+    user.durationMs = lastLoop;
+  };
+  for (const line of lines) {
+    if (line.role === "user") {
+      apply();
+      user = line;
+      lastLoop = line.loopDurationMs;
+    } else if (line.loopDurationMs != null && Number.isFinite(line.loopDurationMs)) {
+      lastLoop = line.loopDurationMs;
+    }
+  }
+  apply();
+}
+
+/** 把「发出 → 现在」写到本 loop 最后一条用户行。完成 / 中断时 ChatPanel 调用。 */
+export function stampLoopWallClock(
+  lines: ChatLine[],
+  now = Date.now(),
+): ChatLine[] {
+  let userIdx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.role === "user") {
+      userIdx = i;
+      break;
+    }
+  }
+  if (userIdx < 0) return lines;
+  const user = lines[userIdx]!;
+  const start = user.startedAt;
+  if (start == null || !Number.isFinite(start) || start <= 0) return lines;
+  const wall = Math.max(0, now - start);
+  const next = lines.slice();
+  next[userIdx] = { ...user, durationMs: wall };
+  for (let i = next.length - 1; i > userIdx; i--) {
+    const cur = next[i]!;
+    if (cur.role !== "assistant") continue;
+    if (cur.durationMs != null && Number.isFinite(cur.durationMs) && cur.durationMs >= 0) {
+      break;
+    }
+    next[i] = {
+      ...cur,
+      durationMs:
+        cur.startedAt != null && Number.isFinite(cur.startedAt)
+          ? Math.max(0, now - cur.startedAt)
+          : wall,
+    };
+    break;
+  }
+  return next;
+}
+
+export function lastIndexOfRole(
+  lines: ChatLine[],
+  role: ChatLine["role"],
+): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.role === role) return i;
+  }
+  return -1;
+}
+
+/** 上一轮已有 tool 之后再出 thinking/正文，要开新的 assistant 行。onEvent 读写。 */
+export function shouldOpenNewAssistantTurn(lines: ChatLine[]): boolean {
+  const lastAsst = lastIndexOfRole(lines, "assistant");
+  if (lastAsst < 0) return true;
+  for (let i = lastAsst + 1; i < lines.length; i++) {
+    const r = lines[i]!.role;
+    if (r === "tool" || r === "user" || r === "system") return true;
+  }
+  return false;
+}
+
+export function applyAssistantDelta(
+  lines: ChatLine[],
+  delta: string,
+  now = Date.now(),
+  newId?: string,
+): ChatLine[] {
+  const next = [...lines];
+  if (!shouldOpenNewAssistantTurn(next)) {
+    for (let i = next.length - 1; i >= 0; i--) {
+      if (next[i]!.role !== "assistant") continue;
+      const cur = next[i]!;
+      const rawBase = isPlaceholderAssistantBody(cur.text)
+        ? ""
+        : (cur.raw ?? cur.text);
+      const raw = rawBase + delta;
+      next[i] = { ...cur, raw, text: stripTaskCompletionMarkup(raw) };
+      return next;
+    }
+  }
+  next.push({
+    id: newId ?? uid(),
+    role: "assistant",
+    text: stripTaskCompletionMarkup(delta),
+    raw: delta,
+    startedAt: now,
+  });
+  return next;
+}
+
+export function applyAssistantContent(
+  lines: ChatLine[],
+  content: string,
+  now = Date.now(),
+  newId?: string,
+): ChatLine[] {
+  const next = [...lines];
+  if (!shouldOpenNewAssistantTurn(next)) {
+    for (let i = next.length - 1; i >= 0; i--) {
+      if (next[i]!.role !== "assistant") continue;
+      const cur = next[i]!;
+      next[i] = {
+        ...cur,
+        raw: content,
+        text: stripTaskCompletionMarkup(content),
+      };
+      return next;
+    }
+  }
+  next.push({
+    id: newId ?? uid(),
+    role: "assistant",
+    text: stripTaskCompletionMarkup(content),
+    raw: content,
+    startedAt: now,
+  });
+  return next;
+}
+
+export function applyThinkingDelta(
+  lines: ChatLine[],
+  delta: string,
+  now = Date.now(),
+  ids?: { assistant?: string; thinking?: string },
+): ChatLine[] {
+  const next = [...lines];
+  if (shouldOpenNewAssistantTurn(next)) {
+    next.push({
+      id: ids?.assistant ?? uid(),
+      role: "assistant",
+      text: "",
+      startedAt: now,
+    });
+  }
+  const lastAsst = lastIndexOfRole(next, "assistant");
+  for (let i = next.length - 1; i > lastAsst; i--) {
+    if (next[i]!.role !== "thinking") continue;
+    const cur = next[i]!;
+    next[i] = {
+      ...cur,
+      text: cur.text + delta,
+      thinkStartedAt: cur.thinkStartedAt ?? now,
+      thinkDurationMs: now - (cur.thinkStartedAt ?? now),
+    };
+    return next;
+  }
+  next.push({
+    id: ids?.thinking ?? uid(),
+    role: "thinking",
+    text: delta,
+    thinkStartedAt: now,
+    thinkDurationMs: 0,
+  });
+  return next;
+}
+
+export function applyThinkingContent(
+  lines: ChatLine[],
+  content: string,
+  now = Date.now(),
+  ids?: { assistant?: string; thinking?: string },
+): ChatLine[] {
+  const next = [...lines];
+  if (shouldOpenNewAssistantTurn(next)) {
+    next.push({
+      id: ids?.assistant ?? uid(),
+      role: "assistant",
+      text: "",
+      startedAt: now,
+    });
+  }
+  const lastAsst = lastIndexOfRole(next, "assistant");
+  for (let i = next.length - 1; i > lastAsst; i--) {
+    if (next[i]!.role !== "thinking") continue;
+    const cur = next[i]!;
+    next[i] = {
+      ...cur,
+      text: content,
+      thinkStartedAt: cur.thinkStartedAt ?? now,
+      thinkDurationMs: now - (cur.thinkStartedAt ?? now),
+    };
+    return next;
+  }
+  next.push({
+    id: ids?.thinking ?? uid(),
+    role: "thinking",
+    text: content,
+    thinkStartedAt: now,
+    thinkDurationMs: 0,
+  });
+  return next;
+}
+
+/** 去掉尾部空助手；中间空助手若后面有 thinking/tool 则保留。完成/中断时 ChatPanel 调用。 */
+export function dropIdleAssistantPlaceholders(lines: ChatLine[]): ChatLine[] {
+  return lines.filter((l, i) => {
+    if (l.role !== "assistant") return true;
+    if (l.text.trim() && !isPlaceholderAssistantBody(l.text)) return true;
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j]!;
+      // 错误行不是独立 role：它是 role="system" + err=true（见 append 的用法）
+      if (next.err) return true;
+      const r = next.role;
+      if (r === "thinking" || r === "tool") return true;
+      if (r === "user" || r === "assistant" || r === "system") return false;
+    }
+    return false;
+  });
 }
 
 /** Start-to-start gap is the earlier tool's duration. */
@@ -309,6 +585,23 @@ function hydrateToolLines(
   });
 }
 
+/**
+ * 每轮跑完拉一次落盘索引：直播行没有 entry id，靠尾对齐补上定位坐标与缓存分桶。
+ * 拉不到就什么都不做 —— 编号仍然渲染，只是不可点、缓存显示 “—”。
+ */
+function hydratePayloadLines(
+  setLines: (fn: (prev: ChatLine[]) => ChatLine[]) => void,
+  sessionId?: string | null,
+  projectRoot?: string,
+) {
+  const sid = (sessionId || "").trim();
+  if (!sid) return;
+  void fetchSessionPayloadIndex(sid, projectRoot || "").then((index) => {
+    if (!index.ok) return;
+    setLines((prev) => applySessionPayloadIndex(prev, index));
+  });
+}
+
 const HELP_TEXT = [
   "斜杠命令（与 CLI coding 工作流对齐）:",
   "/new — 新会话",
@@ -327,7 +620,7 @@ const HELP_TEXT = [
   "/ultragoal [<objective> [--budget <tokens>] | status | pause | resume | clear] — 多 agent 宿主验收长目标",
   "/help — 本帮助",
   "",
-  "热键: Enter 发送（忙碌时入队） · / 补全 ↑↓ Tab · Ctrl+N 新会话 · Ctrl+M 模型 · Ctrl+. / Esc 停止 · Shift+Tab 审批 · Ctrl+Shift+C 复制 · R 重试",
+  "热键: Enter 发送（忙碌时入队） · / 补全 ↑↓ Tab/Enter · Ctrl+N 新会话 · Ctrl+M 模型 · Ctrl+. / Esc 停止 · Shift+Tab 审批 · Ctrl+Shift+C 复制 · R 重试",
 ].join("\n");
 
 /** Cap pending user messages while a turn is running */
@@ -377,8 +670,8 @@ export type ChatPanelProps = {
   threadRailId?: string;
   /** Shell topbar busy chip */
   onBusyChange?: (busy: boolean) => void;
-  /** Active session title for topbar */
-  onSessionTitleChange?: (title: string | null) => void;
+  /** 顶栏今日 in/out：refreshContextUsage / fetchSessionStats 回写 */
+  onTodayUsageChange?: (t: { date?: string; inputTokens: number; outputTokens: number }) => void;
   /** Extra class on root (e.g. wire-context for draft-aligned live shell) */
   className?: string;
   /**
@@ -397,7 +690,7 @@ export function ChatPanel({
   layout = "default",
   threadRailId,
   onBusyChange,
-  onSessionTitleChange,
+  onTodayUsageChange,
   className,
   chrome = "default",
   onDockLogLines,
@@ -412,7 +705,11 @@ export function ChatPanel({
     enqueueChat,
     exportTranscript,
     fetchApproval,
+    fetchPendingAsk,
+    answerAsk,
+    fetchSessionPlan,
     fetchMeta,
+    togglePlan,
     fetchModels,
     fetchLlmConfig,
     fetchSessionStats,
@@ -422,6 +719,7 @@ export function ChatPanel({
     fetchCommandCatalog,
     runCommand,
     setApprovalMode,
+    setPermissionPreset,
     setModel,
     streamChat,
     switchSession,
@@ -446,6 +744,15 @@ export function ChatPanel({
   const [models, setModels] = useState<{ id: string; name?: string }[]>([]);
   const [approval, setApproval] = useState<ApprovalMode>("yolo");
   const [pending, setPending] = useState<PendingApproval[]>([]);
+  /** submit_plan 阻塞在这里等人选：批准 / 拒绝 / 去聊天里说 */
+  const [pendingAsk, setPendingAsk] = useState<PendingAsk | null>(null);
+  const [sessionPlanView, setSessionPlanView] = useState<SessionPlanView | null>(
+    null,
+  );
+  const [planDismissedRevision, setPlanDismissedRevision] = useState<
+    number | null
+  >(null);
+  const [planLaunching, setPlanLaunching] = useState(false);
   const [status, setStatus] = useState("");
   const [turnUsage, setTurnUsage] = useState<{
     in: number;
@@ -456,6 +763,8 @@ export function ChatPanel({
     used: number;
     max: number;
   } | null>(null);
+  const [contextBreakdown, setContextBreakdown] =
+    useState<ContextBreakdown | null>(null);
   const maxContextRef = useRef(128_000);
   /** 上下文 chip → 弹窗（不写入聊天线程） */
   const [usageModalOpen, setUsageModalOpen] = useState(false);
@@ -467,6 +776,15 @@ export function ChatPanel({
   const [usageModalStats, setUsageModalStats] =
     useState<SessionUsageStats | null>(null);
   const [usageModalRaw, setUsageModalRaw] = useState<string | null>(null);
+  // 轮次调试面板：本轮 POST 请求 / 本轮返回内容
+  const [payloadOpen, setPayloadOpen] = useState(false);
+  const [payloadView, setPayloadView] = useState<"request" | "response">(
+    "request",
+  );
+  const [payloadTitle, setPayloadTitle] = useState("");
+  const [payloadDetail, setPayloadDetail] = useState<PayloadDetail | null>(null);
+  const [payloadLoading, setPayloadLoading] = useState(false);
+  const [payloadError, setPayloadError] = useState<string | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -476,6 +794,7 @@ export function ChatPanel({
   const [commandBlock, setCommandBlock] = useState<string | null>(null);
   const [commandBlockSelected, setCommandBlockSelected] = useState(false);
   const cursorRef = useRef(0);
+  const slashPrefixRef = useRef<string | null>(null);
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [attachImages, setAttachImages] = useState<ComposerImage[]>([]);
   const [extraCommands, setExtraCommands] = useState<AppCommand[]>([]);
@@ -488,6 +807,8 @@ export function ChatPanel({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const modelMenuRef = useRef<ModelCascadeMenuHandle | null>(null);
   const stickBottomRef = useRef(true);
+  /** followStickBottom 正在写 scrollTop 时，onScroll 不改 stick。 */
+  const stickPinningRef = useRef(false);
   /** 当前焦点会话的客户端 AbortController（Stop 用） */
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
@@ -508,6 +829,8 @@ export function ChatPanel({
   runningSessionIdsRef.current = runningSessionIds;
   /** 焦点会话（stream 事件只刷当前焦点的 UI） */
   const activeSessionRef = useRef<string | null>(null);
+  /** 流回调里读当前工程根（meta 会变，闭包不能捕死） */
+  const projectRootRef = useRef<string>("");
 
   const setSendMode = useCallback((mode: ChatSendMode) => {
     setSendModeState(mode);
@@ -534,8 +857,8 @@ export function ChatPanel({
   // Parent callbacks via refs — never re-bootstrap because App re-rendered
   const onMetaChangeRef = useRef(onMetaChange);
   onMetaChangeRef.current = onMetaChange;
-  const onSessionTitleChangeRef = useRef(onSessionTitleChange);
-  onSessionTitleChangeRef.current = onSessionTitleChange;
+  const onTodayUsageChangeRef = useRef(onTodayUsageChange);
+  onTodayUsageChangeRef.current = onTodayUsageChange;
   const onBusyChangeRef = useRef(onBusyChange);
   onBusyChangeRef.current = onBusyChange;
   const onDockLogLinesRef = useRef(onDockLogLines);
@@ -595,13 +918,18 @@ export function ChatPanel({
       .then((list) => {
         if (cancelled) return;
         setExtraCommands(
-          list.map((c) => ({
-            name: c.name.replace(/^\//, "").trim().toLowerCase(),
-            label: `/${c.name.replace(/^\//, "").trim()}`,
-            description: c.description || c.name,
-            runtime: true,
-            palette: false,
-          })),
+          list.map((c) => {
+            const name = c.name.replace(/^\//, "").trim().toLowerCase();
+            const desc = (c.description || name).replace(/^\//, "").trim();
+            return {
+              name,
+              label: desc,
+              description: desc,
+              runtime: true,
+              palette: false,
+              slash: true,
+            };
+          }),
         );
       })
       .catch(() => {
@@ -667,6 +995,7 @@ export function ChatPanel({
   // 焦点会话 ref + busy 仅反映「当前会话」是否在跑
   useEffect(() => {
     activeSessionRef.current = meta?.sessionId ?? null;
+    projectRootRef.current = meta?.projectRoot ?? "";
     const id = meta?.sessionId;
     const isRunning = Boolean(id && runningSessionIds.includes(id));
     busyRef.current = isRunning;
@@ -678,19 +1007,6 @@ export function ChatPanel({
       abortRef.current = null;
     }
   }, [meta?.sessionId, runningSessionIds, setBusy]);
-
-  // Push active session title to shell topbar
-  useEffect(() => {
-    const cb = onSessionTitleChangeRef.current;
-    if (!cb) return;
-    const id = meta?.sessionId;
-    if (!id) {
-      cb(null);
-      return;
-    }
-    const hit = sessions.find((x) => x.id === id);
-    cb(hit?.title || null);
-  }, [meta?.sessionId, sessions]);
 
   const patchContextUsage = useCallback(
     (partial: { used?: number; max?: number }) => {
@@ -714,6 +1030,9 @@ export function ChatPanel({
   const refreshContextUsage = useCallback(async () => {
     try {
       const r = await fetchSessionStats();
+      if (r.today) {
+        onTodayUsageChangeRef.current?.(r.today);
+      }
       if (r.stats) {
         const used =
           (r.stats.contextUsed != null && r.stats.contextUsed > 0
@@ -723,6 +1042,9 @@ export function ChatPanel({
           used,
           max: maxContextRef.current,
         });
+        if (r.stats.contextBreakdown) {
+          setContextBreakdown(r.stats.contextBreakdown);
+        }
       }
     } catch {
       /* ignore */
@@ -771,6 +1093,56 @@ export function ChatPanel({
     return a;
   }, []);
 
+  const refreshPlan = useCallback(async () => {
+    try {
+      const view = await fetchSessionPlan();
+      setSessionPlanView(view);
+      setMeta((m) => (m ? { ...m, plan: view.plan } : m));
+      return view;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const refreshAsk = useCallback(async () => {
+    const sid = activeSessionRef.current;
+    try {
+      const list = await fetchPendingAsk();
+      const mine = pickPlanAsk(list, sid);
+      setPendingAsk((prev) => {
+        if (prev?.sessionId === mine?.sessionId && prev?.kind === mine?.kind &&
+            prev?.planRevision === mine?.planRevision) {
+          return prev;
+        }
+        return mine;
+      });
+    } catch {
+      /* 轮询失败不清状态：网络抖一下不该让审阅卡闪掉 */
+    }
+  }, [fetchPendingAsk]);
+
+  const decidePlan = useCallback(
+    (decision: PlanDecision, note?: string) => {
+      const ask = pendingAsk;
+      if (!ask) return;
+      setPendingAsk(null); // 乐观收起：后端已经拿到答案，别让用户对着卡重复点
+      void answerAsk(ask.sessionId, {
+        kind: "plan_review",
+        decision,
+        ...(note ? { note } : {}),
+      })
+        .then(() => {
+          void refreshPlan();
+        })
+        .catch((err) => {
+          setStatus(err instanceof Error ? err.message : String(err));
+          void refreshAsk();
+        });
+    },
+    [answerAsk, pendingAsk, refreshAsk, refreshPlan],
+  );
+
+
   // Mount-only bootstrap — must not re-run when parent callbacks change identity
   useEffect(() => {
     let cancelled = false;
@@ -788,6 +1160,7 @@ export function ChatPanel({
         if (m.sessionId && Array.isArray(m.messages) && m.messages.length > 0) {
           setLines(historyToLines(m.messages));
           hydrateToolLines(setLines, m.sessionId, m.projectRoot);
+          hydratePayloadLines(setLines, m.sessionId, m.projectRoot);
         }
         const md = await fetchModels(m.provider || undefined);
         if (cancelled) return;
@@ -796,6 +1169,10 @@ export function ChatPanel({
         await refreshSessions();
         if (cancelled) return;
         await refreshApproval();
+        if (cancelled) return;
+        await refreshPlan();
+        if (cancelled) return;
+        await refreshAsk();
       } catch (e) {
         if (!cancelled) {
           setStatus(e instanceof Error ? e.message : String(e));
@@ -809,32 +1186,32 @@ export function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 轮询 pending 审批（normal 模式工具阻塞时）
+  // 轮询 pending 审批 / 待审计划（工具阻塞在宿主上时才有东西）
   useEffect(() => {
     const t = setInterval(() => {
       void refreshApproval().catch(() => {});
+      void refreshAsk();
     }, 1500);
     return () => clearInterval(t);
-  }, [refreshApproval]);
+  }, [refreshApproval, refreshAsk]);
 
   const [showBackToBottom, setShowBackToBottom] = useState(false);
   const [showJumpPrev, setShowJumpPrev] = useState(false);
   const [jumpPrevLabel, setJumpPrevLabel] = useState("↑ 上一条 user（点击）");
   const fromBottomRef = useRef(0);
 
-  // Only auto-scroll when user is already near the bottom (don't yank history review)
   useEffect(() => {
     const el = logRef.current;
     if (!el) return;
     const onScroll = () => {
-      const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (stickPinningRef.current) return;
+      const gap = gapFromBottom(el);
       fromBottomRef.current = gap;
-      const stick = gap < 96;
+      const stick = isStickBottom(gap);
       stickBottomRef.current = stick;
       setShowBackToBottom(!stick && el.scrollHeight > el.clientHeight + 48);
       const empty = el.scrollHeight <= el.clientHeight + 8;
       setShowJumpPrev(shouldShowJumpBar(empty, gap));
-      // Label from last user bubble fully above viewport
       const nodes = el.querySelectorAll<HTMLElement>('[data-msg-role="user"]');
       let preview: string | null = null;
       for (const n of nodes) {
@@ -844,18 +1221,27 @@ export function ChatPanel({
       }
       setJumpPrevLabel(buildPrevUserJumpLabel(preview));
     };
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) stickBottomRef.current = false;
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
+    el.addEventListener("wheel", onWheel, { passive: true });
     onScroll();
-    return () => el.removeEventListener("scroll", onScroll);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      el.removeEventListener("wheel", onWheel);
+    };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = logRef.current;
-    if (el && stickBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
-      setShowBackToBottom(false);
-      setShowJumpPrev(false);
-    }
+    if (!el) return;
+    if (!stickBottomRef.current) return;
+    stickPinningRef.current = true;
+    followStickBottom(el, true);
+    stickPinningRef.current = false;
+    setShowBackToBottom(false);
+    setShowJumpPrev(false);
   }, [lines, pending]);
 
   // Dock log board: recent system / tool / err lines
@@ -1022,55 +1408,11 @@ export function ChatPanel({
   }, []);
 
   const patchLastAssistant = useCallback((delta: string) => {
-    setLines((prev) => {
-      const next = [...prev];
-      for (let i = next.length - 1; i >= 0; i--) {
-        if (next[i]!.role === "assistant") {
-          // 状态占位（… 调用模型…）收到正文 delta 时整段替换，避免拼进气泡
-          const cur = next[i]!;
-          const rawBase = /^\u2026\s/.test(cur.text.trimStart()) ? "" : (cur.raw ?? cur.text);
-          const raw = rawBase + delta;
-          next[i] = { ...cur, raw, text: stripTaskCompletionMarkup(raw) };
-          return next;
-        }
-      }
-      next.push({
-        id: uid(),
-        role: "assistant",
-        text: stripTaskCompletionMarkup(delta),
-        raw: delta,
-        startedAt: Date.now(),
-      });
-      return next;
-    });
+    setLines((prev) => applyAssistantDelta(prev, delta));
   }, []);
 
   const patchLastThinking = useCallback((delta: string) => {
-    const now = Date.now();
-    setLines((prev) => {
-      const next = [...prev];
-      for (let i = next.length - 1; i >= 0; i--) {
-        if (next[i]!.role === "thinking") {
-          const cur = next[i]!;
-          next[i] = {
-            ...cur,
-            text: cur.text + delta,
-            thinkStartedAt: cur.thinkStartedAt ?? now,
-            // 流式中持续刷新耗时
-            thinkDurationMs: now - (cur.thinkStartedAt ?? now),
-          };
-          return next;
-        }
-      }
-      next.push({
-        id: uid(),
-        role: "thinking",
-        text: delta,
-        thinkStartedAt: now,
-        thinkDurationMs: 0,
-      });
-      return next;
-    });
+    setLines((prev) => applyThinkingDelta(prev, delta));
   }, []);
 
   const onEvent = useCallback(
@@ -1092,43 +1434,14 @@ export function ChatPanel({
         case "reasoning": {
           const content = String(ev.content ?? "");
           if (content) {
-            append({ id: uid(), role: "thinking", text: content });
+            setLines((prev) => applyThinkingContent(prev, content));
           }
           break;
         }
         case "assistant": {
           const content = String(ev.content ?? "");
           if (!content) break;
-          setLines((prev) => {
-            const next = [...prev];
-            // 注意：thinking / tool 可能插在 assistant 后面，不能只看 next[last]
-            // 否则 final `assistant` 会再 push 一条，正文显示两次
-            let idx = -1;
-            for (let i = next.length - 1; i >= 0; i--) {
-              if (next[i]!.role === "assistant") {
-                idx = i;
-                break;
-              }
-            }
-            if (idx >= 0) {
-              const cur = next[idx]!;
-              // 终态 content 为权威；已有流式前缀则合并覆盖，避免重复气泡
-              next[idx] = {
-                ...cur,
-                raw: content,
-                text: stripTaskCompletionMarkup(content),
-              };
-              return next;
-            }
-            next.push({
-              id: uid(),
-              role: "assistant",
-              text: stripTaskCompletionMarkup(content),
-              raw: content,
-              startedAt: Date.now(),
-            });
-            return next;
-          });
+          setLines((prev) => applyAssistantContent(prev, content));
           break;
         }
         case "tool_call": {
@@ -1285,6 +1598,9 @@ export function ChatPanel({
             ];
           });
           // 不自动弹终端：用户点工具行 / 底栏「终端」再打开
+          if (ok && isPlanWriteTool(seedName || rawName)) {
+            void refreshPlan();
+          }
           break;
         }
         case "usage":
@@ -1313,6 +1629,14 @@ export function ChatPanel({
             setTurnUsage({
               in: Number.isFinite(inn) ? inn : 0,
               out: Number.isFinite(out) ? out : 0,
+            });
+          }
+          const today = (ev as { today?: { date?: string; inputTokens?: number; outputTokens?: number } }).today;
+          if (today) {
+            onTodayUsageChangeRef.current?.({
+              date: today.date,
+              inputTokens: Number(today.inputTokens ?? 0) || 0,
+              outputTokens: Number(today.outputTokens ?? 0) || 0,
             });
           }
           if ((Number.isFinite(inn) && inn > 0) || (Number.isFinite(out) && out > 0)) {
@@ -1391,6 +1715,7 @@ export function ChatPanel({
             });
           }
           void refreshContextUsage();
+          void refreshPlan();
           {
             const now = Date.now();
             setLines((prev) => {
@@ -1422,7 +1747,7 @@ export function ChatPanel({
                 };
                 break;
               }
-              return next;
+              return stampLoopWallClock(next, now);
             });
           }
           break;
@@ -1433,7 +1758,12 @@ export function ChatPanel({
           const qid = Number(ev.id);
           if (content) {
             lastUserRef.current = content;
-            append({ id: uid(), role: "user", text: content });
+            append({
+              id: uid(),
+              role: "user",
+              text: content,
+              startedAt: Date.now(),
+            });
             // 新一轮 assistant 气泡，承接插入/排队后的回复
             append({ id: uid(), role: "assistant", text: "", startedAt: Date.now() });
           }
@@ -1472,7 +1802,7 @@ export function ChatPanel({
           const retryable = (ev as { retryable?: boolean }).retryable;
           const text = formatModelErrorForUi(raw, category, retryable);
           setLines((prev) =>
-            prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
+            stampLoopWallClock(dropIdleAssistantPlaceholders(prev)),
           );
           append({
             id: uid(),
@@ -1487,13 +1817,16 @@ export function ChatPanel({
           const msg = String(ev.message ?? ev.text ?? "").trim();
           // 中断等关键运行时信息：以前静默吞掉，用户只看到「无回复」
           if (msg === "已中断" || /中断|abort/i.test(msg)) {
-            append({
-              id: uid(),
-              role: "system",
-              text: msg,
-              err: true,
-              retryText: lastUserRef.current || undefined,
-            });
+            setLines((prev) => [
+              ...stampLoopWallClock(prev),
+              {
+                id: uid(),
+                role: "system" as const,
+                text: msg,
+                err: true,
+                retryText: lastUserRef.current || undefined,
+              },
+            ]);
           }
           break;
         }
@@ -1526,33 +1859,17 @@ export function ChatPanel({
           break;
         }
         case "status": {
-          // 模型等待/重试进度：写进空 assistant 气泡，避免 wire 模式无 banner 时「只有 LIVE + …」
           const text = String(
             (ev as { text?: string; content?: string; message?: string }).text ??
               (ev as { content?: string }).content ??
               (ev as { message?: string }).message ??
               "",
           ).trim();
-          if (!text) break;
-          setLines((prev) => {
-            const next = [...prev];
-            for (let i = next.length - 1; i >= 0; i--) {
-              const l = next[i]!;
-              if (l.role === "assistant" && !l.text.trim()) {
-                next[i] = {
-                  ...l,
-                  text: `… ${text}`,
-                };
-                return next;
-              }
-            }
-            // 已有正文则用 system 轻提示
-            next.push({
-              id: uid(),
-              role: "system",
-              text: `⏳ ${text}`,
-            });
-            return next;
+          if (!text || isModelCallProgressText(text)) break;
+          append({
+            id: uid(),
+            role: "system",
+            text: `⏳ ${text}`,
           });
           break;
         }
@@ -1569,15 +1886,20 @@ export function ChatPanel({
             });
           } else if (
             // Surface context compress / model switch (CLI shows these)
-            /压缩|归档|模型切换|compact|archive|summaryStage|archiveStage|调用模型|限流|额度|429|Retrying|重试/i.test(
+            /压缩|归档|模型切换|compact|archive|summaryStage|archiveStage|限流|额度|429|Retrying|重试/i.test(
               msg,
             )
           ) {
             append({ id: uid(), role: "system", text: msg });
             if (/压缩|compact|archive|summaryStage|archiveStage/i.test(msg)) {
               patchContextUsage({ used: 0 });
+              void refreshContextUsage();
             }
           }
+          break;
+        }
+        case "context_refresh": {
+          void refreshContextUsage();
           break;
         }
         default:
@@ -1592,6 +1914,7 @@ export function ChatPanel({
       onMetaChange,
       patchContextUsage,
       refreshContextUsage,
+      refreshPlan,
     ],
   );
 
@@ -1683,6 +2006,7 @@ export function ChatPanel({
           pushMeta(r.meta);
           setLines(historyToLines(r.messages));
           hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
+          hydratePayloadLines(setLines, r.sessionId, r.meta.projectRoot);
           setTurnUsage(null);
           await refreshSessions();
           append({
@@ -1857,6 +2181,7 @@ export function ChatPanel({
           id: uid(),
           role: "user",
           text,
+          startedAt: Date.now(),
           ...(images?.length ? { images } : {}),
         });
         append({ id: uid(), role: "assistant", text: "", startedAt: Date.now() });
@@ -1898,10 +2223,9 @@ export function ChatPanel({
           void refreshSessions();
           // 若用户仍在本会话，结束时清空气泡；若已切走，回看时会 reload history
           if (activeSessionRef.current === sessionId) {
-            setLines((prev) =>
-              prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
-            );
+            setLines((prev) => dropIdleAssistantPlaceholders(prev));
             void refreshContextUsage();
+            hydratePayloadLines(setLines, sessionId, projectRootRef.current);
           } else {
             // 后台结束：用户切回时 history 会带上完整回复
           }
@@ -1915,9 +2239,7 @@ export function ChatPanel({
           const err = formatModelErrorForUi(raw);
           if (activeSessionRef.current === sessionId) {
             // 清掉空的「…」assistant，避免和错误行叠在一起
-            setLines((prev) =>
-              prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
-            );
+            setLines((prev) => dropIdleAssistantPlaceholders(prev));
             append({
               id: uid(),
               role: "system",
@@ -1951,9 +2273,7 @@ export function ChatPanel({
           if (activeSessionRef.current === sessionId) {
             busyRef.current = false;
             setBusy(false);
-            setLines((prev) =>
-              prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
-            );
+            setLines((prev) => dropIdleAssistantPlaceholders(prev));
           }
         }
       }
@@ -1971,6 +2291,19 @@ export function ChatPanel({
       streamChat,
     ],
   );
+
+  const sendPlanApprove = useCallback(async () => {
+    if (busyRef.current || inFlightSendRef.current || planLaunching) return;
+    setPlanLaunching(true);
+    try {
+      await runUserMessage("/plan approve");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
+    } finally {
+      await refreshPlan();
+      setPlanLaunching(false);
+    }
+  }, [planLaunching, refreshPlan, runUserMessage]);
 
   /** 只停止「当前焦点」会话；其它会话继续跑 */
   const stopRun = useCallback(async (announce = true) => {
@@ -2001,7 +2334,7 @@ export function ChatPanel({
     setBusy(false);
     setPending([]);
     setLines((prev) =>
-      prev.filter((l) => !(l.role === "assistant" && !l.text.trim())),
+      dropIdleAssistantPlaceholders(stampLoopWallClock(prev)),
     );
     void refreshApproval().catch(() => {});
     if (announce) {
@@ -2082,7 +2415,10 @@ export function ChatPanel({
       activeSessionRef.current = r.sessionId;
       setLines(historyToLines(r.messages));
       hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
+      hydratePayloadLines(setLines, r.sessionId, r.meta.projectRoot);
       setTurnUsage(null);
+      setPendingAsk(null);
+      void refreshAsk();
       stickBottomRef.current = true;
       const stillRunning = runningSessionIdsRef.current.includes(r.sessionId);
       busyRef.current = stillRunning;
@@ -2093,6 +2429,9 @@ export function ChatPanel({
       setStatus("");
       focusComposer();
       void refreshContextUsage();
+      setPlanDismissedRevision(null);
+      setPlanLaunching(false);
+      void refreshPlan();
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     }
@@ -2114,6 +2453,9 @@ export function ChatPanel({
     await refreshSessions();
     setStatus("新会话");
     focusComposer();
+    setPlanDismissedRevision(null);
+    setPlanLaunching(false);
+    setSessionPlanView(null);
   };
 
   const adoptSession = async (
@@ -2124,6 +2466,7 @@ export function ChatPanel({
     activeSessionRef.current = r.sessionId;
     setLines(historyToLines(r.messages));
     hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
+    hydratePayloadLines(setLines, r.sessionId, r.meta.projectRoot);
     setTurnUsage(null);
     stickBottomRef.current = true;
     busyRef.current = false;
@@ -2132,6 +2475,9 @@ export function ChatPanel({
     await refreshSessions();
     setStatus(statusText);
     focusComposer();
+    setPlanDismissedRevision(null);
+    setPlanLaunching(false);
+    void refreshPlan();
   };
 
   const onForkSession = async (parentId: string) => {
@@ -2156,8 +2502,11 @@ export function ChatPanel({
 
   const onDeleteSession = async (id: string) => {
     if (!id) return;
-    if (!window.confirm(`删除会话 ${id.slice(0, 12)}…？`)) return;
-    // 只停被删的会话
+    const label = sessions.find((s) => s.id === id)?.title?.trim() || "这条对话";
+    if (!window.confirm(`删除「${label}」？`)) return;
+    const wasActive = (meta?.sessionId ?? activeSessionRef.current) === id;
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+    if (wasActive) activeSessionRef.current = null;
     const run = sessionRunsRef.current.get(id);
     if (run) {
       try {
@@ -2175,16 +2524,35 @@ export function ChatPanel({
     }
     try {
       const r = await deleteSession(id);
-      pushMeta(r.meta);
-      setSessions(r.sessions);
-      setLines(historyToLines(r.messages));
-      hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
-      setTurnUsage(null);
-      stickBottomRef.current = true;
+      const nextSessions = (r.sessions ?? []).filter((s) => s.id !== id);
+      const nextId =
+        r.sessionId && r.sessionId !== id
+          ? r.sessionId
+          : (nextSessions[0]?.id ?? null);
+      if (nextSessions.length > 0) setSessions(nextSessions);
+      else await refreshSessions();
+      if (nextId) {
+        activeSessionRef.current = nextId;
+        pushMeta({ ...r.meta, sessionId: nextId });
+      } else {
+        pushMeta(r.meta);
+      }
+      if (wasActive) {
+        setLines(historyToLines(r.messages));
+        hydrateToolLines(setLines, nextId, r.meta.projectRoot);
+        hydratePayloadLines(setLines, nextId, r.meta.projectRoot);
+        setTurnUsage(null);
+        stickBottomRef.current = true;
+      }
       setStatus("已删除会话");
       focusComposer();
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
+      try {
+        await refreshSessions();
+      } catch {
+        /* ignore */
+      }
     }
   };
 
@@ -2358,10 +2726,29 @@ export function ChatPanel({
     }
   };
 
-  const onApprovalChange = async (mode: ApprovalMode) => {
-    const m = await setApprovalMode(mode);
-    pushMeta(m);
-    setApproval(mode);
+  const onApprovalChange = async (mode: string) => {
+    try {
+      if (isPermissionPresetId(mode)) {
+        if (
+          mode === "open+yolo" &&
+          !window.confirm("/yolo 放开。确认「我已了解风险」？")
+        ) {
+          return;
+        }
+        const confirm = mode === "open+yolo" ? "我已了解风险" : undefined;
+        const m = await setPermissionPreset(mode, confirm, "session");
+        pushMeta(m);
+        const next = (m.approvalMode || m.sandboxMode) as ApprovalMode | undefined;
+        if (next) setApproval(next);
+        return;
+      }
+      if (mode !== "normal" && mode !== "auto" && mode !== "yolo") return;
+      const m = await setApprovalMode(mode);
+      pushMeta(m);
+      setApproval(mode);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const isCodex = layout === "codex";
@@ -2454,6 +2841,39 @@ export function ChatPanel({
       </div>
     ) : null;
 
+  const planReview = resolvePlanReview(sessionPlanView, pendingAsk, {
+    dismissedRevision: planDismissedRevision,
+    planLaunching,
+  });
+  const showPlanReview = planReview.show;
+  const planReviewProps = {
+    markdown: planReview.markdown,
+    objective: planReview.objective,
+    revision: planReview.revision,
+    blocking: planReview.blocking,
+    ...(planReview.blocking
+      ? {
+          busy: false,
+          onStart: () => decidePlan("approve"),
+          onReject: () => decidePlan("reject"),
+          onChat: () => decidePlan("chat"),
+          // 阻塞态没有「先不跑」，这个回调不会被点到；留个安全出口
+          onHold: () => decidePlan("chat"),
+        }
+      : {
+          busy: busy || planLaunching,
+          onStart: () => void sendPlanApprove(),
+          onHold: () =>
+            setPlanDismissedRevision(sessionPlanView?.plan?.revision ?? 0),
+        }),
+  };
+  const planReviewCard = showPlanReview ? (
+    <PlanReviewCard {...planReviewProps} />
+  ) : null;
+  const planReviewDock = showPlanReview ? (
+    <PlanReviewCard {...planReviewProps} compact />
+  ) : null;
+
   const avatarLabel = (role: ChatLine["role"]) => {
     if (role === "user") return "You";
     if (role === "assistant") return "M";
@@ -2475,6 +2895,29 @@ export function ChatPanel({
     ? "输入任务，或 /help。工具和终端在两侧。"
     : "Describe a task, or type /help. Tools and terminals open on the right.";
 
+  /** 编号点击 → 拉那一轮的落盘账本，开调试面板 */
+  const onInspectPayload = useCallback(
+    (req: PayloadRequest) => {
+      setPayloadView(req.view);
+      setPayloadTitle(req.title);
+      setPayloadDetail(null);
+      setPayloadError(null);
+      setPayloadLoading(true);
+      setPayloadOpen(true);
+      const sid = activeSessionRef.current || meta?.sessionId || "";
+      void fetchSessionPayloadDetail(sid, projectRootRef.current, "assistant", {
+        ...(req.payloadId ? { id: req.payloadId } : {}),
+        ...(req.payloadIndex != null ? { index: req.payloadIndex } : {}),
+      })
+        .then((detail) => setPayloadDetail(detail))
+        .catch((err) =>
+          setPayloadError(err instanceof Error ? err.message : String(err)),
+        )
+        .finally(() => setPayloadLoading(false));
+    },
+    [meta?.sessionId],
+  );
+
   // Wire: same groupThreadBlocks tree as draft ContextPanel
   const wireDraftMessages = useMemo(
     () =>
@@ -2488,13 +2931,17 @@ export function ChatPanel({
   );
 
   const messageList = isWire ? (
-    <WireThreadView
-      messages={wireDraftMessages}
-      emptyTitle={emptyTitle}
-      emptySub={emptySub}
-      onOpenTerminal={onOpenTerminal}
-      agentBusy={busy}
-    />
+    <>
+      <WireThreadView
+        messages={wireDraftMessages}
+        emptyTitle={emptyTitle}
+        emptySub={emptySub}
+        onOpenTerminal={onOpenTerminal}
+        agentBusy={busy}
+        onInspectPayload={onInspectPayload}
+      />
+      {planReviewCard}
+    </>
   ) : (
     <div
       className={`chat-log${isCodex ? " codex-log" : ""}`}
@@ -2598,6 +3045,7 @@ export function ChatPanel({
           )}
         </div>
       ))}
+      {planReviewCard}
     </div>
   );
 
@@ -2615,6 +3063,8 @@ export function ChatPanel({
   const commandHits = filterCommandHits(
     paletteOpen && !typingSlash ? "" : (slashPrefix ?? ""),
     commandCatalog,
+    24,
+    { surface: paletteOpen && !typingSlash ? "all" : "slash" },
   );
   const slashHits = commandHits.map((c) => c.name);
   const mentionQ = mentionQuery(input);
@@ -2766,43 +3216,42 @@ export function ChatPanel({
       : mentionOpen
         ? setMentionIdx
         : setSlashIdx;
-    if (
-      (liveSlashNow || paletteOpen || mentionOpen) &&
-      overlayHits.length > 0
-    ) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setOverlayIdx((i) => (i + 1) % overlayHits.length);
-        return;
+    const overlayOpen =
+      paletteOpen ||
+      mentionOpen ||
+      (liveSlashNow && !overlayDismissed && !commandBlock);
+    const overlayAct = overlayKeyAction(e, overlayOpen, overlayHits.length);
+    if (overlayAct === "nav-down") {
+      e.preventDefault();
+      setOverlayIdx((i) => (i + 1) % overlayHits.length);
+      return;
+    }
+    if (overlayAct === "nav-up") {
+      e.preventDefault();
+      setOverlayIdx((i) => (i - 1 + overlayHits.length) % overlayHits.length);
+      return;
+    }
+    if (overlayAct === "pick") {
+      e.preventDefault();
+      const pick = overlayHits[Math.min(overlayIdx, overlayHits.length - 1)];
+      if (pick) {
+        if (mentionOpen) {
+          replaceInput(
+            applyMentionPick(inputRef.current?.value ?? input, pick),
+          );
+        } else if (paletteOpen) applyPaletteHit(pick);
+        else applySlashHit(pick);
       }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setOverlayIdx(
-          (i) => (i - 1 + overlayHits.length) % overlayHits.length,
-        );
-        return;
-      }
-      if (e.key === "Tab" && !e.shiftKey) {
-        e.preventDefault();
-        const pick = overlayHits[Math.min(overlayIdx, overlayHits.length - 1)];
-        if (pick) {
-          if (mentionOpen) {
-            replaceInput(
-              applyMentionPick(inputRef.current?.value ?? input, pick),
-            );
-          }
-          else if (paletteOpen) applyPaletteHit(pick);
-          else applySlashHit(pick);
-        }
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setSlashOpen(false);
-        setPaletteOpen(false);
-        return;
-      }
-    } else if (e.key === "Escape") {
+      return;
+    }
+    if (overlayAct === "close") {
+      e.preventDefault();
+      setSlashOpen(false);
+      setPaletteOpen(false);
+      setOverlayDismissed(true);
+      return;
+    }
+    if (e.key === "Escape") {
       setSlashOpen(false);
       setPaletteOpen(false);
     }
@@ -2837,7 +3286,10 @@ export function ChatPanel({
     const prefix = slashPrefixAtCursor(v, at);
     const open = prefix != null;
     setSlashOpen(open && !paletteOpen);
-    if (open) setSlashIdx(0);
+    setSlashIdx((idx) =>
+      overlayIdxAfterPrefix(slashPrefixRef.current, prefix, idx),
+    );
+    slashPrefixRef.current = prefix;
     setMentionIdx(0);
     if (paletteOpen && !open) setPaletteOpen(false);
   };
@@ -3047,7 +3499,7 @@ export function ChatPanel({
     slashHits,
     slashIdx,
     slashOpen: !commandBlock && !overlayDismissed && typingSlash,
-    paletteOpen: paletteOpen && !commandBlock,
+    paletteOpen,
     paletteHits: commandHits,
     paletteIdx,
     mentionOpen,
@@ -3061,7 +3513,19 @@ export function ChatPanel({
     providers: providerOptions,
     models: modelOptions,
     approval,
+    permissionPreset: meta?.permissionPreset,
+    planStatus: meta?.plan?.status ?? sessionPlanView?.plan?.status,
+    planActive: meta?.plan?.active ?? sessionPlanView?.plan?.active,
+    onPlanToggle: () => {
+      void togglePlan()
+        .then((m) => {
+          pushMeta(m);
+          return refreshPlan();
+        })
+        .catch((e) => setStatus(e instanceof Error ? e.message : String(e)));
+    },
     contextPct,
+    contextBreakdown,
     canRetry,
     canSteerQueue: Boolean(busy && queueLen > 0 && !input.trim()),
     inputRef,
@@ -3103,7 +3567,10 @@ export function ChatPanel({
     onStop: () => void stopRun(),
     onCycleSendMode: cycleSendMode,
     onSlashPick: applySlashHit,
+    onSlashHighlight: setSlashIdx,
     onPalettePick: applyPaletteHit,
+    onPaletteHighlight: setPaletteIdx,
+    commandCatalog,
     onMentionPick: (path) =>
       replaceInput(applyMentionPick(inputRef.current?.value ?? input, path)),
     onCommandLaunch,
@@ -3112,7 +3579,7 @@ export function ChatPanel({
     onModelsLoaded: (pid, list) => {
       if (pid === (meta?.provider || pid)) setModels(list);
     },
-    onApprovalChange: (mode) => void onApprovalChange(mode as ApprovalMode),
+    onApprovalChange: (mode) => void onApprovalChange(mode),
     onUsageClick: usageClick,
     onRetryLast: () => retryLastUser(),
     onCopyTranscript: () => {
@@ -3308,6 +3775,8 @@ export function ChatPanel({
       className={`chat-panel codex-chat${rootExtra}${
         busy ? " has-busy" : ""
       }${pending.length > 0 ? " has-approval" : ""}${
+        showPlanReview ? " has-plan-review" : ""
+      }${
         showBackToBottom && isWire ? " has-jump" : ""
       }`.trim()}
       aria-label={isWire ? "上下文" : undefined}
@@ -3370,7 +3839,12 @@ export function ChatPanel({
               </button>
             ) : null
           }
-          permit={approvalBlock}
+          permit={
+            <>
+              {approvalBlock}
+              {planReviewDock}
+            </>
+          }
           composer={composerDock}
         />
       ) : (
@@ -3379,6 +3853,18 @@ export function ChatPanel({
           <div className="codex-thread-scroll">{messageList}</div>
           {composerDock}
         </>
+      )}
+      {createPortal(
+        <PayloadInspector
+          open={payloadOpen}
+          onClose={() => setPayloadOpen(false)}
+          view={payloadView}
+          title={payloadTitle}
+          detail={payloadDetail}
+          loading={payloadLoading}
+          error={payloadError}
+        />,
+        document.body,
       )}
       {createPortal(
         <SessionUsageModal
@@ -3410,6 +3896,17 @@ function relativeTime(iso?: string, wire = false): string {
   return String(iso).slice(5, 10);
 }
 
+function renderSearchHighlight(text: string): React.ReactNode {
+  const parts = text.split(/(\[[^\]]+\])/g);
+  return parts.map((p, i) =>
+    p.startsWith("[") && p.endsWith("]") && p.length > 2 ? (
+      <mark key={i}>{p.slice(1, -1)}</mark>
+    ) : (
+      <span key={i}>{p}</span>
+    ),
+  );
+}
+
 function ThreadRail(props: {
   sessions: SessionSummary[];
   activeId: string | null;
@@ -3427,6 +3924,21 @@ function ThreadRail(props: {
 }) {
   const wire = Boolean(props.wire);
   const running = new Set(props.runningSessionIds ?? []);
+  const [searchQ, setSearchQ] = useState("");
+  const [hits, setHits] = useState<SessionSearchHit[]>([]);
+  useEffect(() => {
+    const q = searchQ.trim();
+    if (!q) {
+      setHits([]);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      void searchSessions(q, { limit: 20 })
+        .then((r) => setHits(r.items))
+        .catch(() => setHits([]));
+    }, 200);
+    return () => window.clearTimeout(t);
+  }, [searchQ]);
   const busyHint = props.busy
     ? wire
       ? " · 当前会话运行中（其它会话可并行）"
@@ -3434,114 +3946,97 @@ function ThreadRail(props: {
     : "";
   const untitled = wire ? "未命名" : "Untitled";
   const forest = flattenSessionForest(props.sessions);
+  // Wire = SessionList single-line rows (title · time). Never mix
+  // thread-item column CSS with wire-session-btn 32px row — that
+  // clipped Chinese glyphs into garbage (see live shell session rail).
+  if (wire) {
+    const mapped: DraftSession[] = props.sessions.map((s) => ({
+      id: s.id,
+      title: (s.title || untitled).trim() || untitled,
+      agent: props.agentLabel || "",
+      timeLabel: relativeTime(s.lastMsgAt || s.updatedAt, true),
+      parentSessionId: s.parentSessionId,
+      lamp: s.lamp,
+      helperCount: s.helperCount,
+    }));
+    return (
+      <SessionList
+        className="thread-rail"
+        sessions={mapped}
+        activeId={props.activeId ?? ""}
+        agentLabel={props.agentLabel}
+        busy={props.busy}
+        runningSessionIds={props.runningSessionIds}
+        onSelect={props.onSelect}
+        onNew={props.onNew}
+        onDelete={props.onDelete}
+        onFork={props.onFork}
+        onNewChild={props.onNewChild}
+        onRename={props.onRename}
+        query={searchQ}
+        onQueryChange={setSearchQ}
+        searchHits={hits.map((h) => ({
+          key: `${h.sessionId}:${h.absSeq}:${h.seq}`,
+          sessionId: h.sessionId,
+          snippet: h.snippet,
+        }))}
+      />
+    );
+  }
   return (
     <div
       className={`thread-rail${props.busy ? " is-busy" : ""}${
-        wire ? " wire-session-list" : ""
-      }${running.size > 0 ? " has-running" : ""}`}
-      aria-label={
-        wire
-          ? props.agentLabel
-            ? `${props.agentLabel} 的会话`
-            : "会话列表"
-          : "Sessions"
-      }
+        running.size > 0 ? " has-running" : ""
+      }`}
+      aria-label="Sessions"
     >
-      <div className={wire ? "wire-new-task-wrap" : undefined}>
+      <div>
         <button
           type="button"
-          className={wire ? "wire-new-task-btn thread-new" : "thread-new"}
+          className="thread-new"
           onClick={props.onNew}
-          title={
-            wire ? `新建会话${busyHint}` : `New task${busyHint}`
-          }
+          title={`New task${busyHint}`}
         >
-          {wire ? "新建会话" : "New task"}
+          New task
         </button>
       </div>
-      <div
-        className={
-          wire ? "wire-pane-title thread-list-label" : "thread-list-label"
-        }
-      >
-        {wire
-          ? `会话${props.agentLabel ? ` · ${props.agentLabel}` : ""}`
-          : "Sessions"}
+      <div className="thread-list-label">Sessions</div>
+      <div className="thread-search">
+        <input
+          type="search"
+          value={searchQ}
+          onChange={(e) => setSearchQ(e.target.value)}
+          placeholder="Search sessions"
+          aria-label="Search sessions"
+        />
       </div>
-      <div className={wire ? "wire-session-scroll" : "thread-list"}>
+      {hits.length > 0 ? (
+        <div className="thread-search-hits">
+          {hits.map((h) => (
+            <button
+              key={`${h.sessionId}:${h.absSeq}:${h.seq}`}
+              type="button"
+              className="thread-search-hit"
+              onClick={() => props.onSelect(h.sessionId)}
+            >
+              {renderSearchHighlight(h.snippet)}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div className="thread-list">
         {props.sessions.length === 0 && (
-          <div className={wire ? "wire-empty-row" : "thread-empty"}>
-            {wire ? "还没有会话" : "No sessions yet"}
-          </div>
+          <div className="thread-empty">No sessions yet</div>
         )}
-        {forest.map(({ node: s, depth }) => {
+        {forest.map(({ node: s }) => {
           const active = s.id === props.activeId;
           const isRunning = running.has(s.id);
           const title = (s.title || untitled).trim() || untitled;
-          const when = relativeTime(s.lastMsgAt || s.updatedAt, wire);
+          const when = relativeTime(s.lastMsgAt || s.updatedAt, false);
           const countHint =
             s.messageCount > 0
-              ? wire
-                ? `${s.messageCount} 条消息`
-                : `${s.messageCount} message${s.messageCount === 1 ? "" : "s"}`
-              : wire
-                ? "空会话"
-                : "Empty session";
-          // Wire = SessionList single-line row (title · time). Never mix
-          // thread-item column CSS with wire-session-btn 32px row — that
-          // clipped Chinese glyphs into garbage (see live shell session rail).
-          if (wire) {
-            return (
-              <div
-                key={s.id}
-                className={`wire-session-row${active ? " active" : ""}${
-                  isRunning ? " is-running" : ""
-                }${depth > 0 ? " is-child" : ""}`}
-              >
-                <button
-                  type="button"
-                  className="wire-session-btn"
-                  style={{ paddingLeft: hierarchyIndentPx(depth, 12, 8) }}
-                  onClick={() => props.onSelect(s.id)}
-                  onDoubleClick={() => props.onRename(s.id, title)}
-                  title={`${title} · ${countHint}${when ? ` · ${when}` : ""}${
-                    isRunning ? " · 生成中" : ""
-                  }`}
-                >
-                  <span className="wire-session-title">{title}</span>
-                  <span className="wire-session-time">
-                    {isRunning ? "运行中" : when || countHint}
-                  </span>
-                </button>
-                {props.onFork ? (
-                  <button
-                    type="button"
-                    className="wire-session-fork"
-                    title="派生"
-                    aria-label={`派生 ${title}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      props.onFork?.(s.id);
-                    }}
-                  >
-                    派生
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="wire-session-del"
-                  title="删除会话"
-                  aria-label="删除会话"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    props.onDelete(s.id);
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-            );
-          }
+              ? `${s.messageCount} message${s.messageCount === 1 ? "" : "s"}`
+              : "Empty session";
           return (
             <div
               key={s.id}

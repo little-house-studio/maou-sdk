@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="plate">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 工具卡方案对比</title>
+    <style>
+      /*
+       * Token 抄自 app/src/client/drafts/draft.css 纸面壳
+       * 读写：本页静态演示；生产 ToolCard 不读这里
+       */
+      :root {
+        --n-bg: #ededed;
+        --n-label: #000000;
+        --n-on-ink: #ededed;
+        --n-secondary: #828282;
+        --n-line: #9b9b9b;
+        --n-info: #0291FF;
+        --n-accent: #0256FF;
+        --n-err: #FF261F;
+        --n-ok: #02C85A;
+        --n-wait: #FFAE00;
+        --n-term: #9b9b9b;
+        --n-font: "Helvetica Neue", Helvetica, Arial, "PingFang SC",
+          "HarmonyOS Sans SC", sans-serif;
+        --n-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        --row: 1.3125em;
+        --spine: 3px;
+      }
+      html[data-theme="phosphor"] {
+        --n-bg: #0b0b0b;
+        --n-label: #ecece8;
+        --n-on-ink: #0b0b0b;
+        --n-secondary: #8a8a84;
+        --n-line: #5c5c58;
+        --n-info: #b8ff00;
+        --n-accent: #b8ff00;
+        --n-err: #ff4d3a;
+        --n-ok: #00E872;
+        --n-wait: #ffb020;
+        --n-term: #5c5c58;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        height: 100dvh;
+        overflow: hidden;
+        background: var(--n-bg);
+        color: var(--n-label);
+        font: 400 13px / var(--row) var(--n-font);
+      }
+      button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+      :focus-visible { outline: 1px solid var(--n-info); outline-offset: -1px; }
+
+      .sheet {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .cmd {
+        display: grid;
+        grid-template-columns: minmax(16em, 2.2fr) auto;
+        border-bottom: 1px solid var(--n-line);
+        min-width: 0;
+      }
+      .cmd-copy {
+        padding: 0.7em 0.8em 0.75em;
+        border-right: 1px solid var(--n-line);
+        min-width: 0;
+      }
+      .cmd-copy h1 {
+        margin: 0 0 0.2em;
+        font-size: 1.15em;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        line-height: 1.2;
+      }
+      .cmd-copy p { margin: 0; color: var(--n-secondary); max-width: 62em; }
+      .cmd-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: start;
+        gap: 0.55em 1.1em;
+        padding: 0.7em 0.8em;
+      }
+      .tool-block { display: flex; flex-direction: column; gap: 0.15em; }
+      .tool-k { color: var(--n-secondary); font-size: 11px; }
+      .seg { display: flex; border: 1px solid var(--n-line); }
+      .seg button { padding: 0 0.65em; min-height: calc(var(--row) * 1.35); color: var(--n-secondary); }
+      .seg button + button { border-left: 1px solid var(--n-line); }
+      .seg button.is-on { background: var(--n-label); color: var(--n-on-ink); }
+
+      .stage {
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(16em, 1fr));
+      }
+      .sheet[data-view="switch"] .stage {
+        grid-template-columns: minmax(22em, 28em) minmax(0, 1fr);
+      }
+      .sheet[data-view="switch"] .col:not(.is-focus) { display: none; }
+      .sheet[data-view="switch"] .note { display: block; }
+      .note { display: none; padding: 1em 1.2em; border-left: 1px solid var(--n-line); color: var(--n-secondary); }
+      .note h2 { margin: 0 0 0.35em; font-size: 1.1em; font-weight: 500; color: var(--n-label); }
+      .note ul { margin: 0.5em 0 0; padding-left: 1.1em; }
+      .note li + li { margin-top: 0.25em; }
+
+      .col {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        border-right: 1px solid var(--n-line);
+      }
+      .col-head {
+        padding: 0.55em 0.7em 0.5em;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .col-id { color: var(--n-secondary); font-size: 11px; }
+      .col-name { font-weight: 500; }
+      .col-blurb { margin: 0.15em 0 0; color: var(--n-secondary); }
+
+      .thread {
+        min-height: 0;
+        overflow: auto;
+        padding: 0.9em 1.1em 1.4em;
+      }
+      .ask {
+        background: #1a1817;
+        color: #ededed;
+        padding: 0.35em 0.55em;
+        margin: 0 0 0.85em;
+        font-size: 13px;
+      }
+      html[data-theme="phosphor"] .ask {
+        background: #ecece8;
+        color: #0b0b0b;
+      }
+      .round {
+        display: flex;
+        gap: 0.55em;
+        align-items: flex-start;
+      }
+      .chip {
+        flex-shrink: 0;
+        width: 14px;
+        height: 14px;
+        margin-top: 0.15em;
+        border: 1px solid var(--n-label);
+        border-radius: 50%;
+        font-size: 9px;
+        display: grid;
+        place-items: center;
+      }
+      .stack { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+
+      .card { width: 100%; min-width: 0; }
+      .title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        min-width: 0;
+        padding: 2px 0;
+      }
+      .led {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: var(--n-wait);
+      }
+      .led.ok { background: var(--n-ok); }
+      .led.err { background: var(--n-err); }
+      .led.wait { background: var(--n-wait); }
+      .name { font-family: var(--n-mono); font-size: 12px; font-weight: 600; }
+      .intent {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--n-secondary);
+        font-size: 12px;
+      }
+      .dur { flex-shrink: 0; font-variant-numeric: tabular-nums; color: var(--n-secondary); font-size: 12px; }
+      .mark { flex-shrink: 0; font-size: 12px; }
+      .body { margin-top: 6px; }
+      .lab { font-size: 11px; font-weight: 600; color: var(--n-secondary); margin-bottom: 4px; }
+      pre {
+        margin: 0;
+        padding: 10px 12px;
+        font-family: var(--n-mono);
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 9.5em;
+        overflow: auto;
+      }
+
+      /* 现在：生产还原 — LED + 灰底名条 + 灰井绿字 */
+      .now .name {
+        padding: 2px 8px;
+        background: color-mix(in srgb, var(--n-label) 12%, var(--n-bg));
+      }
+      .now pre {
+        background: var(--n-term);
+        color: var(--n-ok);
+      }
+      .now .is-err pre { color: var(--n-err); }
+      .now .is-wait pre { color: var(--n-wait); }
+
+      /* A：纸面日志 — 左墨条当状态，输出就是纸上的字 */
+      .a .card { box-shadow: inset 2px 0 0 var(--n-label); padding-left: 0.55em; }
+      .a .is-wait { box-shadow: inset 2px 0 0 var(--n-accent); }
+      .a .is-err { box-shadow: inset 2px 0 0 var(--n-err); }
+      .a .led { display: none; }
+      .a .name { font-weight: 500; letter-spacing: 0; }
+      .a pre {
+        padding: 0.15em 0 0.35em;
+        background: transparent;
+        color: var(--n-label);
+        max-height: 8.5em;
+      }
+      .a .lab { font-weight: 400; letter-spacing: 0; }
+      .a .mark { color: var(--n-secondary); }
+
+      /* B：一行账本 — 方灯、无芯片、输出是路径行 */
+      .b .led { border-radius: 0; width: 7px; height: 7px; }
+      .b .name { font-weight: 500; }
+      .b .title { gap: 6px; }
+      .b .files { display: flex; flex-direction: column; }
+      .b .files span {
+        font-family: var(--n-mono);
+        font-size: 12px;
+        color: var(--n-label);
+        padding: 0.05em 0;
+      }
+      .b .files .meta { color: var(--n-secondary); font-family: inherit; padding-bottom: 0.2em; }
+      .b .lab { display: none; }
+
+      /* C：脊线仪器 — 3px 脊 + 细线井，字用墨色 */
+      .c .card { position: relative; padding-left: 0.85em; }
+      .c .card::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.2em;
+        bottom: 0.15em;
+        width: var(--spine);
+        background: var(--n-label);
+      }
+      .c .is-wait::before { background: var(--n-accent); }
+      .c .is-err::before { background: var(--n-err); }
+      .c .led { display: none; }
+      .c .name {
+        padding: 0 0.35em;
+        background: var(--n-label);
+        color: var(--n-on-ink);
+        font-weight: 500;
+      }
+      .c pre {
+        padding: 0.4em 0.5em;
+        border: 1px solid var(--n-line);
+        background: transparent;
+        color: var(--n-label);
+      }
+      .c .is-err pre { border-color: var(--n-err); }
+      .c .is-wait pre { border-color: var(--n-accent); }
+
+      .hint { margin: 0.2em 0 0; font-size: 11px; color: var(--n-secondary); }
+    </style>
+  </head>
+  <body>
+    <div class="sheet" id="sheet" data-view="all">
+      <div class="cmd">
+        <div class="cmd-copy">
+          <h1>工具卡四案对照</h1>
+          <p>
+            点标题折叠。现在 = 生产（灰井 + 绿字）。A 纸面日志去掉终端井。B 账本把输出收成路径行。C 用 3px 脊线当状态，跟对话左侧脊同一套。
+            生产 ToolCard 不读本页。
+          </p>
+        </div>
+        <div class="cmd-tools">
+          <div class="tool-block">
+            <span class="tool-k">纸色</span>
+            <div class="seg">
+              <button type="button" data-theme="plate" class="is-on">纸面</button>
+              <button type="button" data-theme="phosphor">磷光</button>
+            </div>
+          </div>
+          <div class="tool-block">
+            <span class="tool-k">看</span>
+            <div class="seg">
+              <button type="button" data-view="all" class="is-on">四列</button>
+              <button type="button" data-view="switch">单列</button>
+            </div>
+          </div>
+          <div class="tool-block" id="schemeSegWrap" hidden>
+            <span class="tool-k">方案</span>
+            <div class="seg">
+              <button type="button" data-focus="now" class="is-on">现在</button>
+              <button type="button" data-focus="a">A</button>
+              <button type="button" data-focus="b">B</button>
+              <button type="button" data-focus="c">C</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="stage">
+        <section class="col is-focus" data-col="now">
+          <div class="col-head">
+            <div class="col-id">现在</div>
+            <div class="col-name">生产还原</div>
+            <p class="col-blurb">绿点 + 灰底工具名 + 灰井绿字。状态灯和输出抢绿。</p>
+          </div>
+          <div class="thread now" data-scheme="now"></div>
+        </section>
+        <section class="col" data-col="a">
+          <div class="col-head">
+            <div class="col-id">A</div>
+            <div class="col-name">纸面日志</div>
+            <p class="col-blurb">左墨条当完成/跑/失败。输出跟正文同一套墨色。</p>
+          </div>
+          <div class="thread a" data-scheme="a"></div>
+        </section>
+        <section class="col" data-col="b">
+          <div class="col-head">
+            <div class="col-id">B</div>
+            <div class="col-name">一行账本</div>
+            <p class="col-blurb">方灯、无芯片。展开后是路径行，不再套终端块。</p>
+          </div>
+          <div class="thread b" data-scheme="b"></div>
+        </section>
+        <section class="col" data-col="c">
+          <div class="col-head">
+            <div class="col-id">C</div>
+            <div class="col-name">脊线仪器</div>
+            <p class="col-blurb">3px 脊：跑着蓝、停了黑、失败红。名条反色，井只画细线。</p>
+          </div>
+          <div class="thread c" data-scheme="c"></div>
+        </section>
+        <aside class="note" id="note"></aside>
+      </div>
+    </div>
+    <script>
+      const GLOB_OUT = `✓ glob
+[method=rg] 找到 100 个匹配文件:
+.maou/last-session.json
+.maou/config.json
+.maou/ops/agent.json
+core/agent/src/agent/runtime.ts
+app/src/client/ChatPanel.tsx`;
+
+      const CARDS = [
+        {
+          id: "glob",
+          name: "glob",
+          intent: "查看 ops 数据根下所有可见文件",
+          dur: "142ms",
+          led: "ok",
+          open: true,
+          out: GLOB_OUT,
+          files: {
+            meta: "[rg] 100 个匹配",
+            rows: [
+              ".maou/last-session.json",
+              ".maou/config.json",
+              ".maou/ops/agent.json",
+              "core/agent/src/agent/runtime.ts",
+              "app/src/client/ChatPanel.tsx",
+            ],
+          },
+        },
+        {
+          id: "glob2",
+          name: "glob",
+          intent: "列出模板目录",
+          dur: "38ms",
+          led: "ok",
+          open: false,
+          out: "✓ glob\n[method=rg] 找到 12 个匹配文件:",
+          files: { meta: "[rg] 12 个匹配", rows: ["templates/system.md"] },
+        },
+        {
+          id: "write",
+          name: "write",
+          intent: "写入 runtime.ts 护栏",
+          dur: "",
+          led: "wait",
+          open: true,
+          out: "正在写入…",
+          files: { meta: "写入中", rows: ["core/agent/src/agent/runtime.ts"] },
+        },
+        {
+          id: "sh",
+          name: "use_terminal",
+          intent: "跑 typecheck",
+          dur: "2.1s",
+          led: "err",
+          open: true,
+          out: "exit 1\nerror TS2322: Type 'string' is not assignable.",
+          files: { meta: "exit 1", rows: ["error TS2322: Type 'string' is not assignable."] },
+        },
+      ];
+
+      const NOTES = {
+        now: {
+          t: "现在",
+          d: "截图里这一套。",
+          pts: [
+            "绿点成功、绿字输出，同一信号用了两次。",
+            "灰井把工具结果做成终端，和纸面对话抢一层。",
+            "工具名灰底芯片占一行视觉权重。",
+          ],
+        },
+        a: {
+          t: "A 纸面日志",
+          d: "跟会话轨方案 A 同一套：左墨条，不要整块油漆。",
+          pts: [
+            "完成黑条、生成蓝条、失败红条，和对话脊同一语义。",
+            "输出是墨色字，不再绿字灰井。",
+            "名字只是等宽词，不再套芯片。",
+          ],
+        },
+        b: {
+          t: "B 一行账本",
+          d: "折叠时尽量一行；展开给路径，不给终端皮肤。",
+          pts: [
+            "方灯对应提问方标，圆留给轮次。",
+            "glob 结果按文件一行，不再先印 ✓ glob。",
+            "适合目录类工具；长日志会显得碎。",
+          ],
+        },
+        c: {
+          t: "C 脊线仪器",
+          d: "工具卡自己长一条 3px 脊，生成中蓝色。",
+          pts: [
+            "跟对话左侧脊同宽同色规则。",
+            "名条反色，一眼能扫到调了哪个工具。",
+            "井只留 1px 细线，字仍是墨。",
+          ],
+        },
+      };
+
+      const open = {
+        now: Object.fromEntries(CARDS.map((c) => [c.id, c.open])),
+        a: Object.fromEntries(CARDS.map((c) => [c.id, c.open])),
+        b: Object.fromEntries(CARDS.map((c) => [c.id, c.open])),
+        c: Object.fromEntries(CARDS.map((c) => [c.id, c.open])),
+      };
+
+      function esc(s) {
+        return s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+      }
+
+      function cardHtml(scheme, c) {
+        const on = open[scheme][c.id];
+        const mark = on ? "▾" : "▸";
+        const cls = `card is-${c.led}${on ? " is-open" : ""}`;
+        const title = `
+          <button type="button" class="title" data-id="${c.id}" aria-expanded="${on}">
+            <span class="led ${c.led}" aria-hidden></span>
+            <span class="name">${esc(c.name)}</span>
+            <span class="intent">${esc(c.intent)}</span>
+            ${c.dur ? `<span class="dur">${esc(c.dur)}</span>` : ""}
+            <span class="mark" aria-hidden>${mark}</span>
+          </button>`;
+        if (!on) return `<div class="${cls}">${title}</div>`;
+        if (scheme === "b") {
+          const files = c.files.rows.map((r) => `<span>${esc(r)}</span>`).join("");
+          return `<div class="${cls}">${title}<div class="body"><div class="files"><span class="meta">${esc(c.files.meta)}</span>${files}</div></div></div>`;
+        }
+        const lab =
+          c.led === "err" ? "▸ 输出（失败）" : c.led === "wait" ? "▸ 输出" : "▸ 输出";
+        return `<div class="${cls}">${title}<div class="body"><div class="lab">${lab}</div><pre>${esc(c.out)}</pre></div></div>`;
+      }
+
+      function paint(scheme) {
+        const root = document.querySelector(`[data-scheme="${scheme}"]`);
+        root.innerHTML = `
+          <div class="ask">把 ops 数据根下的可见文件列出来</div>
+          <div class="round">
+            <span class="chip" aria-hidden>1</span>
+            <div class="stack">${CARDS.map((c) => cardHtml(scheme, c)).join("")}</div>
+          </div>
+          <p class="hint">点标题折叠 / 展开</p>`;
+      }
+
+      function paintNote() {
+        const sheet = document.getElementById("sheet");
+        const note = document.getElementById("note");
+        if (sheet.dataset.view !== "switch") return;
+        const id = document.querySelector(".col.is-focus")?.getAttribute("data-col") || "now";
+        const n = NOTES[id];
+        note.innerHTML = `<h2>${n.t}</h2><p>${n.d}</p><ul>${n.pts.map((p) => `<li>${p}</li>`).join("")}</ul>`;
+      }
+
+      ["now", "a", "b", "c"].forEach((scheme) => {
+        paint(scheme);
+        document.querySelector(`[data-scheme="${scheme}"]`).addEventListener("click", (e) => {
+          const btn = e.target.closest("[data-id]");
+          if (!btn) return;
+          const id = btn.getAttribute("data-id");
+          open[scheme][id] = !open[scheme][id];
+          paint(scheme);
+        });
+      });
+
+      document.querySelectorAll("[data-view]").forEach((b) => {
+        b.addEventListener("click", () => {
+          document.getElementById("sheet").dataset.view = b.getAttribute("data-view");
+          document.querySelectorAll("[data-view]").forEach((x) => {
+            x.classList.toggle("is-on", x === b);
+          });
+          document.getElementById("schemeSegWrap").hidden =
+            document.getElementById("sheet").dataset.view !== "switch";
+          paintNote();
+        });
+      });
+      document.querySelectorAll("[data-focus]").forEach((b) => {
+        b.addEventListener("click", () => {
+          document.querySelectorAll(".col").forEach((c) => {
+            c.classList.toggle("is-focus", c.getAttribute("data-col") === b.getAttribute("data-focus"));
+          });
+          document.querySelectorAll("[data-focus]").forEach((x) => {
+            x.classList.toggle("is-on", x === b);
+          });
+          paintNote();
+        });
+      });
+      document.querySelectorAll("[data-theme]").forEach((b) => {
+        b.addEventListener("click", () => {
+          document.documentElement.dataset.theme = b.getAttribute("data-theme");
+          document.querySelectorAll("[data-theme]").forEach((x) => {
+            x.classList.toggle("is-on", x === b);
+          });
+        });
+      });
+    </script>
+  </body>
+</html>

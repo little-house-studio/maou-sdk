@@ -12,6 +12,8 @@ import {
   buildLiveSettingsSnapshot,
   emptyLiveSettingsSnapshot,
   isApprovalMode,
+  permissionPresetLabel,
+  permissionPresetName,
   isDraftShowcaseApiKey,
   looksLikeDraftShowcasePreset,
   resolveModelAfterProviderChange,
@@ -98,6 +100,15 @@ describe("live settings adapters", () => {
     assert.equal(isApprovalMode("ask"), false);
     assert.match(approvalModeLabel("normal"), /普通|白名单|询问/);
     assert.match(approvalModeHint("yolo"), /放行|YOLO|yolo/i);
+  });
+
+  it("permission presets use the same short name + comment as slash commands", () => {
+    assert.equal(permissionPresetName("workspace+ask"), "ask");
+    assert.equal(permissionPresetLabel("workspace+ask"), "询问");
+    assert.equal(permissionPresetName("workspace+auto"), "auto");
+    assert.equal(permissionPresetLabel("workspace+auto"), "审核");
+    assert.equal(permissionPresetName("open+yolo"), "yolo");
+    assert.equal(permissionPresetLabel("open+yolo"), "放开");
   });
 
   it("withApprovalMode updates snapshot display fields", () => {

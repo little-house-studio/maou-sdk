@@ -94,7 +94,9 @@ export function createInstallAgent(opts: InstallAgentOptions): InstallAgent {
     terminalPersistRoot: dataRoot,
     agentName: name,
     agentScope: "global",
-    harnessStore: new HarnessSessionStore({ maouRoot: dataRoot }),
+    harnessStore: new HarnessSessionStore({
+      sessionsDir: opts.sessionStore.sessionDir,
+    }),
     taskStore: new TaskSessionStore(dataRoot, name),
     enableCompression: opts.enableCompression,
     summarizer: opts.summarizer,

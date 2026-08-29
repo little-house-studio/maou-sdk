@@ -25,6 +25,7 @@ import { reasoningParamsFor, type ReasoningLevel } from "./reasoning.js";
 import { computeCost } from "./compute-cost.js";
 import { resolvePricingFromPreset } from "./preset-normalize.js";
 import { normalizeStopReason } from "./stop-reason.js";
+import { normalizeCacheUsage } from "./cache-usage.js";
 
 // ─── Context / Message 类型 ──────────────────────────────────────────────────
 
@@ -260,23 +261,19 @@ function toAPIPreset(model: StreamModel, opts: StreamOptions): APIPreset {
 
 /** 把 LLMUsage（下划线字段）算成完整 Usage（含 cost，永远填） */
 function computeUsage(raw: LLMUsage | null, preset: APIPreset): Usage {
-  const input = Number(raw?.prompt_tokens ?? raw?.input_tokens ?? 0);
-  const output = Number(raw?.completion_tokens ?? raw?.output_tokens ?? 0);
-  const cacheRead = Number(raw?.cache_read_input_tokens ?? raw?.cache_hit_tokens ?? raw?.cached_tokens ?? 0);
-  const cacheWrite = Number(raw?.cache_creation_input_tokens ?? 0);
-  const cacheWrite1h = Number((raw as Record<string, unknown> | null)?.cache_write_1h ?? 0);
+  const n = normalizeCacheUsage(raw as Record<string, unknown> | null);
+  const input = n.promptTotal;
+  const output = n.output;
+  const cacheRead = n.cacheRead;
+  const cacheWrite = n.cacheWrite;
+  const rawRec = raw as Record<string, unknown> | null;
+  const cacheWrite1h = Number(rawRec?.cache_write_1h ?? 0);
   const totalTokens = Number(raw?.total_tokens ?? input + output);
 
   const pricing = resolvePricingFromPreset(preset);
   let cost: Usage["cost"] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
   if (pricing) {
-    const c = computeCost(
-      {
-        prompt_tokens: input, completion_tokens: output, total_tokens: totalTokens,
-        cache_read_input_tokens: cacheRead, cache_creation_input_tokens: cacheWrite,
-      },
-      pricing,
-    );
+    const c = computeCost(raw, pricing);
     if (c) {
       // Anthropic 1h 长缓存写入按 2x 计费
       const longWriteCost = cacheWrite1h > 0 ? (cacheWrite1h / 1e6) * pricing.inputPrice * 2 : 0;

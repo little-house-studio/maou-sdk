@@ -42,5 +42,6 @@ export {
   syncRuntimeCommands,
   syncSkillCommands,
   refreshDynamicCommands,
+  setSkillScanContext,
   splitSlashTokens,
 } from "../slash/index.js";

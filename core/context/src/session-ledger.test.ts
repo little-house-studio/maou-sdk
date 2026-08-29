@@ -13,7 +13,7 @@ import {
 } from "./session-ledger.js";
 import { appendSessionEvent } from "./session-event.js";
 
-describe("session ledger catalog + sidecar", () => {
+describe("session ledger catalog + events.jsonl", () => {
   const dirs: string[] = [];
   afterEach(() => {
     resetExtraLedgerCatalogForTests();
@@ -43,7 +43,7 @@ describe("session ledger catalog + sidecar", () => {
     const s = store();
     const session = s.create({ title: "t" });
     const wrote = appendLedgerEvent(s.sessionDir, session.id, "demo/feature", { flag: "on" });
-    expect(wrote).toEqual({ seq: expect.any(Number) });
+    expect(wrote).toMatchObject({ seq: expect.any(Number), byteOffset: expect.any(Number) });
 
     const port = bindSessionLedgerPort(s.sessionDir, session.id);
     expect(port.catalog().some((row) => row.type === "demo/feature")).toBe(true);
@@ -53,7 +53,7 @@ describe("session ledger catalog + sidecar", () => {
     expect(found.events[0]?.summary).toContain("demo/feature on");
   });
 
-  it("appendMessage and appendSessionEvent dual-write the ledger", () => {
+  it("appendMessage and appendSessionEvent write events.jsonl", () => {
     const s = store();
     const session = s.create({ title: "t" });
     s.appendMessage(session.id, "user", "hello world", { kind: "human_user", source: "human" });
@@ -80,36 +80,22 @@ describe("session ledger catalog + sidecar", () => {
     });
   });
 
-  it("save() rewrite of jsonl does not wipe the ledger sidecar", () => {
-    const s = store();
-    const session = s.create({ title: "t" });
-    s.appendMessage(session.id, "user", "keep-me");
-    const before = queryLedgerEvents(s.sessionDir, session.id, { types: ["user/message"] });
-    expect(before.total).toBe(1);
-
-    const loaded = s.load(session.id);
-    expect(loaded).toBeTruthy();
-    s.save(loaded!);
-
-    const after = queryLedgerEvents(s.sessionDir, session.id, { types: ["user/message"] });
-    expect(after.total).toBe(1);
-    expect(after.events[0]?.data.content).toContain("keep-me");
-  });
-
-  it("fork copies ledger; clear empties it", () => {
+  it("fork shares prefix; clear deletes the parent volume", () => {
     const s = store();
     const src = s.create({ title: "src" });
     s.appendMessage(src.id, "user", "origin");
     const child = s.forkSession(src.id, "child");
-    const copied = queryLedgerEvents(s.sessionDir, child.id, { types: ["user/message"] });
-    expect(copied.total).toBeGreaterThanOrEqual(1);
+    expect(child.messages.map((m) => m.content)).toContain("origin");
+    expect(s.readMeta(child.id)?.prefix_ref?.sessionId).toBe(src.id);
 
     s.clearSession(src.id);
+    expect(s.exists(src.id)).toBe(false);
     const cleared = queryLedgerEvents(s.sessionDir, src.id, { surface: "all" });
     expect(cleared.total).toBe(0);
+    expect(s.load(child.id)?.messages.map((m) => m.content)).toContain("origin");
   });
 
-  it("checkpoint copies and restores the ledger sidecar", () => {
+  it("checkpoint rollback keeps regretted turns in events.jsonl", () => {
     const s = store();
     const session = s.create({ title: "cp" });
     s.appendMessage(session.id, "user", "before-checkpoint");
@@ -121,8 +107,9 @@ describe("session ledger catalog + sidecar", () => {
     ).toBe(1);
 
     cps.rollbackToCheckpoint(session.id, meta.id);
-    const restored = queryLedgerEvents(s.sessionDir, session.id, { surface: "model" });
-    expect(restored.events.some((e) => String(e.data.content ?? "").includes("before-checkpoint"))).toBe(true);
-    expect(restored.events.some((e) => String(e.data.content ?? "").includes("after-checkpoint"))).toBe(false);
+    const onDisk = queryLedgerEvents(s.sessionDir, session.id, { surface: "model" });
+    expect(onDisk.events.some((e) => String(e.data.content ?? "").includes("before-checkpoint"))).toBe(true);
+    expect(onDisk.events.some((e) => String(e.data.content ?? "").includes("after-checkpoint"))).toBe(true);
+    expect(s.load(session.id)?.messages.map((m) => m.content)).toEqual(["before-checkpoint"]);
   });
 });

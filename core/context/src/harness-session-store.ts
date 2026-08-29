@@ -1,41 +1,42 @@
 /**
  * HarnessSessionStore —— 管理 harness_session 的双份存储（当前上下文 + 压缩前备份）。
  *
- * 存储路径：
- *   <maouRoot>/sessions/<sessionId>/harness_session.json         —— 当前上下文
- *   <maouRoot>/sessions/<sessionId>/harness_session_backup.json   —— 压缩前备份
+ * 存储路径（与 SessionStore 同一会话目录）：
+ *   <sessionsDir>/<sessionId>/harness.json
+ *   <sessionsDir>/<sessionId>/harness.bak.json
  *
- * harness 是 **LLM 工作集**（可压缩）；SessionStore 仍是完整审计轨迹（UI）。
- * `sourceSessionMessageCount` 记录本工作集已覆盖的 session.messages 条数，
- * 下轮只 append 增量，避免每轮从全量 session 重压（B1）。
+ * harness 是 **LLM 工作集**（可压缩）；SessionStore 是完整审计轨迹。
+ * 对齐键：`absorbedSeq` + 尾指纹；`sourceSessionMessageCount` 仍写入供增量 slice。
  */
 
 import {
   readFileSync,
-  writeFileSync,
   existsSync,
-  mkdirSync,
-  renameSync,
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { MaouMessage } from "./types/message.js";
 import type { CompressionStage } from "./types/compression.js";
+import { durableAtomicWriteJson } from "./durable-write.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
 /** HarnessSessionStore 配置选项 */
 export interface HarnessSessionStoreOptions {
-  /** maou 根目录，默认 ~/.maou */
+  /** maou 根目录，默认 ~/.maou；无 sessionsDir 时用 <maouRoot>/sessions */
   maouRoot?: string;
+  /** 与 SessionStore.sessionDir 相同 */
+  sessionsDir?: string;
 }
 
 /**
  * 工作集与 SessionStore 的对齐元数据。
+ * - absorbedSeq：已吸收的最后一条事件逻辑序号
  * - sourceSessionMessageCount：已吸收的 session.messages 前缀长度
- * - sourceTailFingerprint：该前缀最后一条的指纹（检测 /new 截断或重写）
+ * - sourceTailFingerprint：该前缀最后一条的指纹
  */
 export interface HarnessWorkingSetMeta {
+  absorbedSeq?: number;
   sourceSessionMessageCount: number;
   sourceTailFingerprint?: string;
 }
@@ -53,12 +54,7 @@ function nowIso(): string {
 }
 
 function atomicWriteJson(filePath: string, data: unknown): void {
-  const dir = join(filePath, "..");
-  mkdirSync(dir, { recursive: true });
-  const tmp = `${filePath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2), "utf-8");
-  // Node.js rename 在同一文件系统上是原子操作
-  renameSync(tmp, filePath);
+  durableAtomicWriteJson(filePath, data);
 }
 
 /**
@@ -89,14 +85,17 @@ export function isHarnessMetaAligned(
   if (!meta) return false;
   const n = meta.sourceSessionMessageCount;
   if (!Number.isFinite(n) || n < 0 || n > sessionMessages.length) return false;
-  if (!meta.sourceTailFingerprint) {
-    // 无指纹：无法校验前缀 → 仅「完整覆盖且无新消息」可复用
-    return n > 0 && n === sessionMessages.length;
-  }
   if (n === 0) {
     return sessionMessages.length === 0;
   }
   const tail = sessionMessages[n - 1];
+  if (typeof meta.absorbedSeq === "number") {
+    const tailSeq = tail && typeof tail.seq === "number" ? tail.seq : undefined;
+    if (tailSeq != null && tailSeq !== meta.absorbedSeq) return false;
+  }
+  if (!meta.sourceTailFingerprint) {
+    return n > 0 && n === sessionMessages.length;
+  }
   return sessionMessageFingerprint(tail) === meta.sourceTailFingerprint;
 }
 
@@ -111,30 +110,24 @@ export function isHarnessMetaAligned(
  * - 记录与 SessionStore 的覆盖对齐信息（B1）
  */
 export class HarnessSessionStore {
-  private maouRoot: string;
+  private sessionsDir: string;
 
   constructor(options?: HarnessSessionStoreOptions) {
-    // MAOU_HOME 即用户态根（已含 .maou）；未设时用 ~/ .maou
     const envHome = process.env.MAOU_HOME?.trim();
-    this.maouRoot =
-      options?.maouRoot ?? (envHome ? envHome : join(homedir(), ".maou"));
+    const maouRoot = options?.maouRoot ?? (envHome ? envHome : join(homedir(), ".maou"));
+    this.sessionsDir = options?.sessionsDir ?? join(maouRoot, "sessions");
   }
 
-  // ── 路径计算 ──
-
-  /** 会话目录 */
   private sessionDir(sessionId: string): string {
-    return join(this.maouRoot, "sessions", sessionId);
+    return join(this.sessionsDir, sessionId);
   }
 
-  /** 当前上下文文件路径 */
   private currentPath(sessionId: string): string {
-    return join(this.sessionDir(sessionId), "harness_session.json");
+    return join(this.sessionDir(sessionId), "harness.json");
   }
 
-  /** 备份上下文文件路径 */
   private backupPath(sessionId: string): string {
-    return join(this.sessionDir(sessionId), "harness_session_backup.json");
+    return join(this.sessionDir(sessionId), "harness.bak.json");
   }
 
   // ── 核心操作 ──
@@ -157,6 +150,7 @@ export class HarnessSessionStore {
         meta?.sourceSessionMessageCount ??
         prev?.sourceSessionMessageCount ??
         0,
+      absorbedSeq: meta?.absorbedSeq ?? prev?.absorbedSeq,
       sourceTailFingerprint:
         meta?.sourceTailFingerprint ?? prev?.sourceTailFingerprint,
     };
@@ -166,18 +160,24 @@ export class HarnessSessionStore {
   /**
    * 压缩前备份 —— 将当前上下文复制到备份文件
    */
-  backupBeforeCompress(sessionId: string): void {
+  /**
+   * @param history 压缩前的内存历史。首次压缩时盘上还没有工作集，
+   *   只读盘会备份到空，摘要的 seqRange 就指向不存在的原文。
+   */
+  backupBeforeCompress(sessionId: string, history?: MaouMessage[]): void {
     const current = this.getCurrentRecord(sessionId);
-    if (!current) {
+    const context = history ?? current?.context;
+    if (!context || context.length === 0) {
       return;
     }
     const filePath = this.backupPath(sessionId);
     const data = {
       sessionId,
       updatedAt: nowIso(),
-      context: current.context,
-      sourceSessionMessageCount: current.sourceSessionMessageCount,
-      sourceTailFingerprint: current.sourceTailFingerprint,
+      context,
+      sourceSessionMessageCount: current?.sourceSessionMessageCount,
+      absorbedSeq: current?.absorbedSeq,
+      sourceTailFingerprint: current?.sourceTailFingerprint,
     };
     atomicWriteJson(filePath, data);
   }
@@ -196,6 +196,7 @@ export class HarnessSessionStore {
         updatedAt: String(raw.updatedAt ?? ""),
         context: raw.context,
         sourceSessionMessageCount: Number(raw.sourceSessionMessageCount ?? 0) || 0,
+        absorbedSeq: typeof raw.absorbedSeq === "number" ? raw.absorbedSeq : undefined,
         sourceTailFingerprint:
           typeof raw.sourceTailFingerprint === "string"
             ? raw.sourceTailFingerprint
@@ -246,6 +247,7 @@ export class HarnessSessionStore {
         updatedAt: nowIso(),
         context: raw.context,
         sourceSessionMessageCount: Number(raw.sourceSessionMessageCount ?? 0) || 0,
+        absorbedSeq: typeof raw.absorbedSeq === "number" ? raw.absorbedSeq : undefined,
         sourceTailFingerprint:
           typeof raw.sourceTailFingerprint === "string"
             ? raw.sourceTailFingerprint
@@ -315,5 +317,18 @@ export class HarnessSessionStore {
     const source = backup ?? current;
     if (!source) return null;
     return source.filter((m) => m.seqId <= seqId);
+  }
+
+  /**
+   * 取 [from, to] 闭区间的原文。
+   *
+   * 只认压缩前的备份：当前上下文里这段已经被摘要顶掉了，拿它顶替等于假装能倒带。
+   */
+  getSeqRange(sessionId: string, from: number, to: number): MaouMessage[] | null {
+    const backup = this.getBackup(sessionId);
+    if (!backup) return null;
+    const lo = Math.min(from, to);
+    const hi = Math.max(from, to);
+    return backup.filter((m) => m.seqId >= lo && m.seqId <= hi);
   }
 }

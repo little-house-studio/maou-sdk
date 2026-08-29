@@ -41,6 +41,11 @@ describe("api-presets", () => {
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.key).toBe("sk-test");
     expect(getApiPreset("openai/gpt-4o", path)?.model).toBe("gpt-4o");
+    const disk = JSON.parse(readFileSync(path, "utf-8")) as {
+      api: { presets: Array<{ key?: string; keyRef?: string }> };
+    };
+    expect(disk.api.presets[0]?.key).toBeUndefined();
+    expect(disk.api.presets[0]?.keyRef).toMatch(/^file:/);
   });
 
   it("merges by name and can remove", () => {

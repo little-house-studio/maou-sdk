@@ -8,6 +8,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { isHumanTerminal, MiniUnsupportedError, type FilterConfig, type RunResult, type SandboxConfig, type TerminalBackend, type TerminalInfo } from "../backend.js";
+import { inferPromptWaitState, peekOverflow } from "../overflow.js";
 import { agentShellInvocation } from "../windows-shell.js";
 
 const RING_MAX_CHARS = 200_000;
@@ -290,14 +291,20 @@ export class MiniBackend implements TerminalBackend {
     const lines = [
       banner.trimEnd(),
       `📋 Agent ${agentName} 的终端列表 (共 ${terminals.length} 个)`,
-      "| ID | 描述 | 状态 | 退出码 | 创建时间 |",
-      "|------|------|------|--------|----------|",
+      "| ID | 属主 | 描述 | 状态 | 闲忙 | 溢出 | 退出码 | 创建时间 |",
+      "|------|------|------|------|------|------|--------|----------|",
     ];
     for (const t of terminals) {
+      const entry = this.terminals.get(t.id);
+      const wait = inferPromptWaitState(entry?.output ?? "", t.state);
+      const waitLabel = wait === "waiting" ? "等你" : wait === "exited" ? "已结束" : "忙";
+      const spill = peekOverflow(t.id) ?? "—";
       const emoji =
         t.state === "running" ? "🟢" : t.state === "killed" ? "🔴" : t.state === "interrupted" ? "⚠️" : "💤";
       const exit = t.exitCode != null ? String(t.exitCode) : "—";
-      lines.push(`| ${t.id} | ${t.description} | ${emoji} ${t.state} | ${exit} | ${t.createdAt} |`);
+      lines.push(
+        `| ${t.id} | ${t.agentName || agentName} | ${t.description} | ${emoji} ${t.state} | ${waitLabel} | ${spill} | ${exit} | ${t.createdAt} |`,
+      );
     }
     if (humans.length > 0) {
       lines.push("");

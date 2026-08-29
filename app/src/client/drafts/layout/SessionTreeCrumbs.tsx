@@ -19,10 +19,17 @@ export type SessionTreeCrumbsProps = {
   onNewChild?: (parentId: string) => void;
 };
 
-function StateDot({ running }: { running: boolean }) {
+function StateDot({
+  running,
+  lamp,
+}: {
+  running: boolean;
+  lamp?: string;
+}) {
+  const kind = lamp || (running ? "running" : "idle");
   return (
     <span
-      className={`wire-session-tree-dot${running ? " is-run" : ""}`}
+      className={`wire-session-tree-dot is-${kind}${running ? " is-run" : ""}`}
       aria-hidden
     />
   );
@@ -165,7 +172,9 @@ function SessionChildCascade({
           active: preview === child.id,
           trailing: hasKids ? ("arrow" as const) : null,
           dismiss: true,
-          lead: <StateDot running={running.has(child.id)} />,
+          lead: (
+            <StateDot running={running.has(child.id)} lamp={child.lamp} />
+          ),
           onHover: () => setHoverId(child.id),
           onSelect: () => onSelect(child.id),
         };
@@ -182,7 +191,7 @@ function SessionChildCascade({
         id: child.id,
         label: child.title || child.id,
         selected: child.id === activeSessionId,
-        lead: <StateDot running={running.has(child.id)} />,
+        lead: <StateDot running={running.has(child.id)} lamp={child.lamp} />,
         onSelect: () => onSelect(child.id),
       })),
     });

@@ -94,6 +94,13 @@ export class LoadSkillTool extends Tool {
       );
     }
 
+    const raw = manager.peekSkillEntry(name);
+    if (raw?.userInvocableOnly) {
+      return createToolResponse(
+        false,
+        `技能 '${name}' 仅用户可从菜单调用，模型不能加载。`,
+      );
+    }
     const entry = manager.getSkillEntry(name);
     if (!entry) {
       const available = manager.listAvailableSkills();

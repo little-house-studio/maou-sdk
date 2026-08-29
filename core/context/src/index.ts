@@ -139,11 +139,31 @@ export {
   isLedgerEventType,
   ledgerPath,
   readLedgerRecords,
+  flushLedger,
+  isLedgerBarrier,
   KIND_TO_LEDGER_TYPE,
+  LEDGER_BARRIER_TYPES,
   LEDGER_FILE_SUFFIX,
   mirrorMessageToLedger,
 } from "./session-ledger.js";
 export type { LedgerEventSpec } from "./session-ledger.js";
+export {
+  CONTEXT_ASSERT_ENV,
+  contextAssertEnabled,
+  contextStructure,
+  describeContextDrift,
+  noteContextStructure,
+  takeContextStructure,
+} from "./context-assert.js";
+export type { ContextAssertRecord, ContextStructure } from "./context-assert.js";
+export {
+  crc32of,
+  durableAppend,
+  durableAtomicWrite,
+  durableAtomicWriteJson,
+  fileSizeOrZero,
+  injectDurableAppendFailure,
+} from "./durable-write.js";
 export {
   SessionGoalService,
   sessionGoals,
@@ -209,6 +229,16 @@ export {
   TOOL_RESULT_PRUNE_MARKER,
   TOOL_RESULT_PRUNE_THRESHOLD_CHARS,
 } from "./prune-text.js";
+// 省略/截断文案（实现在 core/types，这里转发）
+export {
+  TOOL_RESULT_OMIT_MARKER,
+  buildRetentionNotice,
+  describeOmitted,
+  formatRetentionNotice,
+  omissionFromCounts,
+  spillRetrieveHint,
+} from "./omission.js";
+export type { Omission, OmissionUnit, RetentionNotice } from "./omission.js";
 export {
   toolCallIdsOf,
   toolResultIdOf,
@@ -217,25 +247,21 @@ export {
 } from "./tool-pairing.js";
 export type { Summarizer, CompressOptions, CompressMaouResult, CompressionStage, CompressionResult, TaskSummary } from "./compressor.js";
 
-// 上下文占用（上一条 usage 的 input+output）
+// 上下文占用（厂商 usage 权威 + 增量估算）
 export {
   estimateTokens,
   estimateTokensFromText,
-  estimateTokensFromStrings,
   contextUsageRatio,
   contextRemainingRatio,
   parseUsageTokens,
   occupancyFromUsage,
   parsePromptTokensFromUsage,
-  estimateFullPromptTokens,
-  resolveContextUsedTokens,
 } from "./token-estimate.js";
 export type { UsageTokens } from "./token-estimate.js";
 
 // 超窗紧急截断 / 剥多模态
 export {
   emergencyTrimMessages,
-  estimateMessagesTokens,
   stripNonTextContent,
 } from "./emergency-trim.js";
 export type { EmergencyTrimResult } from "./emergency-trim.js";
@@ -322,6 +348,67 @@ export type {
   BuiltinContextModuleId,
   SummaryModelConfig,
 } from "./modules/index.js";
+
+export { compactLockOpen, classifyOpenTurn, classifyUnclosedTools } from "./tool-recovery.js";
+export { installContextContracts } from "./runtime-contracts.js";
+export { polishSessionTitle } from "./session-title.js";
+export {
+  composeContextBreakdown,
+  formatContextBreakdownBlock,
+  contextBarShares,
+  estimateSessionMessageTokens,
+  estimateSystemTokens,
+  estimateToolsTokens,
+  formatTokenCount,
+} from "./context-breakdown.js";
+export type {
+  ContextBreakdown,
+  ContextBarKey,
+  ContextBarShare,
+  SessionMessageLike,
+  ComposeContextBreakdownInput,
+} from "./context-breakdown.js";
+
+// 附件落盘 / 会话导出：模块早就写好了，只是没接进 barrel
+export {
+  ALLOWED_IMAGE_MIMES,
+  AttachmentRejectError,
+  MAX_ATTACH_BYTES,
+  MAX_ATTACH_COUNT,
+  MAX_ATTACH_EDGE,
+  MAX_ATTACH_PIXELS,
+  decodeImageBytes,
+  hydrateMessageImages,
+  ingestImageBatch,
+  readAttachment,
+  readImageSize,
+  writeThumbIfNeeded,
+} from "./attachment-store.js";
+export type { AttachmentMeta } from "./attachment-store.js";
+
+export {
+  collectSessionZipEntries,
+  exportSessionZip,
+  listSessionExportPaths,
+  preflightSessionExport,
+  sessionZipFilename,
+} from "./session-export.js";
+export type { ExportPreflight } from "./session-export.js";
+export {
+  resolveWorkspaceInstructionsEnabled,
+  compileWorkspaceInstructions,
+  loadWorkspaceInstructionFiles,
+  dedupeInstructionFiles,
+  diffWorkspaceInstructions,
+  snapshotWorkspaceInstructions,
+  instructionRelPaths,
+  instructionContentHash,
+} from "./workspace-instructions.js";
+export type {
+  WorkspaceInstructionFile,
+  WorkspaceInstructionBaseline,
+  WorkspaceInstructionName,
+} from "./workspace-instructions.js";
 
 export {
   toAgentSendMessage,

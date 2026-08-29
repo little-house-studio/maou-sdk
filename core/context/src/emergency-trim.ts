@@ -22,15 +22,6 @@ function msgChars(m: Record<string, unknown>): number {
   return 0;
 }
 
-/** @deprecated 占用不再估算消息 token。仅给旧测试量字符。 */
-export function estimateMessagesTokens(
-  messages: Array<Record<string, unknown>>,
-): number {
-  let t = 0;
-  for (const m of messages) t += Math.max(1, Math.ceil(msgChars(m) / 4));
-  return t;
-}
-
 /**
  * 把多模态 content 数组压成纯文本（去掉 image_url 等）。
  * 用于「模型不支持图片」时的就地修复重试。

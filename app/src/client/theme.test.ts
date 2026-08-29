@@ -223,6 +223,11 @@ describe("sheet theme", () => {
       draftCss,
       /\.wire-loop-spine::after\s*\{[^}]*height:\s*var\(--spine/s,
     );
+    assert.match(draftCss, /\.wire-loop:hover \.wire-loop-spine/);
+    assert.match(
+      draftCss,
+      /\.wire-loop\.is-live \.wire-loop-spine\s*\{[^}]*background:\s*var\(--n-accent/s,
+    );
     assert.match(
       draftCss,
       /\.wire-loop\s*\{[^}]*position:\s*relative/s,

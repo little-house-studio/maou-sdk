@@ -57,12 +57,18 @@ export type {
 
 // ── Token 用量追踪与费用计算 ──────────────────────────────────────────────
 
-export { TokenTracker, uncachedInputTokens } from "./token-tracker.js";
+export {
+  TokenTracker,
+  uncachedInputTokens,
+  tokenDayKey,
+  collectTodayTokenTotals,
+} from "./token-tracker.js";
 export type {
   TokenUsage,
   PricingInfo,
   TokenRecord,
   DailySummary,
+  TodayTokenTotals,
 } from "./token-tracker.js";
 
 // ── Prompt-cache 分桶账本（agent+session+mainModel，CLI 只读）──────────────

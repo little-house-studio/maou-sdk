@@ -15,7 +15,10 @@ import {
   saveGlobalApiConfig,
 } from "@little-house-studio/agent";
 import type { APIPreset } from "@little-house-studio/llm";
+import { resolveContextWindow } from "@little-house-studio/llm";
+import { migratePresetPlainKey, stripPresetPlainKey } from "@little-house-studio/types";
 import { existsSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 export type LlmConfigProtocol =
   | "openai"
@@ -127,6 +130,8 @@ export type LlmConfigPresetDto = {
   customRequestJson: string;
   keyMasked: string;
   hasKey: boolean;
+  /** env:NAME / file:NAME；设置页只展示引用，不回说明文 */
+  keyRef: string;
 };
 
 export type LlmConfigSnapshot = {
@@ -147,6 +152,7 @@ export type LlmConfigPresetWrite = {
   urlParams?: string;
   model: string;
   key?: string;
+  keyRef?: string;
   maxContext?: number;
   maxTokens?: number;
   supportsImage?: boolean;
@@ -165,8 +171,12 @@ export type LlmConfigPresetWrite = {
   customRequestJson?: string;
 };
 
-const DEFAULT_MAX_CONTEXT = 128_000;
 const DEFAULT_MAX_TOKENS = 32_768;
+
+/** 没写 maxContext 时按模型目录派生，查不到落到 llm 层的保守兜底。 */
+function fallbackMaxContext(model: unknown, provider?: unknown): number {
+  return resolveContextWindow({ model, provider }).window;
+}
 
 export function maskApiKey(key: string | null | undefined): string {
   const k = (key ?? "").trim();
@@ -269,6 +279,7 @@ type ExtendedPreset = APIPreset & {
   vendor?: string;
   customRequestJson?: string;
   extraBody?: Record<string, unknown>;
+  keyRef?: string;
 };
 
 export function mergePresetPreservingKey(
@@ -293,10 +304,15 @@ export function mergePresetPreservingKey(
   } else if (prev.key && String(prev.key).trim()) {
     key = String(prev.key).trim();
   }
+  const keyRef =
+    incoming.keyRef?.trim() ||
+    (typeof prev.keyRef === "string" ? prev.keyRef.trim() : "");
 
   const maxContext =
     parseOptNumber(incoming.maxContext) ??
-    (typeof prev.maxContext === "number" ? prev.maxContext : DEFAULT_MAX_CONTEXT);
+    (typeof prev.maxContext === "number"
+      ? prev.maxContext
+      : fallbackMaxContext(incoming.model ?? prev.model, prev.provider));
   const maxTokens =
     parseOptNumber(incoming.maxTokens) ??
     (typeof prev.maxTokens === "number" ? prev.maxTokens : DEFAULT_MAX_TOKENS);
@@ -382,6 +398,7 @@ export function mergePresetPreservingKey(
     url,
     model: String(incoming.model ?? prev.model ?? "").trim(),
     key,
+    ...(keyRef ? { keyRef } : {}),
     protocol,
     maxContext,
     maxTokens,
@@ -474,7 +491,9 @@ export function toPresetDto(p: APIPreset): LlmConfigPresetDto {
     urlParams,
     model: String(p.model ?? ""),
     maxContext:
-      typeof p.maxContext === "number" ? p.maxContext : DEFAULT_MAX_CONTEXT,
+      typeof p.maxContext === "number"
+        ? p.maxContext
+        : fallbackMaxContext(p.model, (p as Record<string, unknown>).provider),
     maxTokens:
       typeof p.maxTokens === "number" ? p.maxTokens : DEFAULT_MAX_TOKENS,
     supportsImage: Boolean(p.supportsVision ?? false),
@@ -506,8 +525,9 @@ export function toPresetDto(p: APIPreset): LlmConfigPresetDto {
     presencePenalty: numToUi(x.presence_penalty ?? x.presencePenalty),
     frequencyPenalty: numToUi(x.frequency_penalty ?? x.frequencyPenalty),
     customRequestJson,
-    keyMasked: maskApiKey(key),
-    hasKey: key.trim().length > 0,
+    keyMasked: key.trim().length > 0 || Boolean(x.keyRef) ? "已填" : "未填",
+    hasKey: key.trim().length > 0 || Boolean(x.keyRef),
+    keyRef: String(x.keyRef ?? ""),
   };
 }
 
@@ -702,8 +722,15 @@ export function saveLlmConfigFromClient(opts: {
     if (i >= 0) defaultPreset = i;
   }
 
+  const userRoot = dirname(path);
+  const forDisk = merged.map((p) => {
+    const rec = { ...(p as unknown as Record<string, unknown>) };
+    migratePresetPlainKey(rec, userRoot);
+    return stripPresetPlainKey(rec);
+  });
+
   saveGlobalApiConfig({
-    presets: merged,
+    presets: forDisk as unknown as APIPreset[],
     defaultPreset,
     replace: Boolean(opts.replace),
     roles,

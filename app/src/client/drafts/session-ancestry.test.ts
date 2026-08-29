@@ -4,8 +4,11 @@ import {
   childrenOf,
   deriveAncestry,
   descendantCount,
+  filterSessionsKeepingAncestors,
   flattenSessionForest,
   inferParentSessionId,
+  projectSessionRail,
+  SESSION_TREE_COLLAPSE_MANY,
 } from "./session-ancestry";
 
 const root = { id: "s-root", title: "你当前是团队干活吗" };
@@ -71,6 +74,77 @@ describe("session-ancestry", () => {
     );
     assert.equal(rows.find((r) => r.node.id === leaf.id)?.depth, 2);
     assert.equal(rows.find((r) => r.node.id === sib.id)?.depth, 1);
+    const ordered = flattenSessionForest([root, mid, leaf, sib]);
+    assert.deepEqual(ordered.find((r) => r.node.id === mid.id)?.guides, ["tee"]);
+    assert.deepEqual(ordered.find((r) => r.node.id === leaf.id)?.guides, [
+      "pipe",
+      "elbow",
+    ]);
+    assert.deepEqual(ordered.find((r) => r.node.id === sib.id)?.guides, [
+      "elbow",
+    ]);
+    assert.equal(ordered.find((r) => r.node.id === root.id)?.guides.length, 0);
+  });
+
+  it("filter keeps ancestor chain so the tree does not split", () => {
+    const { kept, matchedIds } = filterSessionsKeepingAncestors(
+      [root, mid, leaf, sib],
+      (n) => n.title.includes("抽取"),
+    );
+    assert.deepEqual(
+      kept.map((n) => n.id),
+      [root.id, mid.id, leaf.id],
+    );
+    assert.ok(matchedIds.has(leaf.id));
+    assert.ok(!matchedIds.has(root.id));
+    assert.ok(!kept.some((n) => n.id === sib.id));
+  });
+
+  it("projectSessionRail search keeps indent via ancestors", () => {
+    const { rows, matchedIds, filtering } = projectSessionRail(
+      [sib, leaf, root, mid],
+      { query: "抽取" },
+    );
+    assert.equal(filtering, true);
+    assert.equal(rows.find((r) => r.node.id === leaf.id)?.depth, 2);
+    assert.equal(rows.find((r) => r.node.id === mid.id)?.depth, 1);
+    assert.ok(rows.some((r) => r.node.id === root.id));
+    assert.ok(!rows.some((r) => r.node.id === sib.id));
+    assert.ok(matchedIds.has(leaf.id));
+    assert.ok(!matchedIds.has(sib.id));
+  });
+
+  it("collapses crowded sibling branches but keeps the active path", () => {
+    const kids = Array.from({ length: SESSION_TREE_COLLAPSE_MANY }, (_, i) => ({
+      id: `s-root::fork::crowd::${i}`,
+      title: `旁枝 ${i}`,
+      parentSessionId: root.id,
+    }));
+    const all = [root, mid, leaf, ...kids];
+    const { rows, collapsedIds } = projectSessionRail(all, {
+      activeId: leaf.id,
+    });
+    assert.ok(!collapsedIds.has(root.id));
+    assert.ok(rows.some((r) => r.node.id === mid.id));
+    assert.ok(rows.some((r) => r.node.id === leaf.id));
+    const other = {
+      id: "s-other",
+      title: "另一棵",
+    };
+    const crowdedOther = Array.from(
+      { length: SESSION_TREE_COLLAPSE_MANY },
+      (_, i) => ({
+        id: `s-other::fork::x::${i}`,
+        title: `挤 ${i}`,
+        parentSessionId: other.id,
+      }),
+    );
+    const mixed = [root, mid, leaf, sib, other, ...crowdedOther];
+    const projected = projectSessionRail(mixed, { activeId: leaf.id });
+    assert.ok(projected.collapsedIds.has(other.id));
+    assert.ok(!projected.rows.some((r) => r.node.id.startsWith("s-other::")));
+    assert.ok(projected.rows.some((r) => r.node.id === other.id));
+    assert.ok(projected.rows.some((r) => r.node.id === leaf.id));
   });
 
   it("breaks cycles", () => {

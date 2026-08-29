@@ -10,6 +10,7 @@
 import { normalizeRuntimePreset } from "@little-house-studio/types";
 import type { APIPreset } from "./adapters/types.js";
 import type { Pricing } from "./compute-cost.js";
+import { backfillContextWindow } from "./context-window.js";
 
 function asNum(v: unknown): number | undefined {
   if (v === null || v === undefined || v === "") return undefined;
@@ -58,13 +59,20 @@ export function resolvePricingFromPreset(
 /**
  * 规范化单个 preset，返回新对象（不改入参）。
  * 实现：@little-house-studio/types normalizeRuntimePreset
+ *
+ * maxContext 缺失时按模型目录回填 —— core/types 不能依赖 registry，所以补在这一层。
  */
 export function normalizeApiPreset(
   raw: APIPreset | Record<string, unknown>,
+  opts?: { userRoot?: string; env?: NodeJS.ProcessEnv },
 ): APIPreset {
-  return normalizeRuntimePreset({
-    ...(raw as Record<string, unknown>),
-  }) as unknown as APIPreset;
+  const normalized = normalizeRuntimePreset(
+    {
+      ...(raw as Record<string, unknown>),
+    },
+    opts,
+  );
+  return backfillContextWindow(normalized) as unknown as APIPreset;
 }
 
 /** 批量规范化 */

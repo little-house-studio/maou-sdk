@@ -56,9 +56,8 @@ describe("file-diff-watch", () => {
     writeFileSync(join(root, "src", "a.ts"), "line1\nline2\nline3\nline4\n", "utf-8");
     const xml = watch.consumeUserTurnDiffs(sid);
     expect(xml).toContain("<file_change_notice");
-    expect(xml).toContain("optional");
     expect(xml).toContain("src/a.ts");
-    expect(xml).toMatch(/ignore/i);
+    expect(xml).not.toMatch(/optional|you may ignore|no action required|don't-read|请读/i);
     // 同一改动不再重复
     expect(watch.consumeUserTurnDiffs(sid)).toBe("");
   });
@@ -91,9 +90,40 @@ describe("file-diff-watch", () => {
     expect(watch.listWatched(sid)).toEqual([]);
   });
 
+  it("reports foreign session line delta without read guidance", () => {
+    watch.noteToolTouch(sid, "reader", { path: "src/a.ts" });
+    watch.onAgentRoundEnd(sid);
+    watch.clearRoundTouches(sid);
+    writeFileSync(join(root, "src", "a.ts"), "line1\nline2\nline3\nline4\n", "utf-8");
+    watch.noteToolTouch("sess-2", "write_file", { path: "src/a.ts" });
+    const xml = watch.consumeForeignDiffs(sid);
+    expect(xml).toContain("<foreign_file_notice>");
+    expect(xml).toContain("src/a.ts");
+    expect(xml).toMatch(/Δ\+2|Δ\+|\+2/);
+    expect(xml).not.toMatch(/optional|ignore|don't-read|请读|不要读/i);
+  });
+
   it("skips gitignored paths", () => {
     writeFileSync(join(root, "app.log"), "x\n", "utf-8");
     watch.noteToolTouch(sid, "reader", { path: "app.log" });
     expect(watch.listWatched(sid)).toEqual([]);
+  });
+
+  it("pins instruction files; idle does not drop; notices stay on instruction channel", () => {
+    writeFileSync(join(root, "AGENTS.md"), "v1\n", "utf-8");
+    watch.pinPaths(sid, ["AGENTS.md"], "instruction");
+    expect(watch.listWatched(sid)).toContain("AGENTS.md");
+    watch.onAgentRoundEnd(sid);
+    watch.onAgentRoundEnd(sid);
+    watch.onAgentRoundEnd(sid);
+    watch.onAgentRoundEnd(sid);
+    expect(watch.listWatched(sid)).toContain("AGENTS.md");
+    writeFileSync(join(root, "AGENTS.md"), "v2\n", "utf-8");
+    expect(watch.consumeUserTurnDiffs(sid)).toBe("");
+    const notice = watch.consumeInstructionNotices(sid);
+    expect(notice).toContain("Updated instructions from: AGENTS.md");
+    rmSync(join(root, "AGENTS.md"));
+    const gone = watch.consumeInstructionNotices(sid);
+    expect(gone).toContain("Instructions removed: AGENTS.md");
   });
 });

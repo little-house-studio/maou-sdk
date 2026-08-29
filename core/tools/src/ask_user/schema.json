@@ -1,0 +1,58 @@
+{
+  "name": "ask_user",
+  "description": "向用户提出问卷或请其审阅计划。仅根会话可用。questions：多题、可跳过、可自定义、选项可标推荐。plan_review：批准 / 拒绝 / 去聊天里说。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "kind": {
+        "type": "string",
+        "enum": ["questions", "plan_review"],
+        "description": "questions=问卷；plan_review=计划审阅。"
+      },
+      "title": {
+        "type": "string",
+        "description": "问卷或审阅标题。"
+      },
+      "questions": {
+        "type": "array",
+        "description": "kind=questions 时的题目列表。",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "prompt": { "type": "string" },
+            "options": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "label": { "type": "string" },
+                  "recommended": { "type": "boolean" }
+                },
+                "required": ["id", "label"]
+              }
+            },
+            "allowCustom": { "type": "boolean" },
+            "skippable": { "type": "boolean" }
+          },
+          "required": ["id", "prompt"]
+        }
+      },
+      "plan_id": {
+        "type": "string",
+        "description": "kind=plan_review 时的计划 id。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次提问。"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须问用户而不是自己决定。"
+      }
+    },
+    "required": ["kind", "description", "reason"],
+    "additionalProperties": false
+  }
+}

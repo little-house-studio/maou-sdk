@@ -69,6 +69,7 @@ import {
   projectSessionsDir,
   projectSessionFile,
 } from "../config/paths.js";
+import { SessionStore } from "@little-house-studio/context";
 import { DEFAULT_AGENT_NAME, resolveAgentName } from "../config/defaults.js";
 import { notifyCacheRebuildPoint } from "../headless/cache-rebuild-sink.js";
 import {
@@ -378,13 +379,16 @@ export function loadLastSession(
   try {
     const dir = projectSessionsDir(absCwd);
     if (!existsSync(dir)) return null;
-    const files = readdirSync(dir)
-      .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => ({
-        id: f.replace(/\.jsonl$/, ""),
-        mtime: statSync(join(dir, f)).mtimeMs,
-        size: statSync(join(dir, f)).size,
-      }))
+    // 目录式会话：<sessions>/<id>/events.jsonl（老的扁平 <id>.jsonl 已不再产出）
+    const files = readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => {
+        const events = projectSessionFile(e.name, absCwd);
+        if (!existsSync(events)) return null;
+        const st = statSync(events);
+        return { id: e.name, mtime: st.mtimeMs, size: st.size };
+      })
+      .filter((x): x is { id: string; mtime: number; size: number } => x != null)
       .filter((x) => x.size > 2)
       .sort((a, b) => b.mtime - a.mtime);
     const top = files[0];
@@ -435,29 +439,13 @@ export function persistEmptySession(
   cwd: string = process.cwd(),
 ): string {
   const absCwd = resolve(cwd);
-  const sessionId = newSessionId();
   const name = resolveAgentName(agentName, DEFAULT_AGENT_NAME);
-  const dir = projectSessionsDir(absCwd);
-  mkdirSync(dir, { recursive: true });
-  // 空 jsonl；指针存在时 loadLastSession 不会因 size=0 丢掉它
-  const jsonl = projectSessionFile(sessionId, absCwd);
-  writeFileSync(jsonl, "", "utf-8");
-  const metaPath = join(dir, `${sessionId}.meta.json`);
-  writeFileSync(
-    metaPath,
-    JSON.stringify(
-      {
-        id: sessionId,
-        title: "新对话",
-        agent_name: name,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-    "utf-8",
-  );
+  // 目录式会话（<sessions>/<id>/{events.jsonl,session.json}）由 SessionStore 定义，
+  // 这里必须走它建，别再手搓路径——之前手搓的是老的扁平 <id>.jsonl 布局，
+  // 目录不存在直接 ENOENT，/new 落盘整个失效。
+  const store = new SessionStore(projectSessionsDir(absCwd));
+  const created = store.create({ title: "新对话", agentName: name });
+  const sessionId = created.id;
   // 指针必须写成功；否则下次启动会 mtime 回退到旧对话
   saveLastSession(name, sessionId, absCwd);
   return sessionId;

@@ -40,6 +40,7 @@ describe("live shell production wiring", () => {
   ]);
   const chat = readGraph([
     "ChatPanel.tsx",
+    "drafts/panels/SessionList.tsx",
     "conversation/ConversationPane.tsx",
     "conversation/ThreadBoard.tsx",
     "conversation/UserStick.tsx",
@@ -59,7 +60,9 @@ describe("live shell production wiring", () => {
     assert.match(main, /from\s+["']\.\/App["']/);
     assert.match(main, /<App\s*\/>/);
     assert.match(main, /paintDesktopChrome/);
-    assert.match(main, /paintSheetTheme/);
+    // 首帧先按存下来的快照上色（paintSheetTheme 只吃 resolved，已被它取代）
+    assert.match(main, /readThemeSnapshot/);
+    assert.match(main, /paintThemeSnapshot/);
   });
 
   it("App is draft-aligned wire shell with live modes", () => {
@@ -103,7 +106,8 @@ describe("live shell production wiring", () => {
     assert.match(liveSettings, /fetchMeta/);
     assert.match(liveSettings, /fetchModels/);
     assert.match(liveSettings, /setModel/);
-    assert.match(liveSettings, /setApprovalMode/);
+    // 审批口径已从裸 approvalMode 收敛到权限套餐
+    assert.match(liveSettings, /setPermissionPreset/);
     assert.match(liveSettings, /fetchLlmConfig/);
     assert.match(liveSettings, /saveLlmConfig/);
     assert.match(liveSettings, /data-live-settings/);
@@ -153,6 +157,9 @@ describe("live shell production wiring", () => {
     assert.match(read("shell/SidebarFrame.tsx"), /wire-v-split/);
     assert.match(read("shell/SidebarFrame.tsx"), /sidebar\.agents/);
     assert.match(read("shell/SidebarFrame.tsx"), /sidebar\.sessions/);
+    assert.match(read("shell/SidebarFrame.tsx"), /gridTemplateRows/);
+    assert.match(read("shell/SidebarFrame.tsx"), /minmax\(0/);
+    assert.doesNotMatch(read("shell/SidebarFrame.tsx"), /flex:\s*`0 0/);
     assert.match(read("shell/AsidePane.tsx"), /is-animating/);
     assert.match(read("shell/WireShell.tsx"), /data-focus-region|ShellFocusContext/);
     assert.doesNotMatch(read("shell/WireShell.tsx"), /shell\.activity/);
@@ -247,7 +254,8 @@ describe("live shell production wiring", () => {
 
   it("ChatPanel wire chrome: Chinese rail + IME + wire composer classes", () => {
     assert.match(chat, /chrome\?:\s*["']default["']\s*\|\s*["']wire["']/);
-    assert.match(chat, /新建会话/);
+    assert.match(chat, /SessionList/);
+    assert.match(chat, /session\.new|新建会话/);
     assert.match(chat, /isComposing/);
     assert.match(chat, /wire-composer-dock/);
     assert.match(chat, /wire-session-list/);
@@ -262,6 +270,8 @@ describe("live shell production wiring", () => {
     assert.match(chat, /ThreadBoard|AskScrollRail/);
     assert.match(chat, /busy && !isWire/);
     assert.match(chat, /WireThreadView|groupThreadBlocks|chatLinesToDraftMessages/);
+    assert.match(chat, /PlanReviewCard/);
+    assert.match(chat, /\/plan approve/);
     assert.match(chat, /onDockLogLines/);
     assert.match(chat, /composer-tool-btn/);
     assert.match(chat, /ChromeMark/);
@@ -277,14 +287,41 @@ describe("live shell production wiring", () => {
     assert.match(chat, /className=["']wire-session-btn["']/);
     assert.match(chat, /className=["']wire-session-title["']/);
     assert.match(chat, /className=["']wire-session-time["']/);
+    assert.match(chat, /wire-session-guides|wire-session-guide/);
+    assert.match(chat, /data-guide/);
+    const sessionList = read("drafts/panels/SessionList.tsx");
+    const qAt = sessionList.indexOf("wire-session-qwrap");
+    const newAt = sessionList.indexOf("wire-new-task-btn");
+    const listAt = sessionList.indexOf("wire-session-scroll");
+    assert.ok(qAt >= 0 && newAt > qAt && listAt > newAt);
+    assert.doesNotMatch(sessionList, /wire-session-band/);
+    assert.doesNotMatch(sessionList, /session\.list/);
     // Wire path must not apply thread-item to the same button
+    const wireAt = chat.indexOf("if (wire)");
     const wireBranch = chat.slice(
-      chat.indexOf("if (wire)"),
-      chat.indexOf("return (", chat.indexOf("if (wire)") + 1),
+      wireAt,
+      chat.indexOf("return (", wireAt + 1),
     );
     assert.doesNotMatch(wireBranch, /thread-item/);
     assert.doesNotMatch(wireBranch, /thread-title/);
     assert.doesNotMatch(wireBranch, /thread-meta/);
+    const liveCss = read("live-shell.css");
+    const draftCss = read("drafts/draft.css");
+    const inverse = draftCss.slice(
+      draftCss.indexOf("Selected chrome: inverse fill"),
+    );
+    assert.doesNotMatch(
+      inverse.slice(0, 1800),
+      /\.wire-shell\.draft-shell \.wire-session-row\.active \.wire-session-btn,/,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-session-row\.active\s*\{[^}]*inset 2px 0 0 var\(--n-label\)/s,
+    );
+    assert.match(
+      liveCss,
+      /\.live-shell \.wire-session-row\.active\s*\{[^}]*inset 2px 0 0 var\(--n-label\)/s,
+    );
   });
 
   it("App merges chat dock logs into BottomInfoBar", () => {
@@ -345,12 +382,30 @@ describe("live shell production wiring", () => {
 
   it("ChatPanel usage uses fetchSessionStats", () => {
     assert.match(chat, /fetchSessionStats/);
-    // Context chip opens modal — not append system line into thread
-    assert.match(chat, /SessionUsageModal|usageModalOpen/);
+    assert.match(chat, /contextBreakdown/);
+    assert.match(chat, /onTodayUsageChange/);
+    const meter = read("composer/ContextMeter.tsx");
+    assert.match(meter, /HoverTip/);
+    assert.doesNotMatch(meter, /onUsageClick/);
     assert.doesNotMatch(
       chat,
       /usageClick[\s\S]{0,200}append\(\s*\{\s*id:[\s\S]{0,80}role:\s*["']system["']/,
     );
+  });
+
+  it("live topbar shows today in/out from TokenTracker day bucket", () => {
+    const liveState = read("host/live-state.tsx");
+    const topbar = read("drafts/layout/WireTopbar.tsx");
+    const hub = read("../server/agent-hub.ts");
+    assert.match(liveState, /fetchTodayUsage/);
+    assert.match(liveState, /todayInput/);
+    assert.match(liveState, /onTodayUsageChange/);
+    assert.doesNotMatch(liveState, /onSessionTitleChange/);
+    assert.match(topbar, /formatTodayTokenLine/);
+    assert.doesNotMatch(topbar, /todayBarPercents|wire-today-track/);
+    assert.doesNotMatch(topbar, /wire-meta-model|usageLabel|formatTodayTokenLabel/);
+    assert.match(hub, /stampTodayOnUsage/);
+    assert.match(chat, /today\?: \{ date\?: string; inputTokens\?: number/);
   });
 
   it("ContextPanel message tree shares WireThreadView with live", () => {
@@ -375,6 +430,7 @@ describe("live shell production wiring", () => {
     assert.match(chat, /switchSession/);
     assert.match(chat, /answerApproval/);
     assert.match(chat, /setApprovalMode|setModel/);
+    assert.match(chat, /setPermissionPreset/);
     assert.match(chat, /exportTranscript|handleSlash|\/export/);
     assert.match(chat, /className/);
   });
@@ -389,6 +445,23 @@ describe("live shell production wiring", () => {
     // shortcuts: Enter / Ctrl+Enter insert / Alt+Enter cycle
     assert.match(chat, /send\(["']insert["']\)/);
     assert.match(chat, /altKey/);
+  });
+
+  it("ChatPanel Enter applies slash pick while the flyout is open", () => {
+    assert.match(chat, /overlayKeyAction/);
+    const pick = chat.indexOf('overlayAct === "pick"');
+    const send = chat.indexOf("void send()");
+    assert.ok(pick > 0 && send > pick);
+  });
+
+  it("ChatPanel slash flyout keeps highlight and uses shared CommandFlyout", () => {
+    assert.match(chat, /overlayIdxAfterPrefix/);
+    assert.match(chat, /onSlashHighlight/);
+    const launcher = read("composer/CommandLauncher.tsx");
+    assert.match(launcher, /onHighlight/);
+    const flyout = read("composer/CommandFlyout.tsx");
+    assert.match(flyout, /onMouseEnter/);
+    assert.match(flyout, /addEventListener\("wheel"/);
   });
 
   it("TerminalPanel + api keep WS and list/stop", () => {

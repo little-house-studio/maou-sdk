@@ -26,7 +26,10 @@ describe("subagent integration experiment", () => {
     const helper = resolveSubagentRunPlan({ kind: "helper" })!;
     expect(helper.runChannel).toBe("aux");
     expect(helper.stripTools).toBe(true);
+    // helper 单轮、走 aux 通道，强制无 tool —— 连 report_to_parent 也不给
+    // （见 subagent-kinds.ts helper defaults / HelperSubagentPolicy.enrich）
     expect(helper.tools).toEqual([]);
+    expect(helper.enableLoop).toBe(false);
 
     const helperP = resolveSubagentRunPlan({ kind: "helper", persistContext: true })!;
     expect(helperP.runChannel).toBe("executor");

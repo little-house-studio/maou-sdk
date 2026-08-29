@@ -13,9 +13,32 @@ export type ComposerOutboxItem = {
   status: "queued" | "failed";
   mode: ComposerSendMode;
   error?: string;
+  locked?: boolean;
 };
 
 export type ComposerModelOption = { id: string; name?: string };
+
+export type ContextBreakdown = {
+  window: number;
+  used: number;
+  /** used 里含本地估算：还没有厂商回报，或回报之后又加了消息 */
+  usedIsEstimate?: boolean;
+  promptTotal: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  occupancyPct: number;
+  cacheHitPct: number | null;
+  system: number;
+  tools: number;
+  messages: number;
+  overhead: number;
+  free: number;
+  toolCount: number;
+  skillCount: number;
+  mcpCount: number;
+  imageCount: number;
+};
 
 export type ComposerProps = {
   variant: ComposerVariant;
@@ -46,7 +69,30 @@ export type ComposerProps = {
   providers: readonly ComposerModelOption[];
   models: readonly ComposerModelOption[];
   approval: string;
+  permissionPreset?: string;
+  permissionPresetLabel?: string;
+  planStatus?: string;
+  planActive?: boolean;
+  onPlanToggle?: () => void;
+  goal?: { objective: string; phase: string } | null;
+  onGoalAction?: (action: "pause" | "resume" | "clear" | "edit") => void;
+  pendingAsk?: {
+    sessionId: string;
+    kind: string;
+    title?: string;
+    questions?: Array<{
+      id: string;
+      prompt: string;
+      options?: Array<{ id: string; label: string; recommended?: boolean }>;
+      allowCustom?: boolean;
+      skippable?: boolean;
+    }>;
+  } | null;
+  onAskAnswer?: (result: unknown) => void;
+  inputDisabled?: boolean;
+  inputLockReason?: string;
   contextPct: number | null;
+  contextBreakdown?: ContextBreakdown | null;
   canRetry: boolean;
   canSteerQueue: boolean;
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -64,8 +110,11 @@ export type ComposerProps = {
   onStop?: () => void;
   onCycleSendMode?: () => void;
   onSlashPick?: (cmd: string) => void;
+  onSlashHighlight?: (index: number) => void;
   onPalettePick?: (cmd: string) => void;
+  onPaletteHighlight?: (index: number) => void;
   onMentionPick?: (path: string) => void;
+  commandCatalog?: readonly AppCommand[];
   commandBlock?: string | null;
   commandBlockSelected?: boolean;
   onCommandBlockChange?: (name: string | null) => void;

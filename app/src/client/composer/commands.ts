@@ -9,6 +9,8 @@ export type AppCommand = {
   aliases?: readonly string[];
   palette?: boolean;
   runtime?: boolean;
+  /** App 输入栏 `/` 补全。未标的只走 CLI / + 面板。 */
+  slash?: boolean;
 };
 
 export const APP_COMMANDS: readonly AppCommand[] = [
@@ -50,6 +52,7 @@ export const APP_COMMANDS: readonly AppCommand[] = [
     description: "费用/时长/token",
     palette: true,
     aliases: ["cost"],
+    slash: true,
   },
   {
     name: "analyze",
@@ -62,12 +65,14 @@ export const APP_COMMANDS: readonly AppCommand[] = [
     label: "压缩上下文",
     description: "强制压缩上下文",
     runtime: true,
+    slash: true,
   },
   {
     name: "context",
     label: "上下文占用",
     description: "占用与压缩阈值",
     runtime: true,
+    slash: true,
   },
   {
     name: "init",
@@ -75,27 +80,35 @@ export const APP_COMMANDS: readonly AppCommand[] = [
     description: "扫描并写入 .maou/project/",
     palette: true,
     runtime: true,
+    slash: true,
   },
   {
     name: "plan",
     label: "计划模式",
     description: "先调查并写计划",
     runtime: true,
+    slash: true,
   },
   {
     name: "goal",
     label: "目标模式",
     description: "同会话长目标",
     runtime: true,
+    slash: true,
   },
   {
     name: "ultragoal",
     label: "Ultra 目标",
     description: "多 agent 长目标",
     runtime: true,
+    slash: true,
   },
   { name: "help", label: "帮助", description: "快捷键与指令", palette: true },
 ];
+
+export function commandInSlash(cmd: AppCommand): boolean {
+  return cmd.slash === true;
+}
 
 export const APP_SLASH_NAMES: readonly string[] = APP_COMMANDS.flatMap((c) => [
   c.name,
@@ -122,13 +135,18 @@ export function mergeCommandCatalog(
     const name = raw.name.replace(/^\//, "").trim().toLowerCase();
     if (!name || seen.has(name)) continue;
     seen.add(name);
+    const label = (raw.label?.trim() || raw.description?.trim() || name).replace(
+      /^\//,
+      "",
+    );
     out.push({
       name,
-      label: raw.label?.trim() || `/${name}`,
+      label,
       description: raw.description?.trim() || raw.name,
       aliases: raw.aliases,
       palette: raw.palette === true,
       runtime: raw.runtime ?? true,
+      slash: raw.slash ?? true,
     });
   }
   return out;
@@ -179,12 +197,15 @@ export function composeCommandInput(
 export function filterCommandHits(
   prefix: string,
   catalog: readonly AppCommand[] = APP_COMMANDS,
-  limit = 8,
+  limit = 24,
+  opts?: { surface?: "slash" | "all" },
 ): AppCommand[] {
   const q = prefix.toLowerCase();
+  const surface = opts?.surface ?? "all";
   const out: AppCommand[] = [];
   const seen = new Set<string>();
   for (const c of catalog) {
+    if (surface === "slash" && !commandInSlash(c)) continue;
     const names = [c.name, ...(c.aliases ?? [])];
     const hit =
       !q ||
@@ -201,19 +222,14 @@ export function filterCommandHits(
 export function filterSlashHits(
   input: string,
   catalog: readonly AppCommand[] = APP_COMMANDS,
-  limit = 8,
+  limit = 24,
   cursor = input.length,
 ): string[] {
   const prefix = slashPrefixAtCursor(input, cursor);
   if (prefix == null) return [];
-  const q = prefix.toLowerCase();
-  const names: string[] = [];
-  for (const c of catalog) {
-    for (const n of [c.name, ...(c.aliases ?? [])]) {
-      if (n.startsWith(q) && !names.includes(n)) names.push(n);
-    }
-  }
-  return names.slice(0, limit);
+  return filterCommandHits(prefix, catalog, limit, { surface: "slash" }).map(
+    (c) => c.name,
+  );
 }
 
 export function filterPaletteHits(
@@ -252,4 +268,48 @@ export function filterMentionHits(
 
 export function applyMentionPick(input: string, path: string): string {
   return input.replace(/@([^\s@]*)$/, `@${path} `);
+}
+
+export type OverlayKeyMods = {
+  key: string;
+  shiftKey?: boolean;
+  altKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+};
+
+/** 补全面板打开时：Enter/Tab 应用高亮项，不发送。 */
+export type OverlayKeyAction = "nav-down" | "nav-up" | "pick" | "close" | null;
+
+export function overlayKeyAction(
+  e: OverlayKeyMods,
+  open: boolean,
+  hitCount: number,
+): OverlayKeyAction {
+  if (!open || hitCount <= 0) return null;
+  if (e.key === "ArrowDown") return "nav-down";
+  if (e.key === "ArrowUp") return "nav-up";
+  if (e.key === "Tab" && !e.shiftKey) return "pick";
+  if (
+    e.key === "Enter" &&
+    !e.shiftKey &&
+    !e.altKey &&
+    !e.ctrlKey &&
+    !e.metaKey
+  ) {
+    return "pick";
+  }
+  if (e.key === "Escape") return "close";
+  return null;
+}
+
+/** 前缀没变就保住高亮；回写同一份 `/` 时不要把上下键结果清掉。 */
+export function overlayIdxAfterPrefix(
+  prev: string | null,
+  next: string | null,
+  idx: number,
+): number {
+  if (next == null) return 0;
+  if (prev === next) return idx;
+  return 0;
 }

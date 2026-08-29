@@ -26,7 +26,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  height: 100%;
+  background: transparent;
 }
 
 .live-shell .wire-left-sessions {
@@ -41,26 +41,29 @@
 .live-shell .thread-rail.wire-session-list {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
   min-height: 0;
-  padding: 8px 8px 10px;
+  height: auto;
+  padding: 0;
   background: transparent;
   border: none;
 }
 
 .live-shell .thread-new,
-.live-shell .wire-new-task-btn.thread-new {
+.live-shell .wire-new-task-btn.thread-new,
+.live-shell .wire-session-list .wire-new-task-btn {
   width: 100%;
-  margin: 0.5em 0 0.2em;
-  border: 1px solid var(--n-line-solid, #9b9b9b);
+  margin: 0;
+  border: 0;
   background: transparent;
   color: var(--n-label, #000000);
   border-radius: 0;
   font: inherit;
   font-weight: 400;
-  padding: 0 0.4em;
-  min-height: calc(1.3125em * 1.4);
+  padding: 0 0.2em;
+  min-height: calc(1.3125em * 1.35);
   justify-content: flex-start;
+  gap: 0.4em;
 }
 
 .live-shell .thread-new::before {
@@ -89,20 +92,21 @@
   padding: 4px 4px 6px;
 }
 
-/* Session rail (portal): pure wire-session-* rows — do not reintroduce
-   thread-item column rules here (max-height 32px + column = clipped glyphs). */
+/* Session rail (portal): 方案 A 行 + 树枝；不要把 thread-item 列规则套回来。 */
 .live-shell .wire-session-list .wire-session-scroll {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 0 8px 12px;
+  padding: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
 }
 
 .live-shell .wire-session-list .wire-session-btn {
-  /* Guard against styles.css .thread-item column if class leaks */
   flex-direction: row !important;
   align-items: center !important;
-  max-height: 32px;
+  max-height: none;
   overflow: hidden;
 }
 
@@ -114,7 +118,7 @@
   white-space: nowrap;
   font-size: 13px;
   font-weight: 500;
-  color: var(--n-label, #f5f0e8);
+  color: inherit;
   line-height: 1.25;
 }
 
@@ -125,7 +129,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 10px;
-  color: var(--n-quaternary, #8a8278);
+  color: var(--n-secondary, var(--n-quaternary, #8a8278));
 }
 
 /* Center: ChatPanel fills wire-center as wire-context */
@@ -1539,7 +1543,6 @@
 .live-shell .wire-agent-scope-tab.is-active,
 .live-shell .wire-agent-item.active,
 .live-shell .wire-agent-item.active.is-stale,
-.live-shell .wire-session-row.active .wire-session-btn,
 .live-shell .vsc-tree-row.is-selected,
 .live-shell .wire-settings-nav-item.active,
 .live-shell .wire-settings-preset-item.is-selected,
@@ -1551,4 +1554,21 @@
 }
 .live-shell .wire-agent-item.active {
   opacity: 1 !important;
+}
+
+.live-shell .wire-session-row.active {
+  background: transparent !important;
+  box-shadow: inset 2px 0 0 var(--n-label) !important;
+}
+.live-shell .wire-session-row.active .wire-session-btn {
+  background: transparent !important;
+  color: var(--n-label) !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+.live-shell .wire-session-row.active .wire-session-title {
+  color: var(--n-label) !important;
+}
+.live-shell .wire-session-row.active .wire-session-time {
+  color: var(--n-secondary) !important;
 }

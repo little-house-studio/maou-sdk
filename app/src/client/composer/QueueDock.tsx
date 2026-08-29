@@ -41,7 +41,7 @@ function QueueRow({
 }) {
   return (
     <li
-      className={`composer-queue-item composer-outbox-item is-${item.status}`}
+      className={`composer-queue-item composer-outbox-item is-${item.status}${item.locked ? " is-locked" : ""}`}
       role="listitem"
     >
       <span className="composer-queue-mode composer-outbox-mode">
@@ -52,6 +52,7 @@ function QueueRow({
             : "队列"}
       </span>
       <span className="composer-queue-text composer-outbox-text" title={item.error || item.text}>
+        {item.locked ? "锁 · " : ""}
         {item.text}
       </span>
       <span className="composer-queue-actions composer-outbox-actions">

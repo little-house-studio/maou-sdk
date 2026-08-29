@@ -19,7 +19,7 @@
       },
       "command": {
         "type": "string",
-        "description": "要执行的 shell 命令（run 时必填）。"
+        "description": "要执行的命令（run 时必填）。Unix 用 $HOME、/tmp；Windows 原生 PowerShell 用 $env:USERPROFILE、C:\\Users\\…，不要调用 wsl.exe。"
       },
       "description": {
         "type": "string",

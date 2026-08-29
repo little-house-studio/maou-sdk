@@ -15,7 +15,12 @@
  *   - 防止 tool_call 无 tool_result（已在 context 层 repairOrphanedToolCalls 兜底）。
  */
 
-import { appendSessionEvent, authorHuman, type SessionStore } from "@little-house-studio/context";
+import {
+  appendLedgerEvent,
+  appendSessionEvent,
+  authorHuman,
+  type SessionStore,
+} from "@little-house-studio/context";
 
 /** 5 种排队模式 */
 export type MessageQueueMode =
@@ -38,6 +43,8 @@ export interface EnqueueOptions {
   source?: string;
   /** 附加元数据 */
   metadata?: Record<string, unknown>;
+  /** 写入 inbox/* 账本 */
+  sessionDir?: string;
 }
 
 export interface QueuedMessage {
@@ -106,6 +113,26 @@ export class MessageQueue {
   private defaultMode: MessageQueueMode;
   private maxQueuePerSession: number;
   private onInterrupt?: (sessionId: string, mode: "interrupt_immediately" | "interrupt_stop") => void;
+  private sessionDirs = new Map<string, string>();
+
+  rememberSessionDir(sessionId: string, sessionDir: string): void {
+    this.sessionDirs.set(sessionId, sessionDir);
+  }
+
+  private noteInbox(
+    sessionId: string,
+    type: "inbox/enqueue" | "inbox/claim" | "inbox/cancel" | "inbox/deliver",
+    data: Record<string, unknown>,
+    sessionDir?: string,
+  ): void {
+    const dir = sessionDir ?? this.sessionDirs.get(sessionId);
+    if (!dir) return;
+    try {
+      appendLedgerEvent(dir, sessionId, type, data);
+    } catch {
+      /* 账本失败不影响队列 */
+    }
+  }
 
   constructor(opts: MessageQueueOptions = {}) {
     this.defaultMode = opts.defaultMode ?? "after_loop_complete";
@@ -143,9 +170,17 @@ export class MessageQueue {
     const mode = opts.mode ?? this.getDefaultMode(sessionId);
     const queue = this.queues.get(sessionId) ?? [];
 
+    if (opts.sessionDir) this.rememberSessionDir(sessionId, opts.sessionDir);
+
     if (queue.length >= this.maxQueuePerSession) {
-      // 队列满：丢弃最旧的一条（保留新消息）
-      queue.shift();
+      const dropped = queue.shift();
+      if (dropped) {
+        this.noteInbox(sessionId, "inbox/cancel", {
+          queue_id: dropped.id,
+          reason: "overflow",
+          ran: false,
+        }, opts.sessionDir);
+      }
     }
 
     const entry: QueuedMessage = {
@@ -158,6 +193,12 @@ export class MessageQueue {
     };
     queue.push(entry);
     this.queues.set(sessionId, queue);
+    this.noteInbox(sessionId, "inbox/enqueue", {
+      queue_id: entry.id,
+      queue_mode: entry.mode,
+      source: entry.source,
+      enqueued_at: entry.enqueuedAt,
+    }, opts.sessionDir);
 
     const decision = this.evaluateDecision(mode);
 
@@ -282,6 +323,13 @@ export class MessageQueue {
       } else {
         this.queues.set(sessionId, remaining);
       }
+      for (const msg of ready) {
+        this.noteInbox(sessionId, "inbox/claim", {
+          queue_id: msg.id,
+          queue_mode: msg.mode,
+          phase,
+        });
+      }
     }
 
     return ready;
@@ -373,6 +421,12 @@ export class MessageQueue {
         ...msg.metadata,
       },
     });
+    this.rememberSessionDir(sessionId, sessions.sessionDir);
+    this.noteInbox(sessionId, "inbox/deliver", {
+      queue_id: msg.id,
+      queue_mode: msg.mode,
+      ran: true,
+    }, sessions.sessionDir);
 
     return { delivered: true, patchedToolResults: patched };
   }
@@ -400,14 +454,21 @@ export class MessageQueue {
     if (!queue || queue.length === 0) return false;
     const idx = queue.findIndex((m) => m.id === id);
     if (idx < 0) return false;
-    queue.splice(idx, 1);
+    const [removed] = queue.splice(idx, 1);
     if (queue.length === 0) this.queues.delete(sessionId);
     else this.queues.set(sessionId, queue);
+    if (removed) {
+      this.noteInbox(sessionId, "inbox/cancel", { queue_id: removed.id, reason: "remove", ran: false });
+    }
     return true;
   }
 
   /** 清空指定 session 的队列 */
   clear(sessionId: string): void {
+    const queue = this.queues.get(sessionId) ?? [];
+    for (const msg of queue) {
+      this.noteInbox(sessionId, "inbox/cancel", { queue_id: msg.id, reason: "clear", ran: false });
+    }
     this.queues.delete(sessionId);
   }
 

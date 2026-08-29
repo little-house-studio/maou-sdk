@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, describe, it } from "node:test";
+import { afterAll, describe, it } from "vitest";
 import {
   ensureProactiveStationed,
   resolveProactiveStationDir,
@@ -14,7 +14,7 @@ import { isStationedAffiliateAgentName } from "./defaults.js";
 
 describe("ensureProactiveStationed", () => {
   const root = mkdtempSync(join(tmpdir(), "maou-proactive-station-"));
-  after(() => {
+  afterAll(() => {
     try {
       rmSync(root, { recursive: true, force: true });
     } catch {

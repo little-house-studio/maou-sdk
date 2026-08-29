@@ -17,6 +17,9 @@ export {
   composeCommandInput,
   mergeCommandCatalog,
   mentionQuery,
+  overlayKeyAction,
+  overlayIdxAfterPrefix,
+  commandInSlash,
 } from "./commands";
 export type { ComposerImage } from "./images";
 export { ContextMeter } from "./ContextMeter";
@@ -37,4 +40,5 @@ export type {
   ComposerSendMode,
   ComposerOutboxItem,
   ComposerModelOption,
+  ContextBreakdown,
 } from "./types";

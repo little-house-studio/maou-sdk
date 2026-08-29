@@ -12,6 +12,8 @@
  * 不在此处理：models[] expand（见 preset-models）、roles 解析（见 api-roles）。
  */
 
+import { resolveKeyRef } from "./secrets-store.js";
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -27,8 +29,15 @@ function asFiniteNumber(v: unknown): number | undefined {
  */
 export function normalizeRuntimePreset(
   raw: Record<string, unknown>,
+  opts?: { userRoot?: string; env?: NodeJS.ProcessEnv },
 ): Record<string, unknown> {
   const p: Record<string, unknown> = { ...raw };
+
+  const ref = typeof p.keyRef === "string" ? p.keyRef.trim() : "";
+  if (ref) {
+    const resolved = resolveKeyRef(ref, opts?.env ?? process.env, opts?.userRoot);
+    if (resolved) p.key = resolved;
+  }
 
   // ── reasoning 双写 ──
   const reasoning =

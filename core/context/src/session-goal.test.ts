@@ -98,4 +98,24 @@ describe("session goal", () => {
     const forced = renderGoalRoundPrompt(created, 22, { kind: "forced-close" });
     expect(forced).toContain("直接收尾");
   });
+
+  it("refuses block before the consecutive-round floor", () => {
+    const { dir, id } = session();
+    const created = service.create(dir, id, { objective: "too early" });
+    try {
+      service.block(dir, id, created, { code: "model-reported", message: "stuck" });
+      throw new Error("expected GOAL_BLOCK_TOO_EARLY");
+    } catch (e) {
+      expect(e).toBeInstanceOf(GoalError);
+      expect((e as GoalError).code).toBe("GOAL_BLOCK_TOO_EARLY");
+    }
+    const blocked = service.block(
+      dir,
+      id,
+      created,
+      { code: "model-reported", message: "stuck" },
+      { skipRoundFloor: true },
+    );
+    expect(blocked.phase).toBe("blocked");
+  });
 });

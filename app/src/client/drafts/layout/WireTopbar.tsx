@@ -1,12 +1,16 @@
 import React from "react";
-import type { DraftMeta, UiMode } from "../types";
+import type { UiMode } from "../types";
 import { MaouLogo } from "../icons/MaouLogo";
+import {
+  formatTodayTokenLine,
+  formatTodayTokenTitle,
+} from "./today-tokens";
 
 export type WireTopbarProps = {
   mode: UiMode;
   onModeChange: (m: UiMode) => void;
-  meta: DraftMeta;
-  usageLabel: string;
+  todayInput: number;
+  todayOutput: number;
 };
 
 const MODES: { id: UiMode; label: string }[] = [
@@ -16,17 +20,19 @@ const MODES: { id: UiMode; label: string }[] = [
   { id: "settings", label: "设置" },
 ];
 
-/** 顶栏：左 logo · 中模式页签 · 右 meta */
+/** 顶栏：左 logo · 中模式页签 · 右今日 in/out 一行字 */
 export function WireTopbar({
   mode,
   onModeChange,
-  meta,
-  usageLabel,
+  todayInput,
+  todayOutput,
 }: WireTopbarProps) {
   const darwinChrome =
     typeof navigator !== "undefined" &&
     /Electron/i.test(navigator.userAgent) &&
     /Mac/i.test(navigator.userAgent);
+  const inn = Number.isFinite(todayInput) ? todayInput : 0;
+  const out = Number.isFinite(todayOutput) ? todayOutput : 0;
   return (
     <header className={`wire-topbar${darwinChrome ? " is-darwin-chrome" : ""}`}>
       <div className="wire-topbar-left">
@@ -52,13 +58,10 @@ export function WireTopbar({
 
       <div className="wire-topbar-right">
         <span
-          className={`wire-meta${meta.offline ? " is-off" : ""}`}
-          title={`${meta.provider || "—"} / ${meta.model || "—"} · ${usageLabel}`}
+          className="wire-meta wire-meta-today"
+          title={formatTodayTokenTitle(inn, out)}
         >
-          <span className="wire-meta-model">
-            {meta.model || meta.provider || "离线"}
-          </span>
-          <span className="wire-meta-dim">{usageLabel}</span>
+          {formatTodayTokenLine(inn, out)}
         </span>
       </div>
     </header>

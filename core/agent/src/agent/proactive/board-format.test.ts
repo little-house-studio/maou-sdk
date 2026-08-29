@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import {
   buildDispatchUserMessage,
   emptyBoardMarkdown,
@@ -13,7 +13,7 @@ import {
   setItemChecked,
   setItemDone,
 } from "./board-format.js";
-// node:test so package can run without vitest for pure format
+// 断言仍用 node:assert/strict；runner 跟随本包的 vitest
 
 describe("proactive board-format", () => {
   it("parses checklist lines with note and risk", () => {

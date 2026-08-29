@@ -50,6 +50,15 @@ export type DraftSession = {
   timeLabel: string;
   /** 子会话 / fork 的父会话，驱动顶部横向树 */
   parentSessionId?: string;
+  lamp?:
+    | "running"
+    | "helpers"
+    | "await_approval"
+    | "plan_review"
+    | "await_ask"
+    | "done"
+    | "idle";
+  helperCount?: number;
 };
 
 /**
@@ -84,6 +93,17 @@ export type DraftMessageMeta = {
   authorLabel?: string;
   /** e.g. human_user | queued_user | expanded */
   kind?: string;
+  /** prompt 里命中缓存的部分（落盘账本回填） */
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** usage 是否报过 cache 字段；false → 命中率显示 “—” */
+  cacheReported?: boolean;
+  /** 落盘 entry id —— 调试面板据此拉本轮 POST */
+  payloadId?: string;
+  /** id 缺失时的定位口径：同类消息里的 0 基下标 */
+  payloadIndex?: number;
+  /** 该会话里的第几条（用户消息 / 助手轮），1 基 */
+  ordinal?: number;
 };
 
 export type DraftThinkingMeta = {
@@ -100,6 +120,7 @@ export type DraftThinkingMeta = {
 export type DraftMessage = {
   id: string;
   role: MessageRole;
+  persisted?: boolean;
   body: string;
   /** Tool name shortcut (CLI tools[] / card name) */
   tag?: string;
@@ -113,6 +134,8 @@ export type DraftMessage = {
   /** Thinking-line meta when role=thinking */
   thinking?: DraftThinkingMeta;
   images?: Array<{ mimeType: string; data: string; name?: string }>;
+  toolCallId?: string;
+  artifacts?: Array<{ path: string; delta: string }>;
 };
 
 export type DraftBgTask = {

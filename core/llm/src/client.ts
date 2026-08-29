@@ -731,7 +731,7 @@ export class LLMClient {
         firstOutputMs = Date.now() - startedAt;
         firstOutputSeconds = secondsOneDp(firstOutputMs);
       }
-      accumulatedUsage = data.usage as LLMUsage | null;
+      accumulatedUsage = extractUsageFromEvent(data, protocol);
       yield {
         delta: responseBody,
         thinking: reasoningContent || undefined,
@@ -936,7 +936,7 @@ export class LLMClient {
         firstOutputMs = Date.now() - startedAt;
         firstOutputSeconds = secondsOneDp(firstOutputMs);
       }
-      accumulatedUsage = (data.usage as LLMUsage) ?? null;
+      accumulatedUsage = extractUsageFromEvent(data, protocol);
     }
 
     // 非流式调用完成 — 记录原始数据

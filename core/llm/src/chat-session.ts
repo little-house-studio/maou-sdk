@@ -10,6 +10,7 @@ import { LLMClient, ProtocolGateway } from './client.js'
 import { ModelCaller } from './caller.js'
 import { computeCost, type CostBreakdown } from './compute-cost.js'
 import { resolvePricingFromPreset } from './preset-normalize.js'
+import { normalizeCacheUsage } from './cache-usage.js'
 import { validateRequest } from './guardrails.js'
 import { reasoningParamsFor, type ReasoningLevel } from './reasoning.js'
 import type { ModelCallResult, CallerStreamEvent } from './caller.js'
@@ -692,14 +693,11 @@ export class ChatSession {
 
     for (const msg of this.messages) {
       if (!msg.usage) continue
-      input += msg.usage.prompt_tokens ?? 0
-      output += msg.usage.completion_tokens ?? 0
-      total += msg.usage.total_tokens ?? 0
-      // 尝试常见的 cache token 字段（包括 OpenAI 的 cached_tokens）
-      for (const key of ['cache_read_input_tokens', 'cache_hit_tokens', 'cached_tokens']) {
-        const v = msg.usage[key]
-        if (typeof v === 'number') { cacheHit += v; break }
-      }
+      const n = normalizeCacheUsage(msg.usage as Record<string, unknown>)
+      input += n.promptTotal
+      output += n.output
+      cacheHit += n.cacheRead
+      total += Number(msg.usage.total_tokens ?? n.promptTotal + n.output)
     }
 
     // 计算成本（兼容扁平 inputPrice 与嵌套 pricing）

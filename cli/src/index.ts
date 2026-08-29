@@ -43,6 +43,7 @@ const HELP = `Maou CLI — 终端 AI agent 多产品入口
   maou update --channel X 切换发布通道 stable|dev（仅预编译包）
   maou session analyze    诊断会话：轮次/token/cache/浪费启发式
   maou session analyze <id> [--write] [--md] [--json]
+  maou session export [id] -o <file.zip>
   maou coding --yes       新路径免确认
   maou <path|pkg>         自定义配置
 
@@ -227,10 +228,17 @@ async function main(): Promise<void> {
     // maou session analyze [id] [--write] [--md] [--json]
     const rest = argv.filter((a) => a !== "session");
     const sub = rest.find((a) => !a.startsWith("-")) ?? "analyze";
+    if (sub === "export") {
+      const afterSub = rest.filter((a) => a !== "export");
+      const { runSessionExport } = await import("./commands/session-export.js");
+      const ok = runSessionExport({ argv: afterSub });
+      process.exit(ok ? 0 : 1);
+    }
     if (sub !== "analyze") {
       process.stderr.write(
         `❌ 未知 session 子命令「${sub}」\n` +
-          `   用法: maou session analyze [sessionId] [--write] [--md] [--json]\n`,
+          `   用法: maou session analyze [sessionId] [--write] [--md] [--json]\n` +
+          `         maou session export [sessionId] -o <file.zip>\n`,
       );
       process.exit(1);
     }

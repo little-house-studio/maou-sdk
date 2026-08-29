@@ -14,12 +14,44 @@ export interface Meta {
   projectRoot: string;
   sandboxMode: string;
   approvalMode?: ApprovalMode;
+  permissionPreset?: string;
+  permissionPresetLabel?: string;
+  sendMode?: "queue" | "insert";
+  parentSessionId?: string;
+  jobLamp?: {
+    running: number;
+    stopping: number;
+    done: number;
+    cancelled: number;
+    failed: number;
+    latest?: string;
+  };
+  descendants?: SessionSummary[];
+  oneshot?: boolean;
+  plan?: {
+    id: string;
+    status: string;
+    active: boolean;
+    objective?: string;
+    planReady?: boolean;
+    revision?: number;
+  };
+  goal?: { id: string; objective: string; phase: string; revision: number };
   agentName?: string;
   providers?: { id: string; name?: string }[];
   models?: { id: string; name?: string }[];
   /** getMeta 可选附带（启动恢复） */
   messages?: ChatHistoryLine[];
 }
+
+export type SessionLamp =
+  | "running"
+  | "helpers"
+  | "await_approval"
+  | "plan_review"
+  | "await_ask"
+  | "done"
+  | "idle";
 
 export type SessionSummary = {
   id: string;
@@ -28,6 +60,28 @@ export type SessionSummary = {
   messageCount: number;
   lastMsgAt?: string;
   parentSessionId?: string;
+  agentName?: string;
+  oneshot?: boolean;
+  lamp?: SessionLamp;
+  helperCount?: number;
+};
+
+export type PendingAsk = {
+  sessionId: string;
+  kind: string;
+  title?: string;
+  questions?: Array<{
+    id: string;
+    prompt: string;
+    options?: Array<{ id: string; label: string; recommended?: boolean }>;
+    allowCustom?: boolean;
+    skippable?: boolean;
+  }>;
+  planId?: string;
+  /** kind=plan_review：待审计划正文（markdown） */
+  planMarkdown?: string;
+  planFile?: string;
+  planRevision?: number;
 };
 
 export type ChatImage = { mimeType: string; data: string };
@@ -44,11 +98,14 @@ export type ChatHistoryLine = {
   /** tool_call 参数 description */
   toolDescription?: string;
   durationMs?: number;
+  loopDurationMs?: number;
   /** 助手消息上的 tool_calls，用来回填工具行意图 */
   toolCalls?: Array<{ id: string; description: string }>;
   images?: ChatImage[];
+  artifacts?: Array<{ path: string; delta: string }>;
   usageInput?: number;
   usageOutput?: number;
+  seq?: number;
 };
 
 export type CommandCatalogItem = {
@@ -81,6 +138,8 @@ export type TerminalInfo = {
   createdAt: string;
   updatedAt: string;
   kind?: "agent" | "human";
+  waitState?: "busy" | "waiting" | "exited";
+  overflowPath?: string;
 };
 
 export type TerminalCapabilities = {
@@ -200,6 +259,42 @@ export async function fetchSessions(): Promise<{
     allRunning: j.allRunning ?? [],
     agentsWithRunningTerminals: j.agentsWithRunningTerminals ?? [],
   };
+}
+
+export async function openProjectRoot(path: string): Promise<{ projectRoot: string }> {
+  const r = await fetch("/api/project/open", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  return jsonOrThrow<{ ok: boolean; projectRoot: string }>(r);
+}
+
+export async function browseFolders(path?: string): Promise<{
+  path: string;
+  parent: string | null;
+  entries: Array<{ name: string; path: string; dir: boolean }>;
+}> {
+  const q = path ? `?path=${encodeURIComponent(path)}` : "";
+  const r = await fetch(`/api/fs/browse${q}`);
+  return jsonOrThrow<{
+    ok: boolean;
+    path: string;
+    parent: string | null;
+    entries: Array<{ name: string; path: string; dir: boolean }>;
+  }>(r);
+}
+
+export async function mkdirInBrowse(
+  dir: string,
+  name: string,
+): Promise<{ path: string }> {
+  const r = await fetch("/api/fs/mkdir", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dir, name }),
+  });
+  return jsonOrThrow<{ ok: boolean; path: string }>(r);
 }
 
 /** 跨 Agent 运行态（chat run + 终端） */
@@ -344,6 +439,75 @@ export async function renameSession(
   };
 }
 
+export async function previewDeleteSession(id: string): Promise<{
+  sessionId: string;
+  dependents: { id: string; title: string }[];
+  warning?: string;
+}> {
+  const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/preview-delete`);
+  const j = await jsonOrThrow<{
+    ok: boolean;
+    sessionId: string;
+    dependents?: { id: string; title: string }[];
+    warning?: string;
+  }>(r);
+  return {
+    sessionId: j.sessionId,
+    dependents: j.dependents ?? [],
+    warning: j.warning,
+  };
+}
+
+export type SessionSearchHit = {
+  sessionId: string;
+  seq: number;
+  absSeq: number;
+  type: string;
+  messageId?: string;
+  snippet: string;
+  rank: number;
+};
+
+export async function searchSessions(
+  q: string,
+  opts?: { limit?: number; cursor?: string; sessionId?: string },
+): Promise<{ items: SessionSearchHit[]; nextCursor?: string }> {
+  const params = new URLSearchParams({ q });
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.cursor) params.set("cursor", opts.cursor);
+  if (opts?.sessionId) params.set("sessionId", opts.sessionId);
+  const r = await fetch(`/api/sessions/search?${params.toString()}`);
+  const j = await jsonOrThrow<{
+    ok: boolean;
+    items?: SessionSearchHit[];
+    nextCursor?: string;
+  }>(r);
+  return { items: j.items ?? [], nextCursor: j.nextCursor };
+}
+
+export async function loadOlderMessages(beforeSeq: number, limit = 80): Promise<{
+  messages: ChatHistoryLine[];
+  oldestSeq: number | null;
+  hasMore: boolean;
+}> {
+  const q = new URLSearchParams({
+    beforeSeq: String(beforeSeq),
+    limit: String(limit),
+  });
+  const r = await fetch(`/api/sessions/active/messages?${q.toString()}`);
+  const j = await jsonOrThrow<{
+    ok: boolean;
+    messages?: ChatHistoryLine[];
+    oldestSeq?: number | null;
+    hasMore?: boolean;
+  }>(r);
+  return {
+    messages: j.messages ?? [],
+    oldestSeq: j.oldestSeq ?? null,
+    hasMore: j.hasMore ?? false,
+  };
+}
+
 export async function exportTranscript(): Promise<string> {
   const r = await fetch("/api/sessions/active/export");
   if (!r.ok) {
@@ -378,6 +542,102 @@ export async function setApprovalMode(mode: ApprovalMode): Promise<Meta> {
   return jsonOrThrow<Meta & { ok: boolean }>(r);
 }
 
+export async function setPermissionPreset(
+  id: string,
+  confirm?: string,
+  scope: "session" | "default" = "session",
+): Promise<Meta> {
+  const r = await fetch("/api/permission-preset", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, confirm, scope }),
+  });
+  return jsonOrThrow<Meta & { ok: boolean }>(r);
+}
+
+export async function setSessionSendMode(mode: "queue" | "insert"): Promise<Meta> {
+  const r = await fetch("/api/send-mode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  return jsonOrThrow<Meta & { ok: boolean }>(r);
+}
+
+export async function fetchPendingAsk(): Promise<PendingAsk[]> {
+  const r = await fetch("/api/ask");
+  const j = await jsonOrThrow<{ ok: boolean; pending?: PendingAsk[] }>(r);
+  return j.pending ?? [];
+}
+
+export async function answerAsk(sessionId: string, result: unknown): Promise<void> {
+  const r = await fetch("/api/ask", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, result }),
+  });
+  await jsonOrThrow(r);
+}
+
+export async function forkFromMessage(sessionId: string, entryId: string): Promise<{ sessionId: string }> {
+  const r = await fetch("/api/sessions/fork-message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, entryId }),
+  });
+  return jsonOrThrow<{ ok: boolean; sessionId: string }>(r);
+}
+
+export async function sendMessageFeedback(
+  sessionId: string,
+  messageId: string,
+  vote: "up" | "down",
+  note?: string,
+): Promise<void> {
+  const r = await fetch("/api/sessions/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, messageId, vote, note }),
+  });
+  const j = await jsonOrThrow<{ ok: boolean; conflict?: boolean }>(r);
+  if (j.conflict) {
+    throw new Error("反馈冲突：这条消息已有相反评价");
+  }
+}
+
+export type SessionPlanView = {
+  plan?: Meta["plan"];
+  markdown: string;
+  planFile?: string;
+};
+
+export async function fetchSessionPlan(): Promise<SessionPlanView> {
+  const r = await fetch("/api/plan");
+  const j = await jsonOrThrow<{ ok?: boolean } & SessionPlanView>(r);
+  return {
+    plan: j.plan,
+    markdown: typeof j.markdown === "string" ? j.markdown : "",
+    planFile: typeof j.planFile === "string" ? j.planFile : undefined,
+  };
+}
+
+export async function togglePlan(): Promise<Meta> {
+  const r = await fetch("/api/plan/toggle", { method: "POST" });
+  return jsonOrThrow<Meta & { ok: boolean }>(r);
+}
+
+export async function mutateGoal(
+  action: "pause" | "resume" | "clear" | "edit",
+  objective?: string,
+): Promise<Meta> {
+  const r = await fetch("/api/goal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, objective }),
+  });
+  return jsonOrThrow<Meta & { ok: boolean }>(r);
+}
+
 /** Global LLM preset DTO (keys masked) — LLM 层单模型配置 */
 export type LlmConfigPresetDto = {
   name: string;
@@ -404,6 +664,7 @@ export type LlmConfigPresetDto = {
   customRequestJson: string;
   keyMasked: string;
   hasKey: boolean;
+  keyRef?: string;
 };
 
 export type LlmConfigRoles = {
@@ -435,6 +696,7 @@ export type LlmConfigPresetWrite = {
   urlParams?: string;
   model: string;
   key?: string;
+  keyRef?: string;
   maxContext?: number;
   maxTokens?: number;
   supportsImage?: boolean;
@@ -698,6 +960,27 @@ export async function runCommand(
   return jsonOrThrow(r);
 }
 
+export type TodayTokenTotals = {
+  date: string;
+  inputTokens: number;
+  outputTokens: number;
+};
+
+export async function fetchTodayUsage(): Promise<TodayTokenTotals> {
+  const r = await fetch("/api/usage/today");
+  const j = await jsonOrThrow<{
+    ok: boolean;
+    date?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+  }>(r);
+  return {
+    date: j.date ?? "",
+    inputTokens: Number(j.inputTokens ?? 0) || 0,
+    outputTokens: Number(j.outputTokens ?? 0) || 0,
+  };
+}
+
 export async function fetchSessionStats(): Promise<{
   sessionId: string | null;
   stats: {
@@ -710,9 +993,13 @@ export async function fetchSessionStats(): Promise<{
     cacheRead: number;
     lastInputTokens?: number;
     lastOutputTokens?: number;
+    lastCacheRead?: number;
+    lastCacheWrite?: number;
     contextUsed?: number;
+    contextBreakdown?: import("./composer/types").ContextBreakdown | null;
     file?: string;
   } | null;
+  today: TodayTokenTotals;
   text: string;
 }> {
   const r = await fetch("/api/sessions/active/stats");
@@ -729,14 +1016,23 @@ export async function fetchSessionStats(): Promise<{
       cacheRead: number;
       lastInputTokens?: number;
       lastOutputTokens?: number;
+      lastCacheRead?: number;
+      lastCacheWrite?: number;
       contextUsed?: number;
+      contextBreakdown?: import("./composer/types").ContextBreakdown | null;
       file?: string;
     } | null;
+    today?: TodayTokenTotals;
     text?: string;
   }>(r);
   return {
     sessionId: j.sessionId ?? null,
     stats: j.stats ?? null,
+    today: {
+      date: j.today?.date ?? "",
+      inputTokens: Number(j.today?.inputTokens ?? 0) || 0,
+      outputTokens: Number(j.today?.outputTokens ?? 0) || 0,
+    },
     text: j.text ?? "",
   };
 }

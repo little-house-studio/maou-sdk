@@ -3,6 +3,7 @@
  * 无 I/O，供 runtime 与单元测试共用。
  */
 
+import { createHash } from "node:crypto";
 import {
   normalizeStopReason,
   needsContinuation,
@@ -116,6 +117,88 @@ export function detectRepeatedToolLoop(
   return looping ? { looping: true, dominant, count: max } : { looping: false };
 }
 
+/**
+ * 严格签名：工具名 + 全部参数。
+ *
+ * `toolCallSignature` 只看 8 个白名单键，写同一文件不同内容会被判成同一次调用——
+ * 那对"陷入模式"的判断没问题，但用来数"同一次调用重复了几遍"会误伤正常的连续编辑。
+ */
+export function strictToolCallSignature(tc: {
+  name?: string;
+  parameters?: Record<string, unknown>;
+}): string {
+  const name = String(tc.name ?? "?").trim() || "?";
+  const p = tc.parameters ?? {};
+  let canonical: string;
+  try {
+    canonical = JSON.stringify(p, Object.keys(p).sort());
+  } catch {
+    canonical = String(Object.keys(p).sort().join(","));
+  }
+  return `${name}#${createHash("sha1").update(canonical).digest("hex").slice(0, 16)}`;
+}
+
+export const TOOL_STREAK_NUDGE_AT = [3, 5, 8] as const;
+
+export function consecutiveToolStreak(signatures: string[]): { signature: string; count: number } {
+  if (!signatures.length) return { signature: "", count: 0 };
+  const last = signatures[signatures.length - 1]!;
+  let count = 0;
+  for (let i = signatures.length - 1; i >= 0; i--) {
+    if (signatures[i] !== last) break;
+    count++;
+  }
+  return { signature: last, count };
+}
+
+export function shouldNudgeToolStreak(count: number): boolean {
+  return (TOOL_STREAK_NUDGE_AT as readonly number[]).includes(count);
+}
+
+export const TOOL_STREAK_PARAMS_MAX_CHARS = 800;
+
+/** 参数原样回给模型，让它看清"这组参数"到底是哪一组。 */
+export function formatToolStreakParams(parameters?: Record<string, unknown>): string {
+  if (!parameters || Object.keys(parameters).length === 0) return "（无参数）";
+  let text: string;
+  try {
+    text = JSON.stringify(parameters, Object.keys(parameters).sort(), 2);
+  } catch {
+    return "（参数无法序列化）";
+  }
+  if (text.length <= TOOL_STREAK_PARAMS_MAX_CHARS) return text;
+  return `${text.slice(0, TOOL_STREAK_PARAMS_MAX_CHARS)}…（参数已截断，共 ${text.length} 字符）`;
+}
+
+export function buildToolStreakControl(
+  count: number,
+  call?: { name?: string; parameters?: Record<string, unknown>; signature?: string } | string,
+): string {
+  const info = typeof call === "string" ? { signature: call } : (call ?? {});
+  const name = info.name?.trim();
+  const who = name ? `\`${name}\`` : "同一工具";
+  const sig = info.signature ? `签名 ${info.signature.slice(0, 64)}` : "";
+  if (count === 3) {
+    const hint = name ? who : sig || "同一调用";
+    return `<continue>${hint} 已用同一组参数连续调用 3 次。请换策略或改参数。</continue>`;
+  }
+  const params = formatToolStreakParams(info.parameters);
+  if (count === 5) {
+    return (
+      `<continue>${who} 已用同一组参数连续调用 ${count} 次${sig ? `（${sig}）` : ""}。这组参数是：\n` +
+      `${params}\n` +
+      `不要再用这组参数调它——同样的输入只会给出同样的结果。` +
+      `改参数、换工具，或者直接说明你卡在哪。</continue>`
+    );
+  }
+  return (
+    `<continue>${who} 已用同一组参数连续调用 ${count} 次${sig ? `（${sig}）` : ""}。这组参数是：\n` +
+    `${params}\n` +
+    `停下来。不要再用这组参数调它。若你判断仍必须继续，先用文字说明前 ${count} 次为什么没有产生你要的结果，` +
+    `以及这一次会有什么不同。</continue>`
+  );
+}
+
 export function buildToolLoopControl(dominant?: string): string {
   const hint = dominant
     ? `重复模式近似：${dominant.slice(0, 200)}`
@@ -211,4 +294,47 @@ export function findSameRoundResourceConflicts(
     firstOwner.set(key, { index: i, name });
   }
   return conflicts;
+}
+
+export const CANCELLED_NOT_STARTED = "cancelled_not_started";
+
+export type ToolScheduleBatch =
+  | { kind: "parallel"; indices: number[] }
+  | { kind: "exclusive"; index: number };
+
+/** 连续只读一组并行；独占把自己单独切开，后面的再开下一组。 */
+export function groupToolSchedule(
+  calls: Array<{ exclusive?: boolean; parallelSafe?: boolean }>,
+): ToolScheduleBatch[] {
+  const out: ToolScheduleBatch[] = [];
+  let i = 0;
+  while (i < calls.length) {
+    const cur = calls[i]!;
+    if (!toolActsExclusive(cur) && cur.parallelSafe === true) {
+      const indices: number[] = [];
+      while (
+        i < calls.length &&
+        !toolActsExclusive(calls[i]!) &&
+        calls[i]!.parallelSafe === true
+      ) {
+        indices.push(i);
+        i += 1;
+      }
+      out.push({ kind: "parallel", indices });
+    } else {
+      out.push({ kind: "exclusive", index: i });
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/** 未标 exclusive 且不是 parallelSafe 的，当独占屏障。 */
+export function toolActsExclusive(def?: {
+  exclusive?: boolean;
+  parallelSafe?: boolean;
+}): boolean {
+  if (def?.exclusive === true) return true;
+  if (def?.exclusive === false) return false;
+  return def?.parallelSafe !== true;
 }

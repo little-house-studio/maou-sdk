@@ -3,6 +3,8 @@
  * Pure helpers — UI state (expanded) lives in the React component.
  */
 
+import { resolveToolCardDress } from "@little-house-studio/types/tool-card";
+import { estimateTokensFromText } from "@little-house-studio/types/token-estimate";
 import type { DraftMessage, DraftToolCard } from "./types";
 import { durationStr } from "./message-meta";
 
@@ -19,42 +21,65 @@ export function compactCount(n: number): string {
 export function toolResultSizeLabel(result: string | undefined | null): string {
   if (result == null) return "";
   if (result.length === 0) return "· 0 字";
-  let cjk = 0;
-  let ascii = 0;
-  let other = 0;
-  for (const ch of result) {
-    const code = ch.codePointAt(0) ?? 0;
-    if (
-      (code >= 0x2e80 && code <= 0x9fff) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe30 && code <= 0xfe4f) ||
-      code >= 0x20000
-    ) {
-      cjk += 1;
-    } else if (code <= 0x7f) {
-      ascii += 1;
-    } else {
-      other += 1;
-    }
-  }
   const chars = [...result].length;
-  const tok = cjk + other + Math.ceil(ascii / 4);
-  return `· ${compactCount(chars)} 字 · ~${compactCount(tok)} tok`;
+  return `· ${compactCount(chars)} 字 · ~${compactCount(estimateTokensFromText(result))} tok`;
 }
 
 export function isWriteTool(name: string): boolean {
-  return [
-    "create",
-    "edit",
-    "write",
-    "patch",
-    "rm",
-    "remove",
-    "mkdir",
-    "move",
-    "write_file",
-    "edit_file",
-  ].includes(name);
+  return resolveToolCardDress(name) === "edit";
+}
+
+export function extractToolPath(args: string, body = ""): string | undefined {
+  const from = (raw: string): string | undefined => {
+    const t = raw.trim();
+    if (!t) return undefined;
+    try {
+      const v = JSON.parse(t) as Record<string, unknown>;
+      for (const key of ["path", "file", "file_path", "target", "cwd"]) {
+        const p = v[key];
+        if (typeof p === "string" && p.trim()) return p.trim();
+      }
+    } catch {
+      /* free-form */
+    }
+    const m = t.match(
+      /(?:^|[\s`'"])((?:\.{1,2}\/|~\/|\/(?!\/)|[A-Za-z]:[\\/])[^\s`'"]+)/,
+    );
+    return m?.[1]?.replace(/[.,)]+$/, "");
+  };
+  return from(args) || from(body);
+}
+
+export function todoSummary(result: string): string | undefined {
+  const lines = result.split("\n");
+  let done = 0;
+  let total = 0;
+  let current = "";
+  for (const line of lines) {
+    const check = line.match(/^\s*[-*]\s+\[([ xX>!-])\]\s+(.*)$/);
+    if (check) {
+      total += 1;
+      if (check[1] === "x" || check[1] === "X") done += 1;
+      if ((check[1] === ">" || check[1] === " ") && !current) {
+        current = (check[2] || "").trim();
+      }
+      continue;
+    }
+    const table = line.match(
+      /\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*(\[[ xX>!-]\]|[xX>!-]|▶)?/,
+    );
+    if (table && !/^\s*\|\s*[-=]/.test(line) && !/\|\s*#\s*\|/.test(line)) {
+      total += 1;
+      const mark = (table[3] || "").trim();
+      const desc = (table[2] || "").trim();
+      if (mark.includes("x") || mark.includes("X")) done += 1;
+      if ((mark.includes(">") || /当前执行/.test(line)) && !current) current = desc;
+    }
+    const exec = line.match(/▶\s*当前执行:\s*(\S+)\s*—\s*(.+)$/);
+    if (exec) current = exec[2]!.trim();
+  }
+  if (!total) return undefined;
+  return current ? `${done}/${total} · ${current}` : `${done}/${total}`;
 }
 
 export function isDiffResult(s: string): boolean {
@@ -180,6 +205,11 @@ export function toolTitleMeta(card: ResolvedToolCard): string {
   return [toolIntentLabel(card), toolDurationLabel(card)]
     .filter(Boolean)
     .join(" ");
+}
+
+/** 标题行点击前是否展开。`force` 来自 ToolCard.defaultExpanded。 */
+export function toolCardInitiallyExpanded(force = false): boolean {
+  return force === true;
 }
 
 /** ▶ collapsed · ▼ expanded */

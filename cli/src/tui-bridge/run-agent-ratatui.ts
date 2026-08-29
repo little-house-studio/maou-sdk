@@ -1130,15 +1130,13 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
         const [p, m] = value.split("\0");
         if (p && m) {
           store.setProviderModel(p, m);
-          const preset = opts.config.getPreset(p, m) as {
-            maxContext?: number;
-            maxTokens?: number;
-          };
+          const preset = opts.config.getPreset(p, m) as Record<string, unknown>;
+          const { resolveContextWindow } = await import("@little-house-studio/llm");
           store.setAgentMeta(
             store.agentName,
             p,
             m,
-            preset.maxContext ?? preset.maxTokens ?? 0,
+            resolveContextWindow({ model: m, provider: p, ...preset }).window,
           );
           store.toastMsg(`已切换 ${p}/${m}`, "ok");
         }

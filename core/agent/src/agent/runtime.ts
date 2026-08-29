@@ -18,14 +18,22 @@
 
 import { execSync } from "node:child_process";
 import { PromptCompiler } from "@little-house-studio/prompt";
-import { SessionStore, SessionManager, MemoryStore, CheckpointStore, extractMemories, unwrapAgentSendTag } from "@little-house-studio/context";
+import { SessionStore, SessionManager, MemoryStore, CheckpointStore, extractMemories, unwrapAgentSendTag, installContextContracts } from "@little-house-studio/context";
 import {
   appendToolResult,
   findToolCallIdByPayload,
   buildMessages,
   maybeCompress,
   ContextEngine,
+  maouToLLMMessage,
   parseUsageTokens,
+  composeContextBreakdown,
+  formatContextBreakdownBlock,
+  estimateSessionMessageTokens,
+  estimateSystemTokens,
+  estimateToolsTokens,
+  resolveWorkspaceInstructionsEnabled,
+  instructionRelPaths,
   emergencyTrimMessages,
   stripNonTextContent,
   MAX_ROUNDS,
@@ -41,8 +49,11 @@ import type {
   Summarizer,
   LLMMessage,
   ThinkingContextMode,
+  ContextBreakdown,
+  SessionMessageLike,
 } from "@little-house-studio/context";
 import { compileDynamicContext } from "../dynamic-context.js";
+import { DynamicSnapshotGate, TimeContextGate, formatMultiplexerPane } from "../time-context.js";
 import { TokenTracker } from "./token-tracker.js";
 import type { TokenUsage } from "./token-tracker.js";
 import { promptCacheLedger } from "./prompt-cache-ledger.js";
@@ -50,7 +61,10 @@ import { AgentRegistry } from "./registry.js";
 import {
   detectContextOverflow,
   detectUnsupportedMediaContent,
+  normalizeCacheUsage,
+  resolveContextWindow,
 } from "@little-house-studio/llm";
+import type { ContextWindowSource } from "@little-house-studio/llm";
 import { getTemplateRef } from "./template-ref.js";
 import { renderAgentPreview, watchAgentPreview } from "./template.js";
 import { runAgentCommand } from "./command-runner.js";
@@ -73,9 +87,15 @@ import {
   buildLengthContinuationControl,
   MAX_LENGTH_CONTINUATIONS,
   toolCallSignature,
+  strictToolCallSignature,
   detectRepeatedToolLoop,
   buildToolLoopControl,
+  consecutiveToolStreak,
+  shouldNudgeToolStreak,
+  buildToolStreakControl,
   findSameRoundResourceConflicts,
+  toolActsExclusive,
+  CANCELLED_NOT_STARTED,
 } from "./runtime-recovery.js";
 import { SUPERVISOR_MANAGER } from "./supervisor-manager.js";
 import {
@@ -94,6 +114,10 @@ import {
   toolFail,
   bindPermissionHookHost,
   bindTerminalHookHost,
+  takeQuietReports,
+  formatQuietReports,
+  bindReportWake,
+  installToolsContracts,
 } from "@little-house-studio/tools";
 import type { PermissionRequestPayload, TerminalGateName, TerminalEmitName } from "@little-house-studio/tools";
 import {
@@ -116,6 +140,13 @@ import {
   buildPlanRequiredNotice,
 } from "@little-house-studio/tools";
 import { TODO_ORCHESTRATOR } from "./todo/index.js";
+import {
+  registerJob,
+  completeJob,
+  takeSettledJobs,
+  noteAutoWake,
+  resetWakeStreak,
+} from "./job-registry.js";
 import { buildToolContext } from "./runtime-tool-context.js";
 import {
   isTodoPlanSettled as isTodoPlanSettledHelper,
@@ -125,6 +156,13 @@ import {
 import {
   appendSessionEvent,
   appendLedgerEvent,
+  describeContextDrift,
+  flushLedger,
+  isLedgerBarrier,
+  takeContextStructure,
+  readLedgerRecords,
+  compactLockOpen,
+  polishSessionTitle,
   bindSessionLedgerPort,
   bindSessionGoalPort,
   sessionGoals,
@@ -145,7 +183,8 @@ import type { AgentSkillOptions } from "../bootstrap/skills.js";
 import { createAgentSkillManager, applyAgentSkillOptions } from "../bootstrap/skills.js";
 import type { SubagentExecutorLike } from "@little-house-studio/types";
 import type { StreamEvent } from "@little-house-studio/types";
-import { Profiler, resolveUserMaouRoot, detectExpression } from "@little-house-studio/types";
+import type { MessageImage } from "@little-house-studio/types";
+import { Profiler, resolveUserMaouRoot, detectExpression, ConfigStore } from "@little-house-studio/types";
 import { Hooks, type HookUi, appendHookSystemPrompt, takeHookMessage, isHookContinue } from "./hooks.js";
 import { loadHookScripts } from "./hook-loader.js";
 import { FileDiffWatch } from "../agent_factory/file-diff-watch.js";
@@ -305,7 +344,7 @@ export interface RunOptions {
   /** 附带指令（如 goal）→ 先走 /command，正文仍按 AgentSendMessage 写入 */
   userCommand?: string;
   /** 用户消息附图（写入 SessionMessage.images，buildMessages 会带上） */
-  userImages?: Array<{ mimeType: string; data: string }>;
+  userImages?: MessageImage[];
   userVideo?: Array<{ mimeType: string; data: string }>;
   userAudio?: Array<{ mimeType: string; data: string }>;
   /** 用户消息 source（缺省 human） */
@@ -349,6 +388,58 @@ export interface RunOptions {
    * - always: 每回合都写
    */
   thinkingContextMode?: ThinkingContextMode;
+}
+
+export function classifyCompactError(message: string): string {
+  const m = message.toLowerCase();
+  if (/忙|busy|running/.test(m)) return "busy";
+  if (/变了|changed|generation|fingerprint/.test(m)) return "content_changed";
+  if (/摘要|summar/.test(m)) return "summary_failed";
+  if (/提交|commit/.test(m)) return "commit_failed";
+  if (/磁盘|write|persist|enospc|eacces/.test(m)) return "not_written";
+  if (/区间|no_range|无可压/.test(m)) return "no_range";
+  return "commit_failed";
+}
+
+/**
+ * 落盘屏障失败时给人看的一句话。
+ *
+ * 屏障是"做之前先记下要做什么"：写不进盘就停手，否则崩溃之后没人能判断
+ * 这次请求发出去了没有、这个工具改了世界没有。
+ */
+/** 压缩报告里的真 seq 区间；没顶掉整条消息时什么都不带，不用 0 假装。 */
+export function compactSeqRange(report: { seqFrom?: number; seqTo?: number }): {
+  seqFrom?: number;
+  seqTo?: number;
+} {
+  if (typeof report.seqFrom !== "number" || typeof report.seqTo !== "number") return {};
+  return { seqFrom: report.seqFrom, seqTo: report.seqTo };
+}
+
+export function ledgerBarrierHuman(type: string, reason: string): string {
+  const what =
+    type === "tool/dispatch"
+      ? "本次不动手"
+      : type === "turn/start"
+        ? "本轮不开口"
+        : "本轮不开口";
+  return `账未落盘，${what}：${reason}。磁盘写不进去时继续跑会丢掉这一步的记录，崩了之后无法判断它到底发生过没有。请先处理磁盘（空间 / 权限 / 路径）再重试。`;
+}
+
+/** 距本 loop 最后一条用户消息的墙钟。assistant 落盘 / abort 写入 loopDurationMs。 */
+function loopDurationSinceLastUser(
+  sessions: SessionStore,
+  sessionId: string,
+  endMs: number,
+): number | undefined {
+  const msgs = sessions.load(sessionId)?.messages ?? [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]!.role !== "user") continue;
+    const t = Date.parse(String(msgs[i]!.createdAt ?? ""));
+    if (!Number.isFinite(t) || t <= 0 || endMs < t) return undefined;
+    return endMs - t;
+  }
+  return undefined;
 }
 
 // ─── AgentRuntime ──────────────────────────────────────────────────────────
@@ -445,11 +536,27 @@ export class AgentRuntime {
   private static COMPRESS_RETRY_MS = 15_000;
 
   /**
-   * 上一条主模型回报的 input+output（消息上显示的占用）。
+   * 上一条主模型回报的 prompt + output（消息上显示的占用）。
    */
-  private sessionLastOccupancy = new Map<string, { input: number; output: number }>();
+  private sessionLastOccupancy = new Map<string, {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cacheReported: boolean;
+    /** 记账时会话里有多少条消息 —— 之后新增的部分只能靠估算补 */
+    anchorMessageCount?: number;
+  }>();
   /** 压缩后占用清零，禁止再读磁盘上一条 usage。 */
   private sessionOccupancyCleared = new Set<string>();
+  /** 上一次真正发出去的 system / tools，供分区条估算。 */
+  private sessionLastPromptParts = new Map<string, {
+    systemPrompt: string;
+    toolSchemas: unknown;
+    toolCount: number;
+    skillCount: number;
+    mcpCount: number;
+  }>();
 
   // ── 可插拔工厂（缺省使用内部默认实现）──
   private createSessionManagerFn: (sessions: SessionStore, maouRoot: string) => SessionManager;
@@ -460,6 +567,12 @@ export class AgentRuntime {
   private skillOptions?: AgentSkillOptions;
   /** 会话级文件 diff 监听（coding 等产品可选启用） */
   private fileDiffWatch: FileDiffWatch | null = null;
+  /** 压缩遮蔽说明书后，下一轮整份重组 */
+  private instructionRebaseline = new Set<string>();
+  private timeContextGate: TimeContextGate | null = null;
+  private lastMultiplexerPane = "";
+  /** 每轮重算的运行时快照：变了才注入，变空要说清旧的作废。按会话分。 */
+  private dynamicSnapshotGates = new Map<string, DynamicSnapshotGate>();
   private cacheRebuildTriggers: CacheRebuildTriggers;
   private cacheRebuild: CacheRebuildHost;
   private _hooksLoadedFor = new Set<string>();
@@ -544,6 +657,17 @@ export class AgentRuntime {
     registerBuiltinCommands(this.commandRegistry);
     this.bindPermissionHooks();
     this.bindTerminalHooks();
+    try { installContextContracts(); } catch { /* 契约登记失败不影响运行 */ }
+    try { installToolsContracts(); } catch { /* 契约登记失败不影响运行 */ }
+    bindReportWake((parentId, message, fromSessionId) => {
+      this.messageQueue.rememberSessionDir(parentId, this.sessions.sessionDir);
+      this.messageQueue.enqueue(parentId, message, {
+        mode: "after_round_complete",
+        source: "report_to_parent",
+        metadata: { fromSessionId, wake: true },
+        sessionDir: this.sessions.sessionDir,
+      });
+    });
   }
 
   setHookUi(ui: HookUi): void {
@@ -786,14 +910,18 @@ export class AgentRuntime {
     droppedSummary?: string;
     taskBlocks?: string[];
     error?: string;
+    code?: string;
   }> {
+    if (this.isRunning(sessionId)) {
+      return { ok: false, error: "正忙：当前会话还在跑，空闲后再压。", code: "busy" };
+    }
     if (!this.harnessStore || !this.taskStore) {
-      return { ok: false, error: "压缩引擎未启用" };
+      return { ok: false, error: "压缩引擎未启用", code: "not_written" };
     }
     try {
       const compactGate = await this.hooks?.preCompact({ sessionId, force: true, reason: "command" });
       if (compactGate?.cancel) {
-        return { ok: false, error: "压缩被扩展取消" };
+        return { ok: false, error: "压缩被扩展取消", code: "commit_failed" };
       }
       if (compactGate?.compaction?.summary) {
         this.sessionManager.setRollingSummary(sessionId, compactGate.compaction.summary);
@@ -810,11 +938,9 @@ export class AgentRuntime {
       const msgs = (branch.length ? branch : session?.messages ?? []) as unknown as Array<Record<string, unknown>>;
       // B1：优先 harness 工作集 + session 增量，避免从全量 session 重压
       engine.seedWorkingSet(msgs);
-      const limit =
-        this.currentPreset?.maxContext ??
-        this.currentPreset?.maxTokens ??
-        65536;
+      const limit = this.resolveContextLimit();
       const known = this.resolveSessionContextTokens(sessionId, engine.getHistory());
+      this.writeCompactBracket(sessionId, "start", { source: "manual" });
       const report = await engine.compress(limit, {
         knownTokens: known,
         force: true,
@@ -823,9 +949,11 @@ export class AgentRuntime {
       this.compressRetryAfter.delete(sessionId);
       this.clearLastOccupancy(sessionId);
       if (report.stage === "activeStage") {
+        this.writeCompactBracket(sessionId, "end", { error: "no_range", stage: report.stage, source: "manual" });
         return {
           ok: false,
           error: "没有可压缩的区间",
+          code: "no_range",
           stage: report.stage,
           originalTokens: report.originalTokens,
           compressedTokens: report.compressedTokens,
@@ -842,12 +970,31 @@ export class AgentRuntime {
         this.sessionManager.saveState();
       }
       this.onCompress?.(sessionId, report.stage, report.droppedSummary, report.taskBlocks ?? []);
-      this.noteLedger(sessionId, "compact/end", {
+      const seqRange = compactSeqRange(report);
+      this.writeCompactBracket(sessionId, "summary", {
         stage: report.stage,
         source: "manual",
         originalTokens: report.originalTokens,
         compressedTokens: report.compressedTokens,
+        summary: report.droppedSummary,
+        ...seqRange,
       });
+      this.sessions.appendMessage(sessionId, "user", report.droppedSummary || "上下文已压缩", {
+        kind: "compact",
+        source: "compact",
+        ...(seqRange.seqFrom != null
+          ? { surfaceOp: { op: "replace" as const, start: seqRange.seqFrom, end: seqRange.seqTo! } }
+          : {}),
+      });
+      this.sessions.bumpReplaceGeneration(sessionId);
+      this.writeCompactBracket(sessionId, "end", {
+        stage: report.stage,
+        source: "manual",
+        originalTokens: report.originalTokens,
+        compressedTokens: report.compressedTokens,
+        ...seqRange,
+      });
+      this.instructionRebaseline.add(sessionId);
       await this.hooks?.postCompact(report.compressedTokens ?? 0);
       await this.afterCompressMaybeRebuild({
         sessionId,
@@ -864,29 +1011,180 @@ export class AgentRuntime {
         taskBlocks: report.taskBlocks,
       };
     } catch (e) {
+      this.writeCompactBracket(sessionId, "end", { error: String(e), source: "manual" });
       this.compressRetryAfter.set(sessionId, Date.now() + AgentRuntime.COMPRESS_RETRY_MS);
-      return { ok: false, error: String(e) };
+      const msg = String(e);
+      return { ok: false, error: msg, code: classifyCompactError(msg) };
     }
   }
 
+  private dynamicSnapshotGate(sessionId: string): DynamicSnapshotGate {
+    const key = sessionId || "anon";
+    let gate = this.dynamicSnapshotGates.get(key);
+    if (!gate) {
+      gate = new DynamicSnapshotGate();
+      this.dynamicSnapshotGates.set(key, gate);
+    }
+    return gate;
+  }
+
   /**
-   * 解析会话上下文占用：上一条回报的 input + output。
+   * 上下文窗口：压缩判定、占用条、/context 共用这一个数。
+   * 顺序见 llm/context-window.ts —— 预设 → 模型目录 → 旧 maxTokens → 保守兜底。
+   */
+  private resolveContextLimit(preset?: APIPreset | null): number {
+    return resolveContextWindow(
+      (preset ?? this.currentPreset) as unknown as Record<string, unknown>,
+    ).window;
+  }
+
+  private resolveContextWindowInfo(preset?: APIPreset | null): {
+    window: number;
+    source: ContextWindowSource;
+    model?: string;
+  } {
+    return resolveContextWindow(
+      (preset ?? this.currentPreset) as unknown as Record<string, unknown>,
+    );
+  }
+
+  /**
+   * 压缩后的统一记账：占用锚点作废、说明书基线重发、运行时快照重发。
+   * 压缩可能把上一份快照剪掉了，不重置门就再也不注入。
    */
   private clearLastOccupancy(sessionId: string): void {
     this.sessionLastOccupancy.delete(sessionId);
     this.sessionOccupancyCleared.add(sessionId);
+    this.instructionRebaseline.add(sessionId);
+    this.dynamicSnapshotGates.get(sessionId || "anon")?.reset();
   }
 
-  private peekLastOccupancy(sessionId: string): { input: number; output: number } {
+  private occupancyFromUsageRecord(
+    usage: Record<string, unknown> | null | undefined,
+  ): {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cacheReported: boolean;
+  } {
+    const n = normalizeCacheUsage(usage);
+    if (n.promptTotal > 0 || n.output > 0) {
+      return {
+        input: n.promptTotal,
+        output: n.output,
+        cacheRead: n.cacheRead,
+        cacheWrite: n.cacheWrite,
+        cacheReported: n.reported,
+      };
+    }
+    const parsed = parseUsageTokens(usage ?? undefined);
+    return {
+      input: parsed.input,
+      output: parsed.output,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheReported: false,
+    };
+  }
+
+  private emptyOccupancy(): {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cacheReported: boolean;
+  } {
+    return {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cacheReported: false,
+    };
+  }
+
+  private peekLastOccupancy(sessionId: string): {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cacheReported: boolean;
+  } {
     const mem = this.sessionLastOccupancy.get(sessionId);
     if (mem && (mem.input > 0 || mem.output > 0)) return mem;
-    if (this.sessionOccupancyCleared.has(sessionId)) return { input: 0, output: 0 };
+    if (this.sessionOccupancyCleared.has(sessionId)) return this.emptyOccupancy();
     try {
       const latest = this.sessions.getLatestUsage(sessionId);
-      const usage = parseUsageTokens(latest.usage as Record<string, unknown>);
+      const usage = this.occupancyFromUsageRecord(latest.usage as Record<string, unknown>);
       if (usage.input > 0 || usage.output > 0) return usage;
     } catch { /* ignore */ }
-    return { input: 0, output: 0 };
+    return this.emptyOccupancy();
+  }
+
+  /** 会话消息的启发式估算；skipFirst 之前的部分已被 usage 锚点算过。 */
+  private estimateSessionTokens(sessionId: string, skipFirst = 0): number {
+    try {
+      const session = this.sessions.load(sessionId);
+      const msgs = (session?.messages ?? []) as unknown as SessionMessageLike[];
+      let total = 0;
+      for (let i = Math.max(0, skipFirst); i < msgs.length; i++) {
+        const m = msgs[i];
+        if (!m) continue;
+        if (String(m.role ?? "") === "system") continue;
+        if (m.visibility === "ui") continue;
+        total += estimateSessionMessageTokens(m).tokens;
+      }
+      return total;
+    } catch {
+      return 0;
+    }
+  }
+
+  /** 无锚点时的整份估算：system + tools + messages。 */
+  private estimateWholeContextTokens(sessionId: string): number {
+    const parts = this.sessionLastPromptParts.get(sessionId);
+    return (
+      estimateSystemTokens(parts?.systemPrompt) +
+      estimateToolsTokens(parts?.toolSchemas) +
+      this.estimateSessionTokens(sessionId)
+    );
+  }
+
+  /**
+   * 上下文占用：厂商 usage 锚点优先，锚点之后新增的消息用启发式补。
+   * 压缩判定和占用条读同一个数 —— 别在别处再长一把尺。
+   */
+  private resolveSessionContextUsage(
+    sessionId: string,
+    opts?: { ignoreStaleApi?: boolean },
+  ): { used: number; estimated: boolean } {
+    const anchored = (row: {
+      input: number;
+      output: number;
+      anchorMessageCount?: number;
+    }): { used: number; estimated: boolean } => {
+      const base = row.input + row.output;
+      const delta =
+        row.anchorMessageCount != null
+          ? this.estimateSessionTokens(sessionId, row.anchorMessageCount)
+          : 0;
+      return { used: base + delta, estimated: delta > 0 };
+    };
+
+    const mem = this.sessionLastOccupancy.get(sessionId);
+    if (mem && (mem.input > 0 || mem.output > 0)) return anchored(mem);
+
+    if (!opts?.ignoreStaleApi && !this.sessionOccupancyCleared.has(sessionId)) {
+      const usage = this.peekLastOccupancy(sessionId);
+      if (usage.input > 0 || usage.output > 0) {
+        this.sessionLastOccupancy.set(sessionId, usage);
+        return anchored(usage);
+      }
+    }
+
+    // 没有任何锚点：整份估算，让第一条消息发出去之前尺子上也有数
+    return { used: this.estimateWholeContextTokens(sessionId), estimated: true };
   }
 
   private resolveSessionContextTokens(
@@ -894,17 +1192,7 @@ export class AgentRuntime {
     _history?: unknown,
     opts?: { ignoreStaleApi?: boolean },
   ): number {
-    const mem = this.sessionLastOccupancy.get(sessionId);
-    if (mem && (mem.input > 0 || mem.output > 0)) {
-      return mem.input + mem.output;
-    }
-    if (opts?.ignoreStaleApi || this.sessionOccupancyCleared.has(sessionId)) return 0;
-    const usage = this.peekLastOccupancy(sessionId);
-    if (usage.input > 0 || usage.output > 0) {
-      this.sessionLastOccupancy.set(sessionId, usage);
-      return usage.input + usage.output;
-    }
-    return 0;
+    return this.resolveSessionContextUsage(sessionId, opts).used;
   }
 
   /** 记下上一条消息上显示的 input / output */
@@ -912,9 +1200,13 @@ export class AgentRuntime {
     sessionId: string,
     usage: Record<string, unknown> | null | undefined,
   ): void {
-    const parsed = parseUsageTokens(usage ?? undefined);
+    const parsed = this.occupancyFromUsageRecord(usage);
     if (parsed.input <= 0 && parsed.output <= 0) return;
-    this.sessionLastOccupancy.set(sessionId, parsed);
+    let anchorMessageCount: number | undefined;
+    try {
+      anchorMessageCount = this.sessions.load(sessionId)?.messages?.length;
+    } catch { /* 拿不到条数就退回纯锚点 */ }
+    this.sessionLastOccupancy.set(sessionId, { ...parsed, anchorMessageCount });
     this.sessionOccupancyCleared.delete(sessionId);
   }
 
@@ -1067,6 +1359,9 @@ export class AgentRuntime {
           `  Used:                 ${ctx.used.toLocaleString()} / ${ctx.max.toLocaleString()} (last in ${ctx.lastInput.toLocaleString()} + out ${ctx.lastOutput.toLocaleString()})`,
           `  Remaining:            ${ctx.remaining.toLocaleString()}`,
           `  Thresholds:           compact ${ctx.compactAt}% · summary ${ctx.summaryAt}% · archive ${ctx.archiveAt}%`,
+          "",
+          "Composition (heuristic)",
+          formatContextBreakdownBlock(ctx.breakdown),
         );
       }
 
@@ -1116,17 +1411,40 @@ export class AgentRuntime {
     archiveAt: number;
     lastInput: number;
     lastOutput: number;
+    lastCacheRead: number;
+    lastCacheWrite: number;
+    usedIsEstimate: boolean;
+    windowSource: ContextWindowSource;
+    windowModel?: string;
+    breakdown: ContextBreakdown;
   } | null {
     try {
       const session = this.sessions.load(sessionId);
       if (!session) return null;
       const last = this.peekLastOccupancy(sessionId);
-      const used = last.input + last.output;
-      const max =
-        this.currentPreset?.maxContext ??
-        this.currentPreset?.maxTokens ??
-        65536;
+      // 与压缩判定同一个数：锚点 + 锚点后新消息的估算
+      const occ = this.resolveSessionContextUsage(sessionId);
+      const used = occ.used;
+      const win = this.resolveContextWindowInfo();
+      const max = win.window;
       const pct = max > 0 ? (used / max) * 100 : 0;
+      const parts = this.sessionLastPromptParts.get(sessionId);
+      const breakdown = composeContextBreakdown({
+        window: max,
+        used,
+        usedIsEstimate: occ.estimated,
+        promptTotal: last.input,
+        output: last.output,
+        cacheRead: last.cacheRead,
+        cacheWrite: last.cacheWrite,
+        cacheReported: last.cacheReported,
+        systemText: parts?.systemPrompt,
+        toolSchemas: parts?.toolSchemas,
+        messages: session.messages ?? [],
+        toolCount: parts?.toolCount,
+        skillCount: parts?.skillCount,
+        mcpCount: parts?.mcpCount,
+      });
       return {
         used,
         max,
@@ -1137,6 +1455,12 @@ export class AgentRuntime {
         archiveAt: 90,
         lastInput: last.input,
         lastOutput: last.output,
+        lastCacheRead: last.cacheRead,
+        lastCacheWrite: last.cacheWrite,
+        usedIsEstimate: occ.estimated,
+        windowSource: win.source,
+        windowModel: win.model,
+        breakdown,
       };
     } catch {
       return null;
@@ -1162,7 +1486,7 @@ export class AgentRuntime {
         sessionGoals.block(this.sessions.sessionDir, sessionId, { id: goal.id, revision: goal.revision }, {
           code: "round-limit",
           message: `Goal reached its configured limit of ${goal.maxGoalRounds} rounds.`,
-        });
+        }, { skipRoundFloor: true });
       } catch { /* already transitioned */ }
       return undefined;
     }
@@ -1235,6 +1559,7 @@ export class AgentRuntime {
           sessionId,
           { id: goal.id, revision: goal.revision },
           { code: "failed", message: "The working agent reported the goal as failed." },
+          { skipRoundFloor: true },
         );
       } else {
         sessionGoals.complete(this.sessions.sessionDir, sessionId, {
@@ -1324,6 +1649,18 @@ export class AgentRuntime {
     // 新一轮用户消息：允许「todo 全部完成后」再要一轮收尾
     this._todoFinalReplyGranted.delete(sessionId);
     this.log("info", `[RUN] start session=${sessionId} msg_len=${activeUserMessage.length}`);
+    this.sessions.markLive(sessionId);
+    {
+      const turnBarrier = this.ledgerBarrier(sessionId, "turn/start", {});
+      if (!turnBarrier.ok) {
+        const reason = ledgerBarrierHuman("turn/start", turnBarrier.reason);
+        this.fireErrorHooks({ message: reason, round: 0, reason: "ledger_barrier" });
+        yield this.logEvent("error", `[ledger] turn/start 未落盘，拒绝开轮`);
+        yield this.event("error", { message: reason, round: 0, blocked: true });
+        yield this.event("done", { sessionId, rounds: 0, blocked: true });
+        return;
+      }
+    }
 
     // pathGuard：RunOptions 优先，否则用 per-session map
     if (options.pathGuard) {
@@ -1435,6 +1772,9 @@ export class AgentRuntime {
         const effectiveSessionId = (meta.sessionId as string) ?? sessionId!;
         yield this.event("session", { sessionId: effectiveSessionId });
         yield this.event("assistant", { content: cmdResult.content, round: 0 });
+        if (meta.compress) {
+          yield this.event("context_refresh", { source: "manual", stage: meta.stage });
+        }
         yield this.event("done", { sessionId: effectiveSessionId, rounds: 0, ...meta });
         this.log("info", `[RUN] 指令命中 → ${activeUserMessage.trim().split(/\s/)[0]}`);
         return;
@@ -1515,6 +1855,33 @@ export class AgentRuntime {
       this.log("info", `[RUN] agent=${agentName} round_limit=${effectiveRoundLimit}`);
     }
     // 思考回灌：RunOptions 覆盖 agent.json，缺省 first_round
+    const agentWorkspaceFlag = (() => {
+      // AgentEntry 的 index signature 是 unknown，typeof 收窄即可，不要断言
+      const camel = agentEntry.workspaceInstructions;
+      if (typeof camel === "boolean") return camel;
+      const snake = agentEntry.workspace_instructions;
+      if (typeof snake === "boolean") return snake;
+      return null;
+    })();
+    let workspaceInstructionsOn = resolveWorkspaceInstructionsEnabled({
+      agent: agentWorkspaceFlag,
+      user: (() => {
+        try {
+          return new ConfigStore(this.projectRoot).get().workspaceInstructions ?? null;
+        } catch {
+          return null;
+        }
+      })(),
+    });
+    const timeCtxRaw =
+      (agentEntry as { timeContext?: { enabled?: boolean; minIntervalMs?: number } }).timeContext ??
+      (agentEntry as { time_context?: { enabled?: boolean; minIntervalMs?: number } }).time_context;
+    this.timeContextGate = timeCtxRaw?.enabled
+      ? new TimeContextGate({
+          enabled: true,
+          minIntervalMs: timeCtxRaw.minIntervalMs,
+        })
+      : null;
     const thinkingContextMode: ThinkingContextMode = parseThinkingContextMode(
       options.thinkingContextMode ??
         (agentEntry as { thinking_context_mode?: unknown }).thinking_context_mode,
@@ -1704,15 +2071,11 @@ export class AgentRuntime {
     // compile() 首轮产出 bakedContent（skill 索引 → 文件缓存区 / 稳定前缀，缓存断点之前），
     // 后续轮产出 incrementalContent（<skill_update> → 上下文动态区）。
     let skillManager: SkillContextManager | null = null;
+    let skillCount = 0;
     try {
       skillManager = this.createSkillManagerFn(agentName, this.projectRoot, maouRoot);
-      const skillFirst = skillManager.compile();
-      if (skillFirst.bakedContent) {
-        systemPrompt = `${systemPrompt}\n\n${skillFirst.bakedContent}`;
-        yield this.logEvent("info", "已注入可用 skill 列表到系统提示词");
-      }
     } catch (err) {
-      this.log("warning", `[SKILL] 注入失败: ${err}`);
+      this.log("warning", `[SKILL] 管理器创建失败: ${err}`);
       skillManager = null;
     }
 
@@ -1990,7 +2353,7 @@ export class AgentRuntime {
     if (options.toolWhitelistOverride !== undefined) {
       const override = options.toolWhitelistOverride;
       if (override.length === 0) {
-        toolWhitelist = new Set<string>(); // 空集 = 无工具
+        toolWhitelist = new Set<string>(["report_to_parent"]);
       } else {
         const overrideSet = new Set(override);
         if (toolWhitelist) {
@@ -2025,12 +2388,49 @@ export class AgentRuntime {
       }
     }
 
+    try {
+      if (skillManager) {
+        skillManager.setAvailableTools(toolWhitelist ? [...toolWhitelist] : null);
+        const skillFirst = skillManager.compile();
+        skillCount = skillFirst.currentSkills.size;
+        if (skillFirst.bakedContent) {
+          systemPrompt = `${systemPrompt}\n\n${skillFirst.bakedContent}`;
+          yield this.logEvent("info", "已注入可用 skill 列表到系统提示词");
+        }
+      }
+    } catch (err) {
+      this.log("warning", `[SKILL] 注入失败: ${err}`);
+    }
+
+    if (
+      workspaceInstructionsOn &&
+      sessionId &&
+      this.fileDiffWatch &&
+      (this.agentScope === "project" || options.bindingProjectRoot)
+    ) {
+      try {
+        this.fileDiffWatch.pinPaths(sessionId, instructionRelPaths(), "instruction");
+      } catch { /* ignore */ }
+    }
+
     const planActive = sessionPlan.isActive(this.sessions.sessionDir, sessionId!);
     const planFile = sessionPlanFile(this.sessions.sessionDir, sessionId!);
-    // 空白名单 → 传空数组 schemas（无 tool），而非 null（null 表示全量）
+    const childSession = Boolean(
+      this.sessions.readMeta(sessionId!)?.parent_session_id ||
+        sessionId!.includes("::fork::"),
+    );
+    if (toolWhitelist && childSession) toolWhitelist.add("report_to_parent");
     let toolSchemas = stripAllTools
-      ? []
+      ? (this.tools.nativeToolSchemas?.(new Set(["report_to_parent"])) ?? [])
       : (this.tools.nativeToolSchemas?.(toolWhitelist) ?? null);
+    if (toolSchemas) {
+      toolSchemas = toolSchemas.filter((schema) => {
+        const name = String((schema as { name?: string }).name ?? "");
+        if (!childSession && name === "report_to_parent") return false;
+        if (childSession && name === "ask_user") return false;
+        return true;
+      });
+    }
     if (planActive && toolSchemas) {
       toolSchemas = toolSchemas.filter((schema) => {
         const name = String((schema as { name?: string }).name ?? "");
@@ -2160,12 +2560,25 @@ export class AgentRuntime {
       meta: {
         ...(options.goalRound ? { goalSource: options.goalRound } : {}),
         ...(todoPre.requirePlan ? { had_todo_slash: true } : {}),
-        ...(options.userImages?.length ? { images: options.userImages } : {}),
+        ...(options.userImages?.length
+          ? {
+              images: options.userImages.map((img) => ({
+                mimeType: img.mimeType,
+                ...(img.hash ? { hash: img.hash } : img.data ? { data: img.data } : {}),
+                ...(img.name ? { name: img.name } : {}),
+                ...(img.bytes != null ? { bytes: img.bytes } : {}),
+                ...(img.width != null ? { width: img.width } : {}),
+                ...(img.height != null ? { height: img.height } : {}),
+              })),
+            }
+          : {}),
         ...(options.userVideo?.length ? { video: options.userVideo } : {}),
         ...(options.userAudio?.length ? { audio: options.userAudio } : {}),
         ...(options.userCommand ? { command: options.userCommand } : {}),
       },
     });
+    this.scheduleTitlePolish(sessionId!);
+    resetWakeStreak(sessionId!);
 
     // ── 3. Agent 循环 ──
     let roundCount = 0;
@@ -2190,6 +2603,12 @@ export class AgentRuntime {
     let lengthContinuations = 0;
     // 工具死循环检测：最近签名窗口 + 催促上限
     const recentToolSignatures: string[] = [];
+    // streak 专用：严格全参数签名 + 该签名对应的原始调用（催促文案要点名参数）
+    const recentStrictSignatures: string[] = [];
+    const strictSignatureCalls = new Map<
+      string,
+      { name?: string; parameters?: Record<string, unknown> }
+    >();
     let toolLoopNudges = 0;
     const MAX_TOOL_LOOP_NUDGES = 3;
     const toolLoopWindow = Math.max(3, this.loopThreshold ?? 10);
@@ -2286,6 +2705,13 @@ export class AgentRuntime {
         this.pauseArmedGoal(sessionId!);
         await this.hooks?.abort("用户中断");
         void this.hooks?.notification({ kind: "cancelled", sessionId, reason: "用户中断" });
+        {
+          const wall = loopDurationSinceLastUser(this.sessions, sessionId!, Date.now());
+          this.sessions.appendMessage(sessionId!, "system", "已中断", {
+            source: "runtime",
+            ...(wall != null ? { loopDurationMs: wall } : {}),
+          });
+        }
         yield this.event("info", { message: "已中断" });
         break;
       }
@@ -2334,11 +2760,23 @@ export class AgentRuntime {
         const bgTerminals = listTerminals(agentName);
         for (const t of bgTerminals) {
           if (t.kind === "human" || t.id.startsWith("human_")) continue;
+          registerJob(sessionId!, t.id, {
+            kind: "terminal",
+            label: t.description,
+            status: t.state === "running" ? "running" : t.state === "interrupted" ? "stopping" : "running",
+          });
           if (notifiedBgCompletions.has(t.id)) continue;
           if (t.state === "running") continue;
           if (t.state === "interrupted") continue;
 
+          completeJob(
+            sessionId!,
+            t.id,
+            t.state === "killed" ? "cancelled" : t.exitCode === 0 ? "done" : "failed",
+          );
           notifiedBgCompletions.add(t.id);
+          const wake = noteAutoWake(sessionId!);
+          if (!wake.allowed) continue;
           const output = await getTerminalLogs(t.id, agentName, 2000);
           const statusLabel =
             t.state === "killed" ? "已终止" :
@@ -2404,9 +2842,15 @@ export class AgentRuntime {
       const gitBlock = await prof.async("git_changes", () => this.workspaceChanges(), { round: currentRound });
       // 会话文件 diff 监听：仅用户新消息轮（roundCount===0）注入 before_user 区
       let fileDiffNotice = "";
-      if (roundCount === 0 && this.fileDiffWatch && sessionId) {
+      if (this.fileDiffWatch && sessionId) {
         try {
-          fileDiffNotice = this.fileDiffWatch.consumeUserTurnDiffs(sessionId);
+          const own = roundCount === 0 ? this.fileDiffWatch.consumeUserTurnDiffs(sessionId) : "";
+          const foreign = this.fileDiffWatch.consumeForeignDiffs(sessionId);
+          const instructions =
+            workspaceInstructionsOn && roundCount === 0
+              ? this.fileDiffWatch.consumeInstructionNotices(sessionId)
+              : "";
+          fileDiffNotice = [own, foreign, instructions].filter((s) => s && s.trim()).join("\n\n");
         } catch { /* ignore */ }
       }
       // Skill 增量：本轮新增/删除/更新（首轮已写入文件缓存区，这里只补上下文动态区）
@@ -2414,15 +2858,28 @@ export class AgentRuntime {
       if (roundCount > 0 && skillManager) {
         try { skillIncremental = skillManager.compile().incrementalContent ?? ""; } catch { /* ignore */ }
       }
-      const currentDynamicInjections =
-        (roundCount === 0 ? dynamicInjections : compileDynamicContext(maouRoot, agentName, sessionId!))
-        + (gitBlock ? `\n\n${gitBlock}` : "")
-        + (skillIncremental ? `\n\n${skillIncremental}` : "");
-      // before_user 编译内容 + 可选 file_change_notice（用户要求放在 before_user）
-      const effectiveBeforeUser =
-        roundCount === 0
-          ? [beforeUserContent, fileDiffNotice].filter((s) => s && s.trim()).join("\n\n")
+      const quietReport = formatQuietReports(takeQuietReports(sessionId!));
+      const timeBlock = this.timeContextGate?.consume({
+        turn: currentRound,
+        step: roundCount + 1,
+      }) ?? "";
+      const paneBlock = formatMultiplexerPane();
+      const paneNotice =
+        paneBlock && paneBlock !== this.lastMultiplexerPane
+          ? ((this.lastMultiplexerPane = paneBlock), paneBlock)
           : "";
+      const dynamicSnapshot = this.dynamicSnapshotGate(sessionId!).consume(
+        roundCount === 0 ? dynamicInjections : compileDynamicContext(maouRoot, agentName, sessionId!),
+      );
+      const currentDynamicInjections =
+        dynamicSnapshot
+        + (gitBlock ? `\n\n${gitBlock}` : "")
+        + (skillIncremental ? `\n\n${skillIncremental}` : "")
+        + (fileDiffNotice ? `\n\n${fileDiffNotice}` : "")
+        + (quietReport ? `\n\n${quietReport}` : "")
+        + (timeBlock ? `\n\n${timeBlock}` : "")
+        + (paneNotice ? `\n\n${paneNotice}` : "");
+      const effectiveBeforeUser = roundCount === 0 ? beforeUserContent : "";
 
       // ── 3a. 构建消息数组 ──
       // 记忆只在首轮召回并整 run 复用：子轮反复 recall 会写回 accessCount，
@@ -2438,7 +2895,7 @@ export class AgentRuntime {
       // 自动压缩检查
       // 阈值基于输入上下文上限 maxContext（非输出 maxTokens）。
       // 占用：上一条回报的 input + output。
-      const contextLimit = preset.maxContext ?? preset.maxTokens ?? 65536;
+      const contextLimit = this.resolveContextLimit(preset);
       const compressTriggerAt = contextLimit * (CONTEXT_THRESHOLD_PERCENT / 100);
 
       // ── ContextEngine 闭环路径（注入 stores 时启用）──
@@ -2479,6 +2936,8 @@ export class AgentRuntime {
               });
               if (compactGate?.cancel) {
                 // Pi session_before_compact: 扩展取消本次自动压缩
+              } else if (compactLockOpen(readLedgerRecords(this.sessions.sessionDir, sessionId!))) {
+                this.log("info", `[ContextEngine] compact lock open, skip auto`);
               } else {
               if (compactGate?.compaction?.summary) {
                 this.sessionManager.setRollingSummary(sessionId!, compactGate.compaction.summary);
@@ -2489,11 +2948,18 @@ export class AgentRuntime {
                   sessionId!, `auto_before_compression_round_${currentRound}`, true, "compression",
                 );
               }
-              const report = await engine.compress(contextLimit, {
-                knownTokens: usedTokens,
-                force: usedTokens >= compressTriggerAt,
-                sourceSessionMessages: sessionMsgsWire,
-              });
+              this.writeCompactBracket(sessionId!, "start", { source: "auto" });
+              let report;
+              try {
+                report = await engine.compress(contextLimit, {
+                  knownTokens: usedTokens,
+                  force: usedTokens >= compressTriggerAt,
+                  sourceSessionMessages: sessionMsgsWire,
+                });
+              } catch (e) {
+                this.writeCompactBracket(sessionId!, "end", { error: String(e), source: "auto" });
+                throw e;
+              }
               if (report.stage !== "activeStage") {
                 compressedHistory = engine.toLLMHistory();
                 this.compressRetryAfter.delete(sessionId!);
@@ -2511,13 +2977,9 @@ export class AgentRuntime {
                     this.onCompress(sessionId!, report.stage, report.droppedSummary, report.taskBlocks ?? []);
                   } catch { /* 落盘失败不影响主流程 */ }
                 }
-                this.noteLedger(sessionId!, "compact/end", {
-                  stage: report.stage,
-                  source: "auto",
-                  originalTokens: report.originalTokens,
-                  compressedTokens: report.compressedTokens,
-                });
-                // 仅大压缩 / 归档提醒一次；微压缩（compactStage）永不刷 UI
+                this.recordCompactSurface(sessionId!, "auto", report);
+                yield this.event("context_refresh", { source: "auto", stage: report.stage });
+                // 仅大压缩 / 归档出人话；微压缩只推占用条
                 if (
                   report.stage === "summaryStage" ||
                   report.stage === "archiveStage"
@@ -2532,7 +2994,7 @@ export class AgentRuntime {
                 } else {
                   this.log(
                     "info",
-                    `[ContextEngine] 微压缩静默 stage=${report.stage} token ${report.originalTokens}→${report.compressedTokens}`,
+                    `[ContextEngine] 微压缩 stage=${report.stage} token ${report.originalTokens}→${report.compressedTokens}`,
                   );
                 }
                 await this.hooks?.postCompact(report.compressedTokens ?? 0);
@@ -2542,9 +3004,11 @@ export class AgentRuntime {
                   stage: report.stage,
                   source: "auto",
                 });
-              } else if (seed.useAsLlmHistory) {
-                // 无新压缩但仍在 harness 路径：保持 compressedHistory
-                compressedHistory = engine.toLLMHistory();
+              } else {
+                this.writeCompactBracket(sessionId!, "end", { error: "no_range", stage: report.stage, source: "auto" });
+                if (seed.useAsLlmHistory) {
+                  compressedHistory = engine.toLLMHistory();
+                }
               }
               }
             }
@@ -2585,8 +3049,14 @@ export class AgentRuntime {
         projectRoot: this.agentScope === "project" || options.bindingProjectRoot
           ? effectiveProjectRoot
           : undefined,
+        workspaceInstructions: workspaceInstructionsOn,
+        replaceWorkspaceBaseline: sessionId ? this.instructionRebaseline.has(sessionId) : false,
         compressedHistory,
       }), { round: currentRound });
+      if (sessionId && this.instructionRebaseline.has(sessionId) && workspaceInstructionsOn) {
+        this.instructionRebaseline.delete(sessionId);
+      }
+      if (sessionId) this.assertContextStructure(sessionId);
 
       // ── 历史段最终化 ──
       let finalMessages: Record<string, unknown>[];
@@ -2638,14 +3108,10 @@ export class AgentRuntime {
               // 落盘失败不影响主流程
             }
           }
-          this.noteLedger(sessionId!, "compact/end", {
-            stage: compressResult.stage,
-            source: "legacy",
-            originalTokens: compressResult.originalTokens,
-            compressedTokens: compressResult.compressedTokens,
-          });
+          this.writeCompactBracket(sessionId!, "start", { source: "legacy" });
+          this.recordCompactSurface(sessionId!, "legacy", compressResult);
+          yield this.event("context_refresh", { source: "legacy", stage: compressResult.stage });
 
-          // 仅大压缩 / 归档提醒；微压缩静默
           if (
             compressResult.stage === "summaryStage" ||
             compressResult.stage === "archiveStage"
@@ -2715,11 +3181,31 @@ export class AgentRuntime {
             sessionId,
             model: preset.model,
           });
-          if (reqGate && (!reqGate.allowed || reqGate.cancel)) {
+          // 落盘屏障：账没落上就不向模型开口（这一步花钱且不可逆）
+          const barrier = sessionId
+            ? this.ledgerBarrier(sessionId, "model/request", {
+                round: currentRound,
+                step: roundCount + 1,
+                model: preset.model,
+                messages: finalMessages.length,
+              })
+            : ({ ok: true } as const);
+          if (!barrier.ok) {
+            result = this.errorCallResult(ledgerBarrierHuman("model/request", barrier.reason));
+          } else if (reqGate && (!reqGate.allowed || reqGate.cancel)) {
             result = this.errorCallResult(
               reqGate.blockReason ?? "agent/request 拦截了本次模型调用",
             );
           } else {
+          if (sessionId) {
+            this.sessionLastPromptParts.set(sessionId, {
+              systemPrompt,
+              toolSchemas: nativeToolCalling ? toolSchemas : null,
+              toolCount: Array.isArray(toolSchemas) ? toolSchemas.length : 0,
+              skillCount,
+              mcpCount: this.mcpManager?.listDescriptors().length ?? 0,
+            });
+          }
           const callGen = this.callModelFn({
             preset,
             messages: finalMessages,
@@ -2859,6 +3345,7 @@ export class AgentRuntime {
               finalMessages = shrunk.finalMessages;
               if (shrunk.compressedHistory) compressedHistory = shrunk.compressedHistory;
               if (shrunk.stage && shrunk.stage !== "activeStage") {
+                yield this.event("context_refresh", { source: "overflow", stage: shrunk.stage });
                 yield this.compressLogEvent({
                   stage: shrunk.stage,
                   originalTokens: shrunk.originalTokens ?? 0,
@@ -2981,6 +3468,12 @@ export class AgentRuntime {
           mainAgentName: agentName,
           usage: result.usage as Record<string, unknown>,
         });
+        try {
+          const tracker = this.createTokenTrackerFn(maouRoot, agentName, preset as unknown as Record<string, unknown>);
+          tracker.record(tokenUsage, mainModel);
+        } catch (err) {
+          this.log("warning", `token tracking failed: ${err}`);
+        }
         yield {
           type: "model.usage",
           usage: tokenUsage,
@@ -2991,12 +3484,6 @@ export class AgentRuntime {
           // 分桶快照：CLI 直接镜像，不自建跨会话 history
           cache: cacheSnap ?? undefined,
         } as unknown as StreamEvent;
-        try {
-          const tracker = this.createTokenTrackerFn(maouRoot, agentName, preset as unknown as Record<string, unknown>);
-          tracker.record(tokenUsage, mainModel);
-        } catch (err) {
-          this.log("warning", `token tracking failed: ${err}`);
-        }
       }
 
       // 存储 assistant 消息（不再用空格占位，空串即可；适配器会处理 tool_calls 配对）
@@ -3038,6 +3525,15 @@ export class AgentRuntime {
         }
       }
       lastRoundToolSummary = Object.entries(runToolCounts).map(([n, c]) => `${n}×${c}`).join("、");
+      const artifacts =
+        !hasToolCalls && this.fileDiffWatch
+          ? this.fileDiffWatch.listSessionArtifacts(sessionId!)
+          : [];
+      const loopDurationMs = loopDurationSinceLastUser(
+        this.sessions,
+        sessionId!,
+        Date.now(),
+      );
       this.sessions.appendMessage(sessionId!, "assistant", contentToUse, {
         kind: "assistant_turn",
         source: "assistant",
@@ -3053,6 +3549,8 @@ export class AgentRuntime {
         finish_reason: result.finishReason ?? undefined,
         output_truncated: outputTruncated || undefined,
         aborted: result.aborted || undefined,
+        ...(loopDurationMs != null ? { loopDurationMs } : {}),
+        ...(artifacts.length ? { artifacts } : {}),
         // 仅 mode 允许 / tool 强制时写入；UI 仍走 thinking_delta，不把标签塞进 content
         ...(storeThinking ? { reasoningContent: reasoningRaw } : {}),
       });
@@ -3210,9 +3708,10 @@ export class AgentRuntime {
       yield this.event("assistant", {
         content: contentToUse,
         round: currentRound,
-        usage: { ...result.usage, max_context: preset.maxContext ?? preset.maxTokens },
+        usage: { ...result.usage, max_context: this.resolveContextLimit(preset) },
         nativeToolCalls: result.nativeToolCalls.length > 0 ? result.nativeToolCalls : undefined,
         timing: result.timing,
+        ...(artifacts.length ? { artifacts } : {}),
       });
       await this.hooks?.responseEnd(contentToUse);
       await this.hooks?.postMessage({ role: "assistant", content: contentToUse } as never);
@@ -3244,36 +3743,70 @@ export class AgentRuntime {
         // 工具死循环检测（真签名：name+关键参数，非仅次数）
         for (const tc of result.nativeToolCalls) {
           recentToolSignatures.push(toolCallSignature(tc));
+          // streak 数"同一次调用"，要求全部参数一致；宽签名会把改内容写同一文件也算进来
+          recentStrictSignatures.push(strictToolCallSignature(tc));
+          strictSignatureCalls.set(strictToolCallSignature(tc), {
+            name: tc.name,
+            parameters: tc.parameters,
+          });
         }
         if (recentToolSignatures.length > toolLoopWindow * 2) {
           recentToolSignatures.splice(0, recentToolSignatures.length - toolLoopWindow * 2);
         }
-        const loopHit = detectRepeatedToolLoop(recentToolSignatures, {
-          window: toolLoopWindow,
-        });
-        if (loopHit.looping && toolLoopNudges < MAX_TOOL_LOOP_NUDGES) {
-          toolLoopNudges++;
-          const ctrl = buildToolLoopControl(loopHit.dominant);
-          yield this.logEvent(
-            "warning",
-            `检测到工具调用死循环倾向（${toolLoopNudges}/${MAX_TOOL_LOOP_NUDGES}）dominant≈${(loopHit.dominant ?? "").slice(0, 80)}`,
-          );
+        if (recentStrictSignatures.length > toolLoopWindow * 2) {
+          recentStrictSignatures.splice(0, recentStrictSignatures.length - toolLoopWindow * 2);
+        }
+        const streak = consecutiveToolStreak(recentStrictSignatures);
+        if (shouldNudgeToolStreak(streak.count)) {
+          const call = strictSignatureCalls.get(streak.signature);
+          const ctrl = buildToolStreakControl(streak.count, {
+            name: call?.name,
+            parameters: call?.parameters,
+            signature: streak.signature,
+          });
+          yield this.logEvent("warning", `同一工具连续 ${streak.count} 次`);
           appendSessionEvent(this.sessions, sessionId!, {
             kind: "runtime_control",
             content: ctrl,
-            source: "tool_loop",
+            source: "tool_streak",
             author: authorSystem("runtime", "runtime"),
-            meta: { round: currentRound, dominant: loopHit.dominant, count: loopHit.count },
+            meta: { round: currentRound, streak: streak.count, signature: streak.signature },
           });
           yield this.event("session_inject", {
             kind: "runtime_control",
-            source: "tool_loop",
-            content: "工具循环警告：请换策略",
+            source: "tool_streak",
+            content: `同一调用第 ${streak.count} 次`,
             round: currentRound,
             author: { type: "system", id: "runtime", displayName: "runtime" },
           });
-        } else if (!loopHit.looping) {
-          toolLoopNudges = 0;
+        } else {
+          const loopHit = detectRepeatedToolLoop(recentToolSignatures, {
+            window: toolLoopWindow,
+          });
+          if (loopHit.looping && toolLoopNudges < MAX_TOOL_LOOP_NUDGES) {
+            toolLoopNudges++;
+            const ctrl = buildToolLoopControl(loopHit.dominant);
+            yield this.logEvent(
+              "warning",
+              `检测到工具调用死循环倾向（${toolLoopNudges}/${MAX_TOOL_LOOP_NUDGES}）dominant≈${(loopHit.dominant ?? "").slice(0, 80)}`,
+            );
+            appendSessionEvent(this.sessions, sessionId!, {
+              kind: "runtime_control",
+              content: ctrl,
+              source: "tool_loop",
+              author: authorSystem("runtime", "runtime"),
+              meta: { round: currentRound, dominant: loopHit.dominant, count: loopHit.count },
+            });
+            yield this.event("session_inject", {
+              kind: "runtime_control",
+              source: "tool_loop",
+              content: "工具循环警告：请换策略",
+              round: currentRound,
+              author: { type: "system", id: "runtime", displayName: "runtime" },
+            });
+          } else if (!loopHit.looping) {
+            toolLoopNudges = 0;
+          }
         }
 
         // task_complete phase：本轮若有工具完成（尤其 todo_finish），且全部 todo 已完成，
@@ -3454,12 +3987,18 @@ export class AgentRuntime {
         }
         if (decision.action === "complete" || decision.action === "pause") {
           const spoken = decision.action === "complete" ? decision.summary : decision.message;
+          const loopDurationMs = loopDurationSinceLastUser(
+            this.sessions,
+            sessionId!,
+            Date.now(),
+          );
           this.sessions.appendMessage(sessionId!, "assistant", spoken, {
             kind: "assistant_turn",
             source: "assistant",
             author: authorAgent(runAgentName || agentName || "assistant", runAgentName || agentName || "ai"),
             agentName: runAgentName || agentName,
             round: currentRound,
+            ...(loopDurationMs != null ? { loopDurationMs } : {}),
           });
           yield this.event("assistant", { content: spoken, round: currentRound });
           try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
@@ -3602,6 +4141,9 @@ export class AgentRuntime {
 
     // ── P1-4 生命周期：run 结束 → idle（arm TTL，TTL 后自动 park）──
     lifecycle.setStatus(sessionId, "idle");
+    this.noteLedger(sessionId, "turn/end", {});
+    this.sessions.markCold(sessionId);
+    this.sessions.flush(sessionId);
 
     // 封印最后一轮 cache 累计
     const lastModel = String(
@@ -3861,6 +4403,10 @@ export class AgentRuntime {
       promptRoot: this.compiler.promptRoot,
       maouRoot: this.maouRoot,
       sandboxMode,
+      permissionPreset: typeof this.sessions.readMeta(sessionId)?.permission_preset === "string"
+        ? String(this.sessions.readMeta(sessionId)?.permission_preset)
+        : undefined,
+      parentSessionId: this.sessions.load(sessionId)?.parentSessionId,
       agentName,
       workingDir: workingDir ?? this.projectRoot,
       pathGuard: this.getSessionPathGuard(sessionId ?? ""),
@@ -3917,13 +4463,14 @@ export class AgentRuntime {
     // 用于 endsLoop 判定时考虑执行失败（todo_finish 失败时不应退出 loop）。
     const executedTools: { name: string; ok: boolean }[] = [];
 
-    const emitConflictResult = (
+    const emitSkippedResult = (
       tc: LLMToolCall,
-      conflictMsg: string,
+      message: string,
+      code: string,
     ): StreamEvent[] => {
       const now = () => new Date().toISOString();
-      const fail = toolFail("precondition", conflictMsg, {
-        code: "resource_conflict",
+      const fail = toolFail("precondition", message, {
+        code,
         details: { toolName: tc.name },
       });
       const events: StreamEvent[] = [];
@@ -3996,8 +4543,28 @@ export class AgentRuntime {
       return events;
     };
 
+    const emitConflictResult = (tc: LLMToolCall, conflictMsg: string): StreamEvent[] =>
+      emitSkippedResult(tc, conflictMsg, "resource_conflict");
+
+    const emitCancelledResult = (tc: LLMToolCall): StreamEvent[] =>
+      emitSkippedResult(
+        tc,
+        `工具 ${tc.name} 还没开始执行，已被取消。`,
+        CANCELLED_NOT_STARTED,
+      );
+
     let i = 0;
     while (i < toolCalls.length) {
+      if (this.abortControllers.get(sessionId)?.signal.aborted) {
+        while (i < toolCalls.length) {
+          if (!blockedByConflict.has(i)) {
+            for (const ev of emitCancelledResult(toolCalls[i]!)) yield ev;
+            executedTools.push({ name: toolCalls[i]!.name, ok: false });
+          }
+          i++;
+        }
+        break;
+      }
       const tc = toolCalls[i];
       const conflict = blockedByConflict.get(i);
       if (conflict) {
@@ -4031,9 +4598,13 @@ export class AgentRuntime {
         continue;
       }
 
-      if (this.toolIsParallelSafe(tc.name)) {
+      if (this.toolIsParallelSafe(tc.name) && !this.toolIsExclusive(tc.name)) {
         const group: LLMToolCall[] = [];
-        while (i < toolCalls.length && this.toolIsParallelSafe(toolCalls[i].name)) {
+        while (
+          i < toolCalls.length &&
+          this.toolIsParallelSafe(toolCalls[i].name) &&
+          !this.toolIsExclusive(toolCalls[i].name)
+        ) {
           // blocking=false 已在循环开头 continue 跳过，这里不再检查
           group.push(toolCalls[i]);
           i++;
@@ -4291,6 +4862,14 @@ export class AgentRuntime {
     }
   }
 
+  private toolIsExclusive(name: string): boolean {
+    try {
+      return toolActsExclusive(this.tools.get(name)?.definition);
+    } catch {
+      return true;
+    }
+  }
+
   /**
    * 该工具是否阻塞 loop 等待真实结果。
    * 缺省 true（阻塞）；显式 blocking=false 的是后台 fire-and-forget 工具。
@@ -4502,15 +5081,31 @@ export class AgentRuntime {
     }
 
     // pre_tool_use / tools/pre-execute（deny / ask）+ fs/*-intent
-    const blocked = this.hooks
+    let blocked = this.hooks
       ? !(await this.gateToolCall(tcInfo, sessionId, round))
       : false;
+    let barrierBlockReason: string | undefined;
 
     let result: Awaited<ReturnType<ToolExecutor["executeSingle"]>> | null = null;
     let execError: unknown = null;
     // 工具真实耗时：随 tool_result 下发，UI 不必再用「结果到达时刻」倒推
     let toolElapsedMs = 0;
     if (!blocked) {
+      this.sessions.flush(sessionId);
+      // 落盘屏障：派发意图写不进盘就不动手，否则崩了之后分不清这次到底改了世界没有
+      const barrier = this.ledgerBarrier(sessionId, "tool/dispatch", {
+        id: toolCall.id,
+        name: toolCall.name,
+        callId: toolCall.id,
+        sideEffect: !/^(read_|list_|search_|grep|glob|ls)/.test(toolCall.name),
+      });
+      if (!barrier.ok) {
+        blocked = true;
+        barrierBlockReason = ledgerBarrierHuman("tool/dispatch", barrier.reason);
+      }
+    }
+    if (!blocked) {
+      this.sessions.flush(sessionId);
       const endTool = prof?.start(`tool:${toolCall.name}`, { round });
       const toolStartedAt = Date.now();
       try {
@@ -4595,7 +5190,7 @@ export class AgentRuntime {
       if (blocked) {
         const failRes = hookBlockedToolResponse(
           toolCall.name,
-          this.hooks?.lastBlockReason,
+          barrierBlockReason ?? this.hooks?.lastBlockReason,
         );
         const blockedMsg = failRes.message;
         const toolError = failRes.error;
@@ -4843,11 +5438,130 @@ export class AgentRuntime {
     type: string,
     data: Record<string, unknown>,
   ): void {
+    if (isLedgerBarrier(type)) {
+      // 屏障事件必须先落盘：写不进去就不能往下走不可逆的一步
+      const res = appendLedgerEvent(this.sessions.sessionDir, sessionId, type, data);
+      if (res && typeof res === "object" && "error" in res) throw new Error(res.error);
+      flushLedger(this.sessions.sessionDir, sessionId);
+      return;
+    }
     try {
       appendLedgerEvent(this.sessions.sessionDir, sessionId, type, data);
     } catch {
-      /* 账本不得打断主流程 */
+      /* 普通事件不得打断主流程 */
     }
+  }
+
+  /**
+   * 不可逆动作前的落盘屏障。写不进盘就返回原因，由调用方停手。
+   *
+   * 模型请求和工具派发都是花钱/改世界的一步：先把"我要做这件事"落到账本上，
+   * 崩了之后冷恢复才能判断这一步到底有没有发生。
+   */
+  private ledgerBarrier(
+    sessionId: string,
+    type: string,
+    data: Record<string, unknown>,
+  ): { ok: true } | { ok: false; reason: string } {
+    try {
+      this.noteLedger(sessionId, type, data);
+      return { ok: true };
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      this.log("error", `[ledger-barrier] ${type} 未落盘：${reason}`);
+      return { ok: false, reason };
+    }
+  }
+
+  private writeCompactBracket(
+    sessionId: string,
+    phase: "start" | "summary" | "end",
+    data: Record<string, unknown>,
+  ): void {
+    if (phase === "start") this.noteLedger(sessionId, "compact/start", data);
+    else if (phase === "summary") this.noteLedger(sessionId, "compact/summary", data);
+    else this.noteLedger(sessionId, "compact/end", data);
+  }
+
+  private recordCompactSurface(
+    sessionId: string,
+    source: string,
+    report: {
+      stage: string;
+      originalTokens?: number;
+      compressedTokens?: number;
+      droppedSummary?: string;
+      seqFrom?: number;
+      seqTo?: number;
+    },
+  ): void {
+    const range = compactSeqRange(report);
+    this.writeCompactBracket(sessionId, "summary", {
+      stage: report.stage,
+      source,
+      originalTokens: report.originalTokens,
+      compressedTokens: report.compressedTokens,
+      summary: report.droppedSummary,
+      ...range,
+    });
+    this.sessions.appendMessage(sessionId, "user", report.droppedSummary || "上下文已压缩", {
+      kind: "compact",
+      source: "compact",
+      ...(range.seqFrom != null
+        ? { surfaceOp: { op: "replace" as const, start: range.seqFrom, end: range.seqTo! } }
+        : {}),
+    });
+    this.sessions.bumpReplaceGeneration(sessionId);
+    this.writeCompactBracket(sessionId, "end", {
+      stage: report.stage,
+      source,
+      originalTokens: report.originalTokens,
+      compressedTokens: report.compressedTokens,
+      ...range,
+    });
+  }
+
+  /**
+   * 取回被压缩顶掉的那段原文（seq 闭区间，读压缩前的全量备份）。
+   *
+   * 摘要里的 seqRange 与 compact/end 账本的 seqFrom/seqTo 都指向这里。
+   */
+  getCompactedRange(sessionId: string, from: number, to: number): LLMMessage[] | null {
+    const msgs = this.harnessStore?.getSeqRange(sessionId, from, to);
+    if (!msgs || msgs.length === 0) return null;
+    return msgs.map(maouToLLMMessage);
+  }
+
+  /**
+   * MAOU_CONTEXT_ASSERT=1 时对比本轮与上轮的稳定前缀，漂移就大声报警。
+   *
+   * 断言关着时 takeContextStructure() 恒为 null，整条路径不花钱。
+   */
+  private assertContextStructure(sessionId: string): void {
+    const built = takeContextStructure();
+    if (!built) return;
+    const generation = this.sessions.readMeta(sessionId)?.replace_generation ?? 0;
+    const next = { ...built, generation };
+    const drift = describeContextDrift(this.sessions.readContextAssert(sessionId), next);
+    if (drift) this.log("error", `[context-assert] ${drift}`);
+    this.sessions.writeContextAssert(sessionId, next);
+  }
+
+  private scheduleTitlePolish(sessionId: string): void {
+    const caller = this.auxModelCaller;
+    const preset = this.currentPreset;
+    if (!caller || !preset) return;
+    void polishSessionTitle(this.sessions, sessionId, async (draft) => {
+      const r = await caller.callText({
+        preset,
+        systemPrompt: "把会话标题压成不超过 24 个字的短语，不要引号，不要句号。",
+        userPrompt: draft,
+        context: { tag: "session_title" },
+      });
+      return r.ok ? r.content : draft;
+    }).catch(() => {
+      /* 润色失败保留 draft */
+    });
   }
 
   private errorCallResult(error: string): ModelCallResult {
@@ -4936,6 +5650,7 @@ export class AgentRuntime {
           summarizer: runSummarizer,
         });
         engine.seedWorkingSet(sessionMessages);
+        this.writeCompactBracket(sessionId, "start", { source: "overflow" });
         const report = await engine.compress(contextLimit, {
           force: true,
           sourceSessionMessages: sessionMessages,
@@ -4968,12 +5683,9 @@ export class AgentRuntime {
           } catch { /* ignore */ }
         }
         if (report.stage !== "activeStage") {
-          this.noteLedger(sessionId, "compact/end", {
-            stage: report.stage,
-            source: "overflow",
-            originalTokens: report.originalTokens,
-            compressedTokens: report.compressedTokens,
-          });
+          this.recordCompactSurface(sessionId, "overflow", report);
+        } else {
+          this.writeCompactBracket(sessionId, "end", { error: "no_range", stage: report.stage, source: "overflow" });
         }
         await this.hooks?.postCompact(report.compressedTokens ?? 0);
         await this.afterCompressMaybeRebuild({
@@ -5006,6 +5718,7 @@ export class AgentRuntime {
           compressedHistory,
         }) as Array<Record<string, unknown>>;
       } catch (e) {
+        this.writeCompactBracket(sessionId, "end", { error: String(e), source: "overflow" });
         this.log("warning", `[overflow-shrink] engine failed: ${e}`);
       }
     } else {
@@ -5019,6 +5732,8 @@ export class AgentRuntime {
       droppedSummary = compressResult.droppedSummary;
       taskBlocks = compressResult.taskBlocks ?? [];
       if (compressResult.compressed) {
+        this.writeCompactBracket(sessionId, "start", { source: "overflow" });
+        this.recordCompactSurface(sessionId, "overflow", compressResult);
         await this.hooks?.postCompact(compressResult.compressedTokens ?? 0);
         await this.afterCompressMaybeRebuild({
           sessionId,

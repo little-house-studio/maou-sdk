@@ -3,6 +3,8 @@
  * Opened from the composer 「上下文」 chip — not dumped into the chat thread.
  */
 import { useEffect } from "react";
+import { ContextBreakdownPanel } from "./composer/ContextBreakdownPanel";
+import type { ContextBreakdown } from "./composer/types";
 
 export type SessionUsageStats = {
   messageCount: number;
@@ -15,6 +17,7 @@ export type SessionUsageStats = {
   lastInputTokens?: number;
   lastOutputTokens?: number;
   contextUsed?: number;
+  contextBreakdown?: ContextBreakdown | null;
   file?: string;
 };
 
@@ -200,6 +203,29 @@ export function SessionUsageModal({
                     </div>
                   ) : null}
                 </dl>
+                {stats.contextBreakdown ? (
+                  <div className="session-usage-breakdown">
+                    <ContextBreakdownPanel
+                      breakdown={(() => {
+                        const raw = stats.contextBreakdown;
+                        const w =
+                          raw.window > 0 ? raw.window : (maxContext ?? 0);
+                        return {
+                          ...raw,
+                          window: w,
+                          free: Math.max(0, w - raw.used),
+                          occupancyPct:
+                            w > 0
+                              ? Math.min(
+                                  100,
+                                  Math.max(0, Math.round((raw.used / w) * 100)),
+                                )
+                              : raw.occupancyPct,
+                        };
+                      })()}
+                    />
+                  </div>
+                ) : null}
               </section>
             </>
           ) : rawText ? (

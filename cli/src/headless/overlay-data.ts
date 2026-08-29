@@ -5,6 +5,7 @@
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentCliConfig } from "../types.js";
+import { SessionStore } from "@little-house-studio/context";
 import { projectSessionsDir } from "../config/paths.js";
 import { previewCurrentRequestBundle } from "../lib/preview-system.js";
 import type { ProtoOverlay, ProtoSelectItem } from "./protocol-types.js";
@@ -13,6 +14,7 @@ import { commandPaletteItems, helpKeyRows } from "../config/cli-commands.js";
 import { settingsForSurface } from "../config/cli-settings.js";
 import { getActiveTheme, listThemesMeta } from "../theme/load-theme.js";
 import { getHookConfirm } from "../hooks/hook-ui.js";
+import { getCliAsk } from "./ask-ui.js";
 import {
   agentPresenceKey,
   resolvePresenceStatus,
@@ -354,6 +356,8 @@ export interface BuildOverlayOpts {
   modelProvider?: string | null;
   /** prompt 当前分段下标 */
   promptSectionIndex?: number;
+  /** 会话 overlay 的正文搜索 */
+  query?: string;
 }
 
 export function buildOverlay(
@@ -411,24 +415,52 @@ export function buildOverlay(
     case "sessions": {
       const sessionsDir = projectSessionsDir();
       const items: ProtoSelectItem[] = [];
+      const query = opts.query?.trim();
       if (existsSync(sessionsDir)) {
         try {
-          const files = readdirSync(sessionsDir)
-            .filter((f) => f.endsWith(".jsonl"))
-            .map((f) => ({ f, mtime: statSync(join(sessionsDir, f)).mtimeMs }))
-            .sort((a, b) => b.mtime - a.mtime)
-            .slice(0, 20);
-          for (const { f } of files) {
-            const id = f.replace(/\.jsonl$/, "");
+          const store = new SessionStore(sessionsDir);
+          if (query) {
             try {
-              const first = readFileSync(join(sessionsDir, f), "utf-8").split("\n")[0];
-              const meta = JSON.parse(first ?? "{}") as { content?: string };
-              const label = meta?.content
-                ? String(meta.content).slice(0, 24).replace(/\n/g, " ")
-                : id.slice(0, 12);
-              items.push({ value: id, label, description: id.slice(0, 10) });
+              const page = store.search({ query, limit: 20 });
+              for (const hit of page.items) {
+                items.push({
+                  value: `${hit.sessionId}::${hit.absSeq}`,
+                  label: (hit.snippet || hit.sessionId).replace(/\n/g, " ").slice(0, 48),
+                  description: hit.sessionId.slice(0, 10),
+                });
+              }
             } catch {
-              items.push({ value: id, label: id.slice(0, 12) });
+              /* 无 sqlite 时仍列标题 */
+            }
+          }
+          const listed = store.list().slice(0, 20);
+          const q = query?.toLowerCase();
+          for (const s of listed) {
+            if (q && !(s.title || s.id).toLowerCase().includes(q)) continue;
+            if (items.some((it) => it.value === s.id || it.value.startsWith(`${s.id}::`))) {
+              continue;
+            }
+            const label = (s.title || s.id).slice(0, 24).replace(/\n/g, " ");
+            items.push({ value: s.id, label, description: s.id.slice(0, 10) });
+          }
+          const currentId = useStore.getState().sessionId;
+          if (currentId) {
+            const kids = store.listDescendents(currentId);
+            if (kids.length) {
+              items.push({
+                value: `__desc_${currentId}`,
+                label: `下级 ${kids.length}`,
+                description: "子孙",
+                selectable: false,
+                row_kind: "header",
+              });
+              for (const k of kids) {
+                items.push({
+                  value: k.id,
+                  label: `  ${(k.title || k.id).slice(0, 22).replace(/\n/g, " ")}`,
+                  description: k.oneshot ? "一次性 · 不能再后续" : "可继续",
+                });
+              }
             }
           }
         } catch {
@@ -437,7 +469,7 @@ export function buildOverlay(
       }
       return {
         kind,
-        title: "会话",
+        title: query ? `会话 · ${query}` : "会话",
         footer: "↑↓ 选择 · Enter 切换 · Esc 关闭",
         items,
         selected: 0,
@@ -500,6 +532,57 @@ export function buildOverlay(
         ],
         lines: ask?.message ? ask.message.split("\n").slice(0, 20) : undefined,
         selected: 1,
+      };
+    }
+    case "ask": {
+      const ask = getCliAsk();
+      if (!ask) {
+        return {
+          kind,
+          title: "问卷",
+          footer: "Esc 关闭",
+          items: [],
+          selected: 0,
+        };
+      }
+      if (ask.kind === "plan_review") {
+        return {
+          kind,
+          title: ask.title || "审阅计划",
+          footer: "↑↓ 选择 · Enter · Esc 关闭",
+          items: [
+            { value: "approve", label: "批准" },
+            { value: "reject", label: "拒绝" },
+            { value: "chat", label: "去聊天里说" },
+          ],
+          selected: 0,
+        };
+      }
+      const items: ProtoSelectItem[] = [];
+      for (const q of ask.questions ?? []) {
+        items.push({
+          value: `__q_${q.id}`,
+          label: q.prompt.slice(0, 48),
+          selectable: false,
+          row_kind: "header",
+        });
+        for (const o of q.options ?? []) {
+          items.push({
+            value: `${q.id}=${o.label}`,
+            label: `${o.label}${o.recommended ? " · 推荐" : ""}`,
+          });
+        }
+        if (q.skippable) {
+          items.push({ value: `${q.id}=`, label: "跳过" });
+        }
+      }
+      items.push({ value: "__submit", label: "提交" });
+      return {
+        kind,
+        title: ask.title || "问卷",
+        footer: "↑↓ 选择 · Enter 作答 · Esc 取消",
+        items,
+        selected: 0,
       };
     }
     case "agents": {

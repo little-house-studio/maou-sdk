@@ -7,6 +7,7 @@ import type { Tool, ToolContext, ToolResponse, ToolCall } from "./base.js";
 import { resolveToolRuntimePorts } from "./base.js";
 import { ensureToolError, toolFail, toolFailFromThrown } from "./errors.js";
 import type { ToolRegistry } from "./registry.js";
+import { applySpillGuard } from "./spill-guard.js";
 
 /** 事件发射器类型 */
 export type EventEmitFn = (
@@ -110,8 +111,9 @@ export class ToolExecutor {
     // 带超时的执行
     const started = Date.now();
     try {
-      const result = await this._executeWithTimeout(tool, toolCall, ctx);
-      // 统一保证 ok:false 带 error 字段（含未走 createToolResponse 的实现）
+      const raw = await this._executeWithTimeout(tool, toolCall, ctx);
+      // 超大返回体先收口（全文落盘 + 正文给出路），再统一补 error 字段
+      const result = applySpillGuard(raw, toolCall, ctx);
       const wrapped = { toolCall, events: [], result: ensureToolError(result) };
       noteToolExec(ctx, toolCall, wrapped.result, Date.now() - started);
       return wrapped;

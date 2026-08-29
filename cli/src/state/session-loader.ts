@@ -1,5 +1,5 @@
 /**
- * session-loader —— 从 .maou/sessions/{id}.jsonl 读会话重建 messages。
+ * session-loader —— 从 .maou/sessions/<id>/ 读会话重建 messages。
  *
  * 恢复：
  *  - user / assistant 文本
@@ -7,12 +7,11 @@
  *  - usage / round / 时长（若有）
  */
 
-import { join } from "node:path";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { stripTaskCompletionMarkup } from "@little-house-studio/types";
 import type { ChatMessage, ToolCardState, SessionEventKind, MessageAuthor } from "./types.js";
 import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
-import { projectSessionFile, projectSessionsDir } from "../config/paths.js";
+import { SessionStore } from "@little-house-studio/context";
+import { projectSessionsDir } from "../config/paths.js";
 
 function parseAuthor(ev: Record<string, unknown>, kind: SessionEventKind): MessageAuthor {
   const raw = ev.author as MessageAuthor | undefined;
@@ -115,12 +114,22 @@ function toolOk(ev: Record<string, unknown>): boolean {
 }
 
 /** 读会话 jsonl 重建 messages（失败返回 null） */
-export function loadSessionMessages(sessionId: string, cwd = process.cwd()): LoadedSession | null {
-  const file = projectSessionFile(sessionId, cwd);
-  if (!existsSync(file)) return null;
+export function loadSessionMessages(
+  sessionId: string,
+  cwd = process.cwd(),
+  opts?: { beforeSeq?: number; limit?: number },
+): LoadedSession | null {
+  const store = new SessionStore(projectSessionsDir(cwd));
+  if (!store.exists(sessionId)) return null;
+  store.recoverCold(sessionId);
+  const page = store.loadRecent(sessionId, {
+    limit: opts?.limit ?? 80,
+    ...(opts?.beforeSeq != null ? { beforeSeq: opts.beforeSeq } : {}),
+  });
+  const loaded = page ? { messages: page.messages, sessionId } : null;
+  if (!loaded) return null;
   try {
-    const raw = readFileSync(file, "utf-8");
-    const lines = raw.split("\n").filter((l) => l.trim());
+    const lines = loaded.messages.map((m) => JSON.stringify({ type: "message", ...m }));
     const messages: ChatMessage[] = [];
     /** toolCallId → 所属 assistant 消息在 messages 中的下标 + card 下标 */
     const toolIndex = new Map<string, { msgIdx: number; cardIdx: number }>();
@@ -408,14 +417,8 @@ export function loadSessionMessages(sessionId: string, cwd = process.cwd()): Loa
 
 /** 列出可用会话 id（最新在前） */
 export function listSessions(cwd = process.cwd()): string[] {
-  const dir = projectSessionsDir(cwd);
-  if (!existsSync(dir)) return [];
   try {
-    return readdirSync(dir)
-      .filter((f: string) => f.endsWith(".jsonl"))
-      .map((f: string) => ({ id: f.replace(/\.jsonl$/, ""), mtime: statSync(join(dir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime)
-      .map((x) => x.id);
+    return new SessionStore(projectSessionsDir(cwd)).list().map((s) => s.id);
   } catch {
     return [];
   }

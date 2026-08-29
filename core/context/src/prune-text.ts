@@ -2,7 +2,14 @@
  * 无模型文本修剪：留头 + 省略标记 + 留尾（Unicode 码点，不拆 surrogate）。
  */
 
-export const TOOL_RESULT_PRUNE_MARKER = "\n\n[... tool result middle pruned ...]\n\n";
+import {
+  TOOL_RESULT_OMIT_MARKER,
+  buildRetentionNotice,
+  formatRetentionNotice,
+  spillRetrieveHint,
+} from "./omission.js";
+
+export const TOOL_RESULT_PRUNE_MARKER = TOOL_RESULT_OMIT_MARKER;
 
 export const TOOL_RESULT_PRUNE_THRESHOLD_CHARS = 8192;
 export const TOOL_RESULT_PRUNE_HEAD_CHARS = 4096;
@@ -20,6 +27,7 @@ export function pruneTextHeadTail(
   headChars: number,
   tailChars: number,
   marker = TOOL_RESULT_PRUNE_MARKER,
+  opts?: { locator?: string; retrieveHint?: string },
 ): string | null {
   const chars = codePoints(text);
   const head = Math.max(0, Math.floor(headChars));
@@ -27,7 +35,23 @@ export function pruneTextHeadTail(
   if (chars.length === 0 || head + tail <= 0) return null;
   const mark = codePoints(marker);
   if (chars.length <= head + tail + mark.length) return null;
-  const out = `${chars.slice(0, head).join("")}${marker}${chars.slice(-tail).join("")}`;
+  const notice = buildRetentionNotice({
+    original: chars.length,
+    keptHead: head,
+    keptTail: tail,
+    unit: "code_points",
+    marker,
+    locator: opts?.locator,
+    retrieveHint: opts?.retrieveHint ?? (opts?.locator ? spillRetrieveHint() : undefined),
+  });
+  const mid =
+    notice.omitted.kind === "none"
+      ? marker
+      : `${marker}${formatRetentionNotice(notice.omitted, {
+          locator: notice.locator,
+          retrieveHint: notice.retrieveHint,
+        })}\n`;
+  const out = `${chars.slice(0, head).join("")}${mid}${chars.slice(-tail).join("")}`;
   if (codePoints(out).length >= chars.length) return null;
   return out;
 }

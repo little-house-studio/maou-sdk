@@ -1,23 +1,21 @@
 import React, { useEffect, useRef, useState } from "react";
-import {
-  APPROVAL_LABELS,
-  APPROVAL_MODES,
-  APPROVAL_TITLES,
-  type ApprovalSwitchMode,
-} from "../drafts/panels/ApprovalPhysicsSwitch";
-import { CascadeMenu } from "../drafts/panels/CascadeMenu";
 import { ModelCascadeMenu } from "../drafts/panels/ModelCascadeMenu";
 import { ChromeMark } from "../drafts/icons/Marks";
 import { ContextMeter } from "./ContextMeter";
+import { CommandFlyout } from "./CommandFlyout";
+import type { AppCommand } from "./commands";
 import {
   filesToComposerImages,
   mergeComposerImages,
 } from "./images";
+import { t } from "../i18n";
+import {
+  PERMISSION_PRESET_IDS,
+  isPermissionPresetId,
+  permissionPresetLabel,
+  permissionPresetName,
+} from "../live/settings-adapters";
 import type { ComposerProps } from "./types";
-
-function isApprovalMode(v: string): v is ApprovalSwitchMode {
-  return v === "normal" || v === "auto" || v === "yolo";
-}
 
 function planOn(input: string) {
   return /^\s*\/plan(?:\s|$)/i.test(input);
@@ -81,29 +79,89 @@ export function ModelSeat(props: ComposerProps) {
   );
 }
 
+function selectedPresetId(preset: string, approval: string): string {
+  if (isPermissionPresetId(preset)) return preset;
+  if (approval === "yolo") return "open+yolo";
+  if (approval === "auto") return "workspace+auto";
+  return "workspace+ask";
+}
+
+const PRESET_COMMANDS: readonly AppCommand[] = PERMISSION_PRESET_IDS.map((id) => ({
+  name: permissionPresetName(id),
+  label: permissionPresetLabel(id),
+  description: id,
+}));
+
 export function ApprovalSeat(props: ComposerProps) {
-  const value = isApprovalMode(props.approval) ? props.approval : "yolo";
+  const selected = selectedPresetId(props.permissionPreset || "", props.approval);
+  const name = permissionPresetName(selected);
+  const comment = permissionPresetLabel(selected);
+  const [open, setOpen] = useState(false);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t)) return;
+      if ((e.target as HTMLElement | null)?.closest?.("[data-composer-overlay=command]")) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const selectedIdx = Math.max(
+    0,
+    PRESET_COMMANDS.findIndex((c) => c.name === name),
+  );
+  const activeIdx = hoverIdx ?? selectedIdx;
   return (
-    <CascadeMenu
-      className="wire-composer-approval"
-      triggerClassName="wire-composer-approval-trigger"
-      triggerLabel={APPROVAL_LABELS[value]}
-      triggerTitle={APPROVAL_TITLES[value]}
-      triggerLead={<span className={`wire-cascade-led is-${value}`} aria-hidden />}
-      ariaLabel="审批模式"
-      columns={[
-        {
-          key: "approval",
-          items: APPROVAL_MODES.map((m) => ({
-            id: m,
-            label: APPROVAL_LABELS[m],
-            selected: m === value,
-            lead: <span className={`wire-cascade-led is-${m}`} aria-hidden />,
-            onSelect: () => props.onApprovalChange(m),
-          })),
-        },
-      ]}
-    />
+    <div className="composer-approval" ref={wrapRef} data-composer-approval="">
+      <button
+        ref={btnRef}
+        type="button"
+        className="composer-approval-trigger wire-composer-approval-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`${name} ${comment}`}
+        title={`${name} · ${comment}`}
+        onClick={() => {
+          setHoverIdx(null);
+          setOpen((v) => !v);
+        }}
+      >
+        <span
+          className={`wire-cascade-led is-${selected.includes("yolo") ? "yolo" : selected.includes("auto") ? "auto" : "normal"}`}
+          aria-hidden
+        />
+        <span className="composer-approval-name">{name}</span>
+      </button>
+      <CommandFlyout
+        open={open}
+        anchor={btnRef.current}
+        namePrefix=""
+        items={PRESET_COMMANDS}
+        activeIdx={activeIdx}
+        onHighlight={setHoverIdx}
+        onPick={(picked) => {
+          const id = PERMISSION_PRESET_IDS.find((p) => permissionPresetName(p) === picked);
+          if (id) props.onApprovalChange(id);
+          setHoverIdx(null);
+          setOpen(false);
+        }}
+      />
+    </div>
   );
 }
 
@@ -139,22 +197,24 @@ export function ImageAttachTool(props: ComposerProps) {
         onChange={(e) => {
           const files = e.target.files;
           if (!files?.length) return;
-          void filesToComposerImages(files, props.images?.length ?? 0).then(
-            (extra) => {
+          void filesToComposerImages(files, props.images?.length ?? 0)
+            .then((extra) => {
               if (!extra.length) return;
               props.onImagesChange?.(
                 mergeComposerImages(props.images ?? [], extra),
               );
-            },
-          );
+            })
+            .catch((err: unknown) => {
+              window.alert(err instanceof Error ? err.message : String(err));
+            });
           e.target.value = "";
         }}
       />
       <button
         type="button"
         className="composer-tool-btn"
-        title="附图 · 粘贴或选文件"
-        aria-label="附图"
+        title={t("composer.attach")}
+        aria-label={t("composer.attach")}
         disabled={(props.images?.length ?? 0) >= 4}
         onClick={() => inputRef.current?.click()}
       >
@@ -234,19 +294,24 @@ export function UsageSeat(props: ComposerProps) {
 }
 
 export function PlanSeat(props: ComposerProps) {
-  const on = planOn(props.input);
+  const on = props.planActive ?? planOn(props.input);
+  const status = props.planStatus || (on ? "planning" : "off");
   return (
     <button
       type="button"
       className={`composer-plan${on ? " is-on" : ""}`}
       aria-pressed={on}
-      title="计划模式 /plan"
+      title={`计划 ${status}`}
       onClick={() => {
+        if (props.onPlanToggle) {
+          props.onPlanToggle();
+          return;
+        }
         props.onInputChange(nextPlanInput(props.input));
         props.inputRef.current?.focus();
       }}
     >
-      计划
+      {on ? `计划 · ${status}` : "计划"}
     </button>
   );
 }
@@ -284,6 +349,7 @@ export function LeftToolsFallback(props: ComposerProps) {
   return (
     <>
       <ImageAttachTool {...props} />
+      <PlanSeat {...props} />
       <MoreTools {...props} />
     </>
   );

@@ -20,6 +20,7 @@ import type { APIPreset } from "@little-house-studio/llm";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { LLMPostLogger } from "@little-house-studio/llm";
 import type { LLMPostLogRecord } from "@little-house-studio/llm";
+import type { MessageImage } from "@little-house-studio/types";
 import {
   ToolExecutor,
   TASK_MANAGER,
@@ -696,7 +697,7 @@ export class Runtime {
         userName: params.userName,
         userCommand: params.userCommand,
         userImages: Array.isArray(params.images)
-          ? (params.images as Array<{ mimeType: string; data: string }>)
+          ? (params.images as MessageImage[])
           : undefined,
         userVideo: params.userVideo,
         userAudio: params.userAudio,

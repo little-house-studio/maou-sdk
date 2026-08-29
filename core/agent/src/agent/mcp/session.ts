@@ -26,6 +26,8 @@ import {
 } from "./mappers.js";
 import type { McpToolDescriptor } from "@little-house-studio/types";
 import type { ToolResponse } from "@little-house-studio/tools";
+import { createToolResponse } from "@little-house-studio/tools";
+import { formatMcpUnavailableMessage } from "./status-text.js";
 
 // ─── 配置 ──────────────────────────────────────────────────────────────────
 
@@ -135,6 +137,9 @@ export class McpSession {
   private _lastError: string | null = null;
   private _toolsCache: McpListedTool[] = [];
   private _ownsTransport = true;
+  private _reconnecting = false;
+  private _reconnectAttempts = 0;
+  private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private log: NonNullable<McpSessionConfig["log"]>;
 
   constructor(cfg: McpSessionConfig) {
@@ -154,6 +159,10 @@ export class McpSession {
 
   get connected(): boolean {
     return this._status === "connected" && this.client != null;
+  }
+
+  get reconnecting(): boolean {
+    return this._reconnecting;
   }
 
   /** 底层 Client（已连接时） */
@@ -227,6 +236,9 @@ export class McpSession {
       this.client = client;
       this.transport = transport;
       this._status = "connected";
+      this._reconnectAttempts = 0;
+      this._reconnecting = false;
+      this.bindTransportClose(transport);
 
       const ver = client.getServerVersion();
       const caps = client.getServerCapabilities();
@@ -259,11 +271,12 @@ export class McpSession {
    * 断开连接并释放传输（stdio 子进程等）。
    */
   async disconnect(): Promise<void> {
+    this.clearReconnectTimer();
     const client = this.client;
     this.client = null;
     this.transport = null;
-    this._toolsCache = [];
     this._status = "closed";
+    this._reconnecting = false;
     if (client) {
       try {
         await client.close();
@@ -351,10 +364,81 @@ export class McpSession {
    * tools/call → agent ToolResponse（isError → ok:false）。
    * 协议错误 → ok:false + protocolError payload（不抛，便于 Tool 路径）。
    */
+  unavailableResponse(toolName?: string): ToolResponse {
+    return createToolResponse(
+      false,
+      formatMcpUnavailableMessage({
+        connectionName: this.name,
+        toolName,
+        status: this._status,
+        lastError: this._lastError,
+        reconnecting: this._reconnecting,
+      }),
+    );
+  }
+
+  markTransportLost(reason: string): void {
+    if (this._status === "closed") return;
+    this._status = "error";
+    this._lastError = reason;
+    this.client = null;
+    this.transport = null;
+    this.scheduleReconnect();
+  }
+
+  private bindTransportClose(transport: Transport): void {
+    const prev = transport.onclose;
+    transport.onclose = () => {
+      try {
+        prev?.();
+      } catch {
+        /* ignore */
+      }
+      if (this._status === "closed") return;
+      this.markTransportLost("transport closed");
+    };
+  }
+
+  private clearReconnectTimer(): void {
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this._reconnectTimer || this._status === "closed") return;
+    if (this._reconnectAttempts >= 3) {
+      this._reconnecting = false;
+      return;
+    }
+    this._reconnecting = true;
+    const delay = [1000, 2000, 4000][this._reconnectAttempts] ?? 4000;
+    this._reconnectTimer = setTimeout(() => {
+      this._reconnectTimer = null;
+      this._reconnectAttempts += 1;
+      void this.reconnect()
+        .then(() => {
+          this._reconnecting = false;
+          this._reconnectAttempts = 0;
+        })
+        .catch((err) => {
+          this._lastError = err instanceof Error ? err.message : String(err);
+          this.scheduleReconnect();
+        });
+    }, delay);
+  }
+
   async callToolAsResponse(
     toolName: string,
     args: Record<string, unknown> = {},
   ): Promise<ToolResponse> {
+    if (!this.connected) {
+      if (this._status !== "closed" && this._status !== "connecting") {
+        this.scheduleReconnect();
+      }
+      return this.unavailableResponse(toolName);
+    }
     try {
       const result = await this.callToolRaw(toolName, args);
       return mapCallToolResultToToolResponse(result, {

@@ -9,29 +9,35 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useAppPorts } from "../ports";
 import type {
-  ApprovalMode,
   LlmConfigPresetDto,
   LlmConfigRoles,
   LlmConfigSnapshot,
   LlmConnectionTestResult,
   Meta,
   SvgProbeGalleryItem,
+  TerminalInfo,
 } from "../api";
 import { UiEmoji } from "../ui-emoji";
 import {
-  APPROVAL_MODES,
   LIVE_SETTINGS_SECTIONS,
-  approvalModeHint,
-  approvalModeLabel,
+  PERMISSION_PRESET_IDS,
   buildLiveSettingsSnapshot,
   emptyLiveSettingsSnapshot,
-  isApprovalMode,
+  permissionPresetHint,
+  permissionPresetLabel,
+  permissionPresetName,
   resolveModelAfterProviderChange,
-  withApprovalMode,
   type LiveSettingsSectionId,
   type LiveSettingsSnapshot,
 } from "./settings-adapters";
-import { applySheetTheme, readSheetTheme, type SheetTheme } from "../theme";
+import {
+  applySheetTheme,
+  readSheetPreference,
+  type SheetTheme,
+} from "../theme";
+import { t, writeUiLang, readUiLang } from "../i18n";
+import { FolderBrowse, pickAndOpenProject } from "./FolderBrowse";
+import { refreshThemeAndPlugins } from "../plugin-ui";
 import { PasteFillCard } from "../settings/PasteFillCard";
 import {
   applyLivePasteToRows,
@@ -55,6 +61,7 @@ type DraftRow = {
   keyEdit: string;
   keyMasked: string;
   hasKey: boolean;
+  keyRef: string;
   maxContext: number;
   maxTokens: number;
   supportsImage: boolean;
@@ -85,6 +92,7 @@ function dtoToDraft(p: LlmConfigPresetDto): DraftRow {
     keyEdit: "",
     keyMasked: p.keyMasked,
     hasKey: p.hasKey,
+    keyRef: p.keyRef || "",
     maxContext: p.maxContext,
     maxTokens: p.maxTokens,
     supportsImage: p.supportsImage,
@@ -114,8 +122,9 @@ function emptyDraft(n: number): DraftRow {
     urlParams: "",
     model: "",
     keyEdit: "",
-    keyMasked: "（未设置）",
+    keyMasked: "未填",
     hasKey: false,
+    keyRef: "",
     maxContext: 128_000,
     maxTokens: 32_768,
     supportsImage: false,
@@ -191,11 +200,12 @@ export function LiveSettingsPanel({
     fetchSvgProbeGallery,
     runLlmSvgProbe,
     saveLlmConfig,
-    setApprovalMode,
+    setPermissionPreset,
     setModel,
     setSvgProbeReference,
     testLlmConnection,
   } = useAppPorts().settings;
+  const { fetchTerminals } = useAppPorts().terminals;
   const [snap, setSnap] = useState<LiveSettingsSnapshot>(() =>
     emptyLiveSettingsSnapshot(true),
   );
@@ -204,7 +214,11 @@ export function LiveSettingsPanel({
   const [sheetTheme, setSheetTheme] = useState<SheetTheme>(() =>
     typeof document === "undefined"
       ? "light"
-      : readSheetTheme(typeof localStorage === "undefined" ? null : localStorage),
+      : readSheetPreference(typeof localStorage === "undefined" ? null : localStorage),
+  );
+  const [browseFolder, setBrowseFolder] = useState(false);
+  const [uiLang, setUiLang] = useState(() =>
+    readUiLang(typeof localStorage === "undefined" ? null : localStorage),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -229,6 +243,7 @@ export function LiveSettingsPanel({
   const [vendors, setVendors] = useState<LlmConfigSnapshot["vendors"]>([]);
   const [roleDefs, setRoleDefs] = useState<LlmConfigSnapshot["roleDefs"]>([]);
   const [revealKey, setRevealKey] = useState(false);
+  const [termRows, setTermRows] = useState<TerminalInfo[]>([]);
   const [pasteFlash, setPasteFlash] = useState<string[]>([]);
   const [pasteConfirm, setPasteConfirm] = useState<string[]>([]);
 
@@ -291,6 +306,11 @@ export function LiveSettingsPanel({
         providers: md.providers,
         models: md.models,
       });
+      try {
+        setTermRows(await fetchTerminals(undefined, { all: true }));
+      } catch {
+        setTermRows([]);
+      }
       setStatus("已从全局 config 同步");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -298,7 +318,7 @@ export function LiveSettingsPanel({
     } finally {
       setBusy(false);
     }
-  }, [applyLlmSnap, applySnapshot]);
+  }, [applyLlmSnap, applySnapshot, fetchTerminals]);
 
   useEffect(() => {
     void reload();
@@ -760,21 +780,25 @@ export function LiveSettingsPanel({
     }
   };
 
-  const onApprovalChange = async (raw: string) => {
-    if (!isApprovalMode(raw) || raw === snap.approvalMode) return;
-    const mode: ApprovalMode = raw;
+  const onDefaultPresetChange = async (id: string) => {
+    if (id === snap.permissionPreset) return;
+    if (id === "open+yolo" && !window.confirm("/yolo 放开。确认「我已了解风险」？仅影响新会话。")) {
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const meta = await setApprovalMode(mode);
-      const merged: Meta = {
-        ...meta,
-        approvalMode: meta.approvalMode || mode,
-        sandboxMode: meta.sandboxMode || mode,
-      };
-      setSnap((s) => withApprovalMode(s, mode));
-      onMetaChangeRef.current?.(merged);
-      setStatus(`审批模式 → ${mode}`);
+      const confirm = id === "open+yolo" ? "我已了解风险" : undefined;
+      const meta = await setPermissionPreset(id, confirm);
+      setSnap((s) => ({
+        ...s,
+        permissionPreset: meta.permissionPreset || id,
+        statusLabel: s.offline
+          ? s.statusLabel
+          : `${s.provider || "—"} · ${s.model || "—"} · ${permissionPresetLabel(id)} · live`,
+      }));
+      onMetaChangeRef.current?.(meta);
+      setStatus(`新会话默认套餐 → ${permissionPresetLabel(id)}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -843,8 +867,8 @@ export function LiveSettingsPanel({
         <header className="wire-settings-head">
           <div className="wire-settings-title-row">
             <UiEmoji name="settings" />
-            <h2 className="wire-settings-title">设置</h2>
-            <span className="wire-settings-sub">LLM 配置与模板</span>
+            <h2 className="wire-settings-title">{t("settings.title")}</h2>
+            <span className="wire-settings-sub">{t("settings.sub")}</span>
           </div>
           {onClose ? (
             <button
@@ -852,7 +876,7 @@ export function LiveSettingsPanel({
               className="wire-text-btn wire-settings-close"
               onClick={onClose}
             >
-              返回
+              {t("settings.back")}
             </button>
           ) : null}
         </header>
@@ -870,7 +894,11 @@ export function LiveSettingsPanel({
                 data-live-settings-nav={s.id}
                 onClick={() => setSection(s.id)}
               >
-                {s.label}
+                {s.id === "appearance"
+                  ? t("settings.appearance")
+                  : s.id === "plugins"
+                    ? t("settings.plugins")
+                    : s.label}
               </button>
             ))}
           </nav>
@@ -881,13 +909,10 @@ export function LiveSettingsPanel({
               data-live-settings-section="appearance"
             >
               <div className="wire-settings-section-head">
-                <h3 className="wire-settings-h">外观</h3>
-                <p className="wire-settings-desc">
-                  两套色表。亮色是纸上中暗重点色；暗色只亮一种荧光绿。
-                </p>
+                <h3 className="wire-settings-h">{t("settings.appearance")}</h3>
               </div>
               <div className="wire-settings-theme-row" role="radiogroup" aria-label="色表">
-                {(["light", "dark"] as const).map((id) => {
+                {(["light", "dark", "system"] as const).map((id) => {
                   const on = sheetTheme === id;
                   return (
                     <button
@@ -904,15 +929,63 @@ export function LiveSettingsPanel({
                           localStorage,
                         );
                         setSheetTheme(id);
-                        setStatus(id === "dark" ? "已切到暗色" : "已切到亮色");
+                        void refreshThemeAndPlugins();
+                        setStatus(t(`settings.theme.${id}`));
                       }}
                     >
-                      {id === "light" ? "亮色" : "暗色"}
+                      {t(`settings.theme.${id}`)}
                     </button>
                   );
                 })}
               </div>
+              <div className="wire-settings-theme-row" role="radiogroup" aria-label={t("settings.lang")}>
+                {(["zh", "en"] as const).map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`wire-settings-theme-pick${uiLang === id ? " active" : ""}`}
+                    data-ui-lang={id}
+                    onClick={() => {
+                      writeUiLang(id, localStorage);
+                      setUiLang(id);
+                    }}
+                  >
+                    {t(`settings.lang.${id}`)}
+                  </button>
+                ))}
+              </div>
+              <div className="wire-settings-folder">
+                <h4 className="wire-settings-h">{t("settings.folder")}</h4>
+                <div className="wire-settings-theme-row">
+                  <button
+                    type="button"
+                    className="wire-settings-theme-pick"
+                    onClick={() => {
+                      void pickAndOpenProject().then((root) => {
+                        if (root) window.location.reload();
+                        else setBrowseFolder(true);
+                      });
+                    }}
+                  >
+                    {t("folder.pick")}
+                  </button>
+                  <button
+                    type="button"
+                    className="wire-settings-theme-pick"
+                    onClick={() => setBrowseFolder((v) => !v)}
+                  >
+                    {t("folder.browse")}
+                  </button>
+                </div>
+                {browseFolder ? (
+                  <FolderBrowse onOpened={() => window.location.reload()} />
+                ) : null}
+              </div>
             </section>
+          ) : null}
+
+          {section === "plugins" ? (
+            <PluginSettingsSection />
           ) : null}
 
           {/* ── 1. LLM：厂商连接 + 组内多模型 ── */}
@@ -1117,7 +1190,9 @@ export function LiveSettingsPanel({
                             </label>
                             <label className={`wire-settings-field dense${fieldFlash("api_key")}`}>
                               <span className="wire-settings-label">
-                                API Key{row.hasKey ? " · 已配" : ""}
+                                用这份引用
+                                {row.keyRef ? ` · ${row.keyRef}` : ""}
+                                {row.hasKey ? " · 已填" : " · 未填"}
                               </span>
                               <div className="wire-settings-key-row">
                                 <input
@@ -1753,56 +1828,73 @@ export function LiveSettingsPanel({
 
                 <hr className="wire-settings-sep" />
                 <h4 className="wire-settings-h" data-live-block="approval">
-                  终端审批
+                  权限套餐
                 </h4>
                 <p className="wire-settings-desc">
-                  <code>POST /api/approval</code> · normal / auto / yolo
+                  新会话默认套餐。已开跑会话钉在创建时的套餐，不受这里影响。
+                  终端审批含在套餐里（normal / auto / yolo）。
+                  每个 Agent 自己的壳；闲忙看提示符，超长输出写在会话旁 term-spill。
                 </p>
+                {termRows.length > 0 ? (
+                  <div className="wire-settings-term-list">
+                    {termRows.map((t) => (
+                      <div key={`${t.agentName}:${t.id}`} className="wire-settings-term-row">
+                        <span>
+                          {t.id} · 属主 {t.agentName || "—"}
+                        </span>
+                        <span className="wire-settings-muted">
+                          {t.waitState === "waiting"
+                            ? "等你"
+                            : t.waitState === "exited"
+                              ? "已结束"
+                              : t.state || "—"}
+                          {t.overflowPath ? ` · 溢出 ${t.overflowPath}` : ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <label className="wire-settings-field">
-                  <span className="wire-settings-label">模式</span>
+                  <span className="wire-settings-label">默认套餐</span>
                   <select
                     className="wire-settings-input"
-                    value={
-                      isApprovalMode(snap.approvalMode)
-                        ? snap.approvalMode
-                        : "yolo"
-                    }
+                    value={snap.permissionPreset || "workspace+ask"}
                     disabled={busy || snap.offline}
                     data-live-approval-select=""
-                    onChange={(e) => void onApprovalChange(e.target.value)}
+                    onChange={(e) => void onDefaultPresetChange(e.target.value)}
                   >
-                    {APPROVAL_MODES.map((m) => (
+                    {PERMISSION_PRESET_IDS.map((m) => (
                       <option key={m} value={m}>
-                        {m} — {approvalModeLabel(m)}
+                        {permissionPresetName(m)} {permissionPresetLabel(m)}
                       </option>
                     ))}
                   </select>
                 </label>
                 <div className="wire-settings-approval-modes">
-                  {APPROVAL_MODES.map((m) => (
+                  {PERMISSION_PRESET_IDS.map((m) => (
                     <button
                       key={m}
                       type="button"
                       className={`wire-settings-preset-item${
-                        snap.approvalMode === m ? " is-selected is-default" : ""
+                        (snap.permissionPreset || "workspace+ask") === m
+                          ? " is-selected is-default"
+                          : ""
                       }`}
                       data-live-approval-mode={m}
                       disabled={busy || snap.offline}
-                      onClick={() => void onApprovalChange(m)}
+                      onClick={() => void onDefaultPresetChange(m)}
                     >
-                      <span className="wire-settings-preset-name">{m}</span>
+                      <span className="wire-settings-preset-name">
+                        {permissionPresetName(m)}
+                      </span>
                       <span className="wire-settings-preset-meta">
-                        {approvalModeLabel(m)}
+                        {permissionPresetLabel(m)}
                       </span>
                     </button>
                   ))}
                 </div>
                 <p className="wire-settings-desc">
-                  {approvalModeHint(
-                    isApprovalMode(snap.approvalMode)
-                      ? snap.approvalMode
-                      : "yolo",
-                  )}
+                  {permissionPresetHint(snap.permissionPreset || "workspace+ask")}
                 </p>
 
                 <hr className="wire-settings-sep" />
@@ -1865,5 +1957,69 @@ export function LiveSettingsPanel({
         </div>
       </div>
     </div>
+  );
+}
+
+function PluginSettingsSection() {
+  const [rows, setRows] = useState<
+    Array<{ id: string; name: string; phase: string; enabled: boolean; error?: string }>
+  >([]);
+  const load = useCallback(() => {
+    void fetch("/api/plugins")
+      .then((r) => r.json())
+      .then((j) => {
+        if (Array.isArray(j.plugins)) setRows(j.plugins);
+      })
+      .catch(() => setRows([]));
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+  return (
+    <section className="wire-settings-section" data-live-settings-section="plugins">
+      <div className="wire-settings-section-head">
+        <h3 className="wire-settings-h">{t("settings.plugins")}</h3>
+        <button
+          type="button"
+          className="wire-settings-theme-pick"
+          onClick={() => {
+            void fetch("/api/plugins/reload", { method: "POST" }).then(() => {
+              load();
+              void refreshThemeAndPlugins();
+            });
+          }}
+        >
+          {t("settings.plugins.reload")}
+        </button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="wire-settings-desc">{t("settings.plugins.empty")}</p>
+      ) : (
+        <ul className="wire-plugin-list">
+          {rows.map((p) => (
+            <li key={p.id} className={`wire-plugin-row is-${p.phase}`}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={p.enabled}
+                  onChange={(e) => {
+                    void fetch("/api/plugins/toggle", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ id: p.id, enabled: e.target.checked }),
+                    }).then(() => {
+                      load();
+                      void refreshThemeAndPlugins();
+                    });
+                  }}
+                />
+                {p.name} · {p.phase}
+                {p.error ? ` · ${p.error}` : ""}
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

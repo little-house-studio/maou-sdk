@@ -4,6 +4,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  cacheHitRate,
+  formatCacheCell,
+  formatCacheRate,
+  formatUserTurnTip,
+  userTurnTipRows,
   durationStr,
   formatMessageHead,
   formatThinkingHead,
@@ -12,6 +17,7 @@ import {
   formatUsageLine,
   roundTipRows,
   summarizeLoop,
+  loopWallMs,
   loopMark,
   shortId,
   timecode,
@@ -149,6 +155,32 @@ describe("message-meta CLI helpers", () => {
     assert.equal(sum.lastOutputTokens, 12);
     assert.equal(sum.occupancy, 12);
     assert.equal(sum.durationMs, 1400);
+    const fromSend = summarizeLoop(
+      [
+        {
+          assistant: {
+            meta: {
+              ts: Date.UTC(2026, 6, 31, 8, 1, 0),
+              durationMs: 800,
+              usageOutput: 48,
+            },
+          },
+          internals: [{ role: "tool" }, { role: "tool" }],
+        },
+        {
+          assistant: {
+            meta: {
+              ts: Date.UTC(2026, 6, 31, 8, 1, 1),
+              durationMs: 400,
+              usageOutput: 12,
+            },
+          },
+          internals: [{ role: "thinking" }],
+        },
+      ],
+      { sentAt: Date.UTC(2026, 6, 31, 8, 0, 59, 500) },
+    );
+    assert.equal(fromSend.durationMs, 1900);
     const tip = formatLoopTip(sum);
     assert.match(tip, /共 2 轮/);
     assert.match(tip, /开始 /);
@@ -214,5 +246,187 @@ describe("message-meta CLI helpers", () => {
     assert.match(html, /wire-round-chip/);
     assert.match(html, /第 \d+ 轮/);
     assert.match(html, /wire-think-head|\* think/);
+  });
+});
+
+describe("cache rate + user-turn tip", () => {
+  it("hit rate is cacheRead / promptTotal, and null when unreported", () => {
+    assert.equal(cacheHitRate({ promptTotal: 1000, cacheRead: 600 }), 0.6);
+    assert.equal(cacheHitRate({ promptTotal: 0, cacheRead: 0 }), null);
+    // 模型不上报 cache 字段 → 不能写成 0%
+    assert.equal(
+      cacheHitRate({ promptTotal: 1000, cacheRead: 0, reported: false }),
+      null,
+    );
+    // 中转层偶尔回报 read > prompt，夹到 100%
+    assert.equal(cacheHitRate({ promptTotal: 100, cacheRead: 500 }), 1);
+  });
+
+  it("formats the rate and the cell", () => {
+    assert.equal(formatCacheRate(null), "—");
+    assert.equal(formatCacheRate(0.6), "60%");
+    assert.equal(formatCacheRate(0.6234), "62.3%");
+    assert.equal(formatCacheCell({ promptTotal: 10_000, cacheRead: 6234 }), "62.3% · 6.2k");
+    assert.equal(formatCacheCell({ promptTotal: 1000, cacheRead: 0, reported: false }), "—");
+  });
+
+  it("roundTipRows carries the cache row once buckets are known", () => {
+    const rows = roundTipRows({
+      round: 2,
+      inputTokens: 1000,
+      outputTokens: 40,
+      cacheRead: 600,
+      cacheReported: true,
+    });
+    const cache = rows.find((r) => r.label === "缓存");
+    assert.equal(cache?.value, "60% · 600");
+    // 没有缓存口径时不生造一行
+    assert.equal(
+      roundTipRows({ round: 1, outputTokens: 5 }).some((r) => r.label === "缓存"),
+      false,
+    );
+  });
+
+  it("summarizeLoop sums input + cache across the rounds of one ask", () => {
+    const sum = summarizeLoop([
+      {
+        assistant: {
+          meta: {
+            ts: 1000,
+            durationMs: 400,
+            usageInput: 1000,
+            usageOutput: 40,
+            cacheRead: 600,
+            cacheReported: true,
+          },
+        },
+        internals: [],
+      },
+      {
+        assistant: {
+          meta: {
+            ts: 1400,
+            durationMs: 600,
+            usageInput: 1400,
+            usageOutput: 20,
+            cacheRead: 1200,
+            cacheReported: true,
+          },
+        },
+        internals: [{ role: "tool" }],
+      },
+    ]);
+    assert.equal(sum.inputTokens, 2400);
+    assert.equal(sum.outputTokens, 60);
+    assert.equal(sum.cacheRead, 1800);
+    assert.equal(sum.cacheReported, true);
+    assert.equal(sum.durationMs, 1000);
+    assert.equal(sum.toolCount, 1);
+  });
+
+  it("userTurnTipRows shows the whole ask: 工作时间 / 总输入输出 / 平均缓存率", () => {
+    const rows = userTurnTipRows({
+      ...summarizeLoop([
+        {
+          assistant: {
+            meta: {
+              ts: 1000,
+              durationMs: 400,
+              usageInput: 1000,
+              usageOutput: 40,
+              cacheRead: 600,
+              cacheReported: true,
+            },
+          },
+          internals: [{ role: "tool" }],
+        },
+      ]),
+      ordinal: 3,
+    });
+    const get = (label: string) => rows.find((r) => r.label === label)?.value;
+    assert.equal(get("提问"), "#3");
+    assert.equal(get("工作时间"), "400ms");
+    assert.equal(get("轮次"), "1");
+    assert.equal(get("工具"), "1");
+    assert.equal(get("总输入"), "1.0k tok");
+    assert.equal(get("总输出"), "40 tok");
+    assert.equal(get("平均缓存率"), "60% · 600");
+    assert.equal(get("请求体"), "不可用");
+    assert.match(formatUserTurnTip({ ...summarizeLoop([]), ordinal: 1 }), /提问 #1/);
+  });
+
+  it("a still-running ask reads 待落盘, never a fake 0%", () => {
+    const rows = userTurnTipRows({
+      ...summarizeLoop([]),
+      ordinal: 1,
+      live: true,
+    });
+    const get = (label: string) => rows.find((r) => r.label === label)?.value;
+    assert.equal(get("工作时间"), "…");
+    assert.equal(get("平均缓存率"), "—");
+    assert.equal(get("请求体"), "待落盘");
+  });
+});
+
+describe("loop wall clock: user send → loop end", () => {
+  it("loopWallMs is end minus send, and refuses a reversed clock", () => {
+    assert.equal(loopWallMs(1000, 2500), 1500);
+    assert.equal(loopWallMs(1000, 1000), 0);
+    assert.equal(loopWallMs(2500, 1000), undefined);
+    assert.equal(loopWallMs(undefined, 2500), undefined);
+  });
+
+  it("synthesizes duration from user sentAt to last reply ts when rounds have no duration", () => {
+    const sum = summarizeLoop(
+      [
+        { assistant: { meta: { ts: 1600 } }, internals: [] },
+        { assistant: { meta: { ts: 2500 } }, internals: [] },
+      ],
+      { sentAt: 1000 },
+    );
+    assert.equal(sum.startedAt, 1000);
+    assert.equal(sum.durationMs, 1500);
+  });
+
+  it("prefers a stamped loop duration over round timestamps", () => {
+    const sum = summarizeLoop(
+      [
+        {
+          assistant: { meta: { ts: 1200, durationMs: 400 } },
+          internals: [],
+        },
+      ],
+      { sentAt: 1000, durationMs: 900 },
+    );
+    assert.equal(sum.durationMs, 900);
+  });
+
+  it("interrupt uses endedAt when rounds have no duration", () => {
+    const sum = summarizeLoop(
+      [
+        {
+          assistant: { meta: { ts: 1100 } },
+          internals: [{ role: "tool", meta: { ts: 1400 } }],
+        },
+      ],
+      { sentAt: 1000, endedAt: 1800 },
+    );
+    assert.equal(sum.durationMs, 800);
+  });
+
+  it("does not sum round durations when there is no timestamp", () => {
+    const sum = summarizeLoop([
+      { assistant: { meta: { durationMs: 400 } }, internals: [] },
+      { assistant: { meta: { durationMs: 600 } }, internals: [] },
+    ]);
+    assert.equal(sum.durationMs, undefined);
+  });
+
+  it("does not invent 0ms from a single assistant ts", () => {
+    const sum = summarizeLoop([
+      { assistant: { meta: { ts: 2000 } }, internals: [] },
+    ]);
+    assert.equal(sum.startedAt, 2000);
+    assert.equal(sum.durationMs, undefined);
   });
 });

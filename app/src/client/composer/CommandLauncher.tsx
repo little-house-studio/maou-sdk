@@ -7,10 +7,11 @@ import type { ComposerProps } from "./types";
 export function CommandLauncher(props: ComposerProps) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const [caret, setCaret] = useState<CaretBox | null>(null);
+  const catalog = props.commandCatalog;
   const items = props.paletteOpen
     ? (props.paletteHits ?? [])
     : props.slashHits
-        .map((n) => commandByName(n, props.paletteHits) ?? commandByName(n))
+        .map((n) => commandByName(n, catalog) ?? commandByName(n))
         .filter((c): c is NonNullable<typeof c> => Boolean(c));
   const slashOpen = Boolean(props.slashOpen && !props.paletteOpen);
   const open = Boolean((slashOpen || props.paletteOpen) && items.length > 0);
@@ -70,6 +71,10 @@ export function CommandLauncher(props: ComposerProps) {
         onPick={(name) => {
           if (props.paletteOpen) props.onPalettePick?.(name);
           else props.onSlashPick?.(name);
+        }}
+        onHighlight={(i) => {
+          if (props.paletteOpen) props.onPaletteHighlight?.(i);
+          else props.onSlashHighlight?.(i);
         }}
       />
     </div>

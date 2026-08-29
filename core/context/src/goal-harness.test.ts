@@ -37,7 +37,7 @@ describe("goal harness sidecar", () => {
     expect(created.tokenBudget).toBe(4000);
     expect(goalHarness.isOpen(dir, id)).toBe(true);
     expect(goalHarness.isActive(dir, id)).toBe(true);
-    expect(existsSync(join(dir, `${id}.goal`, "state.json"))).toBe(true);
+    expect(existsSync(join(dir, id, "goal-harness", "state.json"))).toBe(true);
   });
 
   it("reconciles disk-active to user_paused after process restart", () => {
@@ -92,6 +92,6 @@ describe("goal harness sidecar", () => {
       checklist: ["Read the file", "Change it"],
     });
     expect(firstUncheckedPlanItem(markdown)).toBe("Read the file");
-    expect(planPath("/tmp", "x")).toContain("x.goal");
+    expect(planPath("/tmp", "x")).toContain(join("x", "goal-harness"));
   });
 });

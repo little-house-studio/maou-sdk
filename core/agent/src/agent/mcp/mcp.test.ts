@@ -274,6 +274,20 @@ describe("McpSession protocol ops (InMemory fixture)", () => {
     expect(pair.session.connected).toBe(false);
     await expect(pair.session.listTools({ force: true })).rejects.toThrow(/not connected/);
   });
+
+  it("keeps tool schema and returns status text when transport dies", async () => {
+    const tools = await pair.session.listTools({ force: true });
+    expect(tools.map((t) => t.name)).toContain("echo");
+    pair.session.markTransportLost("fake dead");
+    expect(pair.session.connected).toBe(false);
+    const cached = await pair.session.listTools();
+    expect(cached.map((t) => t.name)).toContain("echo");
+    const resp = await pair.session.callToolAsResponse("echo", { text: "hi" });
+    expect(resp.ok).toBe(false);
+    expect(resp.message).toContain("不可用");
+    expect(resp.message).toContain("fake dead");
+    expect(resp.message).toMatch(/重连|工具表/);
+  });
 });
 
 // ── tool bridge + manager ──────────────────────────────────────────────────
@@ -523,7 +537,9 @@ describe("McpConnectionManager agent switch lifecycle", () => {
     expect(registry.get("mcp__conn_b__tool_b")).toBeTruthy();
 
     // ensureLoadedForAgent short-circuits for same agent with sessions
-    const ensured = await manager.ensureLoadedForAgent(maouRoot, "agentB");
+    const ensured = await manager.ensureLoadedForAgent(maouRoot, "agentB", {
+      includeIndustryPaths: false,
+    });
     expect(ensured.ok).toBe(1);
     expect(manager.sessionCount).toBe(1);
 

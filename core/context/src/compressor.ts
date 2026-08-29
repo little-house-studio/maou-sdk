@@ -29,6 +29,8 @@ import {
   RETAIN_TAIL_RATIO,
 } from "./constants.js";
 import { pruneBodyText, pruneToolResultText } from "./prune-text.js";
+import { estimateTokens } from "./token-estimate.js";
+import { applyWindowPressure } from "./window-pressure.js";
 import { snapRetainStartForToolPairs } from "./tool-pairing.js";
 import type { CompressResult } from "./types.js";
 import type {
@@ -37,7 +39,7 @@ import type {
   TaskSummary,
 } from "./types/compression.js";
 import type { MaouMessage, MaouContent, LLMMessage } from "./types/message.js";
-import { maouToLLMMessage } from "./types/message.js";
+import { maouToLLMMessage, seqRangeOf } from "./types/message.js";
 
 // ─── 可插拔摘要器 ────────────────────────────────────────────────────────────
 
@@ -161,21 +163,47 @@ export async function compressMaou(
   }
   if (target === "activeStage") return noChange();
 
-  const retainCount = resolveRetainCount(history.length, opts);
-  const afterMicro = await microCompactAll(history, opts.summarizer, retainCount);
+  const pressed = applyWindowPressure(history, occupancy, threshold);
+  const working = pressed.history;
+
+  const retainCount = resolveRetainCount(working.length, opts);
+  const afterMicro = await microCompactAll(working, opts.summarizer, retainCount);
   const microChanged = historyVisiblyChanged(history, afterMicro);
+
+  /**
+   * 便宜路径剪完后的占用。厂商 token 与启发式估算不可比绝对值，
+   * 只能拿同一批消息剪裁前后的比值去缩放锚点。
+   */
+  const projectOccupancy = (after: MaouMessage[]): number => {
+    if (occupancy <= 0) return occupancy;
+    const before = estimateTokens(history);
+    if (before <= 0) return occupancy;
+    const ratio = estimateTokens(after) / before;
+    if (!Number.isFinite(ratio) || ratio < 0) return occupancy;
+    return Math.trunc(occupancy * Math.min(1, ratio));
+  };
+
+  const compactResult = (projected: number): CompressMaouResult => ({
+    history: afterMicro,
+    stage: "compactStage",
+    droppedSummary: "",
+    taskBlocks: [],
+    perTaskOriginals: new Map(),
+    originalTokens: occupancy,
+    compressedTokens: projected,
+  });
 
   if (target === "compactStage") {
     if (!microChanged) return noChange();
-    return {
-      history: afterMicro,
-      stage: "compactStage",
-      droppedSummary: "",
-      taskBlocks: [],
-      perTaskOriginals: new Map(),
-      originalTokens: occupancy,
-      compressedTokens: 0,
-    };
+    return compactResult(projectOccupancy(afterMicro));
+  }
+
+  // 剪完重测：便宜路径已经把占用压回摘要线以下就别再花摘要的钱
+  if (microChanged && pressed.action === "omit") {
+    const projected = projectOccupancy(afterMicro);
+    if (stageIndex(occupancyStage(projected, threshold)) < stageIndex("summaryStage")) {
+      return compactResult(projected);
+    }
   }
 
   const afterSummary = await summaryCompressHarness(
@@ -189,15 +217,7 @@ export async function compressMaou(
   if (target === "summaryStage") {
     if (!summaryChanged) {
       if (!microChanged) return noChange();
-      return {
-        history: afterMicro,
-        stage: "compactStage",
-        droppedSummary: "",
-        taskBlocks: [],
-        perTaskOriginals: new Map(),
-        originalTokens: occupancy,
-        compressedTokens: 0,
-      };
+      return compactResult(projectOccupancy(afterMicro));
     }
     return {
       history: afterSummary.messages,
@@ -206,7 +226,7 @@ export async function compressMaou(
       taskBlocks: afterSummary.taskBlocks,
       perTaskOriginals: afterSummary.perTaskOriginals,
       originalTokens: occupancy,
-      compressedTokens: 0,
+      compressedTokens: projectOccupancy(afterSummary.messages),
     };
   }
 
@@ -218,7 +238,7 @@ export async function compressMaou(
     taskBlocks: afterArchive.taskBlocks,
     perTaskOriginals: afterSummary.perTaskOriginals,
     originalTokens: occupancy,
-    compressedTokens: 0,
+    compressedTokens: projectOccupancy(afterArchive.messages),
   };
 }
 
@@ -824,7 +844,7 @@ function makeSummaryMessage(summary: string): MaouMessage {
  */
 function makeTaskSummaryMessage(taskId: string, summary: string, originalMsgs: MaouMessage[]): MaouMessage {
   const seqId = originalMsgs[0]?.seqId ?? -1;
-  return {
+  const msg: MaouMessage = {
     seqId,
     taskIds: [taskId],
     contents: [{
@@ -834,6 +854,9 @@ function makeTaskSummaryMessage(taskId: string, summary: string, originalMsgs: M
     category: "injected",
     originalRole: "user",
   };
+  const range = seqRangeOf(originalMsgs);
+  if (range) msg.compact = { type: "major", summary, seqRange: range };
+  return msg;
 }
 
 function truncate(text: string, maxLength: number): string {

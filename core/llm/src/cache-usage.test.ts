@@ -12,7 +12,7 @@ describe("normalizeCacheUsage · OpenAI 家族（prompt_tokens 已含命中）",
       completion_tokens: 200,
       prompt_tokens_details: { cached_tokens: 5504 },
     });
-    expect(n.promptTotal).toBe(6135); // 不重复叠加
+    expect(n.promptTotal).toBe(6135);
     expect(n.cacheRead).toBe(5504);
     expect(n.uncached).toBe(631);
     expect(n.output).toBe(200);
@@ -26,7 +26,19 @@ describe("normalizeCacheUsage · OpenAI 家族（prompt_tokens 已含命中）",
     expect(n.uncached).toBe(100);
   });
 
-  it("DeepSeek prompt_cache_hit_tokens", () => {
+  it("Responses / Codex / Grok：input_tokens_details.cached_tokens ⊂ input_tokens", () => {
+    const n = normalizeCacheUsage({
+      input_tokens: 15000,
+      output_tokens: 80,
+      input_tokens_details: { cached_tokens: 12000, cache_write_tokens: 3000 },
+    });
+    expect(n.promptTotal).toBe(15000);
+    expect(n.cacheRead).toBe(12000);
+    expect(n.cacheWrite).toBe(3000);
+    expect(n.uncached).toBe(0);
+  });
+
+  it("DeepSeek prompt_cache_hit_tokens + miss = prompt_tokens", () => {
     const n = normalizeCacheUsage({
       prompt_tokens: 6135,
       prompt_cache_hit_tokens: 5504,
@@ -36,9 +48,19 @@ describe("normalizeCacheUsage · OpenAI 家族（prompt_tokens 已含命中）",
     expect(n.cacheRead).toBe(5504);
     expect(n.uncached).toBe(631);
   });
+
+  it("中转层 0 占位不盖掉真实 cached_tokens", () => {
+    const n = normalizeCacheUsage({
+      prompt_tokens: 6135,
+      cache_read_input_tokens: 0,
+      cached_tokens: 5504,
+    });
+    expect(n.cacheRead).toBe(5504);
+    expect(n.promptTotal).toBe(6135);
+  });
 });
 
-describe("normalizeCacheUsage · Anthropic（input_tokens 不含命中）", () => {
+describe("normalizeCacheUsage · Anthropic（三字段互斥相加）", () => {
   it("命中时补齐分母，不再算出 9000%", () => {
     const n = normalizeCacheUsage({
       input_tokens: 100,
@@ -46,10 +68,21 @@ describe("normalizeCacheUsage · Anthropic（input_tokens 不含命中）", () =
       cache_read_input_tokens: 9000,
       cache_creation_input_tokens: 0,
     });
-    expect(n.promptTotal).toBe(9100); // 100 + 9000
+    expect(n.promptTotal).toBe(9100);
     expect(n.cacheRead).toBe(9000);
     expect(n.uncached).toBe(100);
     expect(cacheHitPct(n.cacheRead, n.promptTotal)).toBe(99);
+  });
+
+  it("官方小命中也相加（不再误判成已含）", () => {
+    const n = normalizeCacheUsage({
+      input_tokens: 20000,
+      cache_read_input_tokens: 500,
+    });
+    expect(n.promptTotal).toBe(20500);
+    expect(n.cacheRead).toBe(500);
+    expect(n.uncached).toBe(20000);
+    expect(cacheHitPct(n.cacheRead, n.promptTotal)).toBe(2);
   });
 
   it("首轮建缓存：写入计入分母但不算命中", () => {
@@ -76,6 +109,20 @@ describe("normalizeCacheUsage · Anthropic（input_tokens 不含命中）", () =
     expect(cacheHitPct(n.cacheRead, n.promptTotal)).toBe(86);
   });
 
+  it("cache_creation 对象 5m+1h", () => {
+    const n = normalizeCacheUsage({
+      input_tokens: 80,
+      cache_read_input_tokens: 0,
+      cache_creation: {
+        ephemeral_5m_input_tokens: 4000,
+        ephemeral_1h_input_tokens: 1000,
+      },
+    });
+    expect(n.promptTotal).toBe(5080);
+    expect(n.cacheWrite).toBe(5000);
+    expect(n.reported).toBe(true);
+  });
+
   it("无缓存轮（全 0 cache 字段）仍算已上报", () => {
     const n = normalizeCacheUsage({
       input_tokens: 300,
@@ -84,7 +131,22 @@ describe("normalizeCacheUsage · Anthropic（input_tokens 不含命中）", () =
     });
     expect(n.promptTotal).toBe(300);
     expect(n.cacheRead).toBe(0);
-    expect(n.reported).toBe(true); // 字段在 → 该模型上报，可显示 c0%
+    expect(n.reported).toBe(true);
+  });
+});
+
+describe("normalizeCacheUsage · Gemini", () => {
+  it("promptTokenCount 已含 cachedContentTokenCount", () => {
+    const n = normalizeCacheUsage({
+      promptTokenCount: 1000,
+      candidatesTokenCount: 40,
+      cachedContentTokenCount: 800,
+    });
+    expect(n.promptTotal).toBe(1000);
+    expect(n.cacheRead).toBe(800);
+    expect(n.uncached).toBe(200);
+    expect(n.output).toBe(40);
+    expect(n.reported).toBe(true);
   });
 });
 
@@ -101,11 +163,10 @@ describe("normalizeCacheUsage · 边界", () => {
     const n = normalizeCacheUsage({ prompt_tokens: 5000, completion_tokens: 20 });
     expect(n.promptTotal).toBe(5000);
     expect(n.cacheRead).toBe(0);
-    expect(n.reported).toBe(false); // 不写假 0%，UI 应显示 c—
+    expect(n.reported).toBe(false);
   });
 
   it("命中数超总量（脏数据）被 clamp，不产出 >100%", () => {
-    // read > prompt 会被判为「分开计」语义；即便如此也不允许 >100%
     const n = normalizeCacheUsage({ prompt_tokens: 0, cached_tokens: 500 });
     expect(n.cacheRead).toBeLessThanOrEqual(n.promptTotal);
     expect(cacheHitPct(n.cacheRead, n.promptTotal)).toBe(100);
@@ -122,11 +183,13 @@ describe("normalizeCacheUsage · 边界", () => {
     expect(n.output).toBe(0);
   });
 
-  it("小额命中不因判据误判而失真（误差 < 1pp）", () => {
-    // Anthropic 大 prompt + 小命中：read < prompt 会走「已含」分支
-    const n = normalizeCacheUsage({ input_tokens: 20000, cache_read_input_tokens: 500 });
-    const truth = Math.round((500 / 20500) * 100); // 真实口径 2%
-    expect(Math.abs(cacheHitPct(n.cacheRead, n.promptTotal)! - truth)).toBeLessThanOrEqual(1);
+  it("OpenAI 字段名 + Anthropic 命中字段且命中属于总量 → 不重复叠加", () => {
+    const n = normalizeCacheUsage({
+      prompt_tokens: 6135,
+      cache_read_input_tokens: 5504,
+    });
+    expect(n.promptTotal).toBe(6135);
+    expect(n.cacheRead).toBe(5504);
   });
 });
 
@@ -139,7 +202,7 @@ describe("cacheHitPct", () => {
   it("四舍五入并 clamp 到 0–100", () => {
     expect(cacheHitPct(900, 1000)).toBe(90);
     expect(cacheHitPct(818, 1000)).toBe(82);
-    expect(cacheHitPct(9000, 100)).toBe(100); // 永不超 100
+    expect(cacheHitPct(9000, 100)).toBe(100);
     expect(cacheHitPct(-5, 100)).toBe(0);
   });
 });

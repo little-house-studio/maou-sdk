@@ -15,6 +15,7 @@ import {
   type CascadeColumn,
   type CascadeMenuHandle,
 } from "./CascadeMenu";
+import { t } from "../../i18n";
 
 export type ModelOption = { id: string; name?: string };
 export type ProviderOption = { id: string; name?: string };
@@ -26,6 +27,7 @@ export type ModelCascadeMenuProps = {
   models: readonly ModelOption[];
   onSelect: (provider: string, model: string) => void | Promise<void>;
   onModelsLoaded?: (provider: string, models: ModelOption[]) => void;
+  onOpenSettings?: () => void;
   className?: string;
   disabled?: boolean;
 };
@@ -51,6 +53,7 @@ export const ModelCascadeMenu = forwardRef<
     models,
     onSelect,
     onModelsLoaded,
+    onOpenSettings,
     className = "",
     disabled = false,
   },
@@ -59,7 +62,7 @@ export const ModelCascadeMenu = forwardRef<
   const { fetchModels } = useAppPorts().models;
   const innerRef = useRef<CascadeMenuHandle | null>(null);
   const [hoverProvider, setHoverProvider] = useState(provider || "");
-  const [panelModels, setPanelModels] = useState<ModelOption[]>(models);
+  const [panelModels, setPanelModels] = useState<ModelOption[]>(() => [...models]);
   const [loading, setLoading] = useState(false);
   const cacheRef = useRef<Map<string, ModelOption[]>>(new Map());
 
@@ -71,9 +74,9 @@ export const ModelCascadeMenu = forwardRef<
 
   useEffect(() => {
     if (provider && models.length) {
-      cacheRef.current.set(provider, models);
+      cacheRef.current.set(provider, [...models]);
       if (hoverProvider === provider || !hoverProvider) {
-        setPanelModels(models);
+        setPanelModels([...models]);
       }
     }
   }, [provider, models, hoverProvider]);
@@ -114,7 +117,10 @@ export const ModelCascadeMenu = forwardRef<
     {
       key: "providers",
       heading: "方案",
-      items: list.map((p) => ({
+      items: (list.length
+        ? list
+        : [{ id: "__empty__", name: t("composer.model.empty") }]
+      ).map((p) => ({
         id: p.id,
         label: p.name || p.id,
         selected: provider === p.id,
@@ -126,6 +132,11 @@ export const ModelCascadeMenu = forwardRef<
           void loadProviderModels(p.id);
         },
         onSelect: () => {
+          if (p.id === "__empty__") {
+            onOpenSettings?.();
+            window.dispatchEvent(new CustomEvent("maou-open-settings"));
+            return;
+          }
           setHoverProvider(p.id);
           void loadProviderModels(p.id);
         },
@@ -156,10 +167,10 @@ export const ModelCascadeMenu = forwardRef<
       ref={innerRef}
       className={`model-cascade wire-composer-model-cascade ${className}`.trim()}
       triggerClassName="model-cascade-trigger"
-      disabled={disabled || list.length === 0}
+      disabled={disabled}
       triggerLabel={shortLabel(provider, model)}
       triggerTitle={`${provider || "—"} / ${model || "—"} · 下一轮生效 · Ctrl+M`}
-      ariaLabel="选择方案与模型"
+      ariaLabel={t("composer.model")}
       columns={columns}
       onOpen={() => {
         const pid = provider || list[0]?.id || "";

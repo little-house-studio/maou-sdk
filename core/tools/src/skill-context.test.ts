@@ -11,6 +11,7 @@ import {
   setDefaultSkillScanOptions,
   resolveSkillScanOptions,
   skillNameFromPath,
+  listSkillScanRoots,
 } from "./skill-context.js";
 
 function writeSkill(dir: string, name: string, desc = `desc ${name}`) {
@@ -82,6 +83,58 @@ describe("skill-context", () => {
     }).scanAll();
     expect(off.has("sys-skill")).toBe(false);
     expect(off.has("maou-global")).toBe(true);
+  });
+
+  it("project agent skill beats global agent same name", () => {
+    writeSkill(
+      join(maouRoot, "agents", "coding", "skills", "dup"),
+      "dup",
+      "global-agent",
+    );
+    writeSkill(
+      join(projectRoot, ".maou", "agents", "coding", "skills", "dup"),
+      "dup",
+      "project-agent",
+    );
+    const map = new SkillScanner("coding", projectRoot, maouRoot, {
+      includeSystemNpmSkills: false,
+    }).scanAll("coding");
+    expect(map.get("dup")?.description).toBe("project-agent");
+  });
+
+  it("listSkillScanRoots puts project agent last", () => {
+    const roots = listSkillScanRoots({
+      projectRoot,
+      maouRoot,
+      agentName: "coding",
+      home: join(root, "home"),
+      includeSystemNpmSkills: false,
+    });
+    const last = roots[roots.length - 1]?.dir;
+    expect(last).toBe(join(projectRoot, ".maou", "agents", "coding", "skill"));
+  });
+
+  it("hides user-only and missing-tool skills from model catalog", () => {
+    mkdirSync(join(projectRoot, "skills", "user-only"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, "skills", "user-only", "SKILL.md"),
+      "---\nname: user-only\ndescription: menu\nuser_invocable: true\n---\n# u\n",
+    );
+    mkdirSync(join(projectRoot, "skills", "needs-web"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, "skills", "needs-web", "SKILL.md"),
+      "---\nname: needs-web\ndescription: web\nrequired-tools: web_fetch\n---\n# w\n",
+    );
+    writeSkill(join(projectRoot, "skills", "ok"), "ok");
+    const mgr = new SkillContextManager("coding", projectRoot, maouRoot, {
+      includeSystemNpmSkills: false,
+    });
+    mgr.setAvailableTools(["reader"]);
+    const names = mgr.listAvailableSkills().map((s) => s.name);
+    expect(names).toEqual(["ok"]);
+    expect(mgr.getSkillEntry("user-only")).toBeNull();
+    expect(mgr.peekSkillEntry("user-only")?.userInvocableOnly).toBe(true);
+    expect(mgr.listMenuSkills().some((s) => s.name === "user-only")).toBe(true);
   });
 
   it("agent skill overrides project same name", () => {

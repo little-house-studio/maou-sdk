@@ -8,6 +8,8 @@ import {
   existsSync,
   mkdirSync,
   renameSync,
+  readdirSync,
+  statSync,
 } from "node:fs";
 import { join } from "node:path";
 import { normalizeCacheUsage } from "@little-house-studio/llm";
@@ -60,6 +62,13 @@ export interface DailyData {
   daily_summary: DailySummary;
 }
 
+/** 本机日历日桶合计：~/.maou/agents/<name>/tokens/YYYY-MM-DD.json */
+export interface TodayTokenTotals {
+  date: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 // ─── 用量解析（CLI 事件栏 / 计费共用） ─────────────────────────────────────
 
 /**
@@ -91,10 +100,14 @@ function nowMinute(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function todayDate(): string {
-  const d = new Date();
+/** TokenTracker 日桶文件名：本机日历 YYYY-MM-DD。runtime record / App 顶栏读。 */
+export function tokenDayKey(at: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+}
+
+function todayDate(): string {
+  return tokenDayKey();
 }
 
 function loadFile(filePath: string): DailyData {
@@ -123,12 +136,11 @@ function computeCost(usage: TokenUsage, pricing: PricingInfo): {
   cost_cache: number;
   total_cost: number;
 } {
-  const inputTokens = Math.trunc(usage.input_tokens ?? usage.prompt_tokens ?? 0);
-  const outputTokens = Math.trunc(usage.output_tokens ?? usage.completion_tokens ?? 0);
-  const cacheHitTokens = Math.trunc(
-    usage.cache_hit_tokens ?? usage.cache_read_input_tokens ?? 0,
-  );
-  const effectiveInput = Math.max(0, inputTokens - cacheHitTokens);
+  const n = normalizeCacheUsage(usage as Record<string, unknown>);
+  const inputTokens = n.promptTotal;
+  const outputTokens = n.output;
+  const cacheHitTokens = n.cacheRead;
+  const effectiveInput = n.uncached + n.cacheWrite;
 
   const costInput = (effectiveInput / 1_000_000) * pricing.inputPrice;
   const costOutput = (outputTokens / 1_000_000) * pricing.outputPrice;
@@ -258,7 +270,7 @@ export class TokenTracker {
     const totalInput = records.reduce((s, r) => s + r.input_tokens, 0);
     const totalCache = records.reduce((s, r) => s + r.cache_hit_tokens, 0);
     if (totalInput === 0) return 0;
-    return parseFloat((totalCache / totalInput).toFixed(4));
+    return parseFloat(Math.min(1, totalCache / totalInput).toFixed(4));
   }
 
   /**
@@ -277,7 +289,10 @@ export class TokenTracker {
     const totalOutput = records.reduce((s, r) => s + r.output_tokens, 0);
     const totalCache = records.reduce((s, r) => s + r.cache_hit_tokens, 0);
     const totalCost = records.reduce((s, r) => s + r.total_cost, 0);
-    const cacheRate = parseFloat((totalCache / Math.max(1, totalInput)).toFixed(4));
+    const cacheRate =
+      totalInput > 0
+        ? parseFloat(Math.min(1, totalCache / totalInput).toFixed(4))
+        : 0;
 
     return {
       date: todayDate(),
@@ -294,9 +309,10 @@ export class TokenTracker {
    * 格式化 token 用量显示字符串
    */
   static formatUsage(usage: TokenUsage): string {
-    const prompt = usage.prompt_tokens ?? usage.input_tokens ?? 0;
-    const completion = usage.completion_tokens ?? usage.output_tokens ?? 0;
-    const cache = usage.cache_hit_tokens ?? usage.cache_read_input_tokens ?? 0;
+    const n = normalizeCacheUsage(usage as Record<string, unknown>);
+    const prompt = n.promptTotal;
+    const completion = n.output;
+    const cache = n.cacheRead;
     const total = prompt + completion;
     const parts = [`tokens: ${total.toLocaleString()}`];
     if (prompt) parts.push(`prompt=${prompt.toLocaleString()}`);
@@ -312,4 +328,38 @@ export class TokenTracker {
     if (limit <= 0) return 0;
     return Math.min(100, Math.round((used / limit) * 100));
   }
+}
+
+/**
+ * 本机日历日：加总 maouRoot/agents/<name>/tokens/{date}.json 的 daily_summary。
+ * App 顶栏 / hub.getTodayTokenTotals 读；runtime TokenTracker.record 写。
+ */
+export function collectTodayTokenTotals(
+  maouRoot: string,
+  date?: string | null,
+): TodayTokenTotals {
+  const day = date?.trim() || tokenDayKey();
+  const empty: TodayTokenTotals = { date: day, inputTokens: 0, outputTokens: 0 };
+  const agentsDir = join(maouRoot, "agents");
+  if (!existsSync(agentsDir)) return empty;
+  let names: string[] = [];
+  try {
+    names = readdirSync(agentsDir);
+  } catch {
+    return empty;
+  }
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const name of names) {
+    const dir = join(agentsDir, name);
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    const summary = new TokenTracker(maouRoot, name).getDailySummary(day);
+    inputTokens += Number(summary.total_input_tokens ?? 0) || 0;
+    outputTokens += Number(summary.total_output_tokens ?? 0) || 0;
+  }
+  return { date: day, inputTokens, outputTokens };
 }

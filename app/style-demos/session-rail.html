@@ -1,0 +1,1164 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="plate">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 侧栏会话区方案对比</title>
+    <style>
+      /*
+       * Token 抄自 app/src/client/drafts/draft.css 纸面壳
+       * --n-bg / --n-label / --n-line / --n-on / --n-on-ink / --n-secondary / --n-info
+       * 读写：本页静态演示；生产 SessionList / ChatPanel 不读这里
+       */
+      :root {
+        --n-bg: #ededed;
+        --n-label: #000000;
+        --n-on: #000000;
+        --n-on-quiet: #4a4a4a;
+        --n-on-ink: #ededed;
+        --n-secondary: #828282;
+        --n-line: #9b9b9b;
+        --n-info: #0291FF;
+        --n-accent: #0256FF;
+        --n-err: #FF261F;
+        --n-hover: color-mix(in srgb, #000 6%, #ededed);
+        --n-font: "Helvetica Neue", Helvetica, Arial, "PingFang SC",
+          "HarmonyOS Sans SC", sans-serif;
+        --n-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        --row: 1.3125em;
+        --rail: 248px;
+        --spine: 3px;
+        --chip: 14px;
+      }
+      html[data-theme="phosphor"] {
+        --n-bg: #0b0b0b;
+        --n-label: #ecece8;
+        --n-on: #ecece8;
+        --n-on-quiet: #8a8a84;
+        --n-on-ink: #0b0b0b;
+        --n-secondary: #8a8a84;
+        --n-line: #5c5c58;
+        --n-info: #b8ff00;
+        --n-accent: #b8ff00;
+        --n-err: #ff4d3a;
+        --n-hover: color-mix(in srgb, #fff 8%, #0b0b0b);
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        height: 100dvh;
+        overflow: hidden;
+        background: var(--n-bg);
+        color: var(--n-label);
+        font: 400 13px / var(--row) var(--n-font);
+      }
+      button, input { font: inherit; color: inherit; }
+      button {
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      input {
+        border-radius: 0;
+        outline: none;
+      }
+      input::placeholder { color: var(--n-secondary); }
+      :focus-visible {
+        outline: 1px solid var(--n-info);
+        outline-offset: -1px;
+      }
+
+      /* 页壳：顶条 + 方案矩阵，滚动只在各轨列表里 */
+      .sheet {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .cmd {
+        display: grid;
+        grid-template-columns: minmax(16em, 2.2fr) auto;
+        border-bottom: 1px solid var(--n-line);
+        min-width: 0;
+      }
+      .cmd-copy {
+        padding: 0.7em 0.8em 0.75em;
+        border-right: 1px solid var(--n-line);
+        min-width: 0;
+      }
+      .cmd-copy h1 {
+        margin: 0 0 0.2em;
+        font-size: 1.15em;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        line-height: 1.2;
+      }
+      .cmd-copy p {
+        margin: 0;
+        color: var(--n-secondary);
+        max-width: 62em;
+      }
+      .cmd-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: start;
+        gap: 0.55em 1.1em;
+        padding: 0.7em 0.8em;
+      }
+      .tool-block {
+        display: flex;
+        flex-direction: column;
+        gap: 0.15em;
+      }
+      .tool-k {
+        color: var(--n-secondary);
+        font-size: 11px;
+      }
+      .seg {
+        display: flex;
+        border: 1px solid var(--n-line);
+      }
+      .seg button {
+        padding: 0 0.65em;
+        min-height: calc(var(--row) * 1.35);
+        color: var(--n-secondary);
+      }
+      .seg button + button { border-left: 1px solid var(--n-line); }
+      .seg button.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      .stage {
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(var(--rail), 1fr));
+      }
+      .sheet[data-view="switch"] .stage {
+        grid-template-columns: minmax(var(--rail), 20em) minmax(0, 1fr);
+      }
+      .sheet[data-view="switch"] .col:not(.is-focus) { display: none; }
+      .sheet[data-view="switch"] .note { display: block; }
+      .note { display: none; }
+
+      .col {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        border-right: 1px solid var(--n-line);
+      }
+      .col-head {
+        padding: 0.55em 0.7em 0.5em;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .col-id {
+        color: var(--n-secondary);
+        font-size: 11px;
+      }
+      .col-name { font-weight: 500; }
+      .col-blurb {
+        margin: 0.15em 0 0;
+        color: var(--n-secondary);
+      }
+
+      /* 侧栏缩样：上半 Agent 树弱化，下半才是对比区 */
+      .rail {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        max-width: 22em;
+      }
+      .ctx {
+        flex-shrink: 0;
+        opacity: 0.72;
+        pointer-events: none;
+        user-select: none;
+      }
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .tab {
+        min-height: calc(var(--row) * 1.4);
+        padding: 0 0.4em;
+        color: var(--n-secondary);
+        border-left: 1px solid var(--n-line);
+      }
+      .tab:first-child { border-left: 0; }
+      .tab.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .host {
+        padding: 0.55em 0.5em 0.1em;
+        color: var(--n-secondary);
+      }
+      .agent {
+        display: flex;
+        align-items: center;
+        gap: 0.45em;
+        min-height: var(--row);
+        padding: 0 0.5em;
+        color: var(--n-secondary);
+      }
+      .agent.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .sq {
+        width: 0.35em;
+        height: 0.35em;
+        background: currentColor;
+        flex-shrink: 0;
+      }
+      .agent.is-on .sq { background: var(--n-on-ink); }
+
+      .zone {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--n-line);
+      }
+      .list {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+      }
+      .empty {
+        padding: 0.55em 0.5em;
+        color: var(--n-secondary);
+      }
+      .foot {
+        flex-shrink: 0;
+        padding: 0.35em 0.5em 0.45em;
+        border-top: 1px solid var(--n-line);
+        color: var(--n-secondary);
+        font-size: 11px;
+      }
+      .foot b { color: var(--n-label); font-weight: 500; }
+
+      /* 现在：截图还原 — 整行黑底搜索 + 整行油漆桶选中 */
+      .now .new {
+        width: 100%;
+        min-height: calc(var(--row) * 1.45);
+        padding: 0 0.5em;
+        border-bottom: 1px solid var(--n-line);
+        font-weight: 500;
+      }
+      .now .lbl {
+        padding: 0.45em 0.5em 0.2em;
+        color: var(--n-secondary);
+      }
+      .now .q {
+        width: 100%;
+        min-height: calc(var(--row) * 1.55);
+        padding: 0 0.5em;
+        border: 0;
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .now .q::placeholder { color: #6a6a6a; }
+      .now .row {
+        display: flex;
+        align-items: center;
+        gap: 0.5em;
+        width: 100%;
+        min-height: calc(var(--row) * 1.7);
+        padding: 0 0.5em;
+        color: var(--n-label);
+      }
+      .now .row.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .now .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .now .t { flex-shrink: 0; font-size: 11px; color: inherit; opacity: 0.72; }
+
+      /* A：搜索井 / 新建动作行 / 树列表；选中左墨条，不要整行黑 */
+      .a .new {
+        display: flex;
+        align-items: center;
+        gap: 0.4em;
+        width: calc(100% - 1em);
+        margin: 0 0.5em 0.3em;
+        min-height: calc(var(--row) * 1.35);
+        padding: 0 0.2em;
+      }
+      .a .new .plus-mark {
+        display: inline-flex;
+        width: 1.1em;
+        justify-content: center;
+        font-weight: 500;
+      }
+      .a .new:hover { color: var(--n-info); }
+      .a .qwrap {
+        margin: 0.4em 0.5em 0.2em;
+        border: 1px solid var(--n-line);
+        background: var(--n-bg);
+      }
+      .a .qwrap:focus-within { border-color: var(--n-label); }
+      .a .q {
+        width: 100%;
+        min-height: calc(var(--row) * 1.35);
+        padding: 0 0.45em;
+        border: 0;
+        background: transparent;
+      }
+      .a .row {
+        display: flex;
+        align-items: center;
+        gap: 0.5em;
+        width: 100%;
+        min-height: calc(var(--row) * 1.55);
+        padding: 0 0.5em 0 0.7em;
+        color: var(--n-secondary);
+        box-shadow: inset 2px 0 0 transparent;
+      }
+      .a .row:hover { color: var(--n-info); }
+      .a .row.is-on {
+        color: var(--n-label);
+        box-shadow: inset 2px 0 0 var(--n-label);
+      }
+      .a .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .a .t { flex-shrink: 0; font-size: 11px; color: var(--n-secondary); }
+      .a .guides {
+        display: flex;
+        align-self: stretch;
+        flex-shrink: 0;
+      }
+      .a .guide {
+        position: relative;
+        width: 0.75em;
+        flex-shrink: 0;
+      }
+      .a .guide.is-pipe::before,
+      .a .guide.is-tee::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: var(--n-line);
+        transform: translateX(-50%);
+      }
+      .a .guide.is-elbow::before {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 0;
+        height: 50%;
+        width: 1px;
+        background: var(--n-line);
+        transform: translateX(-50%);
+      }
+      .a .guide.is-tee::after,
+      .a .guide.is-elbow::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 50%;
+        height: 1px;
+        background: var(--n-line);
+      }
+      .a .row.is-keep { opacity: 0.55; }
+
+      /* B：搜索+新建同一条命令行；键盘高亮；hover 露出动作 */
+      .b .cmdrow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .b .q {
+        width: 100%;
+        min-height: calc(var(--row) * 1.5);
+        padding: 0 0.5em;
+        border: 0;
+        background: transparent;
+      }
+      .b .plus {
+        min-width: 2.2em;
+        border-left: 1px solid var(--n-line);
+        display: grid;
+        place-items: center;
+        font-weight: 500;
+      }
+      .b .plus:hover,
+      .b .q:hover { color: var(--n-info); }
+      .b .band {
+        display: flex;
+        justify-content: space-between;
+        padding: 0.35em 0.5em 0.15em;
+        color: var(--n-secondary);
+        font-size: 11px;
+      }
+      .b .hint { padding: 0 0.5em 0.25em; color: var(--n-secondary); font-size: 11px; }
+      .b .row {
+        position: relative;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        width: 100%;
+        min-height: calc(var(--row) * 1.6);
+        padding: 0 0.5em;
+        color: var(--n-secondary);
+      }
+      .b .row:hover { color: var(--n-info); }
+      .b .row.is-kb { box-shadow: inset 0 0 0 1px var(--n-label); color: var(--n-label); }
+      .b .row.is-on {
+        color: var(--n-label);
+        box-shadow: inset 2px 0 0 var(--n-label);
+      }
+      .b .row.is-on.is-kb { box-shadow: inset 2px 0 0 var(--n-label), inset 0 0 0 1px var(--n-label); }
+      .b .ttl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .b .meta {
+        display: flex;
+        align-items: center;
+        gap: 0.25em;
+        flex-shrink: 0;
+      }
+      .b .t { font-size: 11px; color: var(--n-secondary); }
+      .b .acts {
+        display: none;
+        align-items: center;
+        gap: 0;
+      }
+      .b .row:hover .acts,
+      .b .row:focus-within .acts { display: flex; }
+      .b .row:hover .t { display: none; }
+      .b .act {
+        min-width: 1.4em;
+        min-height: 1.4em;
+        padding: 0 0.25em;
+        color: var(--n-label);
+        border: 1px solid var(--n-line);
+        background: var(--n-bg);
+        font-size: 11px;
+      }
+      .b .act + .act { border-left: 0; }
+      .b .act:hover { color: var(--n-info); }
+      .b .act.is-danger:hover { color: var(--n-err); border-color: var(--n-err); }
+      .b .more {
+        position: absolute;
+        right: 0.5em;
+        top: calc(100% - 1px);
+        z-index: 3;
+        display: none;
+        flex-direction: column;
+        border: 1px solid var(--n-line);
+        background: var(--n-bg);
+        min-width: 6.5em;
+      }
+      .b .row.is-more .more { display: flex; }
+      .b .more button {
+        padding: 0.2em 0.5em;
+        color: var(--n-label);
+      }
+      .b .more button:hover { color: var(--n-info); }
+      .b .more button.is-danger:hover { color: var(--n-err); }
+
+      /* C：行 = loop 摘要；编号圆点 + 脊线吃 thread 语汇 */
+      .c .headrow {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .c .new {
+        min-height: calc(var(--row) * 1.4);
+        padding: 0 0.5em;
+      }
+      .c .new:hover { color: var(--n-info); }
+      .c .count {
+        display: grid;
+        place-items: center;
+        min-width: 2.2em;
+        border-left: 1px solid var(--n-line);
+        color: var(--n-secondary);
+        font-family: var(--n-mono);
+        font-size: 11px;
+      }
+      .c .qwrap {
+        border-bottom: 1px solid var(--n-line);
+      }
+      .c .q {
+        width: 100%;
+        min-height: calc(var(--row) * 1.4);
+        padding: 0 0.5em;
+        border: 0;
+        background: transparent;
+      }
+      .c .qwrap:focus-within { box-shadow: inset 0 -1px 0 var(--n-label); }
+      .c .loop {
+        position: relative;
+        display: grid;
+        grid-template-columns: 1.6em minmax(0, 1fr);
+        column-gap: 0.15em;
+        width: 100%;
+        padding: 0.35em 0.5em 0.4em 0.35em;
+        color: var(--n-secondary);
+      }
+      .c .loop:hover { color: var(--n-info); }
+      .c .loop.is-on { color: var(--n-label); }
+      .c .numcol {
+        position: relative;
+        display: flex;
+        justify-content: center;
+        padding-top: 0.15em;
+      }
+      .c .chip {
+        position: relative;
+        z-index: 1;
+        width: var(--chip);
+        height: var(--chip);
+        display: grid;
+        place-items: center;
+        border: 1px solid var(--n-line);
+        background: var(--n-bg);
+        color: var(--n-label);
+        font-family: var(--n-mono);
+        font-size: 9px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        border-radius: 50%;
+      }
+      .c .loop.is-on .chip {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+        border-color: var(--n-on);
+      }
+      .c .loop.is-run .chip {
+        background: var(--n-accent);
+        color: var(--n-bg);
+        border-color: var(--n-accent);
+      }
+      .c .spine {
+        position: absolute;
+        top: calc(var(--chip) + 0.25em);
+        bottom: -0.4em;
+        left: 50%;
+        width: var(--spine);
+        transform: translateX(-50%);
+        background: var(--n-on);
+        opacity: 0;
+      }
+      .c .loop:hover .spine,
+      .c .loop.is-on .spine { opacity: 1; }
+      .c .loop:last-child .spine { display: none; }
+      .c .body { min-width: 0; }
+      .c .ttl {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-weight: 500;
+      }
+      .c .loop-foot {
+        display: flex;
+        gap: 0.55em;
+        font-family: var(--n-mono);
+        font-size: 11px;
+        color: var(--n-secondary);
+      }
+      .c .loop.is-child { padding-left: 1.15em; }
+      .c .loop.is-child .spine { display: none; }
+
+      .note {
+        min-width: 0;
+        overflow: auto;
+        border-left: 1px solid var(--n-line);
+      }
+      .note h2 {
+        margin: 0;
+        padding: 0.7em 0.9em;
+        font-size: 1.05em;
+        font-weight: 500;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .note p {
+        margin: 0;
+        padding: 0.6em 0.9em;
+        color: var(--n-secondary);
+        max-width: 42em;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .note ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .note li {
+        padding: 0.45em 0.9em;
+        color: var(--n-secondary);
+        border-bottom: 1px solid var(--n-line);
+      }
+
+      @media (max-width: 1100px) {
+        .sheet[data-view="row"] .stage {
+          grid-template-columns: repeat(2, minmax(var(--rail), 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sheet" data-view="row" id="sheet">
+      <header class="cmd">
+        <div class="cmd-copy">
+          <h1>侧栏会话区方案对比</h1>
+          <p>
+            这是「系统」Tab 下、本机 Agent 选中后的会话管理一块，不是整站重做。
+            系统 / 项目 / IM 与 Agent 树只作上下文框（不可点）。同一批假数据，每列状态独立。
+          </p>
+        </div>
+        <div class="cmd-tools">
+          <div class="tool-block">
+            <span class="tool-k">看</span>
+            <div class="seg" role="tablist" aria-label="对照方式">
+              <button type="button" data-view="row" class="is-on">并排</button>
+              <button type="button" data-view="switch">切换</button>
+            </div>
+          </div>
+          <div class="tool-block" id="schemeSegWrap" hidden>
+            <span class="tool-k">方案</span>
+            <div class="seg" role="tablist" aria-label="方案">
+              <button type="button" data-focus="now" class="is-on">现在</button>
+              <button type="button" data-focus="a">A</button>
+              <button type="button" data-focus="b">B</button>
+              <button type="button" data-focus="c">C</button>
+            </div>
+          </div>
+          <div class="tool-block">
+            <span class="tool-k">纸面</span>
+            <div class="seg" role="tablist" aria-label="主题">
+              <button type="button" data-theme="plate" class="is-on">纸</button>
+              <button type="button" data-theme="phosphor">磷光</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="stage" id="stage">
+        <article class="col is-focus" data-col="now">
+          <div class="col-head">
+            <div class="col-id">对照</div>
+            <div class="col-name">现在</div>
+            <p class="col-blurb">截图还原：黑底搜索 + 整行油漆桶选中。</p>
+          </div>
+          <div class="rail now" data-scheme="now"></div>
+        </article>
+        <article class="col" data-col="a">
+          <div class="col-head">
+            <div class="col-id">A · 克制整理</div>
+            <div class="col-name">细线分层</div>
+            <p class="col-blurb">搜索井 / ➕ 新建 / 树列表；选中左墨条。</p>
+          </div>
+          <div class="rail a" data-scheme="a"></div>
+        </article>
+        <article class="col" data-col="b">
+          <div class="col-head">
+            <div class="col-id">B · 交互加强</div>
+            <div class="col-name">命令行 + 键盘</div>
+            <p class="col-blurb">搜索即时滤；↑↓ 高亮 Enter 选中；hover 露出删除 / 更多。</p>
+          </div>
+          <div class="rail b" data-scheme="b"></div>
+        </article>
+        <article class="col" data-col="c">
+          <div class="col-head">
+            <div class="col-id">C · 更贴对话</div>
+            <div class="col-name">loop 摘要</div>
+            <p class="col-blurb">编号圆点 + 脊线，行读成一条 loop，密度仍是侧栏。</p>
+          </div>
+          <div class="rail c" data-scheme="c"></div>
+        </article>
+        <aside class="note" id="note"></aside>
+      </div>
+    </div>
+
+    <script>
+      /** 假会话种子。各方案复制一份，互不改生产 SessionList。 */
+      const SEED = [
+        { id: "s1", title: "请提供需要压缩的标题…", time: "22分前", rounds: 4, lamp: "idle" },
+        { id: "s2", title: "fork task-mte3nqj9", time: "1时前", rounds: 2, lamp: "idle", parent: "s1", child: true },
+        { id: "s2b", title: "再 fork · 核对 vendor/bin", time: "50分前", rounds: 1, lamp: "idle", parent: "s2", child: true },
+        { id: "s3", title: "值班机磁盘告警排查", time: "昨天", rounds: 8, lamp: "done" },
+        { id: "s4", title: "同步 ~/.maou/config 预设", time: "2天前", rounds: 3, lamp: "idle" },
+        { id: "s5", title: "压缩失败回放", time: "3天前", rounds: 6, lamp: "running" },
+        { id: "s6", title: "子会话 · 核对 vendor/bin", time: "3天前", rounds: 1, lamp: "idle", parent: "s5", child: true },
+      ];
+
+      const NOTES = {
+        now: {
+          t: "现在",
+          d: "对照列。新建、灰标签、黑搜索条、整行反相选中，对齐当前侧栏截图。",
+          pts: ["Agent 与会话两处都用油漆桶，权重撞车。", "搜索条和选中行同级黑块，列表被切开。"],
+        },
+        a: {
+          t: "A · 克制整理",
+          d: "只整理层级与过曝，不改操作模型。选中用左墨条，搜索用纸面细线井。fork / 子会话用竖线与折线挂在父会话下。",
+          pts: ["新建仍是顶行，但不抢 Agent 树的反相条。", "列表连续，检索是一层工具而不是一块场。", "子会话缩进，枝是可见的竖线 / ├ / └。"],
+        },
+        b: {
+          t: "B · 交互加强",
+          d: "会话管理习惯：先搜后建、键盘巡行、hover 才露破坏性动作。",
+          pts: ["点本列任意处后 ↑↓ / j k 移动高亮，Enter 选中，/ 聚焦搜索。", "更多里可派生；删除只改本列假数据。"],
+        },
+        c: {
+          t: "C · 更贴对话",
+          d: "行结构对齐右侧 thread：圆编号、脊线、脚注轮次。选中只反相编号，不刷整行。",
+          pts: ["运行中的行编号吃强调色。", "子会话缩进，脊线不穿过子行。"],
+        },
+      };
+
+      const lamps = {
+        running: "运行中",
+        done: "已结束",
+        idle: "空闲",
+      };
+
+      function cloneSeed() {
+        return SEED.map((s) => ({ ...s }));
+      }
+
+      const stores = {
+        now: { items: cloneSeed(), active: "s1", q: "", kb: 0, more: "" },
+        a: { items: cloneSeed(), active: "s1", q: "", kb: 0, more: "" },
+        b: { items: cloneSeed(), active: "s1", q: "", kb: 0, more: "" },
+        c: { items: cloneSeed(), active: "s1", q: "", kb: 0, more: "" },
+      };
+
+      let seq = 7;
+
+      function filtered(st) {
+        const q = st.q.trim().toLowerCase();
+        if (!q) return st.items;
+        return st.items.filter((s) => s.title.toLowerCase().includes(q));
+      }
+
+      function filterKeepAncestors(items, q) {
+        const needle = q.trim().toLowerCase();
+        if (!needle) return { rows: flattenDemoTree(items), matched: new Set(items.map((s) => s.id)) };
+        const byId = new Map(items.map((s) => [s.id, s]));
+        const matched = new Set();
+        const keep = new Set();
+        for (const s of items) {
+          if (!s.title.toLowerCase().includes(needle)) continue;
+          matched.add(s.id);
+          let cursor = s;
+          const seen = new Set();
+          while (cursor && !seen.has(cursor.id)) {
+            seen.add(cursor.id);
+            keep.add(cursor.id);
+            cursor = cursor.parent ? byId.get(cursor.parent) : null;
+          }
+        }
+        const kept = items.filter((s) => keep.has(s.id));
+        return { rows: flattenDemoTree(kept), matched };
+      }
+
+      function flattenDemoTree(items) {
+        const ids = new Set(items.map((s) => s.id));
+        const children = new Map();
+        for (const s of items) {
+          if (!s.parent || !ids.has(s.parent)) continue;
+          const list = children.get(s.parent);
+          if (list) list.push(s);
+          else children.set(s.parent, [s]);
+        }
+        const roots = items.filter((s) => !s.parent || !ids.has(s.parent));
+        const out = [];
+        const seen = new Set();
+        const walk = (node, lastFlags) => {
+          if (seen.has(node.id)) return;
+          seen.add(node.id);
+          const guides = lastFlags.map((isLast, i) => {
+            if (i === lastFlags.length - 1) return isLast ? "elbow" : "tee";
+            return isLast ? "blank" : "pipe";
+          });
+          out.push({ node, guides, depth: lastFlags.length });
+          const kids = children.get(node.id) || [];
+          kids.forEach((child, i) => walk(child, [...lastFlags, i === kids.length - 1]));
+        };
+        for (const r of roots) walk(r, []);
+        return out;
+      }
+
+      function guideHtml(guides) {
+        if (!guides.length) return "";
+        return `<span class="guides" aria-hidden>${guides
+          .map((g) => `<span class="guide is-${g}" data-guide="${g}"></span>`)
+          .join("")}</span>`;
+      }
+
+      function ctxHtml() {
+        return `
+          <div class="ctx" aria-hidden="true">
+            <div class="tabs">
+              <span class="tab is-on">系统</span>
+              <span class="tab">项目</span>
+              <span class="tab">IM</span>
+            </div>
+            <div class="host">本机</div>
+            <div class="agent"><span class="sq"></span>Install Agent</div>
+            <div class="agent is-on"><span class="sq"></span>Ops Agent</div>
+          </div>`;
+      }
+
+      function rowTitle(s) {
+        return s.title.replace(/</g, "&lt;");
+      }
+
+      function renderNow(root, st) {
+        const hits = filtered(st);
+        root.innerHTML = `
+          ${ctxHtml()}
+          <div class="zone">
+            <button type="button" class="new" data-act="new">新建会话</button>
+            <div class="lbl">会话 · OPS</div>
+            <input class="q" type="search" placeholder="搜索会话" aria-label="搜索会话" value="${escapeAttr(st.q)}" />
+            <div class="list" role="listbox" aria-label="会话">
+              ${
+                hits.length
+                  ? hits
+                      .map(
+                        (s) => `
+                <button type="button" class="row${s.id === st.active ? " is-on" : ""}" data-id="${s.id}" role="option" aria-selected="${s.id === st.active}">
+                  <span class="ttl">${rowTitle(s)}</span>
+                  <span class="t">${s.time}</span>
+                </button>`,
+                      )
+                      .join("")
+                  : `<div class="empty">没有匹配的会话</div>`
+              }
+            </div>
+            <div class="foot">选中 <b>${activeTitle(st)}</b></div>
+          </div>`;
+      }
+
+      function renderA(root, st) {
+        const { rows, matched } = filterKeepAncestors(st.items, st.q);
+        root.innerHTML = `
+          ${ctxHtml()}
+          <div class="zone">
+            <div class="qwrap">
+              <input class="q" type="search" placeholder="搜索会话" aria-label="搜索会话" value="${escapeAttr(st.q)}" />
+            </div>
+            <button type="button" class="new" data-act="new" aria-label="新建会话"><span class="plus-mark">+</span>新建会话</button>
+            <div class="list" role="listbox" aria-label="会话">
+              ${
+                rows.length
+                  ? rows
+                      .map((row) => {
+                        const s = row.node;
+                        const on = s.id === st.active ? " is-on" : "";
+                        const keep = matched.has(s.id) ? "" : " is-keep";
+                        return `
+                <button type="button" class="row${on}${keep}" data-id="${s.id}" data-depth="${row.depth}" role="option" aria-selected="${s.id === st.active}">
+                  ${guideHtml(row.guides)}
+                  <span class="ttl">${rowTitle(s)}</span>
+                  <span class="t">${s.time}</span>
+                </button>`;
+                      })
+                      .join("")
+                  : `<div class="empty">没有匹配的会话</div>`
+              }
+            </div>
+            <div class="foot">选中 <b>${activeTitle(st)}</b></div>
+          </div>`;
+      }
+
+      function renderB(root, st) {
+        const hits = filtered(st);
+        root.innerHTML = `
+          ${ctxHtml()}
+          <div class="zone" tabindex="0" data-kbd="1">
+            <div class="cmdrow">
+              <input class="q" type="search" placeholder="搜索会话" aria-label="搜索会话" value="${escapeAttr(st.q)}" />
+              <button type="button" class="plus" data-act="new" title="新建会话" aria-label="新建会话">+</button>
+            </div>
+            <div class="band"><span>会话 · OPS</span><span>${hits.length}</span></div>
+            <div class="hint">↑↓ 或 j k · Enter 选中 · / 搜索</div>
+            <div class="list" role="listbox" aria-label="会话">
+              ${
+                hits.length
+                  ? hits
+                      .map((s, i) => {
+                        const on = s.id === st.active ? " is-on" : "";
+                        const kb = i === st.kb ? " is-kb" : "";
+                        const more = st.more === s.id ? " is-more" : "";
+                        return `
+                <div class="row${on}${kb}${more}" data-id="${s.id}">
+                  <button type="button" class="ttl">${rowTitle(s)}</button>
+                  <div class="meta">
+                    <span class="t">${s.time}</span>
+                    <div class="acts">
+                      <button type="button" class="act" data-more="${s.id}" aria-label="更多">⋯</button>
+                      <button type="button" class="act is-danger" data-del="${s.id}" aria-label="删除">×</button>
+                    </div>
+                  </div>
+                  <div class="more">
+                    <button type="button" data-fork="${s.id}">派生</button>
+                    <button type="button" class="is-danger" data-del="${s.id}">删除</button>
+                  </div>
+                </div>`;
+                      })
+                      .join("")
+                  : `<div class="empty">没有匹配的会话</div>`
+              }
+            </div>
+            <div class="foot">选中 <b>${activeTitle(st)}</b> · 高亮第 ${hits.length ? st.kb + 1 : 0} 条</div>
+          </div>`;
+      }
+
+      function renderC(root, st) {
+        const hits = filtered(st);
+        root.innerHTML = `
+          ${ctxHtml()}
+          <div class="zone">
+            <div class="headrow">
+              <button type="button" class="new" data-act="new">+ 新会话</button>
+              <span class="count">${hits.length}</span>
+            </div>
+            <div class="qwrap">
+              <input class="q" type="search" placeholder="搜索会话" aria-label="搜索会话" value="${escapeAttr(st.q)}" />
+            </div>
+            <div class="list" role="listbox" aria-label="会话">
+              ${
+                hits.length
+                  ? hits
+                      .map((s, i) => {
+                        const n = i + 1;
+                        const on = s.id === st.active ? " is-on" : "";
+                        const run = s.lamp === "running" ? " is-run" : "";
+                        const child = s.child ? " is-child" : "";
+                        return `
+                <button type="button" class="loop${on}${run}${child}" data-id="${s.id}">
+                  <span class="numcol">
+                    <span class="chip">${n}</span>
+                    <span class="spine" aria-hidden="true"></span>
+                  </span>
+                  <span class="body">
+                    <span class="ttl">${rowTitle(s)}</span>
+                    <span class="loop-foot">
+                      <span>${s.time}</span>
+                      <span>${s.rounds} 轮</span>
+                      <span>${lamps[s.lamp] || ""}</span>
+                    </span>
+                  </span>
+                </button>`;
+                      })
+                      .join("")
+                  : `<div class="empty">没有匹配的会话</div>`
+              }
+            </div>
+            <div class="foot">选中 <b>${activeTitle(st)}</b></div>
+          </div>`;
+      }
+
+      const renderers = { now: renderNow, a: renderA, b: renderB, c: renderC };
+
+      function escapeAttr(s) {
+        return String(s).replace(/"/g, "&quot;");
+      }
+
+      function activeTitle(st) {
+        const hit = st.items.find((s) => s.id === st.active);
+        return hit ? hit.title : "（无）";
+      }
+
+      function paint(scheme) {
+        const root = document.querySelector(`[data-scheme="${scheme}"]`);
+        const q = root.querySelector(".q");
+        const start = q ? q.selectionStart : null;
+        const end = q ? q.selectionEnd : null;
+        const focused = q && document.activeElement === q;
+        renderers[scheme](root, stores[scheme]);
+        const nq = root.querySelector(".q");
+        if (focused && nq) {
+          nq.focus();
+          if (start != null) nq.setSelectionRange(start, end);
+        }
+      }
+
+      function addNew(scheme) {
+        const st = stores[scheme];
+        const id = `n${seq++}`;
+        st.items = [
+          { id, title: `未命名会话 ${id.slice(1)}`, time: "刚刚", rounds: 0, lamp: "idle" },
+          ...st.items,
+        ];
+        st.active = id;
+        st.kb = 0;
+        st.q = "";
+        st.more = "";
+        paint(scheme);
+      }
+
+      function selectId(scheme, id) {
+        const st = stores[scheme];
+        st.active = id;
+        const hits = filtered(st);
+        const i = hits.findIndex((s) => s.id === id);
+        if (i >= 0) st.kb = i;
+        st.more = "";
+        paint(scheme);
+      }
+
+      function bindRail(scheme) {
+        const root = document.querySelector(`[data-scheme="${scheme}"]`);
+        root.addEventListener("input", (e) => {
+          if (!(e.target instanceof HTMLInputElement) || !e.target.classList.contains("q")) return;
+          const st = stores[scheme];
+          st.q = e.target.value;
+          st.kb = 0;
+          st.more = "";
+          paint(scheme);
+        });
+        root.addEventListener("click", (e) => {
+          const t = e.target instanceof Element ? e.target : null;
+          if (!t) return;
+          if (t.closest("[data-act=new]")) {
+            addNew(scheme);
+            return;
+          }
+          const del = t.closest("[data-del]");
+          if (del) {
+            const id = del.getAttribute("data-del");
+            const st = stores[scheme];
+            st.items = st.items.filter((s) => s.id !== id);
+            if (st.active === id) st.active = st.items[0]?.id || "";
+            st.more = "";
+            st.kb = 0;
+            paint(scheme);
+            return;
+          }
+          const fork = t.closest("[data-fork]");
+          if (fork) {
+            const id = fork.getAttribute("data-fork");
+            const st = stores[scheme];
+            const src = st.items.find((s) => s.id === id);
+            const nid = `n${seq++}`;
+            st.items = [
+              {
+                id: nid,
+                title: `fork ${src ? src.title.slice(0, 18) : nid}`,
+                time: "刚刚",
+                rounds: 0,
+                lamp: "idle",
+                child: true,
+              },
+              ...st.items,
+            ];
+            st.active = nid;
+            st.more = "";
+            st.kb = 0;
+            paint(scheme);
+            return;
+          }
+          const more = t.closest("[data-more]");
+          if (more) {
+            const id = more.getAttribute("data-more");
+            const st = stores[scheme];
+            st.more = st.more === id ? "" : id;
+            paint(scheme);
+            return;
+          }
+          const row = t.closest("[data-id]");
+          if (row && !t.closest(".acts") && !t.closest(".more")) {
+            selectId(scheme, row.getAttribute("data-id"));
+          }
+        });
+        root.addEventListener("keydown", (e) => {
+          if (scheme !== "b") return;
+          const st = stores[scheme];
+          const hits = filtered(st);
+          const inSearch = e.target instanceof HTMLInputElement;
+          if (e.key === "/" && !inSearch) {
+            e.preventDefault();
+            root.querySelector(".q")?.focus();
+            return;
+          }
+          if (e.key === "Escape") {
+            st.more = "";
+            if (inSearch) e.target.blur();
+            paint(scheme);
+            return;
+          }
+          const move =
+            e.key === "ArrowDown" || e.key === "j"
+              ? 1
+              : e.key === "ArrowUp" || e.key === "k"
+                ? -1
+                : 0;
+          if (move && (!inSearch || e.key.startsWith("Arrow"))) {
+            if (!hits.length) return;
+            e.preventDefault();
+            st.kb = (st.kb + move + hits.length) % hits.length;
+            st.more = "";
+            paint(scheme);
+            return;
+          }
+          if (e.key === "Enter" && hits[st.kb] && !inSearch) {
+            e.preventDefault();
+            selectId(scheme, hits[st.kb].id);
+          }
+        });
+      }
+
+      function setView(view) {
+        const sheet = document.getElementById("sheet");
+        sheet.dataset.view = view;
+        document.querySelectorAll("[data-view]").forEach((b) => {
+          b.classList.toggle("is-on", b.getAttribute("data-view") === view);
+        });
+        document.getElementById("schemeSegWrap").hidden = view !== "switch";
+        paintNote();
+      }
+
+      function setFocus(id) {
+        document.querySelectorAll(".col").forEach((c) => {
+          c.classList.toggle("is-focus", c.getAttribute("data-col") === id);
+        });
+        document.querySelectorAll("[data-focus]").forEach((b) => {
+          b.classList.toggle("is-on", b.getAttribute("data-focus") === id);
+        });
+        paintNote();
+      }
+
+      function paintNote() {
+        const sheet = document.getElementById("sheet");
+        const note = document.getElementById("note");
+        if (sheet.dataset.view !== "switch") return;
+        const id = document.querySelector(".col.is-focus")?.getAttribute("data-col") || "now";
+        const n = NOTES[id];
+        note.innerHTML = `<h2>${n.t}</h2><p>${n.d}</p><ul>${n.pts.map((p) => `<li>${p}</li>`).join("")}</ul>`;
+      }
+
+      document.querySelectorAll("[data-view]").forEach((b) => {
+        b.addEventListener("click", () => setView(b.getAttribute("data-view")));
+      });
+      document.querySelectorAll("[data-focus]").forEach((b) => {
+        b.addEventListener("click", () => setFocus(b.getAttribute("data-focus")));
+      });
+      document.querySelectorAll("[data-theme]").forEach((b) => {
+        b.addEventListener("click", () => {
+          document.documentElement.dataset.theme = b.getAttribute("data-theme");
+          document.querySelectorAll("[data-theme]").forEach((x) => {
+            x.classList.toggle("is-on", x === b);
+          });
+        });
+      });
+
+      ["now", "a", "b", "c"].forEach((s) => {
+        paint(s);
+        bindRail(s);
+      });
+      setView("row");
+    </script>
+  </body>
+</html>

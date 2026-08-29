@@ -28,12 +28,21 @@ export function parseDataUrl(
   return { mimeType: mime, data, ...(name ? { name } : {}) };
 }
 
-export async function fileToComposerImage(
-  file: File,
-): Promise<ComposerImage | null> {
+export class ComposerImageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ComposerImageError";
+  }
+}
+
+export async function fileToComposerImage(file: File): Promise<ComposerImage> {
   const mime = normalizeMime(file.type || "image/png");
-  if (!mime.startsWith("image/")) return null;
-  if (file.size > MAX_IMAGE_BYTES) return null;
+  if (!mime.startsWith("image/")) {
+    throw new ComposerImageError("只收图片。整批未入库。");
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    throw new ComposerImageError(`单张超过 ${MAX_IMAGE_BYTES / (1024 * 1024)}MB。整批未入库。`);
+  }
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
   let bin = "";
@@ -48,11 +57,12 @@ export async function filesToComposerImages(
   files: ArrayLike<File>,
   already = 0,
 ): Promise<ComposerImage[]> {
-  const room = Math.max(0, MAX_COMPOSER_IMAGES - already);
+  if (already + files.length > MAX_COMPOSER_IMAGES) {
+    throw new ComposerImageError(`一次最多 ${MAX_COMPOSER_IMAGES} 张。整批未入库。`);
+  }
   const out: ComposerImage[] = [];
-  for (let i = 0; i < files.length && out.length < room; i++) {
-    const img = await fileToComposerImage(files[i]!);
-    if (img) out.push(img);
+  for (let i = 0; i < files.length; i++) {
+    out.push(await fileToComposerImage(files[i]!));
   }
   return out;
 }
@@ -77,7 +87,10 @@ export function mergeComposerImages(
   current: readonly ComposerImage[],
   extra: readonly ComposerImage[],
 ): ComposerImage[] {
-  return [...current, ...extra].slice(0, MAX_COMPOSER_IMAGES);
+  if (current.length + extra.length > MAX_COMPOSER_IMAGES) {
+    throw new ComposerImageError(`一次最多 ${MAX_COMPOSER_IMAGES} 张。整批未入库。`);
+  }
+  return [...current, ...extra];
 }
 
 export function imageDataUrl(img: ComposerImage): string {

@@ -9,6 +9,9 @@ import type { WebSocket } from "ws";
 import {
   getActiveBackend,
   initTerminalEngine,
+  inferPromptWaitState,
+  peekOverflow,
+  peekWaitState,
   resolveTerminalPersistPath,
   type TerminalInfo as BackendInfo,
 } from "@little-house-studio/tools";
@@ -24,6 +27,8 @@ export type TerminalInfo = {
   createdAt: string;
   updatedAt: string;
   kind?: "agent" | "human";
+  waitState?: "busy" | "waiting" | "exited";
+  overflowPath?: string;
 };
 
 let inited = false;
@@ -70,6 +75,10 @@ function mapInfo(t: BackendInfo): TerminalInfo {
     createdAt: t.createdAt ?? "",
     updatedAt: t.updatedAt ?? "",
     kind: t.kind ?? (t.id.startsWith("human_") ? "human" : "agent"),
+    overflowPath: peekOverflow(t.id),
+    waitState:
+      peekWaitState(t.id) ??
+      inferPromptWaitState("", t.state),
   };
 }
 

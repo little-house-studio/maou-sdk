@@ -260,8 +260,16 @@ export class PromptCompiler {
       case "get-system":
         return `${os.type()} ${os.release()} (${os.arch()})`;
 
-      case "get-time":
-        return new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+      case "get-time": {
+        // 主机 IANA 时区，与 agent 层可选时钟同口径
+        let zone = "UTC";
+        try {
+          zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        } catch {
+          zone = "UTC";
+        }
+        return `${new Date().toLocaleString("zh-CN", { timeZone: zone })} ${zone}`;
+      }
 
       default:
         return null;

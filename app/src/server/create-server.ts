@@ -8,7 +8,7 @@
 
 import express from "express";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
-import { existsSync, mkdirSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import type { WebSocket } from "ws";
 import { WebSocketServer } from "ws";
@@ -34,6 +34,12 @@ import { mountLlmConfigRoutes } from "./llm-config-routes.js";
 import { mountWebhookRoutes } from "./webhook.js";
 import { shutdownTerminalEngine } from "@little-house-studio/tools";
 import { loadSessionToolMeta } from "./session-intents.js";
+import {
+  loadSessionPayloadDetail,
+  loadSessionPayloadIndex,
+} from "./session-payloads.js";
+import { listDiskPlugins, loadDiskPlugins, pluginThemeVars, pluginUiFile } from "./plugin-host.js";
+import { ConfigStore } from "@little-house-studio/types";
 
 export type AppListen =
   | { kind: "tcp"; host?: string; port?: number }
@@ -101,6 +107,10 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
   });
 
   initAgentTerminalEngine(opts.maouRoot, hub.projectRoot);
+  void loadDiskPlugins({
+    projectRoot: hub.projectRoot,
+    pluginSettings: new ConfigStore(hub.projectRoot).getPluginSettings(),
+  }).catch(() => undefined);
   const termHub = new TerminalHub();
 
   const app = express();
@@ -111,6 +121,36 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     const sessionId = String(req.query.sessionId ?? "");
     const root = String(req.query.root ?? hub.projectRoot ?? "");
     res.json(loadSessionToolMeta(sessionId, root));
+  });
+
+  // 调试面板：这一轮发出去的 POST / 收回来的内容（只读落盘账本）
+  app.get("/api/session-payloads", (req, res) => {
+    const sessionId = String(req.query.sessionId ?? "");
+    const root = String(req.query.root ?? hub.projectRoot ?? "");
+    res.json(loadSessionPayloadIndex(sessionId, root));
+  });
+
+  app.get("/api/session-payload", (req, res) => {
+    const sessionId = String(req.query.sessionId ?? "");
+    const root = String(req.query.root ?? hub.projectRoot ?? "");
+    const kind = req.query.kind === "user" ? "user" : "assistant";
+    const id = String(req.query.id ?? "").trim();
+    const idxRaw = Number(req.query.index);
+    const sel = id
+      ? { id }
+      : Number.isInteger(idxRaw) && idxRaw >= 0
+        ? { index: idxRaw }
+        : null;
+    if (!sessionId || !sel) {
+      res.status(400).json({ ok: false, error: "sessionId + id|index required" });
+      return;
+    }
+    const detail = loadSessionPayloadDetail(sessionId, root, kind, sel);
+    if (!detail) {
+      res.status(404).json({ ok: false, error: "payload not found" });
+      return;
+    }
+    res.json({ ok: true, detail });
   });
 
   app.get("/api/health", (_req, res) => {
@@ -208,6 +248,114 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
   });
 
   // ── Sessions（项目 .maou/sessions，与 CLI coding 同源 SessionStore）──
+  app.get("/api/sessions/search", (req, res) => {
+    try {
+      const query = String(req.query?.q ?? req.query?.query ?? "").trim();
+      const cursor = String(req.query?.cursor ?? "").trim() || undefined;
+      const sessionId = String(req.query?.sessionId ?? "").trim() || undefined;
+      const limitRaw = req.query?.limit;
+      const limit =
+        limitRaw != null && String(limitRaw).trim() ? Number(limitRaw) : undefined;
+      const page = hub.searchSessions({
+        query,
+        cursor,
+        sessionId,
+        ...(Number.isFinite(limit) ? { limit } : {}),
+      });
+      res.json({ ok: true, ...page });
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/project", (_req, res) => {
+    res.json({ ok: true, projectRoot: hub.projectRoot });
+  });
+
+  app.get("/api/fs/browse", (req, res) => {
+    try {
+      res.json({ ok: true, ...hub.browseFolders(String(req.query.path ?? "")) });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.post("/api/fs/mkdir", (req, res) => {
+    try {
+      res.json({
+        ok: true,
+        ...hub.mkdirInBrowse(String(req.body?.dir ?? ""), String(req.body?.name ?? "")),
+      });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.post("/api/project/open", (req, res) => {
+    try {
+      const opened = hub.openProjectRoot(String(req.body?.path ?? ""));
+      void loadDiskPlugins({
+        projectRoot: opened.projectRoot,
+        pluginSettings: new ConfigStore(opened.projectRoot).getPluginSettings(),
+      }).catch(() => undefined);
+      res.json({ ok: true, ...opened });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.get("/api/plugins", (_req, res) => {
+    res.json({
+      ok: true,
+      plugins: listDiskPlugins(),
+      themeVars: {
+        light: pluginThemeVars("light"),
+        dark: pluginThemeVars("dark"),
+      },
+    });
+  });
+
+  app.get("/api/plugins/:id/ui", (req, res) => {
+    const file = pluginUiFile(String(req.params.id ?? ""));
+    if (!file || !existsSync(file)) {
+      res.status(404).json({ ok: false, error: "no ui" });
+      return;
+    }
+    res.type("text/javascript");
+    res.send(readFileSync(file, "utf-8"));
+  });
+
+  app.post("/api/plugins/reload", async (_req, res) => {
+    try {
+      const plugins = await loadDiskPlugins({
+        projectRoot: hub.projectRoot,
+        pluginSettings: new ConfigStore(hub.projectRoot).getPluginSettings(),
+      });
+      res.json({ ok: true, plugins });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.post("/api/plugins/toggle", async (req, res) => {
+    try {
+      const id = String(req.body?.id ?? "").trim();
+      const enabled = req.body?.enabled !== false;
+      const store = new ConfigStore(hub.projectRoot);
+      store.togglePlugin(id, enabled);
+      const plugins = await loadDiskPlugins({
+        projectRoot: hub.projectRoot,
+        pluginSettings: store.getPluginSettings(),
+      });
+      res.json({ ok: true, plugins });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
   app.get("/api/sessions", (_req, res) => {
     try {
       res.json({
@@ -365,6 +513,44 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     }
   });
 
+  app.head("/api/sessions/:id/export.zip", (req, res) => {
+    try {
+      const pre = hub.preflightExport(String(req.params.id ?? ""));
+      if (!pre.ok) {
+        res.status(404).json({ ok: false, error: pre.error ?? "session not found" });
+        return;
+      }
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${hub.sessionExportFilename(pre.sessionId)}"`);
+      res.status(200).end();
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/sessions/:id/export.zip", (req, res) => {
+    try {
+      const id = String(req.params.id ?? "");
+      const pre = hub.preflightExport(id);
+      if (!pre.ok) {
+        res.status(404).json({ ok: false, error: pre.error ?? "session not found" });
+        return;
+      }
+      const buf = hub.exportSessionZip(id);
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="${hub.sessionExportFilename(id)}"`);
+      res.send(buf);
+    } catch (e) {
+      res.status(400).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
   app.post("/api/sessions/delete", (req, res) => {
     const id = String(req.body?.id ?? req.body?.sessionId ?? "").trim();
     if (!id) {
@@ -375,7 +561,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
       const r = hub.deleteSession(id);
       let sessionId = r.sessionId;
       let messages = hub.loadSessionMessages(sessionId);
-      // 删掉当前会话后自动开一个新的，避免空 active
+      // 删光了才新建；还有别的会话时 hub 已经坐过去了
       if (!sessionId) {
         const n = hub.newSession();
         sessionId = n.sessionId;
@@ -397,15 +583,43 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     }
   });
 
-  app.get("/api/sessions/active/messages", (_req, res) => {
+  app.get("/api/sessions/active/messages", (req, res) => {
     try {
+      const beforeSeqRaw = req.query?.beforeSeq;
+      const limitRaw = req.query?.limit;
+      const beforeSeq =
+        beforeSeqRaw != null && String(beforeSeqRaw).trim()
+          ? Number(beforeSeqRaw)
+          : undefined;
+      const limit =
+        limitRaw != null && String(limitRaw).trim() ? Number(limitRaw) : undefined;
+      const page = hub.loadSessionPage(undefined, {
+        ...(Number.isFinite(beforeSeq) ? { beforeSeq } : {}),
+        ...(Number.isFinite(limit) ? { limit } : {}),
+      });
       res.json({
         ok: true,
         sessionId: hub.getMeta().sessionId,
-        messages: hub.loadSessionMessages(),
+        ...page,
       });
     } catch (e) {
       res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/sessions/:id/preview-delete", (req, res) => {
+    try {
+      const id = String(req.params.id ?? "").trim();
+      if (!id) {
+        res.status(400).json({ ok: false, error: "id required" });
+        return;
+      }
+      res.json({ ok: true, ...hub.previewDelete(id) });
+    } catch (e) {
+      res.status(400).json({
         ok: false,
         error: e instanceof Error ? e.message : String(e),
       });
@@ -419,8 +633,20 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         ok: true,
         sessionId: hub.getMeta().sessionId,
         stats,
+        today: hub.getTodayTokenTotals(),
         text: hub.getSessionStatsText(),
       });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/usage/today", (_req, res) => {
+    try {
+      res.json({ ok: true, ...hub.getTodayTokenTotals() });
     } catch (e) {
       res.status(500).json({
         ok: false,
@@ -449,6 +675,110 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     }
     const next = hub.setApprovalMode(mode);
     res.json({ ok: true, mode: next, ...hub.getMeta() });
+  });
+
+  app.post("/api/permission-preset", (req, res) => {
+    try {
+      const id = String(req.body?.id ?? "");
+      const confirm = typeof req.body?.confirm === "string" ? req.body.confirm : undefined;
+      const next =
+        req.body?.scope === "default"
+          ? hub.setDefaultPermissionPreset(id, confirm)
+          : hub.setSessionPermissionPreset(id, confirm);
+      res.json({ ok: true, ...next, ...hub.getMeta() });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.post("/api/send-mode", (req, res) => {
+    const mode = String(req.body?.mode ?? "");
+    if (mode !== "queue" && mode !== "insert") {
+      res.status(400).json({ ok: false, error: "mode must be queue|insert" });
+      return;
+    }
+    try {
+      res.json({ ok: true, mode: hub.setSessionSendMode(mode), ...hub.getMeta() });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.get("/api/ask", (_req, res) => {
+    res.json({ ok: true, pending: hub.listPendingAsks() });
+  });
+
+  app.post("/api/ask", (req, res) => {
+    const sessionId = String(req.body?.sessionId ?? hub.getMeta().sessionId ?? "");
+    const ok = hub.answerAsk(sessionId, req.body?.result ?? req.body);
+    if (!ok) {
+      res.status(404).json({ ok: false, error: "no pending ask" });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  app.post("/api/sessions/fork-message", (req, res) => {
+    try {
+      const out = hub.forkFromMessage(
+        String(req.body?.sessionId ?? hub.getMeta().sessionId ?? ""),
+        String(req.body?.entryId ?? ""),
+        typeof req.body?.title === "string" ? req.body.title : undefined,
+      );
+      res.json({ ok: true, ...out });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.post("/api/sessions/feedback", (req, res) => {
+    try {
+      const result = hub.setMessageFeedback(
+        String(req.body?.sessionId ?? hub.getMeta().sessionId ?? ""),
+        String(req.body?.messageId ?? ""),
+        req.body?.vote === "down" ? "down" : "up",
+        typeof req.body?.note === "string" ? req.body.note : undefined,
+      );
+      res.json({ ok: true, conflict: result.conflict });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.get("/api/plan", (_req, res) => {
+    try {
+      res.json({ ok: true, ...hub.readSessionPlan() });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.post("/api/plan/toggle", (_req, res) => {
+    try {
+      hub.togglePlanActive();
+      // plan / goal 一律以 getMeta() 的落盘态为准（clear 后应当是 undefined）；
+      // 之前把返回值写在 spread 前面，会被 getMeta 直接盖掉，是条死代码。
+      res.json({ ok: true, ...hub.getMeta() });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.post("/api/goal", (req, res) => {
+    try {
+      const action = String(req.body?.action ?? "");
+      if (action !== "pause" && action !== "resume" && action !== "clear" && action !== "edit") {
+        res.status(400).json({ ok: false, error: "invalid action" });
+        return;
+      }
+      hub.mutateGoal(
+        action,
+        typeof req.body?.objective === "string" ? req.body.objective : undefined,
+      );
+      res.json({ ok: true, ...hub.getMeta() });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
   });
 
   app.get("/api/approvals/pending", (_req, res) => {

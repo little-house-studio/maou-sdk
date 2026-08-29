@@ -147,13 +147,18 @@ export function classifyToolErrorMessage(message: string): ToolErrorCategory {
   }
 
   // Mode
-  if (/模式下不可用|not available in .+ mode|allowedModes/i.test(t)) {
+  if (
+    /模式下不可用|not available in .+ mode|allowedModes/i.test(t) ||
+    /only available (while|in|during)|during a .+-mode round|instead of \w+ (complete|blocked)/i.test(
+      t,
+    )
+  ) {
     return "mode_denied";
   }
 
   // Unknown tool
   if (
-    /不支持的工具|Unknown tool|unknown tool|工具不存在|未注册的工具/i.test(t)
+    /不支持的工具|Unknown tool|unknown tool|工具不存在|未注册的工具|不是工具/i.test(t)
   ) {
     return "unknown_tool";
   }
@@ -162,7 +167,8 @@ export function classifyToolErrorMessage(message: string): ToolErrorCategory {
   if (
     /策略拦截|致命指令|危险指令|硬拒绝|hard.?deny|被钩子拦截|安全层|DCG|blacklist|黑名单|policy|deny_fatal|危险·|审核未通过|审核异常|未配置审核器|系统拦截/i.test(
       t,
-    )
+    ) ||
+    /仅用户可|模型不能|不要由模型调用|不要在这里/i.test(t)
   ) {
     return "policy_denied";
   }
@@ -174,7 +180,7 @@ export function classifyToolErrorMessage(message: string): ToolErrorCategory {
     /缺少必填|必填参数|参数错误|无效 action|无效 scope|未知的? action|未知 action|未知模式|未知 manage_action|格式错误|不能为空|参数.*必填|invalid\s*arg|schema|call requires|No query provided/i.test(
       t,
     ) ||
-    /请提供|需要提供|必须提供|必须传|操作缺少|缺少 id|缺少 data|缺少 sessionId|需求描述太短|需求描述过长|无法解析安装源|不支持的操作|不支持的 action|action 为 .* 时|get 需要|write 需要|add 需要|create 需要|send 需要|repair 需要|rebind 需要|output 需要|fork_mode=|action=submit_plan 时必须|failed 时请在/i.test(
+    /请提供|需要提供|必须提供|必须传|操作缺少|缺少 id|缺少 data|缺少 sessionId|需求描述太短|需求描述过长|无法解析安装源|不支持的操作|不支持的\s*(?:action|mode|模式)|must start with|action 为 .* 时|get 需要|write 需要|add 需要|create 需要|send 需要|repair 需要|rebind 需要|output 需要|fork_mode=|action=submit_plan 时必须|failed 时请在/i.test(
       t,
     )
   ) {
@@ -197,7 +203,7 @@ export function classifyToolErrorMessage(message: string): ToolErrorCategory {
 
   // Dependency missing / not wired / not enabled / wrong mode context
   if (
-    /未安装|不可用|not\s*installed|not\s*found.*(binary|engine|sqry|rg|python|browser)|缺少.*引擎|依赖.*不可用|ensure-sqry|ensure-rg|ensure-dcg|language.?server|没有为该文件类型配置|未注入|未启用|暂未开放|服务端正在接入|yield 未启用|执行器未注入|仅在\s*\/goal|监督模式下可用/i.test(
+    /未安装|不可用|not\s*installed|not\s*found.*(binary|engine|sqry|rg|python|browser)|缺少.*引擎|依赖.*不可用|ensure-sqry|ensure-rg|ensure-dcg|language.?server|没有为该文件类型配置|未注入|未启用|暂未开放|服务端正在接入|yield 未启用|执行器未注入|requires a .*\b(?:port|host|executor|engine)\b|仅在\s*\/goal|监督模式下可用/i.test(
       t,
     )
   ) {
@@ -216,7 +222,7 @@ export function classifyToolErrorMessage(message: string): ToolErrorCategory {
 
   // Precondition / conflict / wrong state / wrong tool for task
   if (
-    /已存在|无需编辑|相同|冲突|conflict|precondition|状态不允许|没有可回退|return_when|条件.*失败|当前状态|只能在|只能从|不能 start|不能 submit|必须先|先 start|先 submit|先 verify|用户确认后|多个定义|不唯一|不是目录|无法访问|新路径无效|占位工具不应|plan 未绑定|绑定记录|请用 agent_manage|管理运行中队友/i.test(
+    /已存在|无需编辑|相同|冲突|conflict|precondition|状态不允许|没有可回退|return_when|条件.*失败|当前状态|只能在|只能从|不能 start|不能 submit|现在不能|必须先|先 start|先 submit|先 verify|用户确认后|多个定义|不唯一|不是目录|无法访问|新路径无效|占位工具不应|plan 未绑定|绑定记录|请用 agent_manage|管理运行中队友/i.test(
       t,
     )
   ) {

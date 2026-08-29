@@ -52,8 +52,16 @@ export function projectSessionsDir(cwd: string = process.cwd()): string {
   return resolveProjectSessionsDir(cwd);
 }
 
+export function projectSessionDir(sessionId: string, cwd: string = process.cwd()): string {
+  return join(projectSessionsDir(cwd), sessionId);
+}
+
+export function projectSessionHeader(sessionId: string, cwd: string = process.cwd()): string {
+  return join(projectSessionDir(sessionId, cwd), "session.json");
+}
+
 export function projectSessionFile(sessionId: string, cwd: string = process.cwd()): string {
-  return join(projectSessionsDir(cwd), `${sessionId}.jsonl`);
+  return join(projectSessionDir(sessionId, cwd), "events.jsonl");
 }
 
 /** 项目态上次会话指针：<cwd>/.maou/last-session.json（按工作区隔离，勿用 ~/.maou） */

@@ -59,6 +59,10 @@ export function resolveUserLastSessionPath(userRoot?: string): string {
 }
 
 /** 机器级项目索引：由 `maou coding` 注册，供 Ops Agent 查询。 */
+export function resolveUserAttachmentsDir(userRoot?: string): string {
+  return join(userRoot ? resolve(userRoot) : resolveUserMaouRoot(), "attachments");
+}
+
 export function resolveUserProjectsPath(userRoot?: string): string {
   return join(userRoot ? resolve(userRoot) : resolveUserMaouRoot(), "projects.json");
 }

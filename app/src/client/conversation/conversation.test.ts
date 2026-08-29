@@ -8,7 +8,13 @@ import { fileURLToPath } from "node:url";
 import { ConversationPane } from "./ConversationPane";
 import { ThreadBoard } from "./ThreadBoard";
 import { UserStick } from "./UserStick";
-import { stackFlowOffset, stickHomeScrollTop } from "./scroll-offset";
+import {
+  followStickBottom,
+  gapFromBottom,
+  isStickBottom,
+  stackFlowOffset,
+  stickHomeScrollTop,
+} from "./scroll-offset";
 import { ASK_PREVIEW_MAX, clipAskPreview } from "./ask-preview";
 import {
   ASK_ANCHOR_SEL,
@@ -127,6 +133,24 @@ describe("ConversationPane", () => {
       }),
     );
     assert.doesNotMatch(html, /data-ask-rail/);
+  });
+});
+
+describe("stick-to-bottom", () => {
+  it("only writes scrollTop when already stuck", () => {
+    const el = { scrollTop: 40, scrollHeight: 400, clientHeight: 200 };
+    assert.equal(gapFromBottom(el), 160);
+    assert.equal(isStickBottom(160), false);
+    assert.equal(followStickBottom(el, false), false);
+    assert.equal(el.scrollTop, 40);
+    assert.equal(followStickBottom(el, true), true);
+    assert.equal(el.scrollTop, 400);
+  });
+
+  it("treats a small gap as stuck", () => {
+    assert.equal(isStickBottom(0), true);
+    assert.equal(isStickBottom(95), true);
+    assert.equal(isStickBottom(96), false);
   });
 });
 

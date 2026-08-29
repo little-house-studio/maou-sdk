@@ -18,6 +18,7 @@ import type {
   SessionGoalPort,
 } from "@little-house-studio/types";
 import {
+  BLOCKED_AFTER_CONSECUTIVE_ROUNDS,
   DEFAULT_MAX_GOAL_ROUNDS,
   GOAL_CHANGE_VERSION,
   GoalError,
@@ -384,13 +385,25 @@ export class SessionGoalService {
     );
   }
 
-  block(sessionDir: string, sessionId: string, ref: GoalRef, reason: GoalBlockReason): GoalView {
+  block(
+    sessionDir: string,
+    sessionId: string,
+    ref: GoalRef,
+    reason: GoalBlockReason,
+    opts?: { skipRoundFloor?: boolean },
+  ): GoalView {
     const cache = this.sync(sessionDir, sessionId);
     const current = this.expectCurrent(cache, ref);
     if (current.phase !== "active") {
       throw new GoalError(
         `cannot block goal "${current.id}" from phase "${current.phase}"`,
         "GOAL_INVALID_TRANSITION",
+      );
+    }
+    if (!opts?.skipRoundFloor && cache.state.roundsStarted < BLOCKED_AFTER_CONSECUTIVE_ROUNDS) {
+      throw new GoalError(
+        `cannot block goal "${current.id}" before ${BLOCKED_AFTER_CONSECUTIVE_ROUNDS} rounds (now ${cache.state.roundsStarted})`,
+        "GOAL_BLOCK_TOO_EARLY",
       );
     }
     return this.commitCurrent(

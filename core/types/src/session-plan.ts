@@ -22,6 +22,8 @@ export interface SessionPlanPort {
   writePlan(markdown: string): SessionPlanSnapshot
   readPlan(): string | undefined
   planFile(): string
+  /** 用户批准：status → approved、退出 plan 模式（下一轮 agentMode 变 execute） */
+  approve(): SessionPlanSnapshot | undefined
 }
 
 export function sessionPlanIsOpen(snap: SessionPlanSnapshot | undefined): boolean {

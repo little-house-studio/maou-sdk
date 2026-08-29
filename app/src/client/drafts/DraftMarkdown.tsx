@@ -10,6 +10,7 @@ import React, { type ReactNode } from "react";
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { looksLikeLocalPath, openLocalPath, splitPathTokens } from "../open-local";
 
 export type DraftMarkdownProps = {
   source: string;
@@ -18,7 +19,33 @@ export type DraftMarkdownProps = {
   onHeadingClick?: (title: string, level: number) => void;
   /** Toggle `- [ ]` / `- [x]` task items (project: write back to MD). */
   onTaskToggle?: (taskText: string, checked: boolean) => void;
+  /** 正文里的本地路径可点开。 */
+  linkPaths?: boolean;
 };
+
+function PathAware({ children }: { children?: ReactNode }) {
+  return (
+    <>
+      {React.Children.map(children, (ch, idx) => {
+        if (typeof ch !== "string") return ch;
+        return splitPathTokens(ch).map((part, i) =>
+          part.path ? (
+            <button
+              key={`${idx}-${part.path}-${i}`}
+              type="button"
+              className="dm-path"
+              onClick={() => void openLocalPath(part.path!)}
+            >
+              {part.text}
+            </button>
+          ) : (
+            <React.Fragment key={`${idx}-${i}`}>{part.text}</React.Fragment>
+          ),
+        );
+      })}
+    </>
+  );
+}
 
 function plainText(node: ReactNode): string {
   if (node == null || typeof node === "boolean") return "";
@@ -76,6 +103,7 @@ export function tightenMarkdownListBlankLines(md: string): string {
 function buildComponents(
   onHeadingClick?: (title: string, level: number) => void,
   onTaskToggle?: (taskText: string, checked: boolean) => void,
+  linkPaths?: boolean,
 ): Components {
   const heading =
     (level: 1 | 2 | 3 | 4 | 5 | 6) =>
@@ -104,7 +132,9 @@ function buildComponents(
     h4: heading(4),
     h5: heading(5),
     h6: heading(6),
-    p: ({ children }) => <p className="dm-p">{children}</p>,
+    p: ({ children }) => (
+      <p className="dm-p">{linkPaths ? <PathAware>{children}</PathAware> : children}</p>
+    ),
     a: ({ href, children }) => (
       <a
         className="dm-link"
@@ -198,6 +228,21 @@ function buildComponents(
           <code className={`dm-code-block ${className}`.trim()}>{children}</code>
         );
       }
+      if (
+        linkPaths &&
+        typeof children === "string" &&
+        looksLikeLocalPath(children)
+      ) {
+        return (
+          <button
+            type="button"
+            className="dm-code dm-path"
+            onClick={() => void openLocalPath(children.trim())}
+          >
+            {children}
+          </button>
+        );
+      }
       return <code className="dm-code">{children}</code>;
     },
   };
@@ -208,6 +253,7 @@ export function DraftMarkdown({
   className = "",
   onHeadingClick,
   onTaskToggle,
+  linkPaths = false,
 }: DraftMarkdownProps) {
   const raw = source ?? "";
   if (!raw.trim()) {
@@ -223,7 +269,7 @@ export function DraftMarkdown({
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={buildComponents(onHeadingClick, onTaskToggle)}
+        components={buildComponents(onHeadingClick, onTaskToggle, linkPaths)}
       >
         {text}
       </ReactMarkdown>

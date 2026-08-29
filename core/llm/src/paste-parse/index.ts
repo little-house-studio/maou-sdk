@@ -1,5 +1,11 @@
+/**
+ * 纯解析入口（浏览器安全）：只做「文本 → 字段」，不碰 config / node 内建。
+ *
+ * `apply-preset`（写 ~/.maou/config.json）**故意不在这里**——它经 api-presets
+ * 拖进 node:fs / node:path，渲染进程 import 本子路径就会打包失败。
+ * node 侧要它请从包根 `@little-house-studio/llm` 取。
+ */
 export { parseClipboard } from "./parse.js";
-export { llmPresetFromFields, applyLlmPresetToConfig } from "./apply-preset.js";
 export type {
   LlmPresetFormValues,
   LlmPresetApplyInput,

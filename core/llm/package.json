@@ -33,6 +33,10 @@
       "types": "./dist/base.d.ts",
       "import": "./dist/base.js"
     },
+    "./paste-parse": {
+      "types": "./dist/paste-parse/index.d.ts",
+      "import": "./dist/paste-parse/index.js"
+    },
     "./oauth": {
       "types": "./dist/oauth/index.d.ts",
       "import": "./dist/oauth/index.js"

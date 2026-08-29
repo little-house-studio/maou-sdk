@@ -17,7 +17,14 @@ import { Tool, toolDir } from "../../base.js";
 import type { JsonSchema, ToolContext, ToolResponse, ToolDefinition } from "../../base.js";
 import { compressTerminalOutput, compressOutput } from "../../compress/output-compressor.js";
 import { createToolResponse, toolFail } from "../../base.js";
-import { truncateMiddle, formatMetadata, errToString } from "../../util/common.js";
+import { formatMetadata, errToString } from "../../util/common.js";
+import {
+  applyOutputLimit,
+  inferPromptWaitState,
+  peekOverflow,
+  peekWaitState,
+  rememberWaitState,
+} from "../overflow.js";
 import {
   getTerminalReviewer,
   getTerminalApprover,
@@ -235,12 +242,19 @@ export class TerminalTool extends Tool {
       return res;
     }
 
-    const snapshot = mine.map((t) => ({
-      id: t.id,
-      state: t.state,
-      description: t.description,
-      exit_code: t.exitCode ?? null,
-    }));
+    const snapshot = mine.map((t) => {
+      const wait = peekWaitState(t.id) ?? inferPromptWaitState("", t.state);
+      const overflowPath = peekOverflow(t.id);
+      return {
+        id: t.id,
+        owner: t.agentName,
+        state: t.state,
+        wait,
+        description: t.description,
+        exit_code: t.exitCode ?? null,
+        overflow_path: overflowPath ?? null,
+      };
+    });
     const running = mine.filter((t) => t.state === "running");
     const exited = mine.filter((t) => t.state !== "running");
 
@@ -249,7 +263,12 @@ export class TerminalTool extends Tool {
       lines.push(
         `🟢 运行中 (${running.length}): ` +
           running
-            .map((t) => `${t.id}${t.description ? `「${t.description}」` : ""}`)
+            .map((t) => {
+              const wait = peekWaitState(t.id) ?? inferPromptWaitState("", t.state);
+              const waitLabel = wait === "waiting" ? "等你" : "忙";
+              const spill = peekOverflow(t.id);
+              return `${t.id}${t.description ? `「${t.description}」` : ""} 属主=${t.agentName || agent} ${waitLabel}${spill ? ` 溢出=${spill}` : ""}`;
+            })
             .join("; "),
       );
     }
@@ -659,7 +678,7 @@ export class TerminalTool extends Tool {
         `命令结束或失败后进程即停，下一轮会带上结束结果。\n` +
         `expr: ${opts.expr}\n` +
         (opts.match ? `match: ${opts.match}\n` : "") +
-        (tail ? `\n── 最近输出 ──\n${applyResultLimit(tail, opts.resultLimit)}\n` : "") +
+        (tail ? `\n── 最近输出 ──\n${applyResultLimit(tail, opts.resultLimit, opts.ctx, terminalId)}\n` : "") +
         `\n${meta}`,
       {
         background: true,
@@ -1249,7 +1268,9 @@ export class TerminalTool extends Tool {
         const compressed = result.output
           ? compressTerminalOutput(command, result.output, ctx.compressionLevel ?? "normal")
           : "";
-        const body = compressed ? applyResultLimit(compressed, resultLimit) : "";
+        const body = compressed
+          ? applyResultLimit(compressed, resultLimit, ctx, result.terminalId)
+          : "";
         const meta = formatMetadata({
           terminal_id: result.terminalId,
           cwd,
@@ -1310,7 +1331,10 @@ export class TerminalTool extends Tool {
         ? compressTerminalOutput(command, result.output, ctx.compressionLevel ?? "normal")
         : "";
       // 前台也按 result_limit 截断（与后台一致），避免压缩后输出仍过长撑大上下文
-      const body = (compressed ? applyResultLimit(compressed, resultLimit) : "") || (ok ? "（无输出）" : `命令${status}`);
+      const body =
+        (compressed
+          ? applyResultLimit(compressed, resultLimit, ctx, result.terminalId)
+          : "") || (ok ? "（无输出）" : `命令${status}`);
 
       return createToolResponse(ok, `${body}\n\n${meta}`, {
         payload: {
@@ -1366,7 +1390,7 @@ export class TerminalTool extends Tool {
         const compressed = result.output
           ? compressTerminalOutput(command, result.output, level)
           : "";
-        const truncated = applyResultLimit(compressed, resultLimit);
+        const truncated = applyResultLimit(compressed, resultLimit, ctx, result.terminalId);
         const meta = formatMetadata({
           terminal_id: result.terminalId,
           exit_code: result.exitCode,
@@ -1467,10 +1491,13 @@ export class TerminalTool extends Tool {
         agent,
         terminals: terminals.map((t) => ({
           id: t.id,
+          owner: t.agentName,
           state: t.state,
+          wait: peekWaitState(t.id) ?? inferPromptWaitState("", t.state),
           description: t.description,
           exit_code: t.exitCode ?? null,
           command: t.command,
+          overflow_path: peekOverflow(t.id) ?? null,
         })),
       },
     });
@@ -1552,10 +1579,23 @@ export class TerminalTool extends Tool {
       // maxLines=Infinity 表示只去噪去重不截断——用户主动查日志应给完整信息。
       const level = ctx.compressionLevel ?? "normal";
       const output = rawOutput ? compressOutput(rawOutput, { level, maxLines: Infinity }) : "";
+      const limited = applyResultLimit(output, limit, ctx, id);
+      if (rawOutput) {
+        rememberWaitState(id, inferPromptWaitState(rawOutput, term?.state));
+      }
 
       return createToolResponse(true,
-        `${output || "（无输出）"}\n\n${meta}`,
-        { payload: { id, state: term?.state ?? "unknown", exit_code: term?.exitCode ?? null } },
+        `${limited || "（无输出）"}\n\n${meta}`,
+        {
+          payload: {
+            id,
+            state: term?.state ?? "unknown",
+            wait: peekWaitState(id) ?? inferPromptWaitState(rawOutput, term?.state),
+            exit_code: term?.exitCode ?? null,
+            owner: term?.agentName ?? ctx.agentName,
+            overflow_path: peekOverflow(id) ?? null,
+          },
+        },
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1602,11 +1642,21 @@ export class TerminalTool extends Tool {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function applyResultLimit(output: string, limit: number): string {
-  if (!output) return "";
-  if (limit === 0) return "";
-  if (output.length <= limit) return output;
-  return truncateMiddle(output, limit);
+function applyResultLimit(
+  output: string,
+  limit: number,
+  ctx?: ToolContext,
+  terminalId?: string,
+): string {
+  const r = applyOutputLimit(output, limit, {
+    sessionId: ctx?.sessionId,
+    projectRoot: ctx?.projectRoot,
+    terminalId,
+  });
+  if (terminalId && output) {
+    rememberWaitState(terminalId, inferPromptWaitState(output));
+  }
+  return r.text;
 }
 
 function terminalHookCtx(ctx: ToolContext): { agent_name: string; session_id?: string } {

@@ -46,7 +46,9 @@ function formatTodoPlan(tasks: Task[]): string {
   if (inProgress.length === 1) {
     lines.push(`▶ 当前执行: ${inProgress[0].id} — ${inProgress[0].desc}`);
   } else if (inProgress.length > 1) {
-    lines.push(`⚡ 并行: ${inProgress.map((t) => t.id).join(", ")}`);
+    lines.push(
+      `▶ 当前执行: ${inProgress.map((t) => `${t.id} — ${t.desc}`).join("; ")}`,
+    );
   }
   if (done === total) {
     lines.push("🎉 全部完成，可回复用户收尾（无需再调 todo_finish）");

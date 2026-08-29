@@ -113,6 +113,9 @@ export function handleEscapeCancel(ctx: EscapeCancelContext = {}): EscapeCancelR
   // 6. overlay 弹层
   if (s.overlay) {
     if (s.overlay === "confirm") settleHookConfirm(false);
+    if (s.overlay === "ask") {
+      void import("../headless/ask-ui.js").then((m) => m.settleCliAsk(null)).catch(() => {});
+    }
     s.setOverlay(null);
     return { handled: true, action: "overlay" };
   }

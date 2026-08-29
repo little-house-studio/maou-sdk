@@ -2,7 +2,7 @@
  * 传统压缩模块：过阈值后留下最近 N 轮，更早的换成一条摘要。
  */
 
-import { maouToLLMMessage, type MaouMessage } from "../types/message.js";
+import { maouToLLMMessage, seqRangeOf, type MaouMessage } from "../types/message.js";
 import type {
   ContextCompressContext,
   ContextModule,
@@ -48,8 +48,8 @@ function findRecentRoundsBoundary(history: MaouMessage[], keepRounds: number): n
   return 0;
 }
 
-function makeSummaryMsg(summary: string): MaouMessage {
-  return {
+function makeSummaryMsg(summary: string, replaced: MaouMessage[]): MaouMessage {
+  const msg: MaouMessage = {
     seqId: -1,
     taskIds: [],
     category: "compact",
@@ -57,6 +57,9 @@ function makeSummaryMsg(summary: string): MaouMessage {
     keepAfterCompress: true,
     createdAt: new Date().toISOString(),
   };
+  const range = seqRangeOf(replaced);
+  msg.compact = { type: "major", summary, ...(range ? { seqRange: range } : {}) };
+  return msg;
 }
 
 function fallbackSummary(msgs: MaouMessage[]): string {
@@ -106,7 +109,7 @@ export const legacyContextModule: ContextModule<LegacyCompressConfig> = {
       summary = fallbackSummary(old);
     }
 
-    const history = [makeSummaryMsg(summary), ...recent];
+    const history = [makeSummaryMsg(summary, old), ...recent];
     return {
       compressed: true,
       stage: "summaryStage",

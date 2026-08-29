@@ -276,8 +276,8 @@ export function useDraftHostBag({
     topbar: {
       mode,
       onModeChange: setMode,
-      meta: state.meta,
-      usageLabel: state.usageLabel,
+      todayInput: 0,
+      todayOutput: 0,
     },
     agentList: {
       agents: state.agents,

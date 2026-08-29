@@ -3,22 +3,37 @@
  * 避免 reader/file/terminal 等横向依赖 browser/_util。
  */
 
+import { formatRetentionNotice, spillRetrieveHint } from "@little-house-studio/types";
+
 /** 单字段最大字符数（默认 8000，约 2K~4K token） */
 export const DEFAULT_CHUNK_LIMIT = 8000;
 
 /**
  * 截断长文本，保留头部 + 尾部，并在中间标注被省略的字符数。
  * 当原始文本 ≤ limit 时原样返回。
+ *
+ * `locator` / `retrieveHint` 能给就给 —— 只说省了多少是死路，模型没有下一步。
  */
-export function truncateMiddle(text: string, limit: number = DEFAULT_CHUNK_LIMIT): string {
+export function truncateMiddle(
+  text: string,
+  limit: number = DEFAULT_CHUNK_LIMIT,
+  opts?: { locator?: string; retrieveHint?: string },
+): string {
   if (!text) return text;
   if (text.length <= limit) return text;
   const headSize = Math.floor(limit * 0.6); // 头部占 60%
   const tailSize = Math.max(0, limit - headSize - 80); // 尾部占剩余，留 80 字符给标记
   const skipped = text.length - headSize - tailSize;
+  const notice = formatRetentionNotice(
+    { kind: "exact", count: skipped, unit: "chars" },
+    {
+      locator: opts?.locator,
+      retrieveHint: opts?.retrieveHint ?? (opts?.locator ? spillRetrieveHint() : undefined),
+    },
+  );
   return (
     text.slice(0, headSize) +
-    `\n\n... [省略 ${skipped} 字符，共 ${text.length} 字符] ...\n\n` +
+    `\n\n... ${notice} ...\n\n` +
     text.slice(text.length - tailSize)
   );
 }

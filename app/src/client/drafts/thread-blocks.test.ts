@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  clipTurnSummary,
   groupLoopTurns,
   groupThreadBlocks,
+  isModelCallProgressText,
   isPlaceholderAssistantBody,
+  pinReleasedLastTurn,
+  replyTurnFoldable,
+  replyTurnOpen,
   replyTurnVisible,
+  summarizeReplyTurn,
 } from "./thread-blocks";
 import { FULL_CONTEXT_MESSAGES } from "./fixtures";
 import type { DraftMessage } from "./types";
@@ -111,10 +117,24 @@ describe("groupThreadBlocks", () => {
     }
   });
 
+  it("model-call progress is not a system notice", () => {
+    assert.equal(isModelCallProgressText("调用模型: deepseek-v4-flash"), true);
+    assert.equal(isModelCallProgressText("调用模型..."), true);
+    assert.equal(isModelCallProgressText("⏳ 调用模型..."), true);
+    assert.equal(isModelCallProgressText("编译 Prompt..."), true);
+    assert.equal(isModelCallProgressText("⏳ 编译 Prompt..."), true);
+    assert.equal(isModelCallProgressText("开始编译 Prompt"), true);
+    assert.equal(isModelCallProgressText("规划目标合同..."), true);
+    assert.equal(isModelCallProgressText("模型切换: a → b"), false);
+    assert.equal(isModelCallProgressText("上下文压缩完成"), false);
+  });
+
   it("replyTurnVisible hides blank finished assistants and keeps live/tool turns", () => {
     assert.equal(isPlaceholderAssistantBody(""), true);
     assert.equal(isPlaceholderAssistantBody("…"), true);
     assert.equal(isPlaceholderAssistantBody("ok"), false);
+    assert.equal(isPlaceholderAssistantBody("… 调用模型: deepseek-v4-flash"), true);
+    assert.equal(isPlaceholderAssistantBody("调用模型..."), true);
 
     assert.equal(
       replyTurnVisible({
@@ -145,5 +165,152 @@ describe("groupThreadBlocks", () => {
       }),
       true,
     );
+  });
+});
+
+describe("reply turn fold helpers", () => {
+  it("clipTurnSummary keeps a short first sentence and clips a long line", () => {
+    assert.equal(clipTurnSummary("  先做这一步。后面丢掉。  "), "先做这一步。");
+    assert.equal(
+      clipTurnSummary("好的。先把模块拆开，再用假数据把布局跑通。"),
+      "好的。先把模块拆开，再用假数据把布局跑通。",
+    );
+    const long = `可见开头${"Z".repeat(80)}TAIL`;
+    const clipped = clipTurnSummary(long);
+    assert.ok(clipped.startsWith("可见开头"));
+    assert.ok(clipped.endsWith("…"));
+    assert.ok(clipped.length <= 48);
+    assert.ok(!clipped.includes("TAIL"));
+  });
+
+  it("summarizeReplyTurn prefers body, then tool name, then Thought duration", () => {
+    assert.equal(
+      summarizeReplyTurn({
+        kind: "reply",
+        assistant: { id: "a", role: "assistant", body: "先做这一步。后面丢掉。" },
+        internals: [],
+      }),
+      "先做这一步。",
+    );
+    assert.equal(
+      summarizeReplyTurn({
+        kind: "reply",
+        assistant: { id: "a", role: "assistant", body: "" },
+        internals: [
+          {
+            id: "t",
+            role: "tool",
+            tag: "use_terminal",
+            body: "ls",
+            tool: { name: "read_file" },
+          },
+        ],
+      }),
+      "read_file",
+    );
+    assert.equal(
+      summarizeReplyTurn({
+        kind: "reply",
+        assistant: { id: "a", role: "assistant", body: "…" },
+        internals: [
+          {
+            id: "th",
+            role: "thinking",
+            body: "hmm",
+            thinking: { durationMs: 1500 },
+          },
+        ],
+      }),
+      "Thought · 1.5s",
+    );
+    assert.equal(
+      summarizeReplyTurn({
+        kind: "reply",
+        assistant: null,
+        internals: [{ id: "e", role: "err", body: "boom" }],
+      }),
+      "错误",
+    );
+  });
+
+  it("replyTurnOpen expands last / live; remembers userOpen except running last", () => {
+    assert.equal(
+      replyTurnOpen({
+        isLastVisible: true,
+        turnLive: false,
+        loopLive: false,
+      }),
+      true,
+    );
+    assert.equal(
+      replyTurnOpen({
+        isLastVisible: false,
+        turnLive: false,
+        loopLive: true,
+      }),
+      false,
+    );
+    assert.equal(
+      replyTurnOpen({
+        isLastVisible: true,
+        turnLive: false,
+        loopLive: true,
+      }),
+      true,
+    );
+    assert.equal(
+      replyTurnOpen({
+        isLastVisible: false,
+        turnLive: true,
+        loopLive: false,
+      }),
+      true,
+    );
+    assert.equal(
+      replyTurnOpen({
+        isLastVisible: false,
+        turnLive: false,
+        loopLive: false,
+        userOpen: true,
+      }),
+      true,
+    );
+    assert.equal(
+      replyTurnOpen({
+        isLastVisible: true,
+        turnLive: false,
+        loopLive: true,
+        userOpen: false,
+      }),
+      true,
+    );
+    assert.equal(
+      replyTurnFoldable({ isLastVisible: true, turnLive: false }),
+      false,
+    );
+    assert.equal(
+      replyTurnFoldable({ isLastVisible: false, turnLive: false }),
+      true,
+    );
+    assert.equal(
+      replyTurnFoldable({ isLastVisible: false, turnLive: true }),
+      false,
+    );
+  });
+
+  it("pinReleasedLastTurn keeps the outgoing last turn open unless the user already chose", () => {
+    assert.deepEqual(pinReleasedLastTurn({}, "u::a1", "u::a2"), {
+      "u::a1": true,
+    });
+    assert.deepEqual(
+      pinReleasedLastTurn({ "u::a1": false }, "u::a1", "u::a2"),
+      { "u::a1": false },
+    );
+    assert.deepEqual(
+      pinReleasedLastTurn({ "u::x": true }, "u::a1", "u::a2"),
+      { "u::x": true, "u::a1": true },
+    );
+    assert.deepEqual(pinReleasedLastTurn({}, "u::a1", "u::a1"), {});
+    assert.deepEqual(pinReleasedLastTurn({}, null, "u::a2"), {});
   });
 });

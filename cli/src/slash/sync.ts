@@ -4,10 +4,12 @@
 
 import { readdirSync, existsSync } from "node:fs";
 import { join, basename } from "node:path";
-import { homedir } from "node:os";
+import { listSkillScanRoots } from "@little-house-studio/tools";
 import { cliCommands } from "./registry.js";
 import { registerBuiltinCliCommands } from "./builtins.js";
 import type { CliCommandSpec } from "./types.js";
+import { userMaouRoot } from "../config/paths.js";
+import { DEFAULT_AGENT_NAME } from "../config/defaults.js";
 
 export interface RuntimeCommandListItem {
   name: string;
@@ -58,16 +60,28 @@ export function syncRuntimeCommands(
   return n;
 }
 
+export type SkillScanContext = {
+  agentName?: string;
+  projectRoot?: string;
+  maouRoot?: string;
+  home?: string;
+};
+
+let skillScanCtx: SkillScanContext = {};
+
+export function setSkillScanContext(ctx: SkillScanContext): void {
+  skillScanCtx = { ...skillScanCtx, ...ctx };
+}
+
 function scanSkillNames(): string[] {
-  const dirs = [
-    join(homedir(), ".agents", "skills"),
-    join(process.cwd(), ".agents", "skills"),
-    join(process.cwd(), "skills"),
-    join(process.cwd(), ".maou", "skills"),
-  ];
-  const seen = new Set<string>();
-  const names: string[] = [];
-  for (const dir of dirs) {
+  const roots = listSkillScanRoots({
+    projectRoot: skillScanCtx.projectRoot ?? process.cwd(),
+    maouRoot: skillScanCtx.maouRoot ?? userMaouRoot(),
+    agentName: skillScanCtx.agentName ?? DEFAULT_AGENT_NAME,
+    home: skillScanCtx.home,
+  });
+  const byName = new Map<string, string>();
+  for (const { dir } of roots) {
     if (!existsSync(dir)) continue;
     try {
       for (const ent of readdirSync(dir, { withFileTypes: true })) {
@@ -83,19 +97,19 @@ function scanSkillNames(): string[] {
         } else if (ent.name.endsWith(".md")) {
           name = basename(ent.name, ".md");
         }
-        if (!name || seen.has(name)) continue;
-        seen.add(name);
-        names.push(name);
+        if (!name) continue;
+        byName.set(name, name);
       }
     } catch {
       /* ignore */
     }
   }
-  return names;
+  return [...byName.values()];
 }
 
 /** 扫描 skills 目录并注册为 skill scope */
-export function syncSkillCommands(): number {
+export function syncSkillCommands(opts?: SkillScanContext): number {
+  if (opts) setSkillScanContext(opts);
   registerBuiltinCliCommands();
   cliCommands.unregisterBySource("skill");
   let n = 0;
