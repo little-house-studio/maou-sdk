@@ -27,7 +27,7 @@ export class ChangeSelfTool extends Tool {
       required: ["task"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {

@@ -243,6 +243,7 @@ describe("WireThreadView source structure", () => {
     assert.match(src, /wire-loop-rounds/);
     assert.match(src, /askAnchorProps/);
     assert.match(src, /wire-thread-lead/);
+    assert.match(src, /UserMsgClip/);
     assert.match(src, /InfoHover/);
     assert.match(src, /wire-turn-fold|summarizeReplyTurn/);
     assert.match(src, /pinReleasedLastTurn/);

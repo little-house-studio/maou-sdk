@@ -271,6 +271,7 @@ describe("live shell production wiring", () => {
     assert.match(chat, /busy && !isWire/);
     assert.match(chat, /WireThreadView|groupThreadBlocks|chatLinesToDraftMessages/);
     assert.match(chat, /PlanReviewCard/);
+    assert.doesNotMatch(chat, /planReviewDock/);
     assert.match(chat, /\/plan approve/);
     assert.match(chat, /onDockLogLines/);
     assert.match(chat, /composer-tool-btn/);
@@ -401,7 +402,8 @@ describe("live shell production wiring", () => {
     assert.match(liveState, /todayInput/);
     assert.match(liveState, /onTodayUsageChange/);
     assert.doesNotMatch(liveState, /onSessionTitleChange/);
-    assert.match(topbar, /formatTodayTokenLine/);
+    assert.match(topbar, /formatTodayInArrow/);
+    assert.match(topbar, /formatTodayOutArrow/);
     assert.doesNotMatch(topbar, /todayBarPercents|wire-today-track/);
     assert.doesNotMatch(topbar, /wire-meta-model|usageLabel|formatTodayTokenLabel/);
     assert.match(hub, /stampTodayOnUsage/);

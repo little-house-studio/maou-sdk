@@ -69,6 +69,7 @@ import {
   pickPlanAsk,
   resolvePlanReview,
   isPlanWriteTool,
+  type PlanReviewSettled,
   type SessionPlanView,
 } from "./session-plan-review";
 import { ApprovalPhysicsSwitch } from "./drafts/panels/ApprovalPhysicsSwitch";
@@ -744,7 +745,7 @@ export function ChatPanel({
   const [models, setModels] = useState<{ id: string; name?: string }[]>([]);
   const [approval, setApproval] = useState<ApprovalMode>("yolo");
   const [pending, setPending] = useState<PendingApproval[]>([]);
-  /** submit_plan 阻塞在这里等人选：批准 / 拒绝 / 去聊天里说 */
+  /** submit_plan 阻塞在这里等人选：批准 / 拒绝 / 补充意见 */
   const [pendingAsk, setPendingAsk] = useState<PendingAsk | null>(null);
   const [sessionPlanView, setSessionPlanView] = useState<SessionPlanView | null>(
     null,
@@ -752,6 +753,9 @@ export function ChatPanel({
   const [planDismissedRevision, setPlanDismissedRevision] = useState<
     number | null
   >(null);
+  const [planSettled, setPlanSettled] = useState<PlanReviewSettled | null>(
+    null,
+  );
   const [planLaunching, setPlanLaunching] = useState(false);
   const [status, setStatus] = useState("");
   const [turnUsage, setTurnUsage] = useState<{
@@ -1125,6 +1129,11 @@ export function ChatPanel({
     (decision: PlanDecision, note?: string) => {
       const ask = pendingAsk;
       if (!ask) return;
+      setPlanSettled({
+        revision: ask.planRevision ?? sessionPlanView?.plan?.revision ?? 0,
+        outcome: decision,
+        ...(note ? { note } : {}),
+      });
       setPendingAsk(null); // 乐观收起：后端已经拿到答案，别让用户对着卡重复点
       void answerAsk(ask.sessionId, {
         kind: "plan_review",
@@ -1139,7 +1148,7 @@ export function ChatPanel({
           void refreshAsk();
         });
     },
-    [answerAsk, pendingAsk, refreshAsk, refreshPlan],
+    [answerAsk, pendingAsk, refreshAsk, refreshPlan, sessionPlanView],
   );
 
 
@@ -2297,13 +2306,17 @@ export function ChatPanel({
     setPlanLaunching(true);
     try {
       await runUserMessage("/plan approve");
+      setPlanSettled({
+        revision: sessionPlanView?.plan?.revision ?? 0,
+        outcome: "approve",
+      });
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     } finally {
       await refreshPlan();
       setPlanLaunching(false);
     }
-  }, [planLaunching, refreshPlan, runUserMessage]);
+  }, [planLaunching, refreshPlan, runUserMessage, sessionPlanView]);
 
   /** 只停止「当前焦点」会话；其它会话继续跑 */
   const stopRun = useCallback(async (announce = true) => {
@@ -2430,6 +2443,7 @@ export function ChatPanel({
       focusComposer();
       void refreshContextUsage();
       setPlanDismissedRevision(null);
+      setPlanSettled(null);
       setPlanLaunching(false);
       void refreshPlan();
     } catch (e) {
@@ -2454,6 +2468,7 @@ export function ChatPanel({
     setStatus("新会话");
     focusComposer();
     setPlanDismissedRevision(null);
+    setPlanSettled(null);
     setPlanLaunching(false);
     setSessionPlanView(null);
   };
@@ -2476,6 +2491,7 @@ export function ChatPanel({
     setStatus(statusText);
     focusComposer();
     setPlanDismissedRevision(null);
+    setPlanSettled(null);
     setPlanLaunching(false);
     void refreshPlan();
   };
@@ -2844,6 +2860,7 @@ export function ChatPanel({
   const planReview = resolvePlanReview(sessionPlanView, pendingAsk, {
     dismissedRevision: planDismissedRevision,
     planLaunching,
+    settled: planSettled,
   });
   const showPlanReview = planReview.show;
   const planReviewProps = {
@@ -2851,27 +2868,28 @@ export function ChatPanel({
     objective: planReview.objective,
     revision: planReview.revision,
     blocking: planReview.blocking,
+    settled: planReview.settled,
+    note: planReview.note,
     ...(planReview.blocking
       ? {
           busy: false,
           onStart: () => decidePlan("approve"),
           onReject: () => decidePlan("reject"),
-          onChat: () => decidePlan("chat"),
-          // 阻塞态没有「先不跑」，这个回调不会被点到；留个安全出口
+          onChat: (note?: string) => decidePlan("chat", note),
           onHold: () => decidePlan("chat"),
         }
       : {
           busy: busy || planLaunching,
           onStart: () => void sendPlanApprove(),
-          onHold: () =>
-            setPlanDismissedRevision(sessionPlanView?.plan?.revision ?? 0),
+          onHold: () => {
+            const rev = sessionPlanView?.plan?.revision ?? 0;
+            setPlanSettled({ revision: rev, outcome: "hold" });
+            setPlanDismissedRevision(rev);
+          },
         }),
   };
   const planReviewCard = showPlanReview ? (
     <PlanReviewCard {...planReviewProps} />
-  ) : null;
-  const planReviewDock = showPlanReview ? (
-    <PlanReviewCard {...planReviewProps} compact />
   ) : null;
 
   const avatarLabel = (role: ChatLine["role"]) => {
@@ -3842,7 +3860,6 @@ export function ChatPanel({
           permit={
             <>
               {approvalBlock}
-              {planReviewDock}
             </>
           }
           composer={composerDock}

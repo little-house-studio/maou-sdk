@@ -48,7 +48,7 @@ export class CreateSkillTool extends Tool {
       required: ["description", "name", "skill_description", "requirements"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {

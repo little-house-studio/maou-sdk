@@ -1,0 +1,873 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="plate">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 项目区图示四案</title>
+    <style>
+      /*
+       * 读写：本页静态演示。生产 AgentList 不读这里。
+       * 四套图示做法，同一套纸面 token 和同一套点选规则。
+       */
+      :root {
+        --n-bg: #ededed;
+        --n-label: #000000;
+        --n-on: #000000;
+        --n-on-ink: #ededed;
+        --n-path: #2a2a2a;
+        --n-path-on: #d4d4d4;
+        --n-secondary: #828282;
+        --n-line: #9b9b9b;
+        --n-info: #0291FF;
+        --n-font: "Helvetica Neue", Helvetica, Arial, "PingFang SC",
+          "HarmonyOS Sans SC", sans-serif;
+        --n-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        --row: 1.3125em;
+        --rail: 260px;
+      }
+      html[data-theme="phosphor"] {
+        --n-bg: #0b0b0b;
+        --n-label: #ecece8;
+        --n-on: #ecece8;
+        --n-on-ink: #0b0b0b;
+        --n-path: #c8c8c2;
+        --n-path-on: #3a3a38;
+        --n-secondary: #8a8a84;
+        --n-line: #5c5c58;
+        --n-info: #b8ff00;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        height: 100dvh;
+        overflow: hidden;
+        background: var(--n-bg);
+        color: var(--n-label);
+        font: 400 13px / var(--row) var(--n-font);
+      }
+      button, input { font: inherit; color: inherit; }
+      button {
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      input {
+        border: 0;
+        outline: none;
+        background: transparent;
+        width: 100%;
+      }
+      input::placeholder { color: var(--n-secondary); }
+      :focus-visible { outline: 1px solid var(--n-info); outline-offset: -1px; }
+      a { color: inherit; }
+      @media (hover: hover) {
+        a:hover { color: var(--n-info); }
+      }
+
+      .sheet {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .cmd {
+        display: grid;
+        grid-template-columns: minmax(16em, 2.2fr) auto;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .cmd-copy {
+        padding: 0.65em 0.8em 0.7em;
+        border-right: 1px solid var(--n-line);
+      }
+      .cmd-copy h1 {
+        margin: 0 0 0.15em;
+        font-size: 1.1em;
+        font-weight: 500;
+      }
+      .cmd-copy p { margin: 0; color: var(--n-secondary); max-width: 58em; }
+      .cmd-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: start;
+        gap: 0.5em 1em;
+        padding: 0.6em 0.8em;
+      }
+      .tool-k { color: var(--n-secondary); font-size: 11px; }
+      .seg { display: flex; border: 1px solid var(--n-line); }
+      .seg button {
+        padding: 0 0.65em;
+        min-height: calc(var(--row) * 1.3);
+        color: var(--n-secondary);
+      }
+      .seg button + button { border-left: 1px solid var(--n-line); }
+      .seg button.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      .stage {
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(var(--rail), 1fr));
+      }
+      .col {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        border-right: 1px solid var(--n-line);
+      }
+      .col-head {
+        padding: 0.5em 0.7em 0.5em;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .col-id { color: var(--n-secondary); font-size: 11px; }
+      .col-name { font-weight: 500; }
+      .col-blurb { margin: 0.15em 0 0; color: var(--n-secondary); }
+
+      .rail {
+        width: var(--rail);
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto minmax(0, 0.95fr);
+        border-right: 1px solid var(--n-line);
+      }
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .tab {
+        min-height: calc(var(--row) * 1.4);
+        padding: 0 0.35em;
+        color: var(--n-secondary);
+        border-left: 1px solid var(--n-line);
+      }
+      .tab:first-child { border-left: 0; }
+      .tab.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      .graph {
+        position: relative;
+        min-height: 0;
+        overflow: auto;
+      }
+      .inner { position: relative; min-height: 100%; }
+      .inner svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .labs { position: relative; z-index: 1; }
+      .hit {
+        position: absolute;
+        left: 0;
+        right: 0.5em;
+        display: grid;
+        grid-template-columns: 32px minmax(0, 1fr) auto;
+        align-items: start;
+        padding: 0;
+      }
+      .hit .dot { min-height: 1em; }
+      .hit .copy {
+        min-width: 0;
+        padding: 0.12em 0.35em 0.15em;
+      }
+      .hit .name {
+        display: block;
+        font-weight: 600;
+        line-height: 1.25;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .hit .path {
+        display: block;
+        margin-top: 0.15em;
+        font-size: 11px;
+        font-weight: 400;
+        color: var(--n-path);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .hit .n {
+        padding: 0.15em 0.15em 0 0;
+        color: var(--n-secondary);
+        font: 400 10px / 1.3 var(--n-mono);
+      }
+      .hit.proj.is-on .copy {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .hit.proj.is-on .path { color: var(--n-path-on); }
+      .hit.agent .name { font-weight: 400; }
+      .hit.agent.is-on .copy {
+        box-shadow: inset 2px 0 0 var(--n-label);
+      }
+      .hit.agent.is-on .name { font-weight: 600; }
+      @media (hover: hover) {
+        .hit.proj:hover:not(.is-on) .name,
+        .hit.proj:hover:not(.is-on) .path,
+        .hit.agent:hover:not(.is-on) .name { color: var(--n-info); }
+      }
+
+      .add {
+        padding: 0.35em 0.6em;
+        border-top: 1px solid var(--n-line);
+        font-weight: 500;
+      }
+      @media (hover: hover) {
+        .add:hover { color: var(--n-info); }
+      }
+
+      .sessions {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--n-line);
+      }
+      .q, .new {
+        flex-shrink: 0;
+        padding: 0.3em 0.6em;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .slist { min-height: 0; overflow: auto; }
+      .srow {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.5em;
+        padding: 0.22em 0.6em;
+      }
+      .srow.is-on { box-shadow: inset 2px 0 0 var(--n-label); font-weight: 600; }
+      .srow.is-kid { padding-left: 1.3em; color: var(--n-path); font-weight: 400; }
+      .st { color: var(--n-secondary); font-size: 11px; }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">
+      <div class="cmd">
+        <div class="cmd-copy">
+          <h1>图示四案</h1>
+          <p>
+            同一左栏 260、同一套点选：竖着的是项目，只有当前项目横出 agent。
+            四套只换图示做法，配色仍是纸面壳。点任一列，四列一起变。
+            <a href="agent-cell.html">窗格</a>
+            <a href="agent-desk.html">纸面摊开</a>
+            <a href="agent-fui.html">立方脊椎</a>
+            <a href="index.html">目录</a>
+          </p>
+        </div>
+        <div class="cmd-tools">
+          <div>
+            <div class="tool-k">纸</div>
+            <div class="seg" role="group" aria-label="主题">
+              <button type="button" data-theme="plate" class="is-on">纸面</button>
+              <button type="button" data-theme="phosphor">磷光</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="stage" id="stage"></div>
+    </div>
+    <script>
+      const PROJECTS = [
+        {
+          id: "app",
+          path: "/Users/mac/Documents/vscodeProject/maou-sdk/app",
+          agents: [
+            { id: "app:coding", name: "coding" },
+            { id: "app:explore", name: "explore" },
+          ],
+        },
+        {
+          id: "maou-example",
+          path: "/Users/mac/Documents/vscodeProject/maou-example",
+          agents: [
+            { id: "ex:coding", name: "coding" },
+            { id: "ex:supervisor", name: "supervisor" },
+          ],
+        },
+        {
+          id: "pi",
+          path: "/Users/mac/Documents/vscodeProject/pi",
+          agents: [{ id: "pi:coding", name: "coding" }],
+        },
+        {
+          id: "maou-agent",
+          path: "/Users/mac/Documents/vscodeProject/maou-agent",
+          agents: [
+            { id: "ag:coding", name: "coding" },
+            { id: "ag:Raven", name: "Raven" },
+            { id: "ag:SearchBot", name: "SearchBot" },
+          ],
+        },
+      ];
+      const SYS = [
+        {
+          id: "local",
+          name: "本机",
+          path: "~/.maou",
+          agents: [
+            { id: "sys:ops", name: "ops" },
+            { id: "sys:monitor", name: "monitor" },
+          ],
+        },
+      ];
+      const IM = [
+        {
+          id: "inbox",
+          name: "收件箱",
+          path: "按状态排",
+          agents: [
+            { id: "im:Raven", name: "Raven" },
+            { id: "im:install", name: "install" },
+          ],
+        },
+      ];
+      const SESSIONS = [
+        { t: "左栏项目区重排", time: "现在", on: true },
+        { t: "会话搜索井", time: "14:02" },
+        { t: "fork · 对照页", time: "昨天", kid: true },
+        { t: "install 克隆清理", time: "昨天" },
+      ];
+      const SCHEMES = [
+        {
+          id: "callout",
+          k: "A",
+          name: "引线",
+          blurb: "节点用细线指到名字。当前节实线，其它节只留空心点。",
+        },
+        {
+          id: "dash",
+          k: "B",
+          name: "虚实",
+          blurb: "灰虚线是还没进去的项目。黑实线是你站的这一截。",
+        },
+        {
+          id: "tick",
+          k: "C",
+          name: "刻度",
+          blurb: "竖轴当尺。项目是长刻度，agent 是短刻度，右侧是人数。",
+        },
+        {
+          id: "cell",
+          k: "D",
+          name: "窗格",
+          blurb: "当前项目用细线框住。框外的点仍在脊上。",
+        },
+      ];
+
+      const state = { tab: "project", ws: "app", agent: "app:coding", q: "" };
+
+      function compact(p) {
+        return String(p || "")
+          .replace(/^\/Users\/[^/]+/, "~")
+          .replace(/^\/home\/[^/]+/, "~");
+      }
+      function groups() {
+        if (state.tab === "system") return SYS;
+        if (state.tab === "im") return IM;
+        return PROJECTS;
+      }
+      function current() {
+        return groups().find((g) => g.id === state.ws) || groups()[0];
+      }
+      function labelOf(g) {
+        return g.name || g.id;
+      }
+      function extras(g) {
+        if (state.tab !== "project") return g.agents;
+        return g.agents.filter((a) => a.name !== "coding");
+      }
+      function esc(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/"/g, "&quot;");
+      }
+      function settle() {
+        const gs = groups();
+        if (!gs.some((g) => g.id === state.ws)) state.ws = gs[0].id;
+        const kids = current().agents;
+        if (!kids.some((a) => a.id === state.agent)) {
+          state.agent = kids[0]?.id || "";
+        }
+      }
+      function token(name) {
+        return getComputedStyle(document.documentElement)
+          .getPropertyValue(name)
+          .trim();
+      }
+
+      function layout() {
+        settle();
+        const gs = groups();
+        const cur = current();
+        const rows = [];
+        let y = 14;
+        const cx = 16;
+        gs.forEach((g) => {
+          const on = g.id === cur.id;
+          const path = on ? compact(g.path || "") : "";
+          const h = 22 + (path ? 15 : 0);
+          const cy = y + 11;
+          rows.push({
+            kind: "proj",
+            id: g.id,
+            name: labelOf(g),
+            path,
+            n: extras(g).length,
+            on,
+            top: y,
+            h,
+            cx,
+            cy,
+          });
+          y += h + 8;
+          if (on) {
+            extras(g).forEach((a) => {
+              const ah = 22;
+              rows.push({
+                kind: "agent",
+                id: a.id,
+                name: a.name,
+                on: a.id === state.agent,
+                top: y,
+                h: ah,
+                cx: 28,
+                cy: y + ah / 2,
+                fromX: cx,
+                fromY: cy,
+              });
+              y += ah;
+            });
+            y += 8;
+          }
+        });
+        return { rows, height: y + 10, cx };
+      }
+
+      function elNS(name, attrs) {
+        const n = document.createElementNS("http://www.w3.org/2000/svg", name);
+        for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+        return n;
+      }
+
+      function drawCallout(svg, L, ink, dim) {
+        const projs = L.rows.filter((r) => r.kind === "proj");
+        const agents = L.rows.filter((r) => r.kind === "agent");
+        if (projs.length > 1) {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${L.cx} ${projs[0].cy} L${L.cx} ${projs[projs.length - 1].cy}`,
+              fill: "none",
+              stroke: dim,
+              "stroke-width": 1,
+            }),
+          );
+        }
+        const onP = projs.find((p) => p.on);
+        if (onP && agents.length) {
+          const last = agents[agents.length - 1];
+          svg.appendChild(
+            elNS("path", {
+              d: `M${onP.cx} ${onP.cy} L${onP.cx} ${last.cy}`,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+        }
+        projs.forEach((p) => {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${p.cx + 5} ${p.cy} H32`,
+              fill: "none",
+              stroke: p.on ? ink : dim,
+              "stroke-width": 1,
+            }),
+          );
+          svg.appendChild(
+            elNS("circle", {
+              cx: p.cx,
+              cy: p.cy,
+              r: 3.4,
+              fill: p.on ? ink : "none",
+              stroke: p.on ? ink : dim,
+              "stroke-width": 1,
+            }),
+          );
+        });
+        agents.forEach((a) => {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${a.fromX} ${a.cy} H${a.cx} H32`,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+          svg.appendChild(
+            elNS("circle", {
+              cx: a.cx,
+              cy: a.cy,
+              r: 2.4,
+              fill: a.on ? ink : "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+        });
+      }
+
+      function drawDash(svg, L, ink, dim) {
+        const projs = L.rows.filter((r) => r.kind === "proj");
+        const agents = L.rows.filter((r) => r.kind === "agent");
+        if (projs.length > 1) {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${L.cx} ${projs[0].cy} L${L.cx} ${projs[projs.length - 1].cy}`,
+              fill: "none",
+              stroke: dim,
+              "stroke-width": 1,
+              "stroke-dasharray": "1.2 2.4",
+            }),
+          );
+        }
+        const onP = projs.find((p) => p.on);
+        if (onP) {
+          const end = agents.length ? agents[agents.length - 1].cy : onP.cy;
+          svg.appendChild(
+            elNS("path", {
+              d: `M${onP.cx} ${onP.cy} L${onP.cx} ${end}`,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1.25,
+            }),
+          );
+        }
+        projs.forEach((p) => {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${p.cx} ${p.cy} H32`,
+              fill: "none",
+              stroke: p.on ? ink : dim,
+              "stroke-width": p.on ? 1.25 : 1,
+              "stroke-dasharray": p.on ? "none" : "1.2 2.4",
+            }),
+          );
+          svg.appendChild(
+            elNS("circle", {
+              cx: p.cx,
+              cy: p.cy,
+              r: p.on ? 3.6 : 2.8,
+              fill: p.on ? ink : "none",
+              stroke: p.on ? ink : dim,
+              "stroke-width": 1,
+            }),
+          );
+        });
+        agents.forEach((a) => {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${a.fromX} ${a.cy} H32`,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1.25,
+            }),
+          );
+          svg.appendChild(
+            elNS("rect", {
+              x: a.cx - 2.2,
+              y: a.cy - 2.2,
+              width: 4.4,
+              height: 4.4,
+              fill: a.on ? ink : "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+        });
+      }
+
+      function drawTick(svg, L, ink, dim) {
+        const projs = L.rows.filter((r) => r.kind === "proj");
+        const agents = L.rows.filter((r) => r.kind === "agent");
+        const top = (projs[0]?.cy || 14) - 8;
+        const bot = (projs[projs.length - 1]?.cy || 14) + 8;
+        svg.appendChild(
+          elNS("path", {
+            d: `M${L.cx} ${top} L${L.cx} ${bot}`,
+            fill: "none",
+            stroke: dim,
+            "stroke-width": 1,
+          }),
+        );
+        const onP = projs.find((p) => p.on);
+        if (onP && agents.length) {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${onP.cx} ${onP.cy} L${onP.cx} ${agents[agents.length - 1].cy}`,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+        }
+        projs.forEach((p) => {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${p.cx} ${p.cy} H${p.cx + (p.on ? 14 : 10)}`,
+              fill: "none",
+              stroke: p.on ? ink : dim,
+              "stroke-width": p.on ? 1.5 : 1,
+            }),
+          );
+        });
+        agents.forEach((a) => {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${a.fromX} ${a.cy} H${a.fromX + 8}`,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+          if (a.on) {
+            svg.appendChild(
+              elNS("circle", {
+                cx: a.fromX + 8,
+                cy: a.cy,
+                r: 2.2,
+                fill: ink,
+              }),
+            );
+          }
+        });
+      }
+
+      function drawCell(svg, L, ink, dim) {
+        const projs = L.rows.filter((r) => r.kind === "proj");
+        const agents = L.rows.filter((r) => r.kind === "agent");
+        if (projs.length > 1) {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${L.cx} ${projs[0].cy} L${L.cx} ${projs[projs.length - 1].cy}`,
+              fill: "none",
+              stroke: dim,
+              "stroke-width": 1,
+            }),
+          );
+        }
+        const onP = projs.find((p) => p.on);
+        if (onP) {
+          const last = agents[agents.length - 1] || onP;
+          const x = 6;
+          const y = onP.top - 4;
+          const w = 248;
+          const h = last.top + last.h - onP.top + 8;
+          svg.appendChild(
+            elNS("rect", {
+              x,
+              y,
+              width: w,
+              height: h,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+        }
+        projs.forEach((p) => {
+          svg.appendChild(
+            elNS("circle", {
+              cx: p.cx,
+              cy: p.cy,
+              r: 3.2,
+              fill: p.on ? ink : "none",
+              stroke: p.on ? ink : dim,
+              "stroke-width": 1,
+            }),
+          );
+        });
+        agents.forEach((a) => {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${a.fromX} ${a.cy} H${a.cx}`,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+          svg.appendChild(
+            elNS("circle", {
+              cx: a.cx,
+              cy: a.cy,
+              r: 2.3,
+              fill: a.on ? ink : "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+        });
+      }
+
+      const DRAW = {
+        callout: drawCallout,
+        dash: drawDash,
+        tick: drawTick,
+        cell: drawCell,
+      };
+
+      function paintGraph(root, scheme) {
+        const L = layout();
+        const inner = root.querySelector(".inner");
+        const svg = root.querySelector("svg");
+        const labs = root.querySelector(".labs");
+        inner.style.height = `${Math.max(L.height, 1)}px`;
+        const h = Math.max(L.height, inner.clientHeight, 1);
+        inner.style.height = `${h}px`;
+        svg.setAttribute("viewBox", `0 0 260 ${h}`);
+        svg.setAttribute("preserveAspectRatio", "xMinYMin meet");
+        svg.replaceChildren();
+        DRAW[scheme](svg, L, token("--n-label"), token("--n-line"));
+        const showN = scheme === "tick";
+        labs.innerHTML = L.rows
+          .map((r) => {
+            if (r.kind === "proj") {
+              const on = r.on ? " is-on" : "";
+              const path = r.path
+                ? `<span class="path">${esc(r.path)}</span>`
+                : "";
+              const n = showN && r.n > 0 ? `<span class="n">${r.n}</span>` : "";
+              return `<button type="button" class="hit proj${on}" data-ws="${esc(r.id)}" style="top:${r.top}px;height:${r.h}px"><span class="dot"></span><span class="copy"><span class="name">${esc(r.name)}</span>${path}</span>${n}</button>`;
+            }
+            const on = r.on ? " is-on" : "";
+            return `<button type="button" class="hit agent${on}" data-agent="${esc(r.id)}" style="top:${r.top}px;height:${r.h}px"><span class="dot"></span><span class="copy"><span class="name">${esc(r.name)}</span></span></button>`;
+          })
+          .join("");
+      }
+
+      function sessionsHtml() {
+        const q = state.q.trim().toLowerCase();
+        const rows = SESSIONS.filter((s) => !q || s.t.toLowerCase().includes(q))
+          .map((s) => {
+            const on = s.on ? " is-on" : "";
+            const kid = s.kid ? " is-kid" : "";
+            return `<div class="srow${on}${kid}"><span>${esc(s.t)}</span><span class="st">${esc(s.time)}</span></div>`;
+          })
+          .join("");
+        return `<div class="sessions"><div class="q"><input type="search" placeholder="搜索会话" value="${esc(state.q)}" data-q="1" /></div><button type="button" class="new">+ 新建会话</button><div class="slist">${rows}</div></div>`;
+      }
+
+      function railHtml(scheme) {
+        const t = (id, label) =>
+          `<button type="button" class="tab${state.tab === id ? " is-on" : ""}" data-tab="${id}">${label}</button>`;
+        return `<div class="rail">
+          <div class="tabs">${t("system", "系统")}${t("project", "项目")}${t("im", "IM")}</div>
+          <div class="graph" data-graph="${scheme}"><div class="inner"><svg></svg><div class="labs"></div></div></div>
+          <button type="button" class="add" data-add="1">+ 增加项目</button>
+          ${sessionsHtml()}
+        </div>`;
+      }
+
+      function paint() {
+        const stage = document.getElementById("stage");
+        stage.innerHTML = SCHEMES.map(
+          (s) => `<div class="col" data-scheme="${s.id}">
+            <div class="col-head"><div class="col-id">${s.k}</div><div class="col-name">${s.name}</div><p class="col-blurb">${s.blurb}</p></div>
+            ${railHtml(s.id)}
+          </div>`,
+        ).join("");
+        stage.querySelectorAll("[data-graph]").forEach((g) => {
+          paintGraph(g, g.getAttribute("data-graph"));
+        });
+      }
+
+      paint();
+
+      document.body.addEventListener("click", (e) => {
+        const t = e.target;
+        if (!(t instanceof Element)) return;
+        const theme = t.closest("[data-theme]");
+        if (theme && theme.closest(".seg")) {
+          document.documentElement.dataset.theme = theme.getAttribute("data-theme");
+          document.querySelectorAll(".cmd-tools [data-theme]").forEach((b) => {
+            b.classList.toggle("is-on", b === theme);
+          });
+          document.querySelectorAll("[data-graph]").forEach((g) => {
+            paintGraph(g, g.getAttribute("data-graph"));
+          });
+          return;
+        }
+        const tab = t.closest("[data-tab]");
+        if (tab) {
+          state.tab = tab.getAttribute("data-tab");
+          if (state.tab === "project") {
+            state.ws = PROJECTS.some((p) => p.id === state.ws)
+              ? state.ws
+              : PROJECTS[0].id;
+          } else if (state.tab === "system") state.ws = "local";
+          else state.ws = "inbox";
+          state.agent = current().agents[0].id;
+          paint();
+          return;
+        }
+        const add = t.closest("[data-add]");
+        if (add) {
+          const n = PROJECTS.filter((p) => p.id.startsWith("项目-")).length + 1;
+          const id = `项目-${n}`;
+          PROJECTS.push({
+            id,
+            path: `/tmp/${id}`,
+            agents: [{ id: `${id}:coding`, name: "coding" }],
+          });
+          state.tab = "project";
+          state.ws = id;
+          state.agent = `${id}:coding`;
+          paint();
+          return;
+        }
+        const ws = t.closest("[data-ws]");
+        if (ws) {
+          state.ws = ws.getAttribute("data-ws");
+          state.agent = current().agents[0].id;
+          paint();
+          return;
+        }
+        const ag = t.closest("[data-agent]");
+        if (ag) {
+          state.agent = ag.getAttribute("data-agent");
+          paint();
+        }
+      });
+
+      document.body.addEventListener("input", (e) => {
+        const t = e.target;
+        if (t instanceof HTMLInputElement && t.hasAttribute("data-q")) {
+          state.q = t.value;
+          document.querySelectorAll(".slist").forEach((list) => {
+            const q = state.q.trim().toLowerCase();
+            list.innerHTML = SESSIONS.filter(
+              (s) => !q || s.t.toLowerCase().includes(q),
+            )
+              .map((s) => {
+                const on = s.on ? " is-on" : "";
+                const kid = s.kid ? " is-kid" : "";
+                return `<div class="srow${on}${kid}"><span>${esc(s.t)}</span><span class="st">${esc(s.time)}</span></div>`;
+              })
+              .join("");
+          });
+        }
+      });
+    </script>
+  </body>
+</html>

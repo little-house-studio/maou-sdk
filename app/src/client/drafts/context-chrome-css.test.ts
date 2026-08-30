@@ -76,6 +76,25 @@ describe("context chrome CSS coexistence", () => {
     assert.match(css, /\.wire-thread-lead\s*\{/s);
   });
 
+  it("long user questions clip to 6 lines and scroll inside the bubble", () => {
+    assert.match(
+      css,
+      /\.bubble-text\.user-msg-clip\s*\{[^}]*--user-msg-max-lines:\s*6/s,
+    );
+    assert.match(
+      css,
+      /\.bubble-text\.user-msg-clip\s*\{[^}]*max-height:\s*calc\(1\.55em \* var\(--user-msg-max-lines\)\)/s,
+    );
+    assert.match(
+      css,
+      /\.bubble-text\.user-msg-clip\s*\{[^}]*overflow-y:\s*auto/s,
+    );
+    assert.match(
+      css,
+      /\.bubble-text\.user-msg-clip\s*\{[^}]*overscroll-behavior:\s*contain/s,
+    );
+  });
+
   it("round chip sticks with the user bar inside its turn", () => {
     assert.match(
       css,
@@ -91,6 +110,7 @@ describe("context chrome CSS coexistence", () => {
       css,
       /\.wire-reply-turn > \.wire-info-hover,\s*\.wire-reply-turn > \.wire-round-chip\s*\{[^}]*z-index:\s*32/s,
     );
+    assert.match(css, /\.wire-user-stick\s*\{[^}]*z-index:\s*34/s);
   });
 
   it("thread scroll has no top padding so sticky sits flush under crumbs", () => {

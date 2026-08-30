@@ -48,7 +48,7 @@ export function createMcpBridgeTool(
         properties: {},
         additionalProperties: true,
       }) as JsonSchema,
-      allowedModes: ["execute"],
+      allowedModes: ["plan", "execute"],
       // MCP 副作用不可知：默认串行，避免并发破坏 server 状态
       parallelSafe: false,
     };

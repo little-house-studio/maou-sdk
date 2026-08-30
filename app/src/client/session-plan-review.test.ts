@@ -122,11 +122,39 @@ describe("plan review：阻塞态 vs 顾问态", () => {
     const st = resolvePlanReview(view("# 计划"), null);
     assert.equal(st.blocking, false);
     assert.equal(st.show, isPlanReviewOpen(view("# 计划"), null));
-    // 收起 / 正在启动仍然生效
+    // 正在启动仍然生效
     assert.equal(
       resolvePlanReview(view("# 计划"), null, { planLaunching: true }).show,
       false,
     );
+  });
+
+  it("落盘已批准 → 收成同意灰卡", () => {
+    const st = resolvePlanReview(
+      view("# 计划", { status: "approved", active: false, revision: 2 }),
+      null,
+    );
+    assert.equal(st.show, true);
+    assert.equal(st.blocking, false);
+    assert.equal(st.settled, "approve");
+  });
+
+  it("本地已选 → 按 outcome 收纳，不再当顾问卡", () => {
+    const st = resolvePlanReview(view("# 计划"), null, {
+      settled: { revision: 1, outcome: "reject", note: "改目标" },
+    });
+    assert.equal(st.show, true);
+    assert.equal(st.settled, "reject");
+    assert.equal(st.note, "改目标");
+    assert.equal(st.blocking, false);
+  });
+
+  it("先不跑 → 收成 hold 灰卡，不消失", () => {
+    const st = resolvePlanReview(view("# 计划"), null, {
+      dismissedRevision: 1,
+    });
+    assert.equal(st.show, true);
+    assert.equal(st.settled, "hold");
   });
 });
 

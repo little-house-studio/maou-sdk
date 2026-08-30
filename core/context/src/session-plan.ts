@@ -198,27 +198,13 @@ export function bindSessionPlanPort(sessionDir: string, sessionId: string): Sess
   };
 }
 
-export function renderPlanPolicy(planFile: string, objective?: string): string {
-  const goal = objective?.trim()
-    ? `Objective: ${objective.trim()}\n`
-    : "";
-  return (
-    `<plan_policy>\n` +
-    `You are in plan mode. Investigate first. Do not implement product code.\n` +
-    goal +
-    `Only the session plan file may be written: ${planFile}\n` +
-    `Read the workspace, settle every decision, then write a complete markdown plan that starts with a # heading.\n` +
-    `Required sections: intent, decisions already made, steps, verification, non-goals, risks.\n` +
-    `The plan must be decision-complete so another engineer can implement it without asking you what to choose.\n` +
-    `When the plan is ready, call submit_plan with the full markdown. Do not ask "should I proceed?"\n` +
-    `The user will /plan approve, /plan revise <notes>, or /plan off.\n` +
-    `</plan_policy>`
-  );
+export function renderPlanPolicy(_planFile?: string, _objective?: string): string {
+  return "当前是 plan 计划阶段，不要编辑文件。";
 }
 
 export function renderPlanKickoff(objective: string, planFile: string): string {
   return (
-    `Draft a decision-complete implementation plan. Do not change product files.\n` +
+    `当前是 plan 计划阶段，不要编辑文件。\n` +
     `Objective: ${objective}\n` +
     `Write the plan to ${planFile} and call submit_plan when it is ready.\n`
   );
@@ -226,7 +212,7 @@ export function renderPlanKickoff(objective: string, planFile: string): string {
 
 export function renderPlanRevise(notes: string, planFile: string): string {
   return (
-    `Revise the current plan. Stay in plan mode. Do not implement.\n` +
+    `当前是 plan 计划阶段，不要编辑文件。按备注改计划。\n` +
     `Revision notes: ${notes}\n` +
     `Update ${planFile} and call submit_plan with the full replacement.\n`
   );

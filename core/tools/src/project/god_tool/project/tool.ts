@@ -38,7 +38,7 @@ export class ProjectGodTool extends Tool {
       required: ["action"],
       additionalProperties: true,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   private readonly agent = new ProjectAgentTool();

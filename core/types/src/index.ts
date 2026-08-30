@@ -67,6 +67,7 @@ export interface ToolDefinition {
   aliases: string[]
   description: string
   parameters: JsonSchema
+  /** 可调用此工具的 agentMode。`plan` 与 `execute` 同一档。null = 不限。 */
   allowedModes: string[] | null
   paramGuards?: Record<string, string>
   /**

@@ -3,7 +3,7 @@ export const SHELL_LEFT = {
   default: 260,
   min: 200,
   max: 360,
-  agentPct: 38,
+  agentPct: 24,
 } as const;
 
 /** Icon activity strip on both rails. */

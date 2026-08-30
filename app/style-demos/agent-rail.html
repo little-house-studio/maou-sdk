@@ -1,0 +1,1014 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="plate">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 项目区方案对比</title>
+    <style>
+      /*
+       * Token 抄自 app/src/client/drafts/draft.css 纸面壳
+       * 读写：本页静态演示；生产 AgentList 不读这里
+       */
+      :root {
+        --n-bg: #ededed;
+        --n-label: #000000;
+        --n-on: #000000;
+        --n-on-ink: #ededed;
+        --n-secondary: #828282;
+        --n-line: #9b9b9b;
+        --n-info: #0291FF;
+        --n-font: "Helvetica Neue", Helvetica, Arial, "PingFang SC",
+          "HarmonyOS Sans SC", sans-serif;
+        --row: 1.3125em;
+        --rail: 248px;
+      }
+      html[data-theme="phosphor"] {
+        --n-bg: #0b0b0b;
+        --n-label: #ecece8;
+        --n-on: #ecece8;
+        --n-on-ink: #0b0b0b;
+        --n-secondary: #8a8a84;
+        --n-line: #5c5c58;
+        --n-info: #b8ff00;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        height: 100dvh;
+        overflow: hidden;
+        background: var(--n-bg);
+        color: var(--n-label);
+        font: 400 13px / var(--row) var(--n-font);
+      }
+      button, input { font: inherit; color: inherit; }
+      button {
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      input {
+        border: 0;
+        border-radius: 0;
+        outline: none;
+        background: transparent;
+      }
+      input::placeholder { color: var(--n-secondary); }
+      :focus-visible {
+        outline: 1px solid var(--n-info);
+        outline-offset: -1px;
+      }
+
+      .sheet {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .cmd {
+        display: grid;
+        grid-template-columns: minmax(16em, 2.2fr) auto;
+        border-bottom: 1px solid var(--n-line);
+        min-width: 0;
+      }
+      .cmd-copy {
+        padding: 0.7em 0.8em 0.75em;
+        border-right: 1px solid var(--n-line);
+        min-width: 0;
+      }
+      .cmd-copy h1 {
+        margin: 0 0 0.2em;
+        font-size: 1.15em;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        line-height: 1.2;
+      }
+      .cmd-copy p {
+        margin: 0;
+        color: var(--n-secondary);
+        max-width: 62em;
+      }
+      .cmd-copy a { color: inherit; }
+      @media (hover: hover) {
+        .cmd-copy a:hover { color: var(--n-info); }
+      }
+      .cmd-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: start;
+        gap: 0.55em 1.1em;
+        padding: 0.7em 0.8em;
+      }
+      .tool-block { display: flex; flex-direction: column; gap: 0.15em; }
+      .tool-k { color: var(--n-secondary); font-size: 11px; }
+      .seg { display: flex; border: 1px solid var(--n-line); }
+      .seg button {
+        padding: 0 0.65em;
+        min-height: calc(var(--row) * 1.35);
+        color: var(--n-secondary);
+      }
+      .seg button + button { border-left: 1px solid var(--n-line); }
+      .seg button.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      .stage {
+        min-height: 0;
+        overflow: auto;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(var(--rail), 1fr));
+      }
+      .sheet[data-view="switch"] .stage {
+        grid-template-columns: minmax(var(--rail), 20em) minmax(0, 1fr);
+      }
+      .sheet[data-view="switch"] .col:not(.is-focus) { display: none; }
+      .sheet[data-view="switch"] .note { display: block; }
+      .note { display: none; }
+      .note {
+        padding: 1em 1.2em;
+        color: var(--n-secondary);
+      }
+      .note h2 {
+        margin: 0 0 0.35em;
+        font-size: 1.1em;
+        font-weight: 500;
+        color: var(--n-label);
+      }
+      .note ul { margin: 0.5em 0 0; padding-left: 1.1em; }
+      .note li + li { margin-top: 0.25em; }
+
+      .col {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        border-right: 1px solid var(--n-line);
+      }
+      .col-head {
+        padding: 0.55em 0.7em 0.5em;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .col-id { color: var(--n-secondary); font-size: 11px; }
+      .col-name { font-weight: 500; }
+      .col-blurb {
+        margin: 0.15em 0 0;
+        color: var(--n-secondary);
+      }
+
+      .rail {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        max-width: 22em;
+      }
+
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        border-bottom: 1px solid var(--n-line);
+        flex-shrink: 0;
+      }
+      .tab {
+        min-height: calc(var(--row) * 1.4);
+        padding: 0 0.4em;
+        color: var(--n-secondary);
+        border-left: 1px solid var(--n-line);
+      }
+      .tab:first-child { border-left: 0; }
+      .tab.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      /* 现在：上半按生产旧值锁 38%，空灰也占着；末行脚注 */
+      .rail.now {
+        display: grid;
+        grid-template-rows: minmax(0, 38fr) minmax(0, 62fr) auto;
+      }
+      .rail.now .top {
+        min-height: 0;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+      }
+      .rail.a,
+      .rail.b,
+      .rail.c {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+      }
+
+      .desk { min-width: 0; }
+      .sq {
+        width: 0.35em;
+        height: 0.35em;
+        background: currentColor;
+        flex-shrink: 0;
+      }
+      .sq.is-run { background: var(--n-info); }
+      .is-on .sq { background: var(--n-on-ink); }
+      .is-on .sq.is-run { background: var(--n-on-ink); }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 0.45em;
+        width: 100%;
+        min-height: var(--row);
+        padding: 0 0.5em;
+        color: var(--n-secondary);
+      }
+      .row:hover { color: var(--n-info); }
+      .row.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .row.is-ink {
+        color: var(--n-label);
+        box-shadow: inset 2px 0 0 var(--n-label);
+        background: transparent;
+      }
+      .nm {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* 现在：分组头 + 树轨 + 同名根再画一行 */
+      .now .host {
+        padding: 0.55em 0.5em 0.1em;
+        color: var(--n-secondary);
+      }
+      .now .kids {
+        margin: 0 0 0.15em 0.85em;
+        border-left: 1px solid var(--n-line);
+      }
+      .now .kids .row { padding-left: 0.55em; }
+
+      /* A：当前工作区一行，附属名册，其它进下拉 */
+      .rail.a .top {
+        overflow: visible;
+        position: relative;
+        z-index: 2;
+      }
+      .a .switch {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        position: relative;
+        z-index: 1;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .a .switch:has(.menu) { z-index: 3; }
+      .a .switch-bar {
+        display: flex;
+        align-items: stretch;
+        min-width: 0;
+      }
+      .a .switch-now {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.45em;
+        padding: 0.2em 0.5em;
+        min-height: calc(var(--row) * 2.05);
+        color: var(--n-label);
+      }
+      .a .switch-now.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .a .switch-more {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25em;
+        padding: 0 0.55em;
+        color: var(--n-secondary);
+      }
+      .a .switch-more.is-open,
+      .a .switch-more:hover { color: var(--n-label); }
+      .a .switch-add {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.6em;
+        padding: 0 0.55em;
+        color: var(--n-secondary);
+        border-left: 1px solid var(--n-line);
+      }
+      .a .switch-add:hover { color: var(--n-label); }
+      .a .menu {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 100%;
+        z-index: 8;
+        max-height: min(18em, 45vh);
+        overflow: auto;
+        background: var(--n-bg);
+        border: 1px solid var(--n-line);
+        border-top: 0;
+        padding: 0.15em 0 0.25em;
+      }
+      .a .opt {
+        display: flex;
+        align-items: center;
+        gap: 0.45em;
+        width: 100%;
+        min-height: 0;
+        padding: 0.45em 0.55em;
+        color: var(--n-label);
+      }
+      .a .opt .nm { font-weight: 600; }
+      .a .path {
+        font-size: 12px;
+        color: #2a2a2a;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        line-height: 1.25;
+        opacity: 1;
+      }
+      .a .opt:hover { color: var(--n-info); }
+      .a .opt.is-cur {
+        color: var(--n-label);
+        box-shadow: inset 2px 0 0 var(--n-info);
+      }
+      .a .copy {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.35em;
+        line-height: 1.25;
+      }
+      .a .switch-now.is-on .path {
+        color: #d4d4d4;
+        opacity: 1;
+      }
+      .a .opt-n {
+        margin-left: auto;
+        font-size: 11px;
+        color: #4a4a4a;
+      }
+      .a .roster { padding: 0.15em 0 0.35em; }
+      .a .roster .row { padding-left: 0.9em; }
+
+      /* B：四个项目名都在，只摊开当前这一个 */
+      .b .acc-h {
+        display: flex;
+        align-items: center;
+        gap: 0.4em;
+        width: 100%;
+        min-height: calc(var(--row) * 1.25);
+        padding: 0 0.5em;
+        color: var(--n-secondary);
+      }
+      .b .acc-h:hover { color: var(--n-info); }
+      .b .acc-h.is-cur { color: var(--n-label); }
+      .b .acc-h.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .b .chev {
+        width: 0.9em;
+        flex-shrink: 0;
+        color: inherit;
+        opacity: 0.7;
+      }
+      .b .acc-n {
+        margin-left: auto;
+        font-size: 11px;
+        opacity: 0.7;
+      }
+      .b .acc-kids { padding: 0 0 0.2em; }
+      .b .acc-kids .row { padding-left: 1.4em; }
+
+      /* C：工作区一行 + 附属横排芯片 */
+      .c .pick {
+        display: flex;
+        align-items: stretch;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .c .pick-now {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.45em;
+        min-height: calc(var(--row) * 1.35);
+        padding: 0 0.5em;
+        color: var(--n-label);
+      }
+      .c .pick-now.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .c .pick-more {
+        padding: 0 0.55em;
+        color: var(--n-secondary);
+        display: inline-flex;
+        align-items: center;
+      }
+      .c .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .c .chip {
+        min-height: calc(var(--row) * 1.2);
+        padding: 0 0.55em;
+        color: var(--n-secondary);
+        border-right: 1px solid var(--n-line);
+      }
+      .c .chip:hover { color: var(--n-info); }
+      .c .chip.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .c .menu {
+        border-bottom: 1px solid var(--n-line);
+        padding: 0.15em 0 0.25em;
+      }
+      .c .opt {
+        display: flex;
+        width: 100%;
+        min-height: var(--row);
+        padding: 0 0.55em;
+        color: var(--n-secondary);
+      }
+      .c .opt.is-cur {
+        color: var(--n-label);
+        box-shadow: inset 2px 0 0 var(--n-info);
+      }
+
+      .sessions {
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--n-line);
+        opacity: 0.78;
+        pointer-events: none;
+        user-select: none;
+      }
+      .q {
+        width: 100%;
+        min-height: calc(var(--row) * 1.45);
+        padding: 0 0.5em;
+        border-bottom: 1px solid var(--n-line);
+        color: var(--n-secondary);
+      }
+      .new {
+        width: 100%;
+        min-height: calc(var(--row) * 1.35);
+        padding: 0 0.5em;
+        border-bottom: 1px solid var(--n-line);
+        color: var(--n-label);
+      }
+      .srow {
+        display: flex;
+        align-items: center;
+        gap: 0.5em;
+        min-height: calc(var(--row) * 1.55);
+        padding: 0 0.5em;
+        color: var(--n-label);
+      }
+      .srow.is-on { box-shadow: inset 2px 0 0 var(--n-label); }
+      .srow.is-kid { padding-left: 1.2em; color: var(--n-secondary); }
+      .sttl {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .st { flex-shrink: 0; font-size: 11px; color: var(--n-secondary); }
+      .slist { flex: 1; min-height: 0; overflow: hidden; }
+      .foot {
+        flex-shrink: 0;
+        padding: 0.35em 0.5em 0.45em;
+        border-top: 1px solid var(--n-line);
+        color: var(--n-secondary);
+        font-size: 11px;
+      }
+      .foot b { color: var(--n-label); font-weight: 500; }
+
+      .stub {
+        padding: 0.45em 0.5em;
+        color: var(--n-secondary);
+      }
+
+      @media (max-width: 1100px) {
+        .sheet[data-view="row"] .stage {
+          grid-template-columns: repeat(2, minmax(var(--rail), 1fr));
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * { transition: none !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sheet" data-view="row" id="sheet">
+      <header class="cmd">
+        <div class="cmd-copy">
+          <h1>侧栏项目区方案对比</h1>
+          <p>
+            只比「项目」Tab 那一块怎么放工作区和附属 agent，不是整站重做。
+            会话列表锁住，用来看上半吃掉多少高度。同一批假数据，每列状态独立。
+            生产代码不读本页。
+            <a href="index.html">← 单元网格</a>
+          </p>
+        </div>
+        <div class="cmd-tools">
+          <div class="tool-block">
+            <span class="tool-k">看</span>
+            <div class="seg" role="tablist" aria-label="对照方式">
+              <button type="button" data-view="row" class="is-on">并排</button>
+              <button type="button" data-view="switch">切换</button>
+            </div>
+          </div>
+          <div class="tool-block" id="schemeSegWrap" hidden>
+            <span class="tool-k">方案</span>
+            <div class="seg" role="tablist" aria-label="方案">
+              <button type="button" data-focus="now" class="is-on">现在</button>
+              <button type="button" data-focus="a">A</button>
+              <button type="button" data-focus="b">B</button>
+              <button type="button" data-focus="c">C</button>
+            </div>
+          </div>
+          <div class="tool-block">
+            <span class="tool-k">纸面</span>
+            <div class="seg" role="tablist" aria-label="主题">
+              <button type="button" data-theme="plate" class="is-on">纸</button>
+              <button type="button" data-theme="phosphor">磷光</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="stage" id="stage">
+        <article class="col is-focus" data-col="now">
+          <div class="col-head">
+            <div class="col-id">对照</div>
+            <div class="col-name">现在 · 全树</div>
+            <p class="col-blurb">截图还原：四个项目全摊开，同名根再画一行。上半锁 38%。</p>
+          </div>
+          <div class="rail now" data-scheme="now"></div>
+        </article>
+        <article class="col" data-col="a">
+          <div class="col-head">
+            <div class="col-id">A · 切换器</div>
+            <div class="col-name">当前工作区</div>
+            <p class="col-blurb">只画当前项目。同名根不重复。其它项目进 ▾。右上 + 增加项目。</p>
+          </div>
+          <div class="rail a" data-scheme="a"></div>
+        </article>
+        <article class="col" data-col="b">
+          <div class="col-head">
+            <div class="col-id">B · 单开</div>
+            <div class="col-name">名册手风琴</div>
+            <p class="col-blurb">四个项目名都在，只摊开当前这一个。不用下拉也能看见还有谁。</p>
+          </div>
+          <div class="rail b" data-scheme="b"></div>
+        </article>
+        <article class="col" data-col="c">
+          <div class="col-head">
+            <div class="col-id">C · 一行</div>
+            <div class="col-name">工作台条</div>
+            <p class="col-blurb">工作区一行 + 附属横排芯片。上半压到最薄，会话尽量顶上来。</p>
+          </div>
+          <div class="rail c" data-scheme="c"></div>
+        </article>
+        <aside class="note" id="note"></aside>
+      </div>
+    </div>
+
+    <script>
+      const PROJECTS = [
+        {
+          id: "app",
+          path: "/Users/mac/Documents/vscodeProject/app",
+          agents: [
+            { id: "app:app", name: "app" },
+            { id: "app:install", name: "install" },
+          ],
+        },
+        {
+          id: "maou-example",
+          path: "/Users/mac/Documents/vscodeProject/maou-example",
+          agents: [
+            { id: "ex:root", name: "maou-example" },
+            { id: "ex:sup", name: "supervisor" },
+          ],
+        },
+        {
+          id: "pi",
+          path: "/home/user/pi",
+          agents: [{ id: "pi:pi", name: "pi" }],
+        },
+        {
+          id: "maou-agent",
+          path: "/Users/mac/Documents/vscodeProject/maou-agent",
+          agents: [
+            { id: "ag:root", name: "maou-agent" },
+            { id: "ag:raven", name: "Raven", run: true },
+            { id: "ag:search", name: "SearchBot" },
+            { id: "ag:sup", name: "supervisor" },
+          ],
+        },
+      ];
+
+      const SESSIONS = [
+        { t: "补全上下文方案决策完备", time: "52 分钟前", on: true },
+        { t: "请求补充背景和目标以确定…", time: "1 小时前" },
+        { t: "fork task-mte3nqj9", time: "1 小时前", kid: true },
+        { t: "当前路径: /home/user", time: "5 小时前" },
+        { t: "同步权限档与工具白名单", time: "昨天" },
+        { t: "子会话 · 核对 vendor/bin", time: "昨天", kid: true },
+      ];
+
+      const NOTES = {
+        now: {
+          t: "现在 · 全树",
+          d: "对照列。四个工作区同时摊开，项目名和主 agent 同名就画两行，竖线当文件树。上半按旧生产锁 38%，内容再少也留空灰。",
+          pts: [
+            "能一眼扫完全部项目，这是它唯一的优点。",
+            "同名双行是噪声，不是层级。",
+            "项目一多，会话被整体下推。",
+          ],
+        },
+        a: {
+          t: "A · 切换器",
+          d: "默认只服务「我正在哪」。点工作区名 = 选主 agent；附属列在下面。其它项目藏进 ▾。生产侧栏已经改成这一路，方便你跟另外两案比。",
+          pts: [
+            "纵向最省，空灰不再被 flex 撑满。",
+            "右上 + 选文件夹加入工作区；下拉里也有同一条。",
+            "要知道还有哪些项目，必须点开 ▾。",
+            "适合项目很多、但一次只泡在一个仓库里。",
+          ],
+        },
+        b: {
+          t: "B · 单开名册",
+          d: "四个项目名始终占一行，当前这个才展开附属。不用下拉，也能看见旁边还有 pi / maou-example。",
+          pts: [
+            "发现性比 A 好，高度比全树小一截。",
+            "项目数从 4 涨到 20 时，这列标题本身会重新变长。",
+            "适合同时开着几个仓库、又常来回切的人。",
+          ],
+        },
+        c: {
+          t: "C · 一行工作台",
+          d: "工作区当命令条，附属变成同一行芯片。上半压到 1～2 行，会话几乎贴着 Tab。",
+          pts: [
+            "附属一多芯片会换行，窄侧栏里不如名册稳。",
+            "没有「还有哪些项目」的常驻提示，和 A 一样靠 ▾。",
+            "适合附属很少、会话才是主场的用法。",
+          ],
+        },
+      };
+
+      const stores = {
+        now: { tab: "project", ws: "app", agent: "app:app", menu: false, extra: [] },
+        a: { tab: "project", ws: "app", agent: "app:app", menu: false, extra: [] },
+        b: { tab: "project", ws: "app", agent: "app:app", menu: false, extra: [] },
+        c: { tab: "project", ws: "app", agent: "app:app", menu: false, extra: [] },
+      };
+
+      function esc(s) {
+        return String(s).replace(/[&<>"]/g, (ch) =>
+          ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]),
+        );
+      }
+
+      function catalog(st) {
+        return PROJECTS.concat(st.extra);
+      }
+
+      function proj(st, id) {
+        return catalog(st).find((p) => p.id === id);
+      }
+
+      function compactPath(p) {
+        if (!p) return "";
+        return String(p)
+          .replace(/\\/g, "/")
+          .replace(/^\/Users\/[^/]+/, "~")
+          .replace(/^\/home\/[^/]+/, "~");
+      }
+
+      function copyHtml(name, path) {
+        const c = compactPath(path);
+        return `<span class="copy"><span class="nm">${esc(name)}</span>${c ? `<span class="path">${esc(c)}</span>` : ""}</span>`;
+      }
+
+      function affiliates(p) {
+        return p.agents.filter((a) => a.name !== p.id);
+      }
+
+      function rootAgent(p) {
+        return p.agents.find((a) => a.name === p.id) || p.agents[0];
+      }
+
+      function sq(agent) {
+        return `<span class="sq${agent?.run ? " is-run" : ""}" aria-hidden></span>`;
+      }
+
+      function tabsHtml(st) {
+        const t = (id, label) =>
+          `<button type="button" class="tab${st.tab === id ? " is-on" : ""}" data-tab="${id}">${label}</button>`;
+        return `<div class="tabs" role="tablist">${t("system", "系统")}${t("project", "项目")}${t("im", "IM")}</div>`;
+      }
+
+      function sessionsHtml() {
+        const rows = SESSIONS.map((s) => {
+          const on = s.on ? " is-on" : "";
+          const kid = s.kid ? " is-kid" : "";
+          return `<div class="srow${on}${kid}"><span class="sttl">${esc(s.t)}</span><span class="st">${esc(s.time)}</span></div>`;
+        }).join("");
+        return `
+          <div class="sessions" aria-hidden="true">
+            <div class="q">搜索会话</div>
+            <div class="new">+ 新建会话</div>
+            <div class="slist">${rows}</div>
+          </div>`;
+      }
+
+      function stubHtml(st) {
+        if (st.tab === "system") {
+          return `<div class="desk"><div class="stub">本机</div><div class="row is-on">${sq()}<span class="nm">ops</span></div><div class="row"><span class="sq"></span><span class="nm">monitor</span></div></div>`;
+        }
+        return `<div class="desk"><div class="stub">按状态排的收件箱，本页不比这一块。</div><div class="row is-on">${sq()}<span class="nm">Raven</span></div><div class="row"><span class="sq"></span><span class="nm">install</span></div></div>`;
+      }
+
+      function deskNow(st) {
+        return catalog(st).map((p) => {
+          const kids = p.agents
+            .map((a) => {
+              const on = a.id === st.agent ? " is-on" : "";
+              return `<button type="button" class="row${on}" data-agent="${a.id}" data-ws="${p.id}">${sq(a)}<span class="nm">${esc(a.name)}</span></button>`;
+            })
+            .join("");
+          return `<div><div class="host">${esc(p.id)}</div><div class="kids">${kids}</div></div>`;
+        }).join("");
+      }
+
+      function deskA(st) {
+        const list = catalog(st);
+        const p = proj(st, st.ws);
+        const root = rootAgent(p);
+        const on = st.agent === root.id ? " is-on" : "";
+        const kids = affiliates(p)
+          .map((a) => {
+            const sel = a.id === st.agent ? " is-on" : "";
+            return `<button type="button" class="row${sel}" data-agent="${a.id}">${sq(a)}<span class="nm">${esc(a.name)}</span></button>`;
+          })
+          .join("");
+        const menu = st.menu
+          ? `<div class="menu" role="listbox">${list
+              .map((g) => {
+                const cur = g.id === st.ws ? " is-cur" : "";
+                return `<button type="button" class="opt${cur}" data-ws="${g.id}" role="option">${copyHtml(g.id, g.path)}<span class="opt-n">${affiliates(g).length}</span></button>`;
+              })
+              .join("")}</div>`
+          : "";
+        const roster = kids ? `<div class="roster">${kids}</div>` : "";
+        return `
+          <div class="switch">
+            <div class="switch-bar">
+              <button type="button" class="switch-now${on}" data-agent="${root.id}">${sq(root)}${copyHtml(p.id, p.path)}</button>
+              <button type="button" class="switch-more${st.menu ? " is-open" : ""}" data-menu="1" aria-expanded="${st.menu}" aria-label="切换工作区">${list.length} ▾</button>
+              <button type="button" class="switch-add" data-add="1" aria-label="增加项目" title="增加项目">+</button>
+            </div>
+            ${menu}
+          </div>
+          ${roster}`;
+      }
+
+      function deskB(st) {
+        return catalog(st).map((p) => {
+          const open = p.id === st.ws;
+          const root = rootAgent(p);
+          const rootOn = open && st.agent === root.id ? " is-on" : "";
+          const cur = open ? " is-cur" : "";
+          const kids = open
+            ? affiliates(p)
+                .map((a) => {
+                  const sel = a.id === st.agent ? " is-on" : "";
+                  return `<button type="button" class="row${sel}" data-agent="${a.id}">${sq(a)}<span class="nm">${esc(a.name)}</span></button>`;
+                })
+                .join("")
+            : "";
+          return `
+            <button type="button" class="acc-h${cur}${rootOn}" data-ws="${p.id}" data-agent="${root.id}">
+              <span class="chev" aria-hidden>${open ? "▾" : "▸"}</span>
+              ${sq(root)}
+              <span class="nm">${esc(p.id)}</span>
+              <span class="acc-n">${p.agents.length}</span>
+            </button>
+            ${kids ? `<div class="acc-kids">${kids}</div>` : ""}`;
+        }).join("");
+      }
+
+      function deskC(st) {
+        const list = catalog(st);
+        const p = proj(st, st.ws);
+        const root = rootAgent(p);
+        const on = st.agent === root.id ? " is-on" : "";
+        const chips = affiliates(p)
+          .map((a) => {
+            const sel = a.id === st.agent ? " is-on" : "";
+            return `<button type="button" class="chip${sel}" data-agent="${a.id}">${esc(a.name)}</button>`;
+          })
+          .join("");
+        const menu = st.menu
+          ? `<div class="menu">${list.map((g) => {
+              const cur = g.id === st.ws ? " is-cur" : "";
+              return `<button type="button" class="opt${cur}" data-ws="${g.id}">${esc(g.id)}</button>`;
+            }).join("")}</div>`
+          : "";
+        const chipRow = chips ? `<div class="chips">${chips}</div>` : "";
+        return `
+          <div class="pick">
+            <button type="button" class="pick-now${on}" data-agent="${root.id}">${sq(root)}<span class="nm">${esc(p.id)}</span></button>
+            <button type="button" class="pick-more" data-menu="1" aria-label="切换工作区">▾</button>
+          </div>
+          ${menu}${chipRow}`;
+      }
+
+      function footHtml(scheme, st) {
+        const list = catalog(st);
+        const p = proj(st, st.ws);
+        const agent = p.agents.find((a) => a.id === st.agent);
+        const lines =
+          scheme === "now"
+            ? list.reduce((n, g) => n + 1 + g.agents.length, 0)
+            : scheme === "a"
+              ? 1 + affiliates(p).length + (st.menu ? list.length : 0)
+              : scheme === "b"
+                ? list.length + affiliates(p).length
+                : 1 + (affiliates(p).length ? 1 : 0) + (st.menu ? list.length : 0);
+        const lock = scheme === "now" ? " · 上半锁 38%" : " · 上半随内容";
+        return `<div class="foot">工作区 <b>${esc(p.id)}</b> · agent <b>${esc(agent?.name || "")}</b> · 项目区约 ${lines} 行${lock}</div>`;
+      }
+
+      function paint(scheme) {
+        const st = stores[scheme];
+        const root = document.querySelector(`[data-scheme="${scheme}"]`);
+        const desk =
+          st.tab !== "project"
+            ? stubHtml(st)
+            : scheme === "now"
+              ? `<div class="desk">${deskNow(st)}</div>`
+              : scheme === "a"
+                ? `<div class="desk">${deskA(st)}</div>`
+                : scheme === "b"
+                  ? `<div class="desk">${deskB(st)}</div>`
+                  : `<div class="desk">${deskC(st)}</div>`;
+        root.innerHTML = `
+          <div class="top">
+            ${tabsHtml(st)}
+            ${desk}
+          </div>
+          ${sessionsHtml()}
+          ${footHtml(scheme, st)}`;
+      }
+
+      function selectWs(st, ws) {
+        const p = proj(st, ws);
+        st.ws = ws;
+        st.agent = rootAgent(p).id;
+        st.menu = false;
+      }
+
+      function addProject(st) {
+        const n = st.extra.length + 1;
+        const id = `added-${n}`;
+        st.extra.push({
+          id,
+          path: `/tmp/${id}`,
+          agents: [{ id: `${id}:root`, name: id }],
+        });
+        selectWs(st, id);
+      }
+
+      function bind(scheme) {
+        const root = document.querySelector(`[data-scheme="${scheme}"]`);
+        root.addEventListener("click", (e) => {
+          const t = e.target;
+          const tab = t.closest("[data-tab]");
+          if (tab) {
+            stores[scheme].tab = tab.getAttribute("data-tab");
+            stores[scheme].menu = false;
+            paint(scheme);
+            return;
+          }
+          const add = t.closest("[data-add]");
+          if (add) {
+            addProject(stores[scheme]);
+            paint(scheme);
+            return;
+          }
+          const menu = t.closest("[data-menu]");
+          if (menu) {
+            stores[scheme].menu = !stores[scheme].menu;
+            paint(scheme);
+            return;
+          }
+          const wsBtn = t.closest("[data-ws]");
+          if (wsBtn && !t.closest("[data-agent]")) {
+            selectWs(stores[scheme], wsBtn.getAttribute("data-ws"));
+            paint(scheme);
+            return;
+          }
+          const ag = t.closest("[data-agent]");
+          if (ag) {
+            const st = stores[scheme];
+            const ws = ag.getAttribute("data-ws");
+            if (ws) st.ws = ws;
+            st.agent = ag.getAttribute("data-agent");
+            st.menu = false;
+            paint(scheme);
+          }
+        });
+      }
+
+      document.addEventListener("pointerdown", (e) => {
+        if (e.target.closest("[data-scheme]")) return;
+        ["a", "c"].forEach((s) => {
+          if (!stores[s].menu) return;
+          stores[s].menu = false;
+          paint(s);
+        });
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.key !== "Escape") return;
+        ["a", "c"].forEach((s) => {
+          if (!stores[s].menu) return;
+          stores[s].menu = false;
+          paint(s);
+        });
+      });
+
+      function setView(view) {
+        const sheet = document.getElementById("sheet");
+        sheet.dataset.view = view;
+        document.querySelectorAll("[data-view]").forEach((b) => {
+          b.classList.toggle("is-on", b.getAttribute("data-view") === view);
+        });
+        document.getElementById("schemeSegWrap").hidden = view !== "switch";
+        paintNote();
+      }
+
+      function setFocus(id) {
+        document.querySelectorAll(".col").forEach((c) => {
+          c.classList.toggle("is-focus", c.getAttribute("data-col") === id);
+        });
+        document.querySelectorAll("[data-focus]").forEach((b) => {
+          b.classList.toggle("is-on", b.getAttribute("data-focus") === id);
+        });
+        paintNote();
+      }
+
+      function paintNote() {
+        const sheet = document.getElementById("sheet");
+        const note = document.getElementById("note");
+        if (sheet.dataset.view !== "switch") return;
+        const id = document.querySelector(".col.is-focus")?.getAttribute("data-col") || "now";
+        const n = NOTES[id];
+        note.innerHTML = `<h2>${n.t}</h2><p>${n.d}</p><ul>${n.pts.map((p) => `<li>${p}</li>`).join("")}</ul>`;
+      }
+
+      document.querySelectorAll("[data-view]").forEach((b) => {
+        b.addEventListener("click", () => setView(b.getAttribute("data-view")));
+      });
+      document.querySelectorAll("[data-focus]").forEach((b) => {
+        b.addEventListener("click", () => setFocus(b.getAttribute("data-focus")));
+      });
+      document.querySelectorAll("[data-theme]").forEach((b) => {
+        b.addEventListener("click", () => {
+          document.documentElement.dataset.theme = b.getAttribute("data-theme");
+          document.querySelectorAll("[data-theme]").forEach((x) => {
+            x.classList.toggle("is-on", x === b);
+          });
+        });
+      });
+
+      ["now", "a", "b", "c"].forEach((s) => {
+        paint(s);
+        bind(s);
+      });
+      setView("row");
+    </script>
+  </body>
+</html>

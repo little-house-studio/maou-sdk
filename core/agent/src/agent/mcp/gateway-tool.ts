@@ -138,7 +138,7 @@ export function createMcpGatewayTool(backend: McpGatewayBackend): Tool {
         required: ["action"],
         additionalProperties: false,
       },
-      allowedModes: ["execute"],
+      allowedModes: ["plan", "execute"],
       parallelSafe: false,
     };
 

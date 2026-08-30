@@ -111,6 +111,18 @@ export function stickHomeScrollTop(
   return Math.max(0, Math.min(max, y));
 }
 
+/** Wheel should stay in an inner scroller while that scroller can still move. */
+export function wheelStaysInScroller(
+  box: { scrollHeight: number; scrollTop: number; clientHeight: number },
+  deltaY: number,
+): boolean {
+  if (box.scrollHeight <= box.clientHeight + 1) return false;
+  if (deltaY < 0) return box.scrollTop > 0;
+  if (deltaY > 0)
+    return box.scrollTop + box.clientHeight < box.scrollHeight - 1;
+  return true;
+}
+
 export function gapFromBottom(box: {
   scrollHeight: number;
   scrollTop: number;

@@ -72,15 +72,19 @@ function ctx(over: Partial<ToolContext> = {}): ToolContext {
 }
 
 describe("submit_plan", () => {
-  it("rejects outside plan mode and heading-less markdown", async () => {
+  it("rejects heading-less markdown", async () => {
+    const tool = new SubmitPlanTool();
+    const bad = await tool.execute({ plan: "no heading" }, ctx());
+    expect(bad.ok).toBe(false);
+  });
+
+  it("records a plan even if /plan was not entered first", async () => {
     const tool = new SubmitPlanTool();
     const inactive = await tool.execute(
       { plan: "# X" },
       ctx({ sessionPlan: port({ isActive: () => false }) }),
     );
-    expect(inactive.ok).toBe(false);
-    const bad = await tool.execute({ plan: "no heading" }, ctx());
-    expect(bad.ok).toBe(false);
+    expect(inactive.ok).toBe(true);
   });
 
   it("records a complete plan", async () => {
@@ -198,21 +202,15 @@ describe("plan write gate", () => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  it("blocks product files and allows the session plan file", async () => {
+  it("does not restrict product-file writes while /plan is active", async () => {
     const dir = mkdtempSync(join(tmpdir(), "maou-pgate-"));
     dirs.push(dir);
     const planFile = join(dir, "plan.md");
     const write = new WriteFileTool();
-    const blocked = await write.execute(
-      { path: "src/app.ts", content: "nope" },
+    const product = await write.execute(
+      { path: "src/app.ts", content: "ok", force: true },
       ctx({ projectRoot: dir, workingDir: dir, planFile }),
     );
-    expect(blocked.ok).toBe(false);
-    expect(blocked.message).toContain("plan mode");
-    const allowed = await write.execute(
-      { path: planFile, content: "# Plan\n" },
-      ctx({ projectRoot: dir, workingDir: dir, planFile }),
-    );
-    expect(allowed.ok).toBe(true);
+    expect(product.ok).toBe(true);
   });
 });

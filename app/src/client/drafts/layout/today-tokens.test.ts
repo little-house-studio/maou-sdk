@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   formatCompactTokenCount,
-  formatTodayTokenLine,
+  formatTodayInArrow,
+  formatTodayOutArrow,
   formatTodayTokenTitle,
   localDayKey,
 } from "./today-tokens";
@@ -15,16 +16,21 @@ describe("today-tokens format", () => {
   it("shows 0 when empty", () => {
     assert.equal(formatCompactTokenCount(0), "0");
     assert.equal(formatCompactTokenCount(Number.NaN), "0");
-    assert.equal(formatTodayTokenLine(0, 0), "今日 0 / 0");
+    assert.equal(formatTodayInArrow(0), "↑ 0");
+    assert.equal(formatTodayOutArrow(0), "↓ 0");
   });
 
-  it("keeps small numbers exact and compact k", () => {
+  it("keeps small numbers exact and compact K/M/B", () => {
     assert.equal(formatCompactTokenCount(500), "500");
-    assert.equal(formatCompactTokenCount(1200), "1.2k");
-    assert.equal(formatCompactTokenCount(1000), "1k");
-    assert.equal(formatCompactTokenCount(12_300), "12k");
-    assert.equal(formatCompactTokenCount(1_200_000), "1.2m");
-    assert.equal(formatTodayTokenLine(1200, 500), "今日 1.2k / 500");
+    assert.equal(formatCompactTokenCount(1200), "1.2K");
+    assert.equal(formatCompactTokenCount(1000), "1K");
+    assert.equal(formatCompactTokenCount(12_300), "12K");
+    assert.equal(formatCompactTokenCount(1_200_000), "1.2M");
+    assert.equal(formatCompactTokenCount(12_300_000), "12M");
+    assert.equal(formatCompactTokenCount(1_200_000_000), "1.2B");
+    assert.equal(formatCompactTokenCount(12_000_000_000), "12B");
+    assert.equal(formatTodayInArrow(1200), "↑ 1.2K");
+    assert.equal(formatTodayOutArrow(500), "↓ 500");
   });
 
   it("title uses exact counts", () => {

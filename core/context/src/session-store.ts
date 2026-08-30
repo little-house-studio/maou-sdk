@@ -327,8 +327,8 @@ export class SessionStore {
     if (cached !== undefined) return cached;
     const meta = this.readMeta(sessionId);
     const name = meta?.agent_name || "main";
-    this.agentNameCache.set(sessionId, name);
-    return name;
+      this.agentNameCache.set(sessionId, name);
+      return name;
   }
 
   readMeta(sessionId: string): SessionMeta | null {
@@ -933,27 +933,27 @@ export class SessionStore {
     for (const ev of this.readEventChain(sessionId)) {
       if (ev.type === "session/trace") {
         const item = (ev.data?.data ?? ev.data) as Record<string, unknown>;
-        const tt = String(item.type ?? "");
+      const tt = String(item.type ?? "");
         if (tt === "model.usage") {
-          const u = item.usage as Record<string, unknown> | undefined;
+        const u = item.usage as Record<string, unknown> | undefined;
+        if (u && typeof u === "object") {
+          for (const [k, v] of Object.entries(u)) {
+            if (typeof v === "number") usage[k] = v;
+          }
+        }
+      }
+      if (tt === "model.request" && !model) {
+        const body = (item.request_body ?? item.payload ?? {}) as Record<string, unknown>;
+        model = String(body.model ?? "");
+      }
+    }
+      const u = ev.data?.usage as Record<string, unknown> | undefined;
           if (u && typeof u === "object") {
             for (const [k, v] of Object.entries(u)) {
               if (typeof v === "number") usage[k] = v;
             }
           }
         }
-        if (tt === "model.request" && !model) {
-          const body = (item.request_body ?? item.payload ?? {}) as Record<string, unknown>;
-          model = String(body.model ?? "");
-        }
-      }
-      const u = ev.data?.usage as Record<string, unknown> | undefined;
-      if (u && typeof u === "object") {
-        for (const [k, v] of Object.entries(u)) {
-          if (typeof v === "number") usage[k] = v;
-        }
-      }
-    }
     return { usage, model };
   }
 
@@ -1026,7 +1026,7 @@ export class SessionStore {
             messages: all,
             traces,
           });
-        } catch {
+      } catch {
           /* 缓存失败不影响折叠 */
         }
       }

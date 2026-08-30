@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { sessionPlan, sessionPlanFile } from "./session-plan.js";
+import { sessionPlan, sessionPlanFile, renderPlanPolicy } from "./session-plan.js";
 
 describe("session plan sidecar", () => {
   const dirs: string[] = [];
@@ -40,5 +40,9 @@ describe("session plan sidecar", () => {
     expect(sessionPlan.readPlan(dir, id)).toContain("# Plan");
     expect(sessionPlan.clear(dir, id)).toBe(true);
     expect(sessionPlan.get(dir, id)).toBeUndefined();
+  });
+
+  it("policy is a no-edit instruction", () => {
+    expect(renderPlanPolicy("/tmp/plan.md", "Ship")).toBe("当前是 plan 计划阶段，不要编辑文件。");
   });
 });

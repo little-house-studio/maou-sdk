@@ -122,7 +122,7 @@ export class BrowserTool extends Tool {
       required: ["action"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
     paramGuards: {
       // 需要 text 参数的 action（缺失则被 caller 预校验拦截）：
       "type": "true", "fill": "true", "keys": "true", "select": "true",

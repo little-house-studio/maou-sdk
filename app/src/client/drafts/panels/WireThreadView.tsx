@@ -5,6 +5,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ASK_PREVIEW_MAX,
+  UserMsgClip,
   UserStick,
   askAnchorProps,
   clipAskPreview,
@@ -113,6 +114,36 @@ function MessageRow({
   const isErr = message.role === "err";
   const head = formatMessageHead(message, message.agentName);
   const termId = message.tool?.name === "terminal" ? message.tag : undefined;
+  const textClass = `bubble-text${isTool ? " is-tool" : ""}${
+    isErr ? " is-err" : ""
+  }`;
+  const body = isTool ? (
+    <ToolCard
+      message={message}
+      terminalId={termId}
+      onOpenTerminal={
+        termId && onOpenTerminal
+          ? () => onOpenTerminal(termId, message.agentName)
+          : undefined
+      }
+    />
+  ) : (
+    <>
+      {message.images?.length ? (
+        <div className="wire-msg-images">
+          {message.images.map((img, i) => (
+            <img
+              key={`${message.id}-img-${i}`}
+              className="wire-msg-image"
+              src={`data:${img.mimeType};base64,${img.data}`}
+              alt={img.name || `附图 ${i + 1}`}
+            />
+          ))}
+        </div>
+      ) : null}
+      {message.body ? <DraftMarkdown source={message.body} /> : null}
+    </>
+  );
 
   return (
     <div
@@ -139,39 +170,11 @@ function MessageRow({
       <div className="msg-body">
         {lead}
         {!isTool ? <MessageHeadLine head={head} /> : null}
-        <div
-          className={`bubble-text${isTool ? " is-tool" : ""}${
-            isErr ? " is-err" : ""
-          }`}
-        >
-          {isTool ? (
-            <ToolCard
-              message={message}
-              terminalId={termId}
-              onOpenTerminal={
-                termId && onOpenTerminal
-                  ? () => onOpenTerminal(termId, message.agentName)
-                  : undefined
-              }
-            />
-          ) : (
-            <>
-              {message.images?.length ? (
-                <div className="wire-msg-images">
-                  {message.images.map((img, i) => (
-                    <img
-                      key={`${message.id}-img-${i}`}
-                      className="wire-msg-image"
-                      src={`data:${img.mimeType};base64,${img.data}`}
-                      alt={img.name || `附图 ${i + 1}`}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {message.body ? <DraftMarkdown source={message.body} /> : null}
-            </>
-          )}
-        </div>
+        {message.role === "user" ? (
+          <UserMsgClip className={textClass}>{body}</UserMsgClip>
+        ) : (
+          <div className={textClass}>{body}</div>
+        )}
       </div>
     </div>
   );

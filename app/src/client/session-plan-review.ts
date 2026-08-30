@@ -47,10 +47,21 @@ export type PlanReviewAsk = {
   planRevision?: number;
 };
 
+export type PlanReviewOutcome = "approve" | "reject" | "chat" | "hold";
+
+export type PlanReviewSettled = {
+  revision: number;
+  outcome: PlanReviewOutcome;
+  note?: string;
+};
+
 export type PlanReviewState = {
   show: boolean;
-  /** true = submit_plan 正等着答案，卡不可收起，走 /api/ask 回话 */
+  /** true = submit_plan 正等着答案，走 /api/ask 回话 */
   blocking: boolean;
+  /** 已选过：收成标题灰卡 */
+  settled?: PlanReviewOutcome | null;
+  note?: string;
   markdown: string;
   objective?: string;
   revision?: number;
@@ -71,31 +82,77 @@ export function pickPlanAsk(
 }
 
 /**
- * 审核卡状态：有人在等 → 阻塞态（优先，且不受 dismissed / planLaunching 影响，
- * 因为收起它会把工具永远悬在那儿）；没人等 → 老的顾问态。
+ * 审核卡：有人在等 → 阻塞；已选过 → 收纳灰卡；否则顾问态。
  */
 export function resolvePlanReview(
   view: SessionPlanView | null | undefined,
   ask: PlanReviewAsk | null | undefined,
-  opts?: { dismissedRevision?: number | null; planLaunching?: boolean },
+  opts?: {
+    dismissedRevision?: number | null;
+    planLaunching?: boolean;
+    settled?: PlanReviewSettled | null;
+  },
 ): PlanReviewState {
+  const md = ask?.planMarkdown ?? view?.markdown ?? "";
+  const objective = ask?.title || view?.plan?.objective;
+  const revision = ask?.planRevision ?? view?.plan?.revision;
+  const base = { markdown: md, objective, revision };
+
   if (ask && ask.kind === "plan_review") {
     return {
+      ...base,
+      markdown: ask.planMarkdown ?? view?.markdown ?? "",
       show: true,
       blocking: true,
-      // 正文优先用工具随请求带上来的那份（与模型提交的完全一致）
-      markdown: ask.planMarkdown ?? view?.markdown ?? "",
-      objective: ask.title || view?.plan?.objective,
-      revision: ask.planRevision ?? view?.plan?.revision,
+      settled: null,
     };
   }
+
+  const rev = view?.plan?.revision;
+  const status = view?.plan?.status ?? "";
+  const local =
+    opts?.settled && (rev == null || rev === opts.settled.revision)
+      ? opts.settled
+      : null;
+
+  if (status === "approved" && (view?.markdown ?? "").trim().startsWith("#")) {
+    return {
+      ...base,
+      markdown: view?.markdown ?? "",
+      show: true,
+      blocking: false,
+      settled: local?.outcome ?? "approve",
+      note: local?.note,
+    };
+  }
+
+  if (local) {
+    return {
+      ...base,
+      markdown: view?.markdown ?? "",
+      show: true,
+      blocking: false,
+      settled: local.outcome,
+      note: local.note,
+    };
+  }
+
+  if (rev != null && opts?.dismissedRevision === rev) {
+    return {
+      ...base,
+      markdown: view?.markdown ?? "",
+      show: true,
+      blocking: false,
+      settled: "hold",
+    };
+  }
+
   const show =
     !opts?.planLaunching && isPlanReviewOpen(view, opts?.dismissedRevision);
   return {
+    ...base,
     show,
     blocking: false,
-    markdown: view?.markdown ?? "",
-    objective: view?.plan?.objective,
-    revision: view?.plan?.revision,
+    settled: null,
   };
 }

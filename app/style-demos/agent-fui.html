@@ -1,0 +1,765 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 左栏脊椎</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js"
+        }
+      }
+    </script>
+    <style>
+      /*
+       * 读写：本页静态演示。生产 AgentList 不读这里。
+       * 空间 = 活动条 36 + 左栏 260。纸面壳。竖骨项目，横枝当前项目的 agent。
+       */
+      :root {
+        --n-bg: #ededed;
+        --n-label: #000000;
+        --n-on: #000000;
+        --n-on-ink: #ededed;
+        --n-path: #2a2a2a;
+        --n-path-on: #d4d4d4;
+        --n-secondary: #828282;
+        --n-line: #9b9b9b;
+        --n-info: #0291FF;
+        --n-font: "Helvetica Neue", Helvetica, Arial, "PingFang SC",
+          "HarmonyOS Sans SC", sans-serif;
+        --row: 1.3125em;
+        --left: 260px;
+        --act: 36px;
+        --bone: 32px;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        height: 100dvh;
+        overflow: hidden;
+        background: var(--n-bg);
+        color: var(--n-label);
+        font: 400 13px / var(--row) var(--n-font);
+      }
+      button, input { font: inherit; color: inherit; }
+      button {
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      input {
+        border: 0;
+        outline: none;
+        background: transparent;
+        width: 100%;
+      }
+      input::placeholder { color: var(--n-secondary); }
+      :focus-visible { outline: 1px solid var(--n-info); outline-offset: -1px; }
+      a { color: inherit; }
+      @media (hover: hover) {
+        a:hover { color: var(--n-info); }
+      }
+
+      .page {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .cmd {
+        border-bottom: 1px solid var(--n-line);
+        padding: 0.45em 0.8em 0.5em;
+      }
+      .cmd h1 {
+        margin: 0;
+        font-size: 1em;
+        font-weight: 500;
+      }
+      .cmd p { margin: 0.1em 0 0; color: var(--n-secondary); }
+      .cmd a { margin-left: 0.65em; }
+
+      .shell {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: var(--act) var(--left) minmax(0, 1fr);
+      }
+      .act {
+        border-right: 1px solid var(--n-line);
+        display: flex;
+        flex-direction: column;
+        padding: 8px 0;
+        gap: 8px;
+        align-items: center;
+      }
+      .act i {
+        display: block;
+        width: 14px;
+        height: 14px;
+        border: 1px solid var(--n-line);
+      }
+      .act i.on {
+        background: var(--n-on);
+        border-color: var(--n-on);
+      }
+
+      .left {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) 3px minmax(0, 1.15fr);
+        border-right: 1px solid var(--n-line);
+      }
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .tab {
+        min-height: calc(var(--row) * 1.45);
+        padding: 0 0.4em;
+        color: var(--n-secondary);
+        border-left: 1px solid var(--n-line);
+      }
+      .tab:first-child { border-left: 0; }
+      .tab.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      .desk {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+      }
+      .stage3 {
+        position: relative;
+        min-height: 0;
+        overflow: auto;
+      }
+      .inner {
+        position: relative;
+        min-height: 100%;
+      }
+      #view {
+        display: block;
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .labs {
+        position: relative;
+        z-index: 1;
+      }
+      .row {
+        position: absolute;
+        left: 0;
+        right: 0;
+        display: grid;
+        grid-template-columns: var(--bone) minmax(0, 1fr);
+        align-items: start;
+        padding-right: 0.55em;
+      }
+      .row .bone { min-height: 1em; }
+      .row .copy {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 0.2em;
+        padding: 0.2em 0.4em 0.25em 0.35em;
+      }
+      .row .name {
+        font-weight: 600;
+        line-height: 1.25;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .row .path {
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.25;
+        color: var(--n-path);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .row.proj.is-on .copy {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .row.proj.is-on .path { color: var(--n-path-on); }
+      .row.agent .copy {
+        padding-left: 0.55em;
+        font-weight: 400;
+      }
+      .row.agent .name { font-weight: 400; }
+      .row.agent.is-on .copy {
+        box-shadow: inset 2px 0 0 var(--n-label);
+        font-weight: 600;
+      }
+      .row.agent.is-on .name { font-weight: 600; }
+      @media (hover: hover) {
+        .row.proj:hover:not(.is-on) .name,
+        .row.proj:hover:not(.is-on) .path,
+        .row.agent:hover:not(.is-on) .name { color: var(--n-info); }
+      }
+
+      .desk.is-fail .row .bone {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .desk.is-fail .row .bone::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border: 1px solid var(--n-line);
+      }
+      .desk.is-fail .row.proj.is-on .bone::before,
+      .desk.is-fail .row.agent.is-on .bone::before {
+        background: var(--n-on);
+        border-color: var(--n-on);
+      }
+      .desk.is-fail .row.agent .bone::before {
+        width: 6px;
+        height: 6px;
+      }
+
+      .add {
+        padding: 0.4em 0.65em;
+        border-top: 1px solid var(--n-line);
+        font-weight: 500;
+      }
+      @media (hover: hover) {
+        .add:hover { color: var(--n-info); }
+      }
+
+      .vsplit { cursor: row-resize; }
+
+      .sessions {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--n-line);
+      }
+      .q, .new {
+        flex-shrink: 0;
+        padding: 0.35em 0.65em;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .slist { min-height: 0; overflow: auto; }
+      .srow {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.6em;
+        padding: 0.28em 0.65em;
+      }
+      .srow.is-on { box-shadow: inset 2px 0 0 var(--n-label); font-weight: 600; }
+      .srow.is-kid { padding-left: 1.4em; color: var(--n-path); font-weight: 400; }
+      .st { color: var(--n-secondary); font-size: 11px; }
+
+      .mid {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--n-bg);
+      }
+      .top {
+        min-height: calc(var(--row) * 2.2);
+        display: flex;
+        align-items: center;
+        gap: 0.55em;
+        padding: 0 0.8em;
+        border-bottom: 1px solid var(--n-line);
+        color: var(--n-secondary);
+      }
+      .chip {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+        padding: 0 0.55em;
+      }
+      .thread {
+        flex: 1;
+        min-height: 0;
+        padding: 1.2em 1.6em;
+        color: var(--n-secondary);
+      }
+      .thread .who { font-size: 12px; margin-bottom: 0.2em; }
+      .thread .say {
+        color: var(--n-label);
+        margin: 0 0 1em;
+        max-width: 36em;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="cmd">
+        <h1>左栏脊椎</h1>
+        <p>
+          只占现在这 260 宽。纸面壳。竖着的骨节是项目，只有当前那一节横出枝 = 里面的 agent。
+          <a href="agent-schematic.html">图示四案</a>
+          <a href="agent-desk.html">纸面摊开</a>
+          <a href="agent-rail.html">四案</a>
+          <a href="index.html">目录</a>
+        </p>
+      </div>
+      <div class="shell">
+        <div class="act" aria-hidden="true"><i class="on"></i><i></i><i></i></div>
+        <aside class="left">
+          <div class="tabs" role="tablist">
+            <button type="button" class="tab" data-tab="system">系统</button>
+            <button type="button" class="tab is-on" data-tab="project">项目</button>
+            <button type="button" class="tab" data-tab="im">IM</button>
+          </div>
+          <div class="desk" id="desk">
+            <div class="stage3" id="stage3">
+              <div class="inner" id="inner">
+                <canvas id="view"></canvas>
+                <div class="labs" id="labs"></div>
+              </div>
+            </div>
+            <button type="button" class="add" data-add="1">+ 增加项目</button>
+          </div>
+          <div class="vsplit" aria-hidden="true"></div>
+          <div class="sessions">
+            <div class="q"><input type="search" placeholder="搜索会话" id="q" /></div>
+            <button type="button" class="new">+ 新建会话</button>
+            <div class="slist" id="slist"></div>
+          </div>
+        </aside>
+        <section class="mid">
+          <div class="top" id="top"></div>
+          <div class="thread" id="thread"></div>
+        </section>
+      </div>
+    </div>
+    <script type="module">
+      const PROJECTS = [
+        {
+          id: "app",
+          path: "/Users/mac/Documents/vscodeProject/maou-sdk/app",
+          agents: [
+            { id: "app:coding", name: "coding" },
+            { id: "app:explore", name: "explore" },
+          ],
+        },
+        {
+          id: "maou-example",
+          path: "/Users/mac/Documents/vscodeProject/maou-example",
+          agents: [
+            { id: "ex:coding", name: "coding" },
+            { id: "ex:supervisor", name: "supervisor" },
+          ],
+        },
+        {
+          id: "pi",
+          path: "/Users/mac/Documents/vscodeProject/pi",
+          agents: [{ id: "pi:coding", name: "coding" }],
+        },
+        {
+          id: "maou-agent",
+          path: "/Users/mac/Documents/vscodeProject/maou-agent",
+          agents: [
+            { id: "ag:coding", name: "coding" },
+            { id: "ag:Raven", name: "Raven" },
+            { id: "ag:SearchBot", name: "SearchBot" },
+          ],
+        },
+      ];
+      const SYS = [
+        {
+          id: "local",
+          name: "本机",
+          path: "~/.maou",
+          agents: [
+            { id: "sys:ops", name: "ops" },
+            { id: "sys:monitor", name: "monitor" },
+          ],
+        },
+      ];
+      const IM = [
+        {
+          id: "inbox",
+          name: "收件箱",
+          path: "按状态排",
+          agents: [
+            { id: "im:Raven", name: "Raven" },
+            { id: "im:install", name: "install" },
+          ],
+        },
+      ];
+      const SESSIONS = [
+        { t: "左栏项目区重排", time: "现在", on: true },
+        { t: "会话搜索井", time: "14:02" },
+        { t: "fork · 对照页", time: "昨天", kid: true },
+        { t: "install 克隆清理", time: "昨天" },
+      ];
+
+      const BONE = 32;
+      const PROJ_H = 22;
+      const PATH_H = 16;
+      const AGENT_H = 24;
+      const GAP = 6;
+      const PAD_T = 10;
+      const PAD_B = 12;
+
+      const state = { tab: "project", ws: "app", agent: "app:coding", q: "" };
+
+      function compact(p) {
+        return String(p || "")
+          .replace(/^\/Users\/[^/]+/, "~")
+          .replace(/^\/home\/[^/]+/, "~");
+      }
+      function groups() {
+        if (state.tab === "system") return SYS;
+        if (state.tab === "im") return IM;
+        return PROJECTS;
+      }
+      function current() {
+        return groups().find((g) => g.id === state.ws) || groups()[0];
+      }
+      function labelOf(g) {
+        return g.name || g.id;
+      }
+      function extras(g) {
+        if (state.tab !== "project") return g.agents;
+        return g.agents.filter((a) => a.name !== "coding");
+      }
+      function esc(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/"/g, "&quot;");
+      }
+      function settle() {
+        const gs = groups();
+        if (!gs.some((g) => g.id === state.ws)) state.ws = gs[0].id;
+        const kids = current().agents;
+        if (!kids.some((a) => a.id === state.agent)) {
+          state.agent = kids[0]?.id || "";
+        }
+      }
+
+      function layout() {
+        settle();
+        const gs = groups();
+        const cur = current();
+        const rows = [];
+        let y = PAD_T;
+        const cx = BONE / 2;
+        gs.forEach((g) => {
+          const on = g.id === cur.id;
+          const path = on ? compact(g.path || "") : "";
+          const h = PROJ_H + (path ? PATH_H : 0) + 8;
+          const cy = y + 12;
+          rows.push({
+            kind: "proj",
+            id: g.id,
+            name: labelOf(g),
+            path,
+            on,
+            top: y,
+            h,
+            cx,
+            cy,
+          });
+          y += h + GAP;
+          if (on) {
+            extras(g).forEach((a) => {
+              const ah = AGENT_H;
+              const ay = y + ah / 2;
+              rows.push({
+                kind: "agent",
+                id: a.id,
+                name: a.name,
+                on: a.id === state.agent,
+                top: y,
+                h: ah,
+                cx: BONE - 6,
+                cy: ay,
+                fromX: cx,
+                fromY: cy,
+              });
+              y += ah;
+            });
+            y += GAP;
+          }
+        });
+        return { rows, height: y + PAD_B, cx };
+      }
+
+      const desk = document.getElementById("desk");
+      const inner = document.getElementById("inner");
+      const labsEl = document.getElementById("labs");
+
+      function paintLabs(L) {
+        inner.style.height = `${Math.max(L.height, 1)}px`;
+        labsEl.innerHTML = L.rows
+          .map((r) => {
+            if (r.kind === "proj") {
+              const on = r.on ? " is-on" : "";
+              const path = r.path
+                ? `<span class="path">${esc(r.path)}</span>`
+                : "";
+              return `<button type="button" class="row proj${on}" data-ws="${esc(r.id)}" style="top:${r.top}px;height:${r.h}px"><span class="bone" aria-hidden="true"></span><span class="copy"><span class="name">${esc(r.name)}</span>${path}</span></button>`;
+            }
+            const on = r.on ? " is-on" : "";
+            return `<button type="button" class="row agent${on}" data-agent="${esc(r.id)}" style="top:${r.top}px;height:${r.h}px"><span class="bone" aria-hidden="true"></span><span class="copy"><span class="name">${esc(r.name)}</span></span></button>`;
+          })
+          .join("");
+      }
+
+      function paintSess() {
+        const q = state.q.trim().toLowerCase();
+        document.getElementById("slist").innerHTML = SESSIONS.filter(
+          (s) => !q || s.t.toLowerCase().includes(q),
+        )
+          .map((s) => {
+            const on = s.on ? " is-on" : "";
+            const kid = s.kid ? " is-kid" : "";
+            return `<div class="srow${on}${kid}"><span>${esc(s.t)}</span><span class="st">${esc(s.time)}</span></div>`;
+          })
+          .join("");
+      }
+
+      function paintThread() {
+        const g = current();
+        const a = g.agents.find((x) => x.id === state.agent) || g.agents[0];
+        const name = labelOf(g);
+        const who =
+          state.tab === "project" && a?.name === "coding" ? "" : a?.name || "";
+        const extra = who ? `<span>${esc(who)}</span>` : "";
+        document.getElementById("top").innerHTML =
+          `<span class="chip">${esc(name)}</span>${extra}`;
+        const talk =
+          who
+            ? `在「${esc(name)}」里跟 ${esc(who)} 说话。换项目点左边竖着的骨节，换人点横枝上的名字。`
+            : `在「${esc(name)}」里。换项目点左边竖着的骨节。`;
+        document.getElementById("thread").innerHTML = `
+          <div class="who">你</div>
+          <div class="say">${talk}</div>
+          <div class="who">${esc(who || name)}</div>
+          <div class="say">${esc(compact(g.path || ""))}</div>`;
+      }
+
+      let drawSpine = () => {};
+
+      function paint() {
+        document.querySelectorAll(".tab").forEach((t) => {
+          t.classList.toggle("is-on", t.getAttribute("data-tab") === state.tab);
+        });
+        const L = layout();
+        paintLabs(L);
+        drawSpine(L);
+        paintSess();
+        paintThread();
+      }
+
+      document.body.addEventListener("click", (e) => {
+        const t = e.target;
+        if (!(t instanceof Element)) return;
+        const tab = t.closest("[data-tab]");
+        if (tab) {
+          state.tab = tab.getAttribute("data-tab");
+          if (state.tab === "project") {
+            state.ws = PROJECTS.some((p) => p.id === state.ws)
+              ? state.ws
+              : PROJECTS[0].id;
+          } else if (state.tab === "system") state.ws = "local";
+          else state.ws = "inbox";
+          state.agent = current().agents[0].id;
+          paint();
+          return;
+        }
+        const add = t.closest("[data-add]");
+        if (add) {
+          const n = PROJECTS.filter((p) => p.id.startsWith("项目-")).length + 1;
+          const id = `项目-${n}`;
+          PROJECTS.push({
+            id,
+            name: id,
+            path: `/tmp/${id}`,
+            agents: [{ id: `${id}:coding`, name: "coding" }],
+          });
+          state.tab = "project";
+          state.ws = id;
+          state.agent = `${id}:coding`;
+          paint();
+          return;
+        }
+        const ws = t.closest("[data-ws]");
+        if (ws) {
+          state.ws = ws.getAttribute("data-ws");
+          state.agent = current().agents[0].id;
+          paint();
+          return;
+        }
+        const ag = t.closest("[data-agent]");
+        if (ag) {
+          state.agent = ag.getAttribute("data-agent");
+          paint();
+        }
+      });
+      document.getElementById("q").addEventListener("input", (e) => {
+        state.q = e.target.value;
+        paintSess();
+      });
+
+      async function bootWire() {
+        let THREE;
+        try {
+          THREE = await import("three");
+        } catch {
+          desk.classList.add("is-fail");
+          paint();
+          return;
+        }
+
+        const canvas = document.getElementById("view");
+        const renderer = new THREE.WebGLRenderer({
+          canvas,
+          antialias: true,
+          alpha: false,
+        });
+        renderer.setClearColor(0xededed, 1);
+        renderer.setPixelRatio(1);
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xededed);
+        const camera = new THREE.OrthographicCamera(0, 260, 0, 200, -80, 80);
+        camera.position.set(0, 0, 40);
+
+        const inkFill = new THREE.MeshBasicMaterial({ color: 0x000000 });
+        const dimFill = new THREE.MeshBasicMaterial({ color: 0x9b9b9b });
+        const wireInk = new THREE.MeshBasicMaterial({
+          color: 0x000000,
+          wireframe: true,
+        });
+        const wireDim = new THREE.MeshBasicMaterial({
+          color: 0x9b9b9b,
+          wireframe: true,
+        });
+        const geoP = new THREE.BoxGeometry(12, 12, 10);
+        const geoPCore = new THREE.BoxGeometry(7, 7, 6);
+        const geoA = new THREE.BoxGeometry(8, 8, 7);
+        const geoACore = new THREE.BoxGeometry(5, 5, 4);
+        const unitBar = new THREE.BoxGeometry(1, 1, 1);
+        const iso = new THREE.Euler(-0.38, 0.62, 0.16);
+
+        const shaft = new THREE.Mesh(unitBar, dimFill);
+        scene.add(shaft);
+        const stem = new THREE.Mesh(unitBar, inkFill);
+        scene.add(stem);
+
+        const bones = [];
+        const twigs = [];
+        const ribs = [];
+
+        function take(list, n, make) {
+          while (list.length < n) {
+            const o = make();
+            scene.add(o.group);
+            list.push(o);
+          }
+          list.forEach((o, i) => {
+            o.group.visible = i < n;
+          });
+        }
+
+        function makeBone() {
+          const group = new THREE.Group();
+          const shell = new THREE.Mesh(geoP, wireDim);
+          const core = new THREE.Mesh(geoPCore, inkFill);
+          core.visible = false;
+          group.add(shell, core);
+          group.rotation.copy(iso);
+          return { group, shell, core };
+        }
+        function makeTwig() {
+          const group = new THREE.Group();
+          const shell = new THREE.Mesh(geoA, wireDim);
+          const core = new THREE.Mesh(geoACore, inkFill);
+          core.visible = false;
+          group.add(shell, core);
+          group.rotation.copy(iso);
+          return { group, shell, core };
+        }
+        function makeRib() {
+          const mesh = new THREE.Mesh(unitBar, inkFill);
+          scene.add(mesh);
+          return mesh;
+        }
+
+        function setBar(mesh, x0, y0, x1, y1) {
+          const dx = x1 - x0;
+          const dy = y1 - y0;
+          const len = Math.hypot(dx, dy);
+          mesh.visible = len > 0.5;
+          if (!mesh.visible) return;
+          mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, 0);
+          mesh.rotation.z = Math.atan2(dy, dx);
+          mesh.scale.set(len, 1, 1);
+        }
+
+        drawSpine = (L) => {
+          const w = inner.clientWidth || 260;
+          const h = Math.max(L.height, inner.clientHeight, 1);
+          renderer.setSize(w, h, false);
+          camera.left = 0;
+          camera.right = w;
+          camera.top = h;
+          camera.bottom = 0;
+          camera.updateProjectionMatrix();
+          const flip = (y) => h - y;
+
+          const projs = L.rows.filter((r) => r.kind === "proj");
+          const agents = L.rows.filter((r) => r.kind === "agent");
+          take(bones, projs.length, makeBone);
+          take(twigs, agents.length, makeTwig);
+          while (ribs.length < agents.length) ribs.push(makeRib());
+          ribs.forEach((mesh, i) => {
+            mesh.visible = i < agents.length;
+          });
+
+          if (projs.length > 1) {
+            const a = projs[0];
+            const b = projs[projs.length - 1];
+            setBar(shaft, a.cx, flip(a.cy), b.cx, flip(b.cy));
+          } else shaft.visible = false;
+
+          const onP = projs.find((p) => p.on);
+          if (onP && agents.length) {
+            const last = agents[agents.length - 1];
+            setBar(stem, onP.cx, flip(onP.cy), onP.cx, flip(last.cy));
+          } else stem.visible = false;
+
+          projs.forEach((p, i) => {
+            const b = bones[i];
+            b.group.position.set(p.cx, flip(p.cy), 0);
+            b.core.visible = p.on;
+            b.shell.material = p.on ? wireInk : wireDim;
+          });
+          agents.forEach((a, i) => {
+            const t = twigs[i];
+            t.group.position.set(a.cx, flip(a.cy), 0);
+            t.core.visible = a.on;
+            t.shell.material = a.on ? wireInk : wireDim;
+            setBar(ribs[i], a.fromX, flip(a.cy), a.cx, flip(a.cy));
+          });
+          renderer.render(scene, camera);
+        };
+
+        paint();
+      }
+
+      paint();
+      new ResizeObserver(() => paint()).observe(document.getElementById("stage3"));
+      bootWire();
+    </script>
+  </body>
+</html>

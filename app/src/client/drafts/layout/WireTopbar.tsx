@@ -2,7 +2,8 @@ import React from "react";
 import type { UiMode } from "../types";
 import { MaouLogo } from "../icons/MaouLogo";
 import {
-  formatTodayTokenLine,
+  formatTodayInArrow,
+  formatTodayOutArrow,
   formatTodayTokenTitle,
 } from "./today-tokens";
 
@@ -20,7 +21,7 @@ const MODES: { id: UiMode; label: string }[] = [
   { id: "settings", label: "设置" },
 ];
 
-/** 顶栏：左 logo · 中模式页签 · 右今日 in/out 一行字 */
+/** 顶栏：左 logo · 中模式页签 · 右今日 ↑in ↓out */
 export function WireTopbar({
   mode,
   onModeChange,
@@ -61,7 +62,11 @@ export function WireTopbar({
           className="wire-meta wire-meta-today"
           title={formatTodayTokenTitle(inn, out)}
         >
-          {formatTodayTokenLine(inn, out)}
+          <span className="wire-today-kicker">今日</span>
+          <span className="wire-today-io">
+            <span className="wire-today-in">{formatTodayInArrow(inn)}</span>
+            <span className="wire-today-out">{formatTodayOutArrow(out)}</span>
+          </span>
         </span>
       </div>
     </header>

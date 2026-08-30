@@ -14,12 +14,20 @@ import {
   isStickBottom,
   stackFlowOffset,
   stickHomeScrollTop,
+  wheelStaysInScroller,
 } from "./scroll-offset";
+import {
+  emptyNestedWheelLatch,
+  endNestedClipWheel,
+  resolveNestedClipWheel,
+  wheelDeltaPx,
+} from "./nested-wheel";
 import { ASK_PREVIEW_MAX, clipAskPreview } from "./ask-preview";
 import {
   ASK_ANCHOR_SEL,
   askAnchorProps,
   readAskAnchor,
+  USER_MSG_CLIP_CLASS,
   USER_STICK_CLASS,
 } from "./contract";
 
@@ -33,6 +41,7 @@ describe("conversation contract", () => {
     assert.deepEqual(readAskAnchor(el), { askId: "u1", askPreview: "hello" });
     assert.equal(ASK_ANCHOR_SEL, "[data-ask-anchor]");
     assert.equal(USER_STICK_CLASS, "wire-user-stick");
+    assert.equal(USER_MSG_CLIP_CLASS, "user-msg-clip");
     const props = askAnchorProps("u2", "hi");
     assert.equal(props["data-ask-id"], "u2");
     assert.equal(clipAskPreview("  hello  "), "hello");
@@ -76,6 +85,7 @@ describe("UserStick", () => {
     const src = readFileSync(join(here, "UserStick.tsx"), "utf8");
     assert.match(src, /onClickCapture/);
     assert.match(src, /scrollStickHome/);
+    assert.match(src, /USER_MSG_CLIP_CLASS/);
   });
 
   it("jumps a stuck stick back to its in-flow top", () => {
@@ -152,6 +162,49 @@ describe("stick-to-bottom", () => {
     assert.equal(isStickBottom(95), true);
     assert.equal(isStickBottom(96), false);
   });
+
+  it("keeps wheel inside a tall user bubble until that box hits an edge", () => {
+    const box = { scrollHeight: 400, scrollTop: 40, clientHeight: 120 };
+    assert.equal(wheelStaysInScroller(box, 1), true);
+    assert.equal(wheelStaysInScroller(box, -1), true);
+    assert.equal(wheelStaysInScroller({ ...box, scrollTop: 0 }, -1), false);
+    assert.equal(
+      wheelStaysInScroller({ ...box, scrollTop: 280 }, 1),
+      false,
+    );
+    assert.equal(
+      wheelStaysInScroller({ scrollHeight: 100, scrollTop: 0, clientHeight: 100 }, 1),
+      false,
+    );
+  });
+
+  it("locks the thread until the inner wheel gesture ends, then hands off", () => {
+    const mid = { scrollHeight: 400, scrollTop: 40, clientHeight: 120 };
+    const bottom = { scrollHeight: 400, scrollTop: 280, clientHeight: 120 };
+    const latch = emptyNestedWheelLatch();
+    assert.equal(resolveNestedClipWheel(mid, 1, latch), "inner");
+    assert.equal(latch.held, true);
+    assert.equal(resolveNestedClipWheel(bottom, 1, latch), "lock");
+    assert.equal(latch.primed, true);
+    endNestedClipWheel(latch);
+    assert.equal(latch.held, false);
+    assert.equal(latch.primed, true);
+    assert.equal(resolveNestedClipWheel(bottom, 1, latch), "outer");
+    assert.equal(wheelDeltaPx(2, 0, 200), 2);
+    assert.equal(wheelDeltaPx(2, 1, 200), 32);
+    assert.equal(wheelDeltaPx(1, 2, 200), 200);
+  });
+
+  it("does not spend a second gesture re-arming after a bounce at the edge", () => {
+    const top = { scrollHeight: 400, scrollTop: 0, clientHeight: 120 };
+    const latch = emptyNestedWheelLatch();
+    assert.equal(resolveNestedClipWheel({ ...top, scrollTop: 40 }, -20, latch), "inner");
+    assert.equal(resolveNestedClipWheel(top, -20, latch), "lock");
+    endNestedClipWheel(latch);
+    assert.equal(resolveNestedClipWheel(top, 4, latch), "lock");
+    assert.equal(latch.primed, true);
+    assert.equal(resolveNestedClipWheel(top, -20, latch), "outer");
+  });
 });
 
 describe("conversation source boundaries", () => {
@@ -167,6 +220,8 @@ describe("conversation source boundaries", () => {
       "ConversationPane.tsx",
       "ThreadBoard.tsx",
       "UserStick.tsx",
+      "UserMsgClip.tsx",
+      "nested-wheel.ts",
       "contract.ts",
       "ask-preview.ts",
       "scroll-offset.ts",

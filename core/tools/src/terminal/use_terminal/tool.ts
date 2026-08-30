@@ -186,7 +186,7 @@ export class TerminalTool extends Tool {
       required: ["reason"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   /** Windows 才改 LLM schema 文案；Mac 仍读 schema.json 原句。 */

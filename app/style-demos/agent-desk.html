@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="plate">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 项目区推荐案</title>
+    <style>
+      /*
+       * 读写：本页静态演示。生产 AgentList 不读这里。
+       * Token 对齐 draft.css 纸面壳。
+       */
+      :root {
+        --n-bg: #ededed;
+        --n-label: #000000;
+        --n-on: #000000;
+        --n-on-ink: #ededed;
+        --n-path: #2a2a2a;
+        --n-path-on: #d4d4d4;
+        --n-secondary: #5c5c5c;
+        --n-line: #9b9b9b;
+        --n-info: #0291FF;
+        --n-font: "Helvetica Neue", Helvetica, Arial, "PingFang SC",
+          "HarmonyOS Sans SC", sans-serif;
+        --row: 1.3125em;
+        --rail: 252px;
+      }
+      html[data-theme="phosphor"] {
+        --n-bg: #0b0b0b;
+        --n-label: #ecece8;
+        --n-on: #ecece8;
+        --n-on-ink: #0b0b0b;
+        --n-path: #c8c8c2;
+        --n-path-on: #3a3a38;
+        --n-secondary: #8a8a84;
+        --n-line: #5c5c58;
+        --n-info: #b8ff00;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        height: 100dvh;
+        overflow: hidden;
+        background: var(--n-bg);
+        color: var(--n-label);
+        font: 400 13px / var(--row) var(--n-font);
+      }
+      button, input { font: inherit; color: inherit; }
+      button {
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      input {
+        border: 0;
+        border-radius: 0;
+        outline: none;
+        background: transparent;
+      }
+      input::placeholder { color: var(--n-secondary); }
+      :focus-visible {
+        outline: 1px solid var(--n-info);
+        outline-offset: -1px;
+      }
+      a { color: inherit; }
+      @media (hover: hover) {
+        a:hover { color: var(--n-info); }
+      }
+
+      .sheet {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .cmd {
+        display: grid;
+        grid-template-columns: minmax(16em, 1.4fr) auto;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .cmd-copy {
+        padding: 0.75em 0.9em 0.8em;
+        border-right: 1px solid var(--n-line);
+        min-width: 0;
+      }
+      .cmd-copy h1 {
+        margin: 0 0 0.2em;
+        font-size: 1.2em;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        line-height: 1.2;
+      }
+      .cmd-copy p {
+        margin: 0;
+        color: var(--n-secondary);
+        max-width: 54em;
+      }
+      .cmd-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: start;
+        gap: 0.55em 1.1em;
+        padding: 0.7em 0.9em;
+      }
+      .tool-k { color: var(--n-secondary); font-size: 11px; }
+      .seg { display: flex; border: 1px solid var(--n-line); }
+      .seg button {
+        padding: 0 0.65em;
+        min-height: calc(var(--row) * 1.35);
+        color: var(--n-secondary);
+      }
+      .seg button + button { border-left: 1px solid var(--n-line); }
+      .seg button.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      .stage {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: var(--rail) minmax(0, 1fr);
+      }
+
+      /* ── 左栏：真宽真高，项目随内容，会话吃剩余 ── */
+      .rail {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        border-right: 1px solid var(--n-line);
+      }
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .tab {
+        min-height: calc(var(--row) * 1.45);
+        padding: 0 0.45em;
+        color: var(--n-secondary);
+        border-left: 1px solid var(--n-line);
+      }
+      .tab:first-child { border-left: 0; }
+      .tab.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      .desk {
+        min-width: 0;
+        padding-bottom: 0.35em;
+      }
+
+      .ws {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        width: 100%;
+        padding: 0.45em 0.7em 0.4em;
+        color: var(--n-label);
+      }
+      .ws-name {
+        font-weight: 600;
+        line-height: 1.25;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ws-path {
+        margin-top: 0.28em;
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.3;
+        color: var(--n-path);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .ws.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .ws.is-on .ws-path {
+        color: var(--n-path-on);
+      }
+      @media (hover: hover) {
+        .ws:hover:not(.is-on) { color: var(--n-info); }
+        .ws:hover:not(.is-on) .ws-path { color: var(--n-info); }
+      }
+
+      .kids {
+        display: flex;
+        flex-direction: column;
+        padding: 0.1em 0 0.25em;
+      }
+      .agent {
+        display: flex;
+        align-items: center;
+        gap: 0.5em;
+        width: 100%;
+        padding: 0.32em 0.7em 0.32em 1.55em;
+        color: var(--n-label);
+        line-height: 1.25;
+      }
+      .agent .nm {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .sq {
+        width: 0.38em;
+        height: 0.38em;
+        flex-shrink: 0;
+        background: currentColor;
+      }
+      .sq.is-run { background: var(--n-info); }
+      .agent.is-on {
+        font-weight: 600;
+        box-shadow: inset 2px 0 0 var(--n-label);
+      }
+      .agent.is-on .sq { background: var(--n-label); }
+      .agent.is-on .sq.is-run { background: var(--n-info); }
+      @media (hover: hover) {
+        .agent:hover:not(.is-on) { color: var(--n-info); }
+      }
+
+      .add {
+        display: flex;
+        align-items: center;
+        gap: 0.45em;
+        width: 100%;
+        margin-top: 0.15em;
+        padding: 0.45em 0.7em;
+        border-top: 1px solid var(--n-line);
+        color: var(--n-label);
+        font-weight: 500;
+      }
+      @media (hover: hover) {
+        .add:hover { color: var(--n-info); }
+      }
+
+      .stub {
+        padding: 0.7em 0.7em 0.35em;
+        color: var(--n-secondary);
+      }
+      .host {
+        padding: 0.45em 0.7em 0.15em;
+        color: var(--n-secondary);
+        font-size: 12px;
+      }
+
+      .sessions {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--n-line);
+      }
+      .q {
+        flex-shrink: 0;
+        padding: 0.35em 0.7em;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .q input { width: 100%; }
+      .new {
+        flex-shrink: 0;
+        padding: 0.4em 0.7em;
+        color: var(--n-label);
+        border-bottom: 1px solid var(--n-line);
+      }
+      @media (hover: hover) {
+        .new:hover { color: var(--n-info); }
+      }
+      .slist {
+        min-height: 0;
+        overflow: auto;
+      }
+      .srow {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 0.6em;
+        padding: 0.28em 0.7em;
+        color: var(--n-label);
+      }
+      .srow.is-on { box-shadow: inset 2px 0 0 var(--n-label); font-weight: 600; }
+      .srow.is-kid { padding-left: 1.55em; color: var(--n-path); font-weight: 400; }
+      .st { color: var(--n-secondary); font-size: 11px; flex-shrink: 0; }
+
+      /* ── 右侧说明 ── */
+      .note {
+        min-height: 0;
+        overflow: auto;
+        padding: 1.1em 1.4em 2em;
+        max-width: 40em;
+      }
+      .note h2 {
+        margin: 0 0 0.4em;
+        font-size: 1.15em;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+      }
+      .note p {
+        margin: 0 0 0.85em;
+        color: var(--n-secondary);
+      }
+      .note p strong { color: var(--n-label); font-weight: 600; }
+      .rules {
+        display: grid;
+        gap: 0;
+        margin: 0 0 1.1em;
+        border-top: 1px solid var(--n-line);
+      }
+      .rule {
+        display: grid;
+        grid-template-columns: 5.5em minmax(0, 1fr);
+        gap: 0.6em;
+        padding: 0.55em 0;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .rule b { font-weight: 600; }
+      .rule span { color: var(--n-secondary); }
+      .kicks { margin: 0; padding-left: 1.15em; color: var(--n-secondary); }
+      .kicks li + li { margin-top: 0.35em; }
+      .foot {
+        margin-top: 1.2em;
+        color: var(--n-secondary);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">
+      <div class="cmd">
+        <div class="cmd-copy">
+          <h1>当前摊开</h1>
+          <p>
+            项目是文件夹，agent 是里面的人。当前项目反相摊开，其它项目只占两行。
+            没有下拉，没有树轨，没有要学的符号。
+            <a href="agent-cell.html">窗格</a>
+            ·
+            <a href="agent-schematic.html">图示四案</a>
+            ·
+            <a href="agent-fui.html">左栏脊椎</a>
+            ·
+            <a href="agent-rail.html">对照旧四案</a>
+            ·
+            <a href="index.html">目录</a>
+          </p>
+        </div>
+        <div class="cmd-tools">
+          <div class="tool-block">
+            <span class="tool-k">纸</span>
+            <div class="seg" role="group" aria-label="主题">
+              <button type="button" data-theme="plate" class="is-on">纸面</button>
+              <button type="button" data-theme="phosphor">磷光</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="stage">
+        <aside class="rail" id="rail" aria-label="左侧栏演示"></aside>
+        <article class="note">
+          <h2>我会这样排</h2>
+          <p>
+            侧栏上半只回答两件事：<strong>我在哪个项目</strong>，<strong>我在跟谁说话</strong>。
+            下半还是会话。项目区按内容长，不锁 24% 空白。
+          </p>
+          <div class="rules">
+            <div class="rule">
+              <b>层级</b>
+              <span>项目是第一层。只有当前项目底下挂 agent。其它项目不展开，所以不会出现「四个项目各自一棵树」。</span>
+            </div>
+            <div class="rule">
+              <b>学习</b>
+              <span>没有 ▾、没有 + 藏在角上、没有「先开菜单再选」。想换项目就点那一行，想换人就点名字。</span>
+            </div>
+            <div class="rule">
+              <b>一眼</b>
+              <span>黑条 = 你在的项目。左墨条 = 你在聊的 agent。路径只跟项目走，不跟 agent 重复。</span>
+            </div>
+            <div class="rule">
+              <b>视觉</b>
+              <span>纸面壳：反相、左条、12px 近黑路径。名称和路径分开，不靠透明度洗字。</span>
+            </div>
+            <div class="rule">
+              <b>交互</b>
+              <span>点项目 → 进这个工作区并落到主 agent。点 agent → 只换人。最底下「+ 增加项目」始终在流里，裁不到。</span>
+            </div>
+          </div>
+          <p>这页故意不做的：</p>
+          <ul class="kicks">
+            <li>下拉切换器：层级进了菜单，路径还被 24% 高裁掉。</li>
+            <li>文件树竖线：agent 不是文件，轨线占宽、像资源管理器。</li>
+            <li>每个项目都摊开：四份 coding 并排，分不清「我在哪」。</li>
+          </ul>
+          <p class="foot">只是方案演示，没有改生产侧栏。点左边可以切换项目、agent、系统 / IM。</p>
+        </article>
+      </div>
+    </div>
+    <script>
+      const PROJECTS = [
+        {
+          id: "app",
+          path: "/Users/mac/Documents/vscodeProject/maou-sdk/app",
+          agents: [
+            { id: "app:coding", name: "coding" },
+            { id: "app:explore", name: "explore" },
+          ],
+        },
+        {
+          id: "maou-example",
+          path: "/Users/mac/Documents/vscodeProject/maou-example",
+          agents: [
+            { id: "ex:coding", name: "coding" },
+            { id: "ex:supervisor", name: "supervisor" },
+          ],
+        },
+        {
+          id: "pi",
+          path: "/Users/mac/Documents/vscodeProject/pi",
+          agents: [{ id: "pi:coding", name: "coding" }],
+        },
+        {
+          id: "maou-agent",
+          path: "/Users/mac/Documents/vscodeProject/maou-agent",
+          agents: [
+            { id: "ag:coding", name: "coding" },
+            { id: "ag:Raven", name: "Raven", run: true },
+            { id: "ag:SearchBot", name: "SearchBot" },
+          ],
+        },
+      ];
+
+      const SESSIONS = [
+        { t: "左栏项目区重排", time: "现在", on: true },
+        { t: "会话搜索井", time: "14:02" },
+        { t: "fork · 对照页", time: "昨天", kid: true },
+        { t: "install 克隆清理", time: "昨天" },
+      ];
+
+      const state = {
+        tab: "project",
+        ws: "app",
+        agent: "app:coding",
+        q: "",
+      };
+
+      function esc(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function compact(p) {
+        return p
+          .replace(/^\/Users\/[^/]+/, "~")
+          .replace(/^\/home\/[^/]+/, "~");
+      }
+
+      function proj(id) {
+        return PROJECTS.find((p) => p.id === id) || PROJECTS[0];
+      }
+
+      function tabsHtml() {
+        const t = (id, label) =>
+          `<button type="button" class="tab${state.tab === id ? " is-on" : ""}" data-tab="${id}">${label}</button>`;
+        return `<div class="tabs" role="tablist">${t("system", "系统")}${t("project", "项目")}${t("im", "IM")}</div>`;
+      }
+
+      function agentRow(a) {
+        const on = a.id === state.agent ? " is-on" : "";
+        const run = a.run ? " is-run" : "";
+        return `<button type="button" class="agent${on}" data-agent="${esc(a.id)}"><span class="sq${run}" aria-hidden></span><span class="nm">${esc(a.name)}</span></button>`;
+      }
+
+      function deskProject() {
+        const blocks = PROJECTS.map((p) => {
+          const on = p.id === state.ws;
+          const path = compact(p.path);
+          const head = `<button type="button" class="ws${on ? " is-on" : ""}" data-ws="${esc(p.id)}" title="${esc(p.id)}\n${esc(path)}"><span class="ws-name">${esc(p.id)}</span><span class="ws-path">${esc(path)}</span></button>`;
+          const shown = p.agents.filter((a) => a.name !== "coding");
+          const kids =
+            on && shown.length
+              ? `<div class="kids">${shown.map(agentRow).join("")}</div>`
+              : "";
+          return head + kids;
+        }).join("");
+        return `${blocks}<button type="button" class="add" data-add="1">+ 增加项目</button>`;
+      }
+
+      function deskSystem() {
+        const rows = [
+          { id: "sys:ops", name: "ops" },
+          { id: "sys:monitor", name: "monitor" },
+        ];
+        if (!rows.some((a) => a.id === state.agent)) state.agent = "sys:ops";
+        return `<div class="host">本机</div><div class="kids">${rows.map(agentRow).join("")}</div>`;
+      }
+
+      function deskIm() {
+        const rows = [
+          { id: "im:Raven", name: "Raven", run: true },
+          { id: "im:install", name: "install" },
+        ];
+        if (!rows.some((a) => a.id === state.agent)) state.agent = "im:Raven";
+        return `<div class="stub">按状态排的收件箱。本页只示意层级不在这里。</div><div class="kids">${rows.map(agentRow).join("")}</div>`;
+      }
+
+      function sessionsHtml() {
+        const q = state.q.trim().toLowerCase();
+        const rows = SESSIONS.filter((s) => !q || s.t.toLowerCase().includes(q))
+          .map((s) => {
+            const on = s.on ? " is-on" : "";
+            const kid = s.kid ? " is-kid" : "";
+            return `<div class="srow${on}${kid}"><span class="sttl">${esc(s.t)}</span><span class="st">${esc(s.time)}</span></div>`;
+          })
+          .join("");
+        return `
+          <div class="sessions">
+            <div class="q"><input type="search" placeholder="搜索会话" value="${esc(state.q)}" data-q="1" /></div>
+            <button type="button" class="new">+ 新建会话</button>
+            <div class="slist">${rows}</div>
+          </div>`;
+      }
+
+      function paint() {
+        const desk =
+          state.tab === "system"
+            ? deskSystem()
+            : state.tab === "im"
+              ? deskIm()
+              : deskProject();
+        document.getElementById("rail").innerHTML =
+          `${tabsHtml()}<div class="desk">${desk}</div>${sessionsHtml()}`;
+      }
+
+      document.documentElement.dataset.theme = "plate";
+      paint();
+
+      document.body.addEventListener("click", (e) => {
+        const t = e.target;
+        if (!(t instanceof Element)) return;
+        const theme = t.closest("[data-theme]");
+        if (theme && theme.closest(".seg")) {
+          document.documentElement.dataset.theme = theme.getAttribute("data-theme");
+          document.querySelectorAll(".cmd-tools [data-theme]").forEach((b) => {
+            b.classList.toggle("is-on", b === theme);
+          });
+          return;
+        }
+        const tab = t.closest("[data-tab]");
+        if (tab) {
+          state.tab = tab.getAttribute("data-tab");
+          if (state.tab === "project") state.agent = proj(state.ws).agents[0].id;
+          paint();
+          return;
+        }
+        const add = t.closest("[data-add]");
+        if (add) {
+          const n = PROJECTS.filter((p) => p.id.startsWith("项目-")).length + 1;
+          const id = `项目-${n}`;
+          PROJECTS.push({
+            id,
+            path: `/tmp/${id}`,
+            agents: [{ id: `${id}:coding`, name: "coding" }],
+          });
+          state.ws = id;
+          state.agent = `${id}:coding`;
+          state.tab = "project";
+          paint();
+          return;
+        }
+        const ws = t.closest("[data-ws]");
+        if (ws) {
+          const id = ws.getAttribute("data-ws");
+          state.ws = id;
+          state.tab = "project";
+          state.agent = proj(id).agents[0].id;
+          paint();
+          return;
+        }
+        const agent = t.closest("[data-agent]");
+        if (agent) {
+          state.agent = agent.getAttribute("data-agent");
+          paint();
+        }
+      });
+
+      document.body.addEventListener("input", (e) => {
+        const t = e.target;
+        if (t instanceof HTMLInputElement && t.hasAttribute("data-q")) {
+          state.q = t.value;
+          const slist = document.querySelector(".slist");
+          if (!slist) return;
+          const q = state.q.trim().toLowerCase();
+          slist.innerHTML = SESSIONS.filter((s) => !q || s.t.toLowerCase().includes(q))
+            .map((s) => {
+              const on = s.on ? " is-on" : "";
+              const kid = s.kid ? " is-kid" : "";
+              return `<div class="srow${on}${kid}"><span class="sttl">${esc(s.t)}</span><span class="st">${esc(s.time)}</span></div>`;
+            })
+            .join("");
+        }
+      });
+    </script>
+  </body>
+</html>

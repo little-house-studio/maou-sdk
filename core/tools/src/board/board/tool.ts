@@ -231,7 +231,7 @@ export class BoardTool extends Tool {
       required: ["action"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   /**

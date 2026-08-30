@@ -8,6 +8,7 @@ import { resolveToolRuntimePorts } from "./base.js";
 import { ensureToolError, toolFail, toolFailFromThrown } from "./errors.js";
 import type { ToolRegistry } from "./registry.js";
 import { applySpillGuard } from "./spill-guard.js";
+import { toolAllowedInAgentMode } from "./tool-mode.js";
 
 /** 事件发射器类型 */
 export type EventEmitFn = (
@@ -84,10 +85,7 @@ export class ToolExecutor {
     }
 
     // 权限检查：工具是否在当前模式下可用
-    if (
-      tool.definition.allowedModes !== null &&
-      !tool.definition.allowedModes.includes(ctx.agentMode)
-    ) {
+    if (!toolAllowedInAgentMode(tool.definition.allowedModes, ctx.agentMode)) {
       const result = toolFail(
         "mode_denied",
         `工具 '${toolCall.name}' 在 ${ctx.agentMode} 模式下不可用`,

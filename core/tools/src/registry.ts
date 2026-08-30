@@ -12,6 +12,7 @@ import { readFileSync, existsSync, readdirSync, statSync, watch, type FSWatcher 
 import { join } from "node:path";
 import type { Tool, ToolDefinition, ToolContext, ToolResponse } from "./base.js";
 import { toolFail } from "./errors.js";
+import { toolAllowedInAgentMode } from "./tool-mode.js";
 import { clearReadRegistry } from "./file/read-registry.js";
 import { clearHistory as clearFileEditHistory } from "./file/file-edit-history.js";
 import { toMaouToolName } from "./compat/tool-names.js";
@@ -391,10 +392,7 @@ export class ToolRegistry {
         details: { toolName: name },
       });
     }
-    if (
-      tool.definition.allowedModes !== null &&
-      !tool.definition.allowedModes.includes(context.agentMode)
-    ) {
+    if (!toolAllowedInAgentMode(tool.definition.allowedModes, context.agentMode)) {
       return toolFail(
         "mode_denied",
         `Tool '${name}' not available in ${context.agentMode} mode`,

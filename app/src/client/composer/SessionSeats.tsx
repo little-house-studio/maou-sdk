@@ -102,7 +102,16 @@ export function AskUserPanel(props: {
         <h3>{ask.title || "审阅计划"}</h3>
         <button type="button" onClick={() => props.onAnswer({ kind: "plan_review", decision: "approve" })}>批准</button>
         <button type="button" onClick={() => props.onAnswer({ kind: "plan_review", decision: "reject" })}>拒绝</button>
-        <button type="button" onClick={() => props.onAnswer({ kind: "plan_review", decision: "chat" })}>去聊天里说</button>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const fd = new FormData(e.currentTarget);
+            const note = String(fd.get("note") ?? "").trim();
+            props.onAnswer({ kind: "plan_review", decision: "chat", ...(note ? { note } : {}) });
+          }}
+        >
+          <input name="note" type="text" placeholder="补充意见，Enter 发送" aria-label="补充意见" />
+        </form>
       </div>
     );
   }

@@ -23,7 +23,7 @@ export class ProjectSendTool extends Tool {
       required: ["project", "task"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   private readonly agent = new ProjectAgentTool();

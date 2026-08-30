@@ -35,6 +35,7 @@ describe("executePlanCommand", () => {
     expect(result.meta?.asUserTask).toBe(true);
     expect(result.meta?.planArmed).toBe(true);
     expect(sessionPlan.isActive(dir, id)).toBe(true);
+    expect(String(result.meta?.taskPrompt)).toContain("不要编辑文件");
   });
 
   it("refuses approve without a written plan", () => {

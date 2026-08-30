@@ -13,7 +13,6 @@ import { verifyAfterWrite } from "../../lsp/lsp_verify.js";
 import { atomicWrite } from "../atomic-write.js";
 import { wasRead, isStaleSinceRead, markRead, refreshRead } from "../read-registry.js";
 import { record as recordEdit, wasEditedInSession } from "../file-edit-history.js";
-import { denyNonPlanWrite } from "../../plan-gate.js";
 
 /** 统计 needle 在 haystack 中的出现次数（非重叠）。 */
 function countOccurrences(haystack: string, needle: string): number {
@@ -97,9 +96,6 @@ export class EditFileTool extends Tool {
     } catch (err: unknown) {
       return toolFailFromThrown(err, { fallbackCategory: "sandbox_denied" });
     }
-
-    const planDenied = denyNonPlanWrite(ctx, fullPath);
-    if (planDenied) return planDenied;
 
     if (!existsSync(fullPath)) {
       return toolFail(

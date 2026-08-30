@@ -53,7 +53,7 @@ export class AgentTeamGodTool extends Tool {
       required: ["action"],
       additionalProperties: true,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   private readonly message = new SubagentTool();

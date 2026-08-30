@@ -171,6 +171,21 @@ describe("listOpsAgents taxonomy", () => {
     expect(list.some((e) => e.name === "proactive")).toBe(false);
   });
 
+  it("coding-template clone named install is not a project child", () => {
+    mkdirSync(join(proj, ".maou", "agents", "install"), { recursive: true });
+    writeFileSync(
+      join(proj, ".maou", "agents", "install", ".agent.ref"),
+      "/opt/maou-sdk/agent-products/coding-agent/templates/coding\n",
+    );
+    const list = listOpsAgents(root);
+    expect(list.some((e) => e.group === "project" && e.name === "install")).toBe(
+      false,
+    );
+    expect(list.some((e) => e.group === "project" && e.name === "coding")).toBe(
+      true,
+    );
+  });
+
   it("ensureProjectPaths surfaces unregistered project", () => {
     const orphan = join(root, "orphan");
     mkdirSync(join(orphan, ".maou", "agents", "coding"), { recursive: true });

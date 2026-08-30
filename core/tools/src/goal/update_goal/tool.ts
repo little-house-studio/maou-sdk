@@ -42,7 +42,7 @@ export class UpdateGoalTool extends Tool {
       required: ["goal_id", "revision", "action"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
     parallelSafe: false,
   };
 

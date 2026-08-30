@@ -1,6 +1,5 @@
 /**
  * 会话计划模式：先调查并写成合同，用户确认后再执行。
- * 进行中只允许改会话计划文件。
  */
 
 export type SessionPlanStatus = "idle" | "planning" | "review" | "approved"
@@ -22,7 +21,7 @@ export interface SessionPlanPort {
   writePlan(markdown: string): SessionPlanSnapshot
   readPlan(): string | undefined
   planFile(): string
-  /** 用户批准：status → approved、退出 plan 模式（下一轮 agentMode 变 execute） */
+  /** 用户批准：status → approved、退出 plan 阶段 */
   approve(): SessionPlanSnapshot | undefined
 }
 

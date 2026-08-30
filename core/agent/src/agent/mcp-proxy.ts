@@ -80,7 +80,7 @@ export function createMcpProxyTool(
         properties: {},
         additionalProperties: true,
       }) as JsonSchema,
-      allowedModes: ["execute"],
+      allowedModes: ["plan", "execute"],
       // MCP 工具大多是读操作（list/search/get），默认 parallelSafe；
       // 实际副作用由 MCP server 端决定，proxy 无法准确判断——保守起见
       // 标记为非并行（false），让 runtime 串行执行，避免并发副作用。

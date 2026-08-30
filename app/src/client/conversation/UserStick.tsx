@@ -1,5 +1,5 @@
 import React, { type KeyboardEvent, type ReactNode } from "react";
-import { askAnchorProps, USER_STICK_CLASS } from "./contract";
+import { askAnchorProps, USER_MSG_CLIP_CLASS, USER_STICK_CLASS } from "./contract";
 import { scrollStickHome } from "./scroll-offset";
 
 /** Sticky user row. Click jumps the scroller to this row's in-flow top. */
@@ -29,7 +29,10 @@ export function UserStick({
       onClickCapture={(e) => {
         // 行内交互件（链接 / 编号方块等按钮）自己处理点击，不抢成“跳回提问”
         const t = e.target;
-        if (t instanceof Element && t.closest('a, button, [role="button"]')) {
+        if (
+          t instanceof Element &&
+          t.closest(`a, button, [role="button"], .${USER_MSG_CLIP_CLASS}`)
+        ) {
           return;
         }
         goHome(e.currentTarget);

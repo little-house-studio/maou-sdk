@@ -48,7 +48,7 @@ export class ProjectManageTool extends Tool {
       required: ["action"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   private readonly agent = new ProjectAgentTool();

@@ -2431,15 +2431,6 @@ export class AgentRuntime {
         return true;
       });
     }
-    if (planActive && toolSchemas) {
-      toolSchemas = toolSchemas.filter((schema) => {
-        const name = String((schema as { name?: string }).name ?? "");
-        const tool = this.tools.get(name);
-        if (!tool) return false;
-        const allowed = tool.definition.allowedModes;
-        return allowed === null || allowed.includes("plan");
-      });
-    }
     // nativeToolCalling 在循环内按当前 preset 每轮重算（支持 switchPreset 切换模型后
     // 不同 tool-calling 能力）。toolSchemas 固定不变（白名单决定）。
 
@@ -4432,9 +4423,7 @@ export class AgentRuntime {
         ? bindSessionPlanPort(this.sessions.sessionDir, sessionId)
         : undefined,
       planFile: sessionId ? sessionPlanFile(this.sessions.sessionDir, sessionId) : undefined,
-      agentMode: sessionId && sessionPlan.isActive(this.sessions.sessionDir, sessionId)
-        ? "plan"
-        : "execute",
+      agentMode: "execute",
     });
 
     // ── 同轮资源冲突：多写同一 path / 相同破坏性终端命令 → 后者不执行 ──

@@ -52,6 +52,7 @@ export type {
 
 export { ToolRegistry } from './registry.js'
 export { ToolExecutor } from './executor.js'
+export { toolAllowedInAgentMode } from './tool-mode.js'
 export { registerBuiltins } from './impls/index.js'
 export { createToolScaffold } from './scaffold.js'
 export type { ScaffoldOptions } from './scaffold.js'

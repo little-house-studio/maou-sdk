@@ -5,7 +5,7 @@ import { getAskUserHost, requestAskUser } from "../../ask_user/host.js";
 import type { AskUserPlanDecision } from "../../ask_user/host.js";
 
 export const SUBMIT_PLAN_DESCRIPTION =
-  "Submit a complete markdown implementation plan for user review while plan mode is active. " +
+  "Submit a complete markdown implementation plan for user review. " +
   "The plan must start with a # heading and be decision-complete. " +
   "Do not use this to start implementation. This call blocks until the user approves, " +
   "rejects, or asks to discuss it.";
@@ -37,7 +37,7 @@ export class SubmitPlanTool extends Tool {
       required: ["plan"],
       additionalProperties: false,
     },
-    allowedModes: ["plan"],
+    allowedModes: ["plan", "execute"],
     parallelSafe: false,
   };
 
@@ -45,9 +45,6 @@ export class SubmitPlanTool extends Tool {
     const port = resolveToolRuntimePorts(ctx).sessionPlan;
     if (!port) {
       return createToolResponse(false, "submit_plan requires a session plan port");
-    }
-    if (!port.isActive()) {
-      return createToolResponse(false, "submit_plan is only available while /plan mode is active");
     }
     const markdown = String(params.plan ?? "").trim();
     if (!markdown.startsWith("#")) {

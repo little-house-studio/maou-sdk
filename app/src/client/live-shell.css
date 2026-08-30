@@ -1543,6 +1543,7 @@
 .live-shell .wire-agent-scope-tab.is-active,
 .live-shell .wire-agent-item.active,
 .live-shell .wire-agent-item.active.is-stale,
+.live-shell .wire-agent-switch-now.is-active,
 .live-shell .vsc-tree-row.is-selected,
 .live-shell .wire-settings-nav-item.active,
 .live-shell .wire-settings-preset-item.is-selected,
@@ -1553,6 +1554,10 @@
   border-color: var(--n-on, #000) !important;
 }
 .live-shell .wire-agent-item.active {
+  opacity: 1 !important;
+}
+.live-shell .wire-agent-switch-now.is-active,
+.live-shell .wire-agent-switch-now.is-active.is-stale {
   opacity: 1 !important;
 }
 

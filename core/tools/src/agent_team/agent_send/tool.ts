@@ -30,7 +30,7 @@ export class AgentSendTool extends Tool {
       required: ["to"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   private readonly manage = new TeamManageTool();

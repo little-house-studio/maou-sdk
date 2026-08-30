@@ -23,7 +23,7 @@ export class CreateGoalTool extends Tool {
       required: ["objective"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
     parallelSafe: false,
   };
 

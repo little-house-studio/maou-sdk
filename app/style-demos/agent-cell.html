@@ -1,0 +1,691 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="plate">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maou · 窗格</title>
+    <style>
+      /*
+       * 读写：本页静态演示。生产 AgentList 不读这里。
+       * 当前项目是一块监视格。标题就是主 agent。框是选中。
+       */
+      :root {
+        --n-bg: #ededed;
+        --n-label: #000000;
+        --n-on: #000000;
+        --n-on-ink: #ededed;
+        --n-path: #2a2a2a;
+        --n-path-on: #d4d4d4;
+        --n-secondary: #828282;
+        --n-line: #9b9b9b;
+        --n-info: #0291FF;
+        --n-font: "Helvetica Neue", Helvetica, Arial, "PingFang SC",
+          "HarmonyOS Sans SC", sans-serif;
+        --n-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        --row: 1.3125em;
+        --left: 260px;
+        --act: 36px;
+      }
+      html[data-theme="phosphor"] {
+        --n-bg: #0b0b0b;
+        --n-label: #ecece8;
+        --n-on: #ecece8;
+        --n-on-ink: #0b0b0b;
+        --n-path: #c8c8c2;
+        --n-path-on: #3a3a38;
+        --n-secondary: #8a8a84;
+        --n-line: #5c5c58;
+        --n-info: #b8ff00;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        height: 100dvh;
+        overflow: hidden;
+        background: var(--n-bg);
+        color: var(--n-label);
+        font: 400 13px / var(--row) var(--n-font);
+      }
+      button, input { font: inherit; color: inherit; }
+      button {
+        background: none;
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        text-align: left;
+      }
+      input {
+        border: 0;
+        outline: none;
+        background: transparent;
+        width: 100%;
+      }
+      input::placeholder { color: var(--n-secondary); }
+      :focus-visible { outline: 1px solid var(--n-info); outline-offset: -1px; }
+      a { color: inherit; }
+      @media (hover: hover) {
+        a:hover { color: var(--n-info); }
+      }
+
+      .page {
+        height: 100%;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .cmd {
+        display: grid;
+        grid-template-columns: minmax(16em, 1fr) auto;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .cmd-copy { padding: 0.5em 0.8em 0.55em; }
+      .cmd-copy h1 {
+        margin: 0;
+        font-size: 1em;
+        font-weight: 500;
+      }
+      .cmd-copy p { margin: 0.1em 0 0; color: var(--n-secondary); }
+      .cmd-tools {
+        display: flex;
+        align-items: center;
+        padding: 0.45em 0.8em;
+        border-left: 1px solid var(--n-line);
+      }
+      .seg { display: flex; border: 1px solid var(--n-line); }
+      .seg button {
+        padding: 0 0.6em;
+        min-height: calc(var(--row) * 1.25);
+        color: var(--n-secondary);
+      }
+      .seg button + button { border-left: 1px solid var(--n-line); }
+      .seg button.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      .shell {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: var(--act) var(--left) minmax(0, 1fr);
+      }
+      .act {
+        border-right: 1px solid var(--n-line);
+        display: flex;
+        flex-direction: column;
+        padding: 8px 0;
+        gap: 8px;
+        align-items: center;
+      }
+      .act i {
+        display: block;
+        width: 14px;
+        height: 14px;
+        border: 1px solid var(--n-line);
+      }
+      .act i.on {
+        background: var(--n-on);
+        border-color: var(--n-on);
+      }
+
+      .left {
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) 3px minmax(0, 1.1fr);
+        border-right: 1px solid var(--n-line);
+      }
+      .tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .tab {
+        min-height: calc(var(--row) * 1.45);
+        padding: 0 0.4em;
+        color: var(--n-secondary);
+        border-left: 1px solid var(--n-line);
+      }
+      .tab:first-child { border-left: 0; }
+      .tab.is-on {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+
+      .desk {
+        min-height: 0;
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+      }
+      .stage {
+        position: relative;
+        min-height: 0;
+        overflow: auto;
+      }
+      .inner { position: relative; min-height: 100%; }
+      .inner svg {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .labs { position: relative; z-index: 1; }
+      .hit {
+        position: absolute;
+        left: 0;
+        right: 8px;
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr);
+        align-items: start;
+      }
+      .hit .copy {
+        min-width: 0;
+        padding: 0.1em 0.35em 0.15em;
+      }
+      .hit .name {
+        display: block;
+        font-weight: 600;
+        line-height: 1.25;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .hit.quiet .name { font-weight: 500; }
+      .hit .path {
+        display: block;
+        margin-top: 0.15em;
+        font-size: 11px;
+        font-weight: 400;
+        line-height: 1.25;
+        color: var(--n-path);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .hit.proj.is-on .copy {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+      }
+      .hit.proj.is-on .path { color: var(--n-path-on); }
+      .hit.agent .copy { padding-left: 0.5em; }
+      .hit.agent .name { font-weight: 400; }
+      .hit.agent.is-on .copy {
+        box-shadow: inset 2px 0 0 var(--n-label);
+      }
+      .hit.agent.is-on .name { font-weight: 600; }
+      @media (hover: hover) {
+        .hit:hover:not(.is-on) .name,
+        .hit:hover:not(.is-on) .path { color: var(--n-info); }
+      }
+      .add {
+        padding: 0.4em 0.65em;
+        border-top: 1px solid var(--n-line);
+        font-weight: 500;
+      }
+      @media (hover: hover) {
+        .add:hover { color: var(--n-info); }
+      }
+
+      .sessions {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-top: 1px solid var(--n-line);
+      }
+      .q, .new {
+        flex-shrink: 0;
+        padding: 0.35em 0.65em;
+        border-bottom: 1px solid var(--n-line);
+      }
+      .slist { min-height: 0; overflow: auto; }
+      .srow {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.6em;
+        padding: 0.28em 0.65em;
+      }
+      .srow.is-on { box-shadow: inset 2px 0 0 var(--n-label); font-weight: 600; }
+      .srow.is-kid { padding-left: 1.4em; color: var(--n-path); font-weight: 400; }
+      .st { color: var(--n-secondary); font-size: 11px; }
+
+      .mid {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .top {
+        min-height: calc(var(--row) * 2.2);
+        display: flex;
+        align-items: center;
+        gap: 0.55em;
+        padding: 0 0.8em;
+        border-bottom: 1px solid var(--n-line);
+        color: var(--n-secondary);
+      }
+      .chip {
+        background: var(--n-on);
+        color: var(--n-on-ink);
+        padding: 0 0.55em;
+      }
+      .thread {
+        flex: 1;
+        min-height: 0;
+        padding: 1.2em 1.6em;
+        color: var(--n-secondary);
+      }
+      .thread .who { font-size: 12px; margin-bottom: 0.2em; }
+      .thread .say {
+        color: var(--n-label);
+        margin: 0 0 1em;
+        max-width: 36em;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div class="cmd">
+        <div class="cmd-copy">
+          <h1>窗格</h1>
+          <p>
+            当前项目用细线框住。标题就是主 agent。coding 不单列。
+            <a href="agent-schematic.html">四案</a>
+            <a href="agent-desk.html">纸面摊开</a>
+            <a href="index.html">目录</a>
+          </p>
+        </div>
+        <div class="cmd-tools">
+          <div class="seg" role="group" aria-label="主题">
+            <button type="button" data-theme="plate" class="is-on">纸面</button>
+            <button type="button" data-theme="phosphor">磷光</button>
+          </div>
+        </div>
+      </div>
+      <div class="shell">
+        <div class="act" aria-hidden="true"><i class="on"></i><i></i><i></i></div>
+        <aside class="left">
+          <div class="tabs" role="tablist">
+            <button type="button" class="tab" data-tab="system">系统</button>
+            <button type="button" class="tab is-on" data-tab="project">项目</button>
+            <button type="button" class="tab" data-tab="im">IM</button>
+          </div>
+          <div class="desk">
+            <div class="stage" id="stage">
+              <div class="inner" id="inner">
+                <svg id="draw"></svg>
+                <div class="labs" id="labs"></div>
+              </div>
+            </div>
+            <button type="button" class="add" data-add="1">+ 增加项目</button>
+          </div>
+          <div aria-hidden="true"></div>
+          <div class="sessions">
+            <div class="q"><input type="search" placeholder="搜索会话" id="q" /></div>
+            <button type="button" class="new">+ 新建会话</button>
+            <div class="slist" id="slist"></div>
+          </div>
+        </aside>
+        <section class="mid">
+          <div class="top" id="top"></div>
+          <div class="thread" id="thread"></div>
+        </section>
+      </div>
+    </div>
+    <script>
+      const PROJECTS = [
+        {
+          id: "app",
+          path: "/Users/mac/Documents/vscodeProject/maou-sdk/app",
+          agents: [
+            { id: "app:coding", name: "coding" },
+            { id: "app:explore", name: "explore" },
+          ],
+        },
+        {
+          id: "maou-example",
+          path: "/Users/mac/Documents/vscodeProject/maou-example",
+          agents: [
+            { id: "ex:coding", name: "coding" },
+            { id: "ex:supervisor", name: "supervisor" },
+          ],
+        },
+        {
+          id: "pi",
+          path: "/Users/mac/Documents/vscodeProject/pi",
+          agents: [{ id: "pi:coding", name: "coding" }],
+        },
+        {
+          id: "maou-agent",
+          path: "/Users/mac/Documents/vscodeProject/maou-agent",
+          agents: [
+            { id: "ag:coding", name: "coding" },
+            { id: "ag:Raven", name: "Raven" },
+            { id: "ag:SearchBot", name: "SearchBot" },
+          ],
+        },
+      ];
+      const SYS = [
+        {
+          id: "local",
+          name: "本机",
+          path: "~/.maou",
+          agents: [
+            { id: "sys:ops", name: "ops" },
+            { id: "sys:monitor", name: "monitor" },
+          ],
+        },
+      ];
+      const IM = [
+        {
+          id: "inbox",
+          name: "收件箱",
+          path: "按状态排",
+          agents: [
+            { id: "im:Raven", name: "Raven" },
+            { id: "im:install", name: "install" },
+          ],
+        },
+      ];
+      const SESSIONS = [
+        { t: "左栏项目区重排", time: "现在", on: true },
+        { t: "会话搜索井", time: "14:02" },
+        { t: "fork · 对照页", time: "昨天", kid: true },
+        { t: "install 克隆清理", time: "昨天" },
+      ];
+
+      const FX = 8;
+      const FW = 244;
+      const CX = 16;
+      const state = { tab: "project", ws: "app", agent: "app:coding", q: "" };
+
+      function compact(p) {
+        return String(p || "")
+          .replace(/^\/Users\/[^/]+/, "~")
+          .replace(/^\/home\/[^/]+/, "~");
+      }
+      function groups() {
+        if (state.tab === "system") return SYS;
+        if (state.tab === "im") return IM;
+        return PROJECTS;
+      }
+      function current() {
+        return groups().find((g) => g.id === state.ws) || groups()[0];
+      }
+      function labelOf(g) {
+        return g.name || g.id;
+      }
+      function extras(g) {
+        if (state.tab !== "project") return g.agents;
+        return g.agents.filter((a) => a.name !== "coding");
+      }
+      function esc(s) {
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/"/g, "&quot;");
+      }
+      function settle() {
+        const gs = groups();
+        if (!gs.some((g) => g.id === state.ws)) state.ws = gs[0].id;
+        const kids = current().agents;
+        if (!kids.some((a) => a.id === state.agent)) {
+          state.agent = kids[0]?.id || "";
+        }
+      }
+      function token(name) {
+        return getComputedStyle(document.documentElement)
+          .getPropertyValue(name)
+          .trim();
+      }
+      function elNS(name, attrs) {
+        const n = document.createElementNS("http://www.w3.org/2000/svg", name);
+        for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+        return n;
+      }
+
+      function layout() {
+        settle();
+        const gs = groups();
+        const cur = current();
+        const rows = [];
+        let y = 14;
+        gs.forEach((g) => {
+          const on = g.id === cur.id;
+          const kids = extras(g);
+          const path = on ? compact(g.path || "") : "";
+          const h = 22 + (path ? 15 : 0);
+          const cy = y + 11;
+          const top = y;
+          rows.push({
+            kind: "proj",
+            id: g.id,
+            name: labelOf(g),
+            path,
+            on,
+            top,
+            h,
+            cx: CX,
+            cy,
+          });
+          y += h + 6;
+          if (on) {
+            kids.forEach((a) => {
+              rows.push({
+                kind: "agent",
+                id: a.id,
+                name: a.name,
+                on: a.id === state.agent,
+                top: y,
+                h: 22,
+                cx: 28,
+                cy: y + 11,
+                fromX: CX,
+                fromY: cy,
+              });
+              y += 22;
+            });
+            y += 8;
+          }
+        });
+        const onP = rows.find((r) => r.kind === "proj" && r.on);
+        const last = [...rows].reverse().find((r) => r.on) || onP;
+        if (onP && last) {
+          onP.frame = {
+            x: FX,
+            y: onP.top - 4,
+            w: FW,
+            h: last.top + last.h - onP.top + 8,
+          };
+        }
+        return { rows, height: y + 10 };
+      }
+
+      function draw(svg, L) {
+        const ink = token("--n-label");
+        const dim = token("--n-line");
+        const projs = L.rows.filter((r) => r.kind === "proj");
+        const agents = L.rows.filter((r) => r.kind === "agent");
+        if (projs.length > 1) {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${CX} ${projs[0].cy} L${CX} ${projs[projs.length - 1].cy}`,
+              fill: "none",
+              stroke: dim,
+              "stroke-width": 1,
+            }),
+          );
+        }
+        const onP = projs.find((p) => p.on);
+        if (onP?.frame) {
+          const { x, y, w, h } = onP.frame;
+          svg.appendChild(
+            elNS("rect", {
+              x,
+              y,
+              width: w,
+              height: h,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+        }
+        projs.forEach((p) => {
+          svg.appendChild(
+            elNS("circle", {
+              cx: p.cx,
+              cy: p.cy,
+              r: 3.2,
+              fill: p.on ? ink : "none",
+              stroke: p.on ? ink : dim,
+              "stroke-width": 1,
+            }),
+          );
+        });
+        agents.forEach((a) => {
+          svg.appendChild(
+            elNS("path", {
+              d: `M${a.fromX} ${a.cy} H${a.cx}`,
+              fill: "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+          svg.appendChild(
+            elNS("circle", {
+              cx: a.cx,
+              cy: a.cy,
+              r: 2.3,
+              fill: a.on ? ink : "none",
+              stroke: ink,
+              "stroke-width": 1,
+            }),
+          );
+        });
+      }
+
+      function paintLabs(L) {
+        const labs = document.getElementById("labs");
+        labs.innerHTML = L.rows
+          .map((r) => {
+            if (r.kind === "proj") {
+              const on = r.on ? " is-on" : " quiet";
+              const path = r.path
+                ? `<span class="path">${esc(r.path)}</span>`
+                : "";
+              return `<button type="button" class="hit proj${on}" data-ws="${esc(r.id)}" style="top:${r.top}px;height:${r.h}px"><span></span><span class="copy"><span class="name">${esc(r.name)}</span>${path}</span></button>`;
+            }
+            const on = r.on ? " is-on" : "";
+            return `<button type="button" class="hit agent${on}" data-agent="${esc(r.id)}" style="top:${r.top}px;height:${r.h}px"><span></span><span class="copy"><span class="name">${esc(r.name)}</span></span></button>`;
+          })
+          .join("");
+      }
+
+      function paintSess() {
+        const q = state.q.trim().toLowerCase();
+        document.getElementById("slist").innerHTML = SESSIONS.filter(
+          (s) => !q || s.t.toLowerCase().includes(q),
+        )
+          .map((s) => {
+            const on = s.on ? " is-on" : "";
+            const kid = s.kid ? " is-kid" : "";
+            return `<div class="srow${on}${kid}"><span>${esc(s.t)}</span><span class="st">${esc(s.time)}</span></div>`;
+          })
+          .join("");
+      }
+
+      function paintThread() {
+        const g = current();
+        const a = g.agents.find((x) => x.id === state.agent) || g.agents[0];
+        const name = labelOf(g);
+        const who =
+          state.tab === "project" && a?.name === "coding" ? "" : a?.name || "";
+        document.getElementById("top").innerHTML =
+          `<span class="chip">${esc(name)}</span>${who ? `<span>${esc(who)}</span>` : ""}`;
+        document.getElementById("thread").innerHTML = `
+          <div class="who">你</div>
+          <div class="say">${who ? `在「${esc(name)}」里跟 ${esc(who)} 说话。` : `在「${esc(name)}」里。框住的是当前项目。`}</div>
+          <div class="who">${esc(who || name)}</div>
+          <div class="say">${esc(compact(g.path || ""))}</div>`;
+      }
+
+      function paint() {
+        document.querySelectorAll(".tab").forEach((t) => {
+          t.classList.toggle("is-on", t.getAttribute("data-tab") === state.tab);
+        });
+        const L = layout();
+        const inner = document.getElementById("inner");
+        const svg = document.getElementById("draw");
+        inner.style.height = `${Math.max(L.height, 1)}px`;
+        const h = Math.max(L.height, inner.clientHeight, 1);
+        inner.style.height = `${h}px`;
+        svg.setAttribute("viewBox", `0 0 260 ${h}`);
+        svg.setAttribute("preserveAspectRatio", "xMinYMin meet");
+        svg.replaceChildren();
+        paintLabs(L);
+        draw(svg, L);
+        paintSess();
+        paintThread();
+      }
+
+      paint();
+      new ResizeObserver(() => paint()).observe(document.getElementById("stage"));
+
+      document.body.addEventListener("click", (e) => {
+        const t = e.target;
+        if (!(t instanceof Element)) return;
+        const theme = t.closest("[data-theme]");
+        if (theme && theme.closest(".seg")) {
+          document.documentElement.dataset.theme = theme.getAttribute("data-theme");
+          document.querySelectorAll(".cmd-tools [data-theme]").forEach((b) => {
+            b.classList.toggle("is-on", b === theme);
+          });
+          paint();
+          return;
+        }
+        const tab = t.closest("[data-tab]");
+        if (tab) {
+          state.tab = tab.getAttribute("data-tab");
+          if (state.tab === "project") {
+            state.ws = PROJECTS.some((p) => p.id === state.ws)
+              ? state.ws
+              : PROJECTS[0].id;
+          } else if (state.tab === "system") state.ws = "local";
+          else state.ws = "inbox";
+          state.agent = current().agents[0].id;
+          paint();
+          return;
+        }
+        const add = t.closest("[data-add]");
+        if (add) {
+          const n = PROJECTS.filter((p) => p.id.startsWith("项目-")).length + 1;
+          const id = `项目-${n}`;
+          PROJECTS.push({
+            id,
+            path: `/tmp/${id}`,
+            agents: [{ id: `${id}:coding`, name: "coding" }],
+          });
+          state.tab = "project";
+          state.ws = id;
+          state.agent = `${id}:coding`;
+          paint();
+          return;
+        }
+        const ws = t.closest("[data-ws]");
+        if (ws) {
+          state.ws = ws.getAttribute("data-ws");
+          state.agent = current().agents[0].id;
+          paint();
+          return;
+        }
+        const ag = t.closest("[data-agent]");
+        if (ag) {
+          state.agent = ag.getAttribute("data-agent");
+          paint();
+        }
+      });
+      document.getElementById("q").addEventListener("input", (e) => {
+        state.q = e.target.value;
+        paintSess();
+      });
+    </script>
+  </body>
+</html>

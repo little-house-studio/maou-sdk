@@ -188,6 +188,35 @@ export function useDraftHostBag({
     });
   }, []);
 
+  const onAddProject = useCallback(() => {
+    const slug = `proj-${Date.now().toString(36).slice(-4)}`;
+    const id = `project:/tmp/${slug}:coding`;
+    setState((prev) => ({
+      ...prev,
+      agents: [
+        ...prev.agents,
+        {
+          id,
+          name: "coding",
+          displayName: "coding",
+          role: "编码",
+          status: "idle",
+          group: "project",
+          projectPath: `/tmp/${slug}`,
+          projectName: slug,
+          overview: `~/…/${slug}`,
+        },
+      ],
+      activeAgentId: id,
+      meta: {
+        ...prev.meta,
+        agentName: "coding",
+        projectLabel: slug,
+        projectPath: `~/tmp/${slug}`,
+      },
+    }));
+  }, []);
+
   const onApprovalModeChange = useCallback((next: string) => {
     setState((prev) => ({
       ...prev,
@@ -284,6 +313,7 @@ export function useDraftHostBag({
       activeId: state.activeAgentId,
       onSelect: selectAgent,
       onOpenChat: () => setMode("chat"),
+      onAddProject,
     },
     sessionList: {
       sessions: agentSessions,

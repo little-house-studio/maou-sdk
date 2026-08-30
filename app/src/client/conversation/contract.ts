@@ -5,6 +5,7 @@ export const ASK_ID_ATTR = "data-ask-id";
 export const ASK_PREVIEW_ATTR = "data-ask-preview";
 export const ASK_ANCHOR_SEL = "[data-ask-anchor]";
 export const USER_STICK_CLASS = "wire-user-stick";
+export const USER_MSG_CLIP_CLASS = "user-msg-clip";
 export const THREAD_SCROLL_ATTR = "data-thread-scroll";
 
 export type AskAnchorDataset = {

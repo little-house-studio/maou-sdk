@@ -1365,62 +1365,70 @@ button.queue-badge:hover {
 
 .plan-review-card {
   margin: 10px 16px 12px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
+  padding: 0;
+  border: 1px solid var(--n-ok, #FFAE00);
+  background: var(--bg, #ededed);
 }
 
 .plan-review-head {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 8px;
+  padding: 16px;
+  background: var(--n-ok, #FFAE00);
+  border-bottom: 0;
 }
 
-.plan-review-title {
-  flex-shrink: 0;
+.plan-review-heading {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
 }
 
-.plan-review-objective {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-  font-weight: 500;
-}
-
-.plan-review-body {
-  max-height: 40vh;
+.plan-review-preview {
+  max-height: 16em;
   overflow: auto;
-  padding: 8px 10px;
-  margin-bottom: 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
+  padding: 10px 12px;
 }
 
 .plan-review-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
 }
 
 .plan-review-start {
   font-size: 12px;
   font-weight: 600;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--fg);
-  color: var(--bg);
+  padding: 5px 12px;
+  border-radius: 0;
+  border: 1px solid var(--n-ok, #FFAE00);
+  background: var(--n-ok, #FFAE00);
+  color: #000;
 }
 
 .plan-review-start:disabled {
   opacity: 0.45;
+}
+
+.plan-review-note {
+  flex: 1 1 160px;
+  min-width: 140px;
+  margin: 0;
+}
+
+.plan-review-note-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
 }
 
 /* ── Terminal in rail ── */

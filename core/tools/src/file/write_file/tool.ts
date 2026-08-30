@@ -19,7 +19,7 @@ import {
   refreshRead,
 } from "../read-registry.js";
 import { record as recordEdit, wasEditedInSession } from "../file-edit-history.js";
-import { denyNonPlanWrite, isSessionPlanFile } from "../../plan-gate.js";
+import { isSessionPlanFile } from "../../plan-gate.js";
 
 /**
  * 先读后写策略：
@@ -106,9 +106,6 @@ export class WriteFileTool extends Tool {
     } catch (err: unknown) {
       return toolFailFromThrown(err, { fallbackCategory: "sandbox_denied" });
     }
-
-    const planDenied = denyNonPlanWrite(ctx, fullPath);
-    if (planDenied) return planDenied;
 
     try {
       const isNew = !existsSync(fullPath);

@@ -79,6 +79,38 @@ function loadOverview(agentDir: string, fallback = ""): string {
   return fallback;
 }
 
+function templateRefPath(agentDir: string): string {
+  try {
+    const p = join(agentDir, ".agent.ref");
+    if (!existsSync(p)) return "";
+    return readFileSync(p, "utf-8").trim().replace(/\\/g, "/");
+  } catch {
+    return "";
+  }
+}
+
+/** 项目顶层里误放的其它产品 / coding 双胞胎，不当成可切换子 agent。 */
+function skipAsProjectChild(
+  agentDir: string,
+  name: string,
+  role: string,
+  display: string,
+): boolean {
+  if (isCodingAgentIdentity(name, role, display)) return true;
+  const n = name.trim().toLowerCase();
+  if (n === "ops" || n === "install") return true;
+  const ref = templateRefPath(agentDir).toLowerCase();
+  if (!ref) return false;
+  return (
+    ref.includes("/coding-agent/") ||
+    ref.includes("/templates/coding") ||
+    ref.includes("/install-agent/") ||
+    ref.includes("/ops-agent/") ||
+    ref.includes("/templates/install") ||
+    ref.includes("/templates/ops")
+  );
+}
+
 function projectDisplayName(path: string, fallback?: string): string {
   if (fallback?.trim()) return fallback.trim();
   const base = path.replace(/\/+$/, "").split("/").pop();
@@ -235,6 +267,7 @@ function pushProjectAgents(
     } catch {
       /* keep listing if unreadable */
     }
+    if (skipAsProjectChild(sdir, sub, subRole, subDisplay)) continue;
     // 主已是 coding 时，历史 main/code 双胞胎不再并列成自由子项
     if (
       mainName === "coding" &&
@@ -242,7 +275,6 @@ function pushProjectAgents(
     ) {
       continue;
     }
-    if (isCodingAgentIdentity(sub, subRole, subDisplay)) continue;
     const slast = agentDirMtime(sdir);
     const so = loadOverview(sdir, `${p.name} / ${sub}`);
     projectEntries.push(

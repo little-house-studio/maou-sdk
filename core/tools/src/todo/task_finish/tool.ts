@@ -46,7 +46,7 @@ export class TodoFinishTool extends Tool {
       },
       required: ["task_id", "summary"],
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
     endsLoop: true,
   };
 

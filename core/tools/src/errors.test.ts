@@ -191,6 +191,17 @@ describe("ToolExecutor gates", () => {
     expect(out.result.error?.category).toBe("mode_denied");
   });
 
+  it("plan shares execute tools", async () => {
+    const reg = new ToolRegistry();
+    reg.register(new DummyTool("term", ["execute"]));
+    const ex = new ToolExecutor(reg);
+    const out = await ex.executeSingle(
+      { id: "1", name: "term", parameters: {} },
+      { ...ctx, agentMode: "plan" },
+    );
+    expect(out.result.ok).toBe(true);
+  });
+
   it("thrown path-guard → sandbox_denied", async () => {
     const reg = new ToolRegistry();
     reg.register(

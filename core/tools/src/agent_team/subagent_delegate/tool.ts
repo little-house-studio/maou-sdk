@@ -58,7 +58,7 @@ export function createSubagentDelegateTool(
         required: ["task"],
         additionalProperties: false,
       },
-      allowedModes: ["execute"],
+      allowedModes: ["plan", "execute"],
     };
 
     async execute(params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResponse> {
@@ -133,7 +133,7 @@ export class SubagentDelegateTool extends Tool {
       required: ["task"],
       additionalProperties: false,
     },
-    allowedModes: ["execute"],
+    allowedModes: ["plan", "execute"],
   };
 
   async execute(_params: Record<string, unknown>, _ctx: ToolContext): Promise<ToolResponse> {

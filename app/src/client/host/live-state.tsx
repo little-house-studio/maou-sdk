@@ -19,6 +19,7 @@ import {
   terminalsToTermLines,
 } from "../live/adapters";
 import { localDayKey } from "../drafts/layout/today-tokens";
+import { pickAndOpenProject } from "../live/FolderBrowse";
 import { SHELL_LEFT, LIVE_FILES_RAIL } from "../shell/metrics";
 import {
   FILES_ACTIVITY_ID,
@@ -334,6 +335,26 @@ export function useLiveHostBag(): WireHostBag {
     [agents, activeSwitchId, setActiveAgent],
   );
 
+  const onAddProject = useCallback(() => {
+    void pickAndOpenProject().then(async (root) => {
+      if (!root) {
+        if (!window.maouApp?.pickFolder) setMode("settings");
+        return;
+      }
+      try {
+        const [m, a] = await Promise.all([fetchMeta(), fetchAgents()]);
+        setMeta(m);
+        setMetaOffline(false);
+        setLiveAgentRows(a.agents);
+        if (a.activeAgentName) setActiveAgentName(a.activeAgentName);
+        if (a.activeSwitchId) setActiveSwitchId(a.activeSwitchId);
+        setActiveProjectPath(a.activeProjectPath ?? null);
+      } catch (e) {
+        console.error("[app] add project refresh failed", e);
+      }
+    });
+  }, [fetchMeta, fetchAgents]);
+
   const applyTodayUsage = useCallback(
     (t: { date?: string; inputTokens: number; outputTokens: number }) => {
       const day = t.date || localDayKey();
@@ -446,6 +467,7 @@ export function useLiveHostBag(): WireHostBag {
       },
       onOpenChat: () => setMode("chat"),
       terminalAgentNames,
+      onAddProject,
     },
     dock: {
       termLines,
