@@ -49,12 +49,13 @@ export class ReportToParentTool extends Tool {
     }
     const wake = params.wake === true;
     if (wake) {
-      if (!wakeParent(parentId, message, ctx.sessionId)) {
+      if (!wakeParent(parentId, message, ctx.sessionId, ctx.agentName)) {
         return toolFail("precondition", "parent inbox is not bound", { code: "no_wake_host" });
       }
     } else {
       pushQuietReport(parentId, {
         fromSessionId: ctx.sessionId,
+        fromAgent: ctx.agentName,
         message,
         at: Date.now(),
       });

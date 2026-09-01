@@ -108,6 +108,8 @@ describe("live shell production wiring", () => {
     assert.match(liveSettings, /setModel/);
     // 审批口径已从裸 approvalMode 收敛到权限套餐
     assert.match(liveSettings, /setPermissionPreset/);
+    assert.match(liveSettings, /setWorkspaceInstructions/);
+    assert.match(liveSettings, /data-live-workspace-instructions/);
     assert.match(liveSettings, /fetchLlmConfig/);
     assert.match(liveSettings, /saveLlmConfig/);
     assert.match(liveSettings, /data-live-settings/);
@@ -287,6 +289,7 @@ describe("live shell production wiring", () => {
     assert.match(chat, /className=\{`wire-session-row/);
     assert.match(chat, /className=["']wire-session-btn["']/);
     assert.match(chat, /className=["']wire-session-title["']/);
+    assert.match(chat, /className=["']wire-session-count["']/);
     assert.match(chat, /className=["']wire-session-time["']/);
     assert.match(chat, /wire-session-guides|wire-session-guide/);
     assert.match(chat, /data-guide/);
@@ -344,6 +347,27 @@ describe("live shell production wiring", () => {
     assert.match(chat, /onMetaChangeRef/);
     assert.match(chat, /intentional mount-only|mount-only bootstrap/i);
     assert.match(chat, /cancelled = true/);
+  });
+
+  it("enter boot is agents → sessions → newest context upward", () => {
+    const live = read("host/live-state.tsx");
+    assert.match(live, /agentsReady/);
+    assert.match(live, /bootReady:\s*agentsReady/);
+    const metaEffect = live.slice(live.indexOf("if (!agentsReady) return"));
+    assert.match(metaEffect, /fetchMeta/);
+    const chat = read("ChatPanel.tsx");
+    const boot = chat.slice(chat.indexOf("Mount-only bootstrap"));
+    const sessionsAt = boot.indexOf("refreshSessions");
+    const contextAt = boot.indexOf("fetchSessionMessages");
+    assert.ok(sessionsAt >= 0, "bootstrap must refresh sessions");
+    assert.ok(contextAt > sessionsAt, "context page must follow session list");
+    assert.match(boot, /loadOlderRef/);
+    const server = read("../server/create-server.ts");
+    const metaRoute = server.slice(
+      server.indexOf('app.get("/api/meta"'),
+      server.indexOf('app.post("/api/model"'),
+    );
+    assert.doesNotMatch(metaRoute, /loadSessionMessages|loadSessionPage/);
   });
 
   it("App chat files rail uses LiveFilesRail (draft FilesRail + live FS)", () => {

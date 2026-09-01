@@ -52,6 +52,19 @@ export { GitHubCopilotAdapter } from "./adapters/github-copilot.js";
 export { registerAdapter, getAdapterRegistry } from "./adapter-registry.js";
 
 // 类型 + 工具
+export {
+  usageOutputTokens,
+  OutputRateClock,
+  settleOutputRate,
+  addOutputRateSample,
+  emptyOutputRateFold,
+  emptyOutputRate,
+  foldTokensPerSecond,
+  foldTtftAverageMs,
+  formatTokensPerSecond,
+} from "./output-rate.js";
+export type { OutputRate, OutputRateFold } from "./output-rate.js";
+
 export type { APIPreset, LLMUsage, LLMToolCall, APIProtocol } from "./adapters/types.js";
 export { normalizeApiProtocol, completeApiUrl } from "./adapters/types.js";
 export type { OpenAICompat, AnthropicCompat, ThinkingFormat, StructuredOutputCompat } from "./adapters/compat.js";

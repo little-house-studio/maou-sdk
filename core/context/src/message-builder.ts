@@ -70,13 +70,12 @@ export function buildMessages(params: BuildMessagesParams): Record<string, unkno
     if (projectContext) {
       messages.push({ role: "system", content: projectContext });
     }
-    if (workspaceInstructions !== false) {
-      const instructions = compileWorkspaceInstructions(projectRoot, {
-        replaceBaseline: replaceWorkspaceBaseline,
-      });
-      if (instructions) {
-        messages.push({ role: "system", content: instructions });
-      }
+    const instructions = compileWorkspaceInstructions(projectRoot, {
+      replaceBaseline: replaceWorkspaceBaseline,
+      enabled: workspaceInstructions !== false,
+    });
+    if (instructions) {
+      messages.push({ role: "system", content: instructions });
     }
   }
 

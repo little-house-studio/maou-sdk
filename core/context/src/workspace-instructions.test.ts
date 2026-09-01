@@ -30,13 +30,12 @@ describe("workspace-instructions", () => {
     return dir;
   }
 
-  it("defaults on; env/agent/user can turn off", () => {
+  it("defaults on; env/agent can turn off", () => {
     delete process.env.MAOU_WORKSPACE_INSTRUCTIONS;
     expect(resolveWorkspaceInstructionsEnabled()).toBe(true);
     expect(resolveWorkspaceInstructionsEnabled({ agent: false })).toBe(false);
-    expect(resolveWorkspaceInstructionsEnabled({ user: false })).toBe(false);
     process.env.MAOU_WORKSPACE_INSTRUCTIONS = "0";
-    expect(resolveWorkspaceInstructionsEnabled({ agent: true, user: true })).toBe(false);
+    expect(resolveWorkspaceInstructionsEnabled({ agent: true })).toBe(false);
   });
 
   it("MAOU_PROJECT_CONTEXT does not control workspace instructions", () => {
@@ -81,6 +80,23 @@ describe("workspace-instructions", () => {
     writeFileSync(join(dir, "AGENTS.md"), "rules", "utf-8");
     expect(compileWorkspaceInstructions(dir, { replaceBaseline: true })).toContain(
       "This complete workspace instruction baseline replaces all earlier workspace instruction baselines.",
+    );
+  });
+
+  it("does not load AGENT.md", () => {
+    const dir = root();
+    writeFileSync(join(dir, "AGENT.md"), "legacy name\n", "utf-8");
+    const files = loadWorkspaceInstructionFiles(dir);
+    expect(files.some((f) => f.exists)).toBe(false);
+    expect(compileWorkspaceInstructions(dir)).toBe("");
+  });
+
+  it("emits empty replacement when disabled after compact", () => {
+    const dir = root();
+    writeFileSync(join(dir, "AGENTS.md"), "rules", "utf-8");
+    expect(compileWorkspaceInstructions(dir, { enabled: false })).toBe("");
+    expect(compileWorkspaceInstructions(dir, { enabled: false, replaceBaseline: true })).toContain(
+      "No workspace instructions are currently active.",
     );
   });
 });

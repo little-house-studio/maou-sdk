@@ -2,13 +2,21 @@
  * 子→父汇报桥：安静注入 + 可选 inbox 投递（由 runtime 绑定）。
  */
 
+import { formatSenderEnvelope } from "@little-house-studio/types";
+
 export type QuietReport = {
   fromSessionId: string;
+  fromAgent?: string;
   message: string;
   at: number;
 };
 
-export type ReportWakeFn = (parentSessionId: string, message: string, fromSessionId: string) => void;
+export type ReportWakeFn = (
+  parentSessionId: string,
+  message: string,
+  fromSessionId: string,
+  fromAgent?: string,
+) => void;
 
 const quiet = new Map<string, QuietReport[]>();
 let wakeFn: ReportWakeFn | null = null;
@@ -17,9 +25,14 @@ export function bindReportWake(fn: ReportWakeFn | null): void {
   wakeFn = fn;
 }
 
-export function wakeParent(parentSessionId: string, message: string, fromSessionId: string): boolean {
+export function wakeParent(
+  parentSessionId: string,
+  message: string,
+  fromSessionId: string,
+  fromAgent?: string,
+): boolean {
   if (!wakeFn) return false;
-  wakeFn(parentSessionId, message, fromSessionId);
+  wakeFn(parentSessionId, message, fromSessionId, fromAgent);
   return true;
 }
 
@@ -41,6 +54,13 @@ export function resetQuietReportsForTest(): void {
 
 export function formatQuietReports(reports: QuietReport[]): string {
   if (!reports.length) return "";
-  const lines = reports.map((r) => `- ${r.fromSessionId}: ${r.message}`);
-  return `<subagent_report>\n${lines.join("\n")}\n</subagent_report>`;
+  return reports
+    .map((r) =>
+      formatSenderEnvelope({
+        body: r.message,
+        from: r.fromAgent?.trim() || r.fromSessionId,
+        type: "report",
+      }),
+    )
+    .join("\n");
 }

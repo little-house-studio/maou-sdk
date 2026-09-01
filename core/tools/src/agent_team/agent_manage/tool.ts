@@ -30,7 +30,7 @@ export class TeamManageTool extends Tool {
       "与运行中 subagent 再说话优先用 agent_send（message/insert/interrupt/stop）。" +
       "本工具仍接受 action=message|interrupt|insert|stop。" +
       "通信：to=名称 + content=内容 → MessageBus；" +
-      "目标 agent 每轮 loop 会 poll inbox 并注入为 user 消息（标注 [来自 …]）。" +
+      "目标 agent 每轮 loop 会 poll inbox 并注入为 <message from=\"发送者\"> 的 user 消息。" +
       "list 可看状态与未读；dispatch 后台执行（detached fork）；stop 停止当前任务。" +
       "专业子 agent 模板（explore/research/tester/browser 等）也可由 subagent_<name> 或 agent_message 启动。",
     parameters: {

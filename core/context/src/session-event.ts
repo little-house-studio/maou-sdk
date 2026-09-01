@@ -9,6 +9,7 @@
  * 见 docs/SESSION_EVENT.md
  */
 
+import { isAgentSenderEnvelope } from "@little-house-studio/types";
 import type { SessionStore } from "./session-store.js";
 
 // ── Author（发言人身份）────────────────────────────────────────────────────
@@ -82,6 +83,7 @@ const SOURCE_KIND: Record<string, SessionEventKind> = {
   cli: "human_user",
   feishu: "human_user",
   message_bus: "agent_message",
+  report_to_parent: "agent_message",
   empty_retry: "runtime_control",
   verification: "runtime_control",
   todo_notice: "system_notice",
@@ -143,7 +145,9 @@ export function resolveSessionEventKind(msg: {
     if (c.includes("<verification-failed>") || c.includes("<verification>")) {
       return "runtime_control";
     }
-    if (c.startsWith("[来自 ")) return "agent_message";
+    if (c.startsWith("[来自 ") || isAgentSenderEnvelope(c)) {
+      return "agent_message";
+    }
     return "human_user";
   }
 
@@ -213,7 +217,9 @@ export function resolveMessageAuthor(msg: {
   if (msg.source === "todo_notice") return authorSystem("todo", "todo");
   if (msg.source === "empty_retry") return authorSystem("runtime", "runtime");
   if (msg.source === "verification") return authorSystem("verify", "verify");
-  if (msg.source === "message_bus") return authorAgent(from || "peer", from || "peer");
+  if (msg.source === "message_bus" || msg.source === "report_to_parent") {
+    return authorAgent(from || "peer", from || "peer");
+  }
   if (msg.source === "terminal-notification") {
     return authorTool(toolName || "use_terminal", toolName || "use_terminal");
   }

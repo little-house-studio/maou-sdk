@@ -25,7 +25,6 @@ export interface WorkspaceInstructionBaseline {
 
 export function resolveWorkspaceInstructionsEnabled(opts?: {
   agent?: boolean | null;
-  user?: boolean | null;
   env?: string | null;
 }): boolean {
   const env = (opts?.env ?? process.env.MAOU_WORKSPACE_INSTRUCTIONS ?? "").trim().toLowerCase();
@@ -33,8 +32,6 @@ export function resolveWorkspaceInstructionsEnabled(opts?: {
   if (env === "1" || env === "true" || env === "on") return true;
   if (opts?.agent === false) return false;
   if (opts?.agent === true) return true;
-  if (opts?.user === false) return false;
-  if (opts?.user === true) return true;
   return true;
 }
 
@@ -86,8 +83,16 @@ export function dedupeInstructionFiles(files: WorkspaceInstructionFile[]): Works
 
 export function compileWorkspaceInstructions(
   projectRoot: string,
-  opts?: { replaceBaseline?: boolean },
+  opts?: { replaceBaseline?: boolean; enabled?: boolean },
 ): string {
+  if (opts?.enabled === false) {
+    if (!opts.replaceBaseline) return "";
+    return [
+      "<workspace_instructions>",
+      "This complete workspace instruction baseline replaces all earlier workspace instruction baselines. No workspace instructions are currently active.",
+      "</workspace_instructions>",
+    ].join("\n");
+  }
   const files = dedupeInstructionFiles(loadWorkspaceInstructionFiles(projectRoot));
   if (files.length === 0) return "";
   const parts: string[] = ["<workspace_instructions>"];

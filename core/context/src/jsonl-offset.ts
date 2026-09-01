@@ -99,6 +99,15 @@ export function readOffsetRecs(sessionRoot: string): OffsetRec[] {
   return out;
 }
 
+/** 旁路里 type 为 `t` 的条数。列表兜底数用户发出时用。 */
+export function countOffsetType(sessionRoot: string, type: string): number {
+  let n = 0;
+  for (const rec of readOffsetRecs(sessionRoot)) {
+    if (rec.t === type) n += 1;
+  }
+  return n;
+}
+
 /** 从旁路尾往回找 seq<=throughSeq 的最后一条。 */
 export function offsetRecAtOrBefore(sessionRoot: string, throughSeq: number): OffsetRec | null {
   const { recs } = scanOffsetsReverse(sessionRoot, {

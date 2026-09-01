@@ -24,6 +24,7 @@ const root: DraftSession = {
   title: "值班机磁盘告警排查",
   agent: "ops",
   timeLabel: "昨天",
+  messageCount: 24,
 };
 const mid: DraftSession = {
   id: "s-root::fork::research::a",
@@ -74,6 +75,17 @@ describe("SessionList scheme A + tree", () => {
     assert.doesNotMatch(src, /wire-session-band/);
     assert.doesNotMatch(src, /session\.list/);
     assert.match(src, /wire-session-qwrap/);
+  });
+
+  it("shows message count between title and time", () => {
+    const html = render();
+    assert.match(html, /wire-session-count/);
+    assert.match(html, />24</);
+    assert.match(src, /messageCount/);
+    assert.match(
+      draftCss,
+      /\.wire-session-count\s*\{[^}]*tabular-nums/s,
+    );
   });
 
   it("fork children carry tree branch class and structure", () => {
@@ -127,6 +139,31 @@ describe("SessionList scheme A + tree", () => {
     assert.match(
       draftCss,
       /\.wire-session-row\s*\{[^}]*flex:\s*0 0 auto/s,
+    );
+  });
+
+  it("hovers a three-dot menu that holds row actions", () => {
+    const html = render({
+      onDelete: () => {},
+      onFork: () => {},
+      onNewChild: () => {},
+      onRename: () => {},
+    });
+    assert.match(html, /wire-session-more-host/);
+    assert.match(html, /wire-session-more-btn/);
+    assert.match(html, /⋯/);
+    assert.doesNotMatch(html, /wire-session-fork/);
+    assert.doesNotMatch(html, /wire-session-child/);
+    assert.doesNotMatch(html, /wire-session-del/);
+    assert.doesNotMatch(html, /data-cascade-panel=/);
+    assert.match(src, /SessionRowMore/);
+    assert.match(
+      draftCss,
+      /\.wire-session-more-host\s*\{[^}]*opacity:\s*0/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-session-row:hover \.wire-session-more-host/s,
     );
   });
 

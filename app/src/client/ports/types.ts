@@ -9,6 +9,7 @@ import type {
   clearSession,
   createSession,
   deleteSession,
+  fetchSessionMessages,
   loadOlderMessages,
   previewDeleteSession,
   enqueueChat,
@@ -36,6 +37,7 @@ import type {
   setActiveAgent,
   setApprovalMode,
   setPermissionPreset,
+  setWorkspaceInstructions,
   setSessionSendMode,
   fetchPendingAsk,
   answerAsk,
@@ -79,6 +81,7 @@ export type ChatPorts = {
   clearSession: typeof clearSession;
   deleteSession: typeof deleteSession;
   previewDeleteSession: typeof previewDeleteSession;
+  fetchSessionMessages: typeof fetchSessionMessages;
   loadOlderMessages: typeof loadOlderMessages;
   renameSession: typeof renameSession;
   exportTranscript: typeof exportTranscript;
@@ -122,6 +125,7 @@ export type SettingsPorts = {
   setModel: typeof setModel;
   setApprovalMode: typeof setApprovalMode;
   setPermissionPreset: typeof setPermissionPreset;
+  setWorkspaceInstructions: typeof setWorkspaceInstructions;
   fetchLlmConfig: typeof fetchLlmConfig;
   saveLlmConfig: typeof saveLlmConfig;
   parseLlmClipboard: typeof parseLlmClipboard;

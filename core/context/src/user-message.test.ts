@@ -5,6 +5,7 @@ import {
   formatAgentSendSessionText,
   resolveAgentSendMode,
   toAgentSendMessage,
+  unwrapAgentSendTag,
 } from "./user-message.js";
 
 describe("toAgentSendMessage", () => {
@@ -70,5 +71,10 @@ describe("toAgentSendMessage", () => {
 
   it("agentUserMessageText reads content", () => {
     expect(agentUserMessageText({ content: "hi" })).toBe("hi");
+  });
+
+  it("unwraps from= and name= envelopes", () => {
+    expect(unwrapAgentSendTag(`<message name="门磁">人回来了</message>`)).toBe("人回来了");
+    expect(unwrapAgentSendTag(`<message from="help">这边查完了。</message>`)).toBe("这边查完了。");
   });
 });

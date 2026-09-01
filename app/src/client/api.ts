@@ -37,12 +37,21 @@ export interface Meta {
     revision?: number;
   };
   goal?: { id: string; objective: string; phase: string; revision: number };
+  /** 当前 Agent 是否注入仓库根 AGENTS.md / CLAUDE.md。默认 true */
+  workspaceInstructions?: boolean;
   agentName?: string;
   providers?: { id: string; name?: string }[];
   models?: { id: string; name?: string }[];
-  /** getMeta 可选附带（启动恢复） */
+  /** 会话页接口才保证带 oldestSeq / hasMore */
   messages?: ChatHistoryLine[];
 }
+
+export type SessionMessagePage = {
+  messages: ChatHistoryLine[];
+  oldestSeq: number | null;
+  hasMore: boolean;
+  sessionId?: string;
+};
 
 export type SessionLamp =
   | "running"
@@ -58,6 +67,8 @@ export type SessionSummary = {
   title: string;
   updatedAt?: string;
   messageCount: number;
+  /** 用户发出条数，列表展示用 */
+  userTurns: number;
   lastMsgAt?: string;
   parentSessionId?: string;
   agentName?: string;
@@ -325,12 +336,28 @@ export async function fetchRuntimeRunning(): Promise<{
   };
 }
 
+function readSessionPage(j: {
+  messages?: ChatHistoryLine[];
+  oldestSeq?: number | null;
+  hasMore?: boolean;
+  sessionId?: string;
+}): SessionMessagePage {
+  return {
+    messages: j.messages ?? [],
+    oldestSeq: j.oldestSeq ?? null,
+    hasMore: j.hasMore ?? false,
+    sessionId: j.sessionId,
+  };
+}
+
 export async function createSession(
   title?: string,
   opts?: { parentSessionId?: string; fork?: boolean },
 ): Promise<{
   sessionId: string;
   messages: ChatHistoryLine[];
+  oldestSeq: number | null;
+  hasMore: boolean;
   meta: Meta;
 }> {
   const r = await fetch("/api/sessions", {
@@ -343,11 +370,18 @@ export async function createSession(
     }),
   });
   const j = await jsonOrThrow<
-    { ok: boolean; sessionId: string; messages?: ChatHistoryLine[] } & Meta
+    {
+      ok: boolean;
+      sessionId: string;
+      messages?: ChatHistoryLine[];
+      oldestSeq?: number | null;
+      hasMore?: boolean;
+    } & Meta
   >(r);
+  const page = readSessionPage(j);
   return {
     sessionId: j.sessionId,
-    messages: j.messages ?? [],
+    ...page,
     meta: j,
   };
 }
@@ -355,6 +389,8 @@ export async function createSession(
 export async function switchSession(id: string): Promise<{
   sessionId: string;
   messages: ChatHistoryLine[];
+  oldestSeq: number | null;
+  hasMore: boolean;
   meta: Meta;
 }> {
   const r = await fetch("/api/sessions/switch", {
@@ -363,11 +399,18 @@ export async function switchSession(id: string): Promise<{
     body: JSON.stringify({ id }),
   });
   const j = await jsonOrThrow<
-    { ok: boolean; sessionId: string; messages?: ChatHistoryLine[] } & Meta
+    {
+      ok: boolean;
+      sessionId: string;
+      messages?: ChatHistoryLine[];
+      oldestSeq?: number | null;
+      hasMore?: boolean;
+    } & Meta
   >(r);
+  const page = readSessionPage(j);
   return {
     sessionId: j.sessionId,
-    messages: j.messages ?? [],
+    ...page,
     meta: j,
   };
 }
@@ -375,6 +418,8 @@ export async function switchSession(id: string): Promise<{
 export async function clearSession(id?: string): Promise<{
   sessionId: string;
   messages: ChatHistoryLine[];
+  oldestSeq: number | null;
+  hasMore: boolean;
   meta: Meta;
 }> {
   const r = await fetch("/api/sessions/clear", {
@@ -383,11 +428,18 @@ export async function clearSession(id?: string): Promise<{
     body: JSON.stringify({ id }),
   });
   const j = await jsonOrThrow<
-    { ok: boolean; sessionId: string; messages?: ChatHistoryLine[] } & Meta
+    {
+      ok: boolean;
+      sessionId: string;
+      messages?: ChatHistoryLine[];
+      oldestSeq?: number | null;
+      hasMore?: boolean;
+    } & Meta
   >(r);
+  const page = readSessionPage(j);
   return {
     sessionId: j.sessionId,
-    messages: j.messages ?? [],
+    ...page,
     meta: j,
   };
 }
@@ -395,6 +447,8 @@ export async function clearSession(id?: string): Promise<{
 export async function deleteSession(id: string): Promise<{
   sessionId: string | null;
   messages: ChatHistoryLine[];
+  oldestSeq: number | null;
+  hasMore: boolean;
   meta: Meta;
   sessions: SessionSummary[];
 }> {
@@ -408,12 +462,15 @@ export async function deleteSession(id: string): Promise<{
       ok: boolean;
       sessionId?: string | null;
       messages?: ChatHistoryLine[];
+      oldestSeq?: number | null;
+      hasMore?: boolean;
       sessions?: SessionSummary[];
     } & Meta
   >(r);
+  const page = readSessionPage(j);
   return {
     sessionId: j.sessionId ?? null,
-    messages: j.messages ?? [],
+    ...page,
     meta: j,
     sessions: j.sessions ?? [],
   };
@@ -485,27 +542,32 @@ export async function searchSessions(
   return { items: j.items ?? [], nextCursor: j.nextCursor };
 }
 
-export async function loadOlderMessages(beforeSeq: number, limit = 80): Promise<{
-  messages: ChatHistoryLine[];
-  oldestSeq: number | null;
-  hasMore: boolean;
-}> {
-  const q = new URLSearchParams({
-    beforeSeq: String(beforeSeq),
-    limit: String(limit),
-  });
-  const r = await fetch(`/api/sessions/active/messages?${q.toString()}`);
+export async function fetchSessionMessages(opts?: {
+  beforeSeq?: number;
+  limit?: number;
+}): Promise<SessionMessagePage> {
+  const q = new URLSearchParams();
+  if (opts?.beforeSeq != null) q.set("beforeSeq", String(opts.beforeSeq));
+  if (opts?.limit != null) q.set("limit", String(opts.limit));
+  const qs = q.toString();
+  const r = await fetch(
+    `/api/sessions/active/messages${qs ? `?${qs}` : ""}`,
+  );
   const j = await jsonOrThrow<{
     ok: boolean;
     messages?: ChatHistoryLine[];
     oldestSeq?: number | null;
     hasMore?: boolean;
+    sessionId?: string;
   }>(r);
-  return {
-    messages: j.messages ?? [],
-    oldestSeq: j.oldestSeq ?? null,
-    hasMore: j.hasMore ?? false,
-  };
+  return readSessionPage(j);
+}
+
+export async function loadOlderMessages(
+  beforeSeq: number,
+  limit = 80,
+): Promise<SessionMessagePage> {
+  return fetchSessionMessages({ beforeSeq, limit });
 }
 
 export async function exportTranscript(): Promise<string> {
@@ -551,6 +613,15 @@ export async function setPermissionPreset(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id, confirm, scope }),
+  });
+  return jsonOrThrow<Meta & { ok: boolean }>(r);
+}
+
+export async function setWorkspaceInstructions(enabled: boolean): Promise<Meta> {
+  const r = await fetch("/api/workspace-instructions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
   });
   return jsonOrThrow<Meta & { ok: boolean }>(r);
 }

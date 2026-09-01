@@ -18,6 +18,7 @@
 import {
   appendLedgerEvent,
   appendSessionEvent,
+  authorAgent,
   authorHuman,
   type SessionStore,
 } from "@little-house-studio/context";
@@ -406,12 +407,16 @@ export class MessageQueue {
       }
     }
 
-    // 追加排队用户消息（kind=queued_user）
+    const fromRaw = msg.metadata.fromAgent ?? msg.metadata.from ?? msg.metadata.fromSessionId;
+    const from = typeof fromRaw === "string" ? fromRaw.trim() : "";
+    const agentInbound = msg.source === "report_to_parent" || msg.source === "message_bus";
     appendSessionEvent(sessions, sessionId, {
-      kind: "queued_user",
+      kind: agentInbound ? "agent_message" : "queued_user",
       content: msg.message,
       source: msg.source || "queue",
-      author: authorHuman("user", "user"),
+      author: agentInbound
+        ? authorAgent(from || "agent", from || "agent")
+        : authorHuman("user", "user"),
       meta: {
         queued: true,
         queue_id: msg.id,

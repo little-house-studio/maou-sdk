@@ -13,6 +13,11 @@
   "session.lamp.plan": "Plan review",
   "session.lamp.ask": "Waiting for you",
   "session.lamp.done": "Done",
+  "session.more": "More",
+  "session.rename": "Rename",
+  "session.fork": "Fork",
+  "session.newChild": "New child session",
+  "session.delete": "Delete",
   "composer.send": "Send",
   "composer.stop": "Stop",
   "composer.attach": "Attach image",
@@ -45,5 +50,10 @@
   "settings.lang": "Language",
   "settings.lang.zh": "中文",
   "settings.lang.en": "English",
-  "settings.folder": "Project folder"
+  "settings.folder": "Project folder",
+  "settings.workspaceInstructions": "Project instructions",
+  "settings.workspaceInstructions.label": "Inject AGENTS.md / CLAUDE.md",
+  "settings.workspaceInstructions.hint": "Stored on the current Agent. Turning off applies on the next send; already injected text stays in this session history.",
+  "settings.workspaceInstructions.on": "On",
+  "settings.workspaceInstructions.off": "Off"
 }

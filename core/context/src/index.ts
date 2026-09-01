@@ -423,3 +423,9 @@ export {
   agentUserMessageText,
   unwrapAgentSendTag,
 } from "./user-message.js";
+export {
+  formatSenderEnvelope,
+  unwrapSenderEnvelope,
+  isSenderEnvelope,
+  isAgentSenderEnvelope,
+} from "@little-house-studio/types";

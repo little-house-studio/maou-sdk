@@ -123,6 +123,7 @@ export type LiveSettingsSnapshot = {
   sandboxMode: string;
   approvalMode: string;
   permissionPreset?: string;
+  workspaceInstructions: boolean;
   agentName: string;
   offline: boolean;
   /** One-line status for the settings header */
@@ -141,6 +142,7 @@ export function emptyLiveSettingsSnapshot(
     sandboxMode: "—",
     approvalMode: "—",
     permissionPreset: undefined,
+    workspaceInstructions: true,
     agentName: "coding",
     offline,
     statusLabel: offline ? "后端离线" : "未配置",
@@ -191,6 +193,7 @@ export function buildLiveSettingsSnapshot(
     sandboxMode: meta.sandboxMode || "—",
     approvalMode,
     permissionPreset: meta.permissionPreset,
+    workspaceInstructions: meta.workspaceInstructions !== false,
     agentName: meta.agentName || "coding",
     offline,
     statusLabel: offline

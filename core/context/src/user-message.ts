@@ -2,11 +2,13 @@
  * 把各种入站形态收成 AgentSendMessage（发给 Agent 的结构体）。
  * webhook / Runtime / 队列共用。工具回包不要走这里，用 ToolMessage。
  */
-import type {
-  AgentSendContentBlock,
-  AgentSendMessage,
-  AgentSendMode,
-  MessageMedia,
+import {
+  formatSenderEnvelope,
+  unwrapSenderEnvelope,
+  type AgentSendContentBlock,
+  type AgentSendMessage,
+  type AgentSendMode,
+  type MessageMedia,
 } from "@little-house-studio/types";
 
 function asText(v: unknown): string {
@@ -65,14 +67,6 @@ function parseSendMode(v: unknown): AgentSendMode | undefined {
   return undefined;
 }
 
-function escapeXmlAttr(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
 /**
  * 字符串、旧 Message、新 AgentSendMessage 都收成发送结构体。
  */
@@ -119,10 +113,10 @@ export function flattenAgentSendText(msg: AgentSendMessage): string {
 
 /** 写入会话 / 给模型看的正文：有 name 则包裹 */
 export function formatAgentSendSessionText(msg: AgentSendMessage): string {
-  const text = flattenAgentSendText(msg);
-  const name = asText(msg.name);
-  if (!name) return text;
-  return `<message name="${escapeXmlAttr(name)}">${text}</message>`;
+  return formatSenderEnvelope({
+    body: flattenAgentSendText(msg),
+    name: asText(msg.name) || undefined,
+  });
 }
 
 /** 指令匹配用：`/goal 正文`；无 command 则同 session 文本 */
@@ -158,6 +152,5 @@ export function agentUserMessageText(input: unknown): string {
 }
 
 export function unwrapAgentSendTag(text: string): string {
-  const m = text.match(/^<message name="[^"]*">([\s\S]*)<\/message>$/);
-  return m ? m[1]! : text;
+  return unwrapSenderEnvelope(text);
 }

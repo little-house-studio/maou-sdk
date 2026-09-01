@@ -24,6 +24,7 @@ export type CascadeItem = {
   disabled?: boolean;
   trailing?: "arrow" | "check" | null;
   lead?: ReactNode;
+  danger?: boolean;
   dismiss?: boolean;
   onHover?: () => void;
   onSelect?: () => void;
@@ -231,7 +232,9 @@ export const CascadeMenu = forwardRef<CascadeMenuHandle, CascadeMenuProps>(
                           disabled={item.disabled}
                           className={`wire-cascade-item${
                             item.active ? " is-active" : ""
-                          }${item.selected ? " is-selected" : ""}`}
+                          }${item.selected ? " is-selected" : ""}${
+                            item.danger ? " is-danger" : ""
+                          }`}
                           onMouseEnter={() => item.onHover?.()}
                           onFocus={() => item.onHover?.()}
                           onClick={() => pick(item)}

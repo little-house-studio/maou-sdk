@@ -7,7 +7,7 @@
  *  - usage / round / 时长（若有）
  */
 
-import { stripTaskCompletionMarkup } from "@little-house-studio/types";
+import { isAgentSenderEnvelope, stripTaskCompletionMarkup } from "@little-house-studio/types";
 import type { ChatMessage, ToolCardState, SessionEventKind, MessageAuthor } from "./types.js";
 import { repairUtf8Mojibake } from "../input/filtered-stdin.js";
 import { SessionStore } from "@little-house-studio/context";
@@ -25,7 +25,9 @@ function parseAuthor(ev: Record<string, unknown>, kind: SessionEventKind): Messa
   if (source === "todo_notice") return { type: "system", id: "todo", displayName: "todo" };
   if (source === "empty_retry") return { type: "system", id: "runtime", displayName: "runtime" };
   if (source === "verification") return { type: "system", id: "verify", displayName: "verify" };
-  if (source === "message_bus") return { type: "agent", id: from || "peer", displayName: from || "peer" };
+  if (source === "message_bus" || source === "report_to_parent") {
+    return { type: "agent", id: from || "peer", displayName: from || "peer" };
+  }
   if (source === "terminal-notification" || kind === "tool_async_notify") {
     return { type: "tool", id: toolName || "use_terminal", displayName: toolName || "use_terminal" };
   }
@@ -52,6 +54,7 @@ function resolveKind(ev: Record<string, unknown>): SessionEventKind {
   const map: Record<string, SessionEventKind> = {
     human: "human_user",
     message_bus: "agent_message",
+    report_to_parent: "agent_message",
     empty_retry: "runtime_control",
     verification: "runtime_control",
     todo_notice: "system_notice",
@@ -72,7 +75,9 @@ function resolveKind(ev: Record<string, unknown>): SessionEventKind {
     }
     if (c.includes("<system_notice")) return "system_notice";
     if (c.includes("<continue>")) return "runtime_control";
-    if (c.startsWith("[来自 ")) return "agent_message";
+    if (c.startsWith("[来自 ") || isAgentSenderEnvelope(c)) {
+      return "agent_message";
+    }
     if (ev.queued) return "queued_user";
     return "human_user";
   }

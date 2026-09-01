@@ -23,6 +23,7 @@ import type {
   Meta,
   PendingApproval,
   PendingAsk,
+  SessionMessagePage,
   SessionSummary,
   StreamEvent,
 } from "./api";
@@ -158,6 +159,8 @@ export type ChatLine = {
   payloadIndex?: number;
   /** 该会话里的第几条（用户消息 / 助手轮），1 基 */
   ordinal?: number;
+  /** SessionStore 绝对 seq，往上翻旧消息用 */
+  seq?: number;
 };
 
 /**
@@ -307,6 +310,7 @@ export function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
       ...(asstRound ? { round: asstRound } : {}),
       ...(m.usageInput && m.usageInput > 0 ? { usageInput: m.usageInput } : {}),
       ...(m.usageOutput && m.usageOutput > 0 ? { usageOutput: m.usageOutput } : {}),
+      ...(typeof m.seq === "number" && Number.isFinite(m.seq) ? { seq: m.seq } : {}),
       err:
         role === "tool" &&
         (/^✗|❌|缺少必填|失败/i.test(text.trim()) ||
@@ -317,6 +321,34 @@ export function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
   inferToolDurationsFromStartGaps(lines);
   backfillUserLoopDuration(lines);
   return lines;
+}
+
+export function mergeOlderChatLines(
+  current: ChatLine[],
+  older: ChatLine[],
+): ChatLine[] {
+  if (!older.length) return current;
+  const seen = new Set<string>();
+  for (const line of current) {
+    if (line.seq != null) seen.add(`s:${line.seq}`);
+    seen.add(`i:${line.id}`);
+  }
+  const prepend: ChatLine[] = [];
+  for (const line of older) {
+    if (line.seq != null && seen.has(`s:${line.seq}`)) continue;
+    if (seen.has(`i:${line.id}`)) continue;
+    prepend.push(line);
+    if (line.seq != null) seen.add(`s:${line.seq}`);
+    seen.add(`i:${line.id}`);
+  }
+  return prepend.length ? [...prepend, ...current] : current;
+}
+
+export function oldestSeqFromLines(lines: ChatLine[]): number | null {
+  for (const line of lines) {
+    if (line.seq != null && Number.isFinite(line.seq)) return line.seq;
+  }
+  return null;
 }
 
 /** 把本 loop 最后一条 loopDurationMs 写到对应用户行。historyToLines 调用。 */
@@ -651,6 +683,8 @@ type OutboxItem = {
 };
 
 /** 交给 Runtime.commandRegistry 的 slash（走 chat 流，不本地吞掉） */
+const CONTEXT_PAGE = 40;
+
 const RUNTIME_SLASH = new Set([
   "compact",
   "context",
@@ -682,6 +716,8 @@ export type ChatPanelProps = {
   chrome?: "default" | "wire";
   /** Push recent system/tool/err lines for bottom dock log board */
   onDockLogLines?: (lines: string[]) => void;
+  /** 名册就绪后再拉会话 / 上下文。默认 true（draft / 单测） */
+  bootReady?: boolean;
 };
 
 export function ChatPanel({
@@ -695,6 +731,7 @@ export function ChatPanel({
   className,
   chrome = "default",
   onDockLogLines,
+  bootReady = true,
 }: ChatPanelProps) {
   const {
     abortChat,
@@ -715,6 +752,8 @@ export function ChatPanel({
     fetchLlmConfig,
     fetchSessionStats,
     fetchSessions,
+    fetchSessionMessages,
+    loadOlderMessages,
     removeChatQueueItem,
     renameSession,
     fetchCommandCatalog,
@@ -730,6 +769,11 @@ export function ChatPanel({
     chrome === "wire" ||
     (typeof className === "string" && className.includes("wire-context"));
   const [lines, setLines] = useState<ChatLine[]>([]);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [contextHydrated, setContextHydrated] = useState(false);
+  const oldestSeqRef = useRef<number | null>(null);
+  const hasMoreRef = useRef(false);
+  const loadingOlderRef = useRef(false);
   const [input, setInput] = useState("");
   const [inputEpoch, setInputEpoch] = useState(0);
   const replaceInput = useCallback((v: string) => {
@@ -979,6 +1023,7 @@ export function ChatPanel({
             x.id === next[i]?.id &&
             x.title === next[i]?.title &&
             x.messageCount === next[i]?.messageCount &&
+            x.userTurns === next[i]?.userTurns &&
             x.updatedAt === next[i]?.updatedAt,
         )
       ) {
@@ -995,6 +1040,57 @@ export function ChatPanel({
     }
     return s;
   }, []);
+
+  const applyHistoryPage = useCallback(
+    (
+      page: SessionMessagePage,
+      sessionId?: string | null,
+      projectRoot?: string,
+    ) => {
+      const next = historyToLines(page.messages);
+      setLines(next);
+      oldestSeqRef.current = page.oldestSeq ?? oldestSeqFromLines(next);
+      hasMoreRef.current = page.hasMore;
+      setHasMoreHistory(page.hasMore);
+      stickBottomRef.current = true;
+      setContextHydrated(true);
+      if (sessionId && page.messages.length) {
+        hydrateToolLines(setLines, sessionId, projectRoot);
+        hydratePayloadLines(setLines, sessionId, projectRoot);
+      }
+    },
+    [],
+  );
+
+  const loadOlderHistory = useCallback(async (mode: "anchor" | "bottom") => {
+    const before = oldestSeqRef.current;
+    if (!hasMoreRef.current || before == null || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    try {
+      const page = await loadOlderMessages(before, CONTEXT_PAGE);
+      const el = logRef.current;
+      const prevH = el?.scrollHeight ?? 0;
+      const prevTop = el?.scrollTop ?? 0;
+      const older = historyToLines(page.messages);
+      oldestSeqRef.current = page.oldestSeq;
+      hasMoreRef.current = page.hasMore;
+      setHasMoreHistory(page.hasMore);
+      setLines((prev) => mergeOlderChatLines(prev, older));
+      if (mode === "anchor" && el) {
+        requestAnimationFrame(() => {
+          el.scrollTop = prevTop + (el.scrollHeight - prevH);
+        });
+      }
+    } catch {
+      hasMoreRef.current = false;
+      setHasMoreHistory(false);
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }, [loadOlderMessages]);
+
+  const loadOlderRef = useRef(loadOlderHistory);
+  loadOlderRef.current = loadOlderHistory;
 
   // 焦点会话 ref + busy 仅反映「当前会话」是否在跑
   useEffect(() => {
@@ -1152,11 +1248,14 @@ export function ChatPanel({
   );
 
 
-  // Mount-only bootstrap — must not re-run when parent callbacks change identity
+  // Mount-only bootstrap — bootReady 后：会话列表 → 最新一页往上
   useEffect(() => {
+    if (!bootReady) return;
     let cancelled = false;
     void (async () => {
       try {
+        await refreshSessions();
+        if (cancelled) return;
         const m = await fetchMeta();
         if (cancelled) return;
         pushMeta(m);
@@ -1165,18 +1264,24 @@ export function ChatPanel({
             (m.sandboxMode as ApprovalMode) ||
             "yolo",
         );
-        // 恢复 last-session 历史（与 CLI 启动一致）
-        if (m.sessionId && Array.isArray(m.messages) && m.messages.length > 0) {
-          setLines(historyToLines(m.messages));
-          hydrateToolLines(setLines, m.sessionId, m.projectRoot);
-          hydratePayloadLines(setLines, m.sessionId, m.projectRoot);
-        }
+        const page = await fetchSessionMessages({ limit: CONTEXT_PAGE });
+        if (cancelled) return;
+        applyHistoryPage(page, m.sessionId, m.projectRoot);
+        requestAnimationFrame(() => {
+          if (cancelled) return;
+          const el = logRef.current;
+          if (
+            el &&
+            el.scrollHeight <= el.clientHeight + 24 &&
+            hasMoreRef.current
+          ) {
+            void loadOlderRef.current("bottom");
+          }
+        });
         const md = await fetchModels(m.provider || undefined);
         if (cancelled) return;
         setProviders(md.providers.length ? md.providers : m.providers ?? []);
         setModels(md.models);
-        await refreshSessions();
-        if (cancelled) return;
         await refreshApproval();
         if (cancelled) return;
         await refreshPlan();
@@ -1184,6 +1289,7 @@ export function ChatPanel({
         await refreshAsk();
       } catch (e) {
         if (!cancelled) {
+          setContextHydrated(true);
           setStatus(e instanceof Error ? e.message : String(e));
         }
       }
@@ -1191,9 +1297,9 @@ export function ChatPanel({
     return () => {
       cancelled = true;
     };
-    // intentional mount-only (pushMeta/refresh* are stable)
+    // bootReady 从 false→true 才开跑；其余回调走 ref
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bootReady]);
 
   // 轮询 pending 审批 / 待审计划（工具阻塞在宿主上时才有东西）
   useEffect(() => {
@@ -1229,6 +1335,7 @@ export function ChatPanel({
         } else break;
       }
       setJumpPrevLabel(buildPrevUserJumpLabel(preview));
+      if (el.scrollTop < 80) void loadOlderRef.current("anchor");
     };
     const onWheel = (e: WheelEvent) => {
       if (e.deltaY < 0) stickBottomRef.current = false;
@@ -1950,7 +2057,7 @@ export function ChatPanel({
       try {
         const r = await clearSession();
         pushMeta(r.meta);
-        setLines([]);
+        applyHistoryPage(r, r.sessionId, r.meta.projectRoot);
         setTurnUsage(null);
         await refreshSessions();
         append({
@@ -1959,7 +2066,7 @@ export function ChatPanel({
           text: `✓ 已清空会话消息 ${r.sessionId}`,
         });
       } catch {
-        setLines([]);
+        applyHistoryPage({ messages: [], oldestSeq: null, hasMore: false });
         setTurnUsage(null);
         append({
           id: uid(),
@@ -1973,7 +2080,7 @@ export function ChatPanel({
       await stopRun(false);
       const r = await createSession();
       pushMeta(r.meta);
-      setLines([]);
+      applyHistoryPage(r, r.sessionId, r.meta.projectRoot);
       setTurnUsage(null);
       await refreshSessions();
       setStatus(`新会话 ${r.sessionId.slice(0, 8)}…`);
@@ -2013,9 +2120,7 @@ export function ChatPanel({
         try {
           const r = await switchSession(hit.id);
           pushMeta(r.meta);
-          setLines(historyToLines(r.messages));
-          hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
-          hydratePayloadLines(setLines, r.sessionId, r.meta.projectRoot);
+          applyHistoryPage(r, r.sessionId, r.meta.projectRoot);
           setTurnUsage(null);
           await refreshSessions();
           append({
@@ -2039,7 +2144,7 @@ export function ChatPanel({
           .slice(0, 20)
           .map(
             (x) =>
-              `${x.id === s.activeSessionId ? "→ " : "  "}${x.id.slice(0, 12)}… ${x.title} (${x.messageCount})`,
+              `${x.id === s.activeSessionId ? "→ " : "  "}${x.id.slice(0, 12)}… ${x.title} (${x.userTurns})`,
           )
           .join("\n") || "(无会话)";
       append({
@@ -2426,9 +2531,7 @@ export function ChatPanel({
       const r = await switchSession(id);
       pushMeta(r.meta);
       activeSessionRef.current = r.sessionId;
-      setLines(historyToLines(r.messages));
-      hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
-      hydratePayloadLines(setLines, r.sessionId, r.meta.projectRoot);
+      applyHistoryPage(r, r.sessionId, r.meta.projectRoot);
       setTurnUsage(null);
       setPendingAsk(null);
       void refreshAsk();
@@ -2458,7 +2561,7 @@ export function ChatPanel({
     const r = await createSession();
     pushMeta(r.meta);
     activeSessionRef.current = r.sessionId;
-    setLines([]);
+    applyHistoryPage(r, r.sessionId, r.meta.projectRoot);
     setTurnUsage(null);
     stickBottomRef.current = true;
     busyRef.current = false;
@@ -2479,9 +2582,7 @@ export function ChatPanel({
   ) => {
     pushMeta(r.meta);
     activeSessionRef.current = r.sessionId;
-    setLines(historyToLines(r.messages));
-    hydrateToolLines(setLines, r.sessionId, r.meta.projectRoot);
-    hydratePayloadLines(setLines, r.sessionId, r.meta.projectRoot);
+    applyHistoryPage(r, r.sessionId, r.meta.projectRoot);
     setTurnUsage(null);
     stickBottomRef.current = true;
     busyRef.current = false;
@@ -2554,9 +2655,7 @@ export function ChatPanel({
         pushMeta(r.meta);
       }
       if (wasActive) {
-        setLines(historyToLines(r.messages));
-        hydrateToolLines(setLines, nextId, r.meta.projectRoot);
-        hydratePayloadLines(setLines, nextId, r.meta.projectRoot);
+        applyHistoryPage(r, nextId, r.meta.projectRoot);
         setTurnUsage(null);
         stickBottomRef.current = true;
       }
@@ -2950,10 +3049,15 @@ export function ChatPanel({
 
   const messageList = isWire ? (
     <>
+      {hasMoreHistory ? (
+        <div className="empty-sub" style={{ textAlign: "center", padding: "8px 0" }}>
+          向上滚动加载更早
+        </div>
+      ) : null}
       <WireThreadView
         messages={wireDraftMessages}
-        emptyTitle={emptyTitle}
-        emptySub={emptySub}
+        emptyTitle={contextHydrated ? emptyTitle : ""}
+        emptySub={contextHydrated ? emptySub : ""}
         onOpenTerminal={onOpenTerminal}
         agentBusy={busy}
         onInspectPayload={onInspectPayload}
@@ -2965,7 +3069,12 @@ export function ChatPanel({
       className={`chat-log${isCodex ? " codex-log" : ""}`}
       ref={logRef}
     >
-      {lines.length === 0 && (
+      {hasMoreHistory ? (
+        <div className="empty-sub" style={{ textAlign: "center", padding: "8px 0" }}>
+          向上滚动加载更早
+        </div>
+      ) : null}
+      {lines.length === 0 && contextHydrated && (
         <div className="bubble system empty-hint codex-bubble">
           {isCodex ? (
             <div className="msg-body">
@@ -3834,7 +3943,7 @@ export function ChatPanel({
           }
           jumpPrev={null}
           scrollRef={logRef}
-          empty={lines.length === 0}
+          empty={lines.length === 0 && contextHydrated}
           rail={
             lines.length === 0 ? null : (
               <AskScrollRail
@@ -3963,7 +4072,7 @@ function ThreadRail(props: {
     : "";
   const untitled = wire ? "未命名" : "Untitled";
   const forest = flattenSessionForest(props.sessions);
-  // Wire = SessionList single-line rows (title · time). Never mix
+  // Wire = SessionList single-line rows (title · count · time). Never mix
   // thread-item column CSS with wire-session-btn 32px row — that
   // clipped Chinese glyphs into garbage (see live shell session rail).
   if (wire) {
@@ -3972,6 +4081,7 @@ function ThreadRail(props: {
       title: (s.title || untitled).trim() || untitled,
       agent: props.agentLabel || "",
       timeLabel: relativeTime(s.lastMsgAt || s.updatedAt, true),
+      messageCount: s.userTurns,
       parentSessionId: s.parentSessionId,
       lamp: s.lamp,
       helperCount: s.helperCount,
@@ -4051,8 +4161,8 @@ function ThreadRail(props: {
           const title = (s.title || untitled).trim() || untitled;
           const when = relativeTime(s.lastMsgAt || s.updatedAt, false);
           const countHint =
-            s.messageCount > 0
-              ? `${s.messageCount} message${s.messageCount === 1 ? "" : "s"}`
+            s.userTurns > 0
+              ? `${s.userTurns} message${s.userTurns === 1 ? "" : "s"}`
               : "Empty session";
           return (
             <div

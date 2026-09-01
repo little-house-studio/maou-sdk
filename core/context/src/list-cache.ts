@@ -7,13 +7,15 @@ import { join } from "node:path";
 import { durableAtomicWriteJson } from "./durable-write.js";
 
 export const LIST_CACHE_FILE = "list-cache.json";
-export const LIST_CACHE_VER = 1;
+export const LIST_CACHE_VER = 2;
 
 export interface ListCacheItem {
   id: string;
   title: string;
   updatedAt?: string;
   messageCount: number;
+  /** 用户发出条数（user/message），列表展示用 */
+  userTurns: number;
   lastMsgAt: string;
   parentSessionId?: string;
   agentName?: string;

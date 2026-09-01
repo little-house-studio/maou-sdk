@@ -964,8 +964,6 @@ export interface AppConfig {
   security?: SecurityConfig
   ui?: Record<string, unknown>
   terminal?: TerminalConfig
-  /** 是否注入仓库根 AGENTS.md / CLAUDE.md。默认 true；与 MAOU_PROJECT_CONTEXT 并列。 */
-  workspaceInstructions?: boolean
 }
 export interface HealthResponse {
   ok: boolean
@@ -1073,13 +1071,21 @@ export {
   spillRetrieveHint,
 } from './omission.js'
 export type { Omission, OmissionUnit, RetentionNotice } from './omission.js'
-export { toToolMessage } from './agent-message.js'
+export {
+  toToolMessage,
+  formatSenderEnvelope,
+  unwrapSenderEnvelope,
+  isSenderEnvelope,
+  isAgentSenderEnvelope,
+} from './agent-message.js'
 export type {
   AgentSendMode,
   AgentSendMessage,
   AgentSendContentBlock,
   MessageMedia,
   ToolMessage,
+  SenderEnvelope,
+  SenderEnvelopeType,
 } from './agent-message.js'
 export {
   WEBHOOK_PROTOCOL_VERSION,

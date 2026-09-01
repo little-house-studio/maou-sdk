@@ -42,6 +42,7 @@ import {
 import { resolveSessionEventKind } from "./session-event.js";
 import {
   catchUpOffsetSidecar,
+  countOffsetType,
   isOverlayType,
   lastOffsetRec,
   lineCrcMatches,
@@ -177,6 +178,8 @@ export interface SessionListItem {
   title: string;
   updatedAt?: string;
   messageCount: number;
+  /** 用户发出条数（user/message），列表展示用 */
+  userTurns: number;
   lastMsgAt: string;
   parentSessionId?: string;
   agentName?: string;
@@ -1262,12 +1265,23 @@ export class SessionStore {
       title: meta.title ?? "新对话",
       updatedAt: meta.updated_at,
       messageCount: typeof meta.message_count === "number" ? meta.message_count : 0,
+      userTurns: this.resolveListUserTurns(meta),
       lastMsgAt: meta.updated_at || meta.created_at || "",
       ...(parentSessionId ? { parentSessionId } : {}),
       ...(agentName ? { agentName } : {}),
       ...(oneshot ? { oneshot: true } : {}),
       ...(typeof meta.leaf_seq === "number" ? { leafSeq: meta.leaf_seq } : {}),
     };
+  }
+
+  /** lifetime.userTurns；旧卷为 0 但账本有条时从旁路数 user/message。 */
+  private resolveListUserTurns(meta: SessionMeta): number {
+    const fromLife = meta.lifetime?.userTurns;
+    if (typeof fromLife === "number" && fromLife > 0) return fromLife;
+    const messageCount = typeof meta.message_count === "number" ? meta.message_count : 0;
+    if (messageCount <= 0) return typeof fromLife === "number" ? fromLife : 0;
+    this.ensureSidecar(meta.id);
+    return countOffsetType(this.sessionRoot(meta.id), "user/message");
   }
 
   private touchListCache(sessionId: string, meta?: SessionMeta | null): void {

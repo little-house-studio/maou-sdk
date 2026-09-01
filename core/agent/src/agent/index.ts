@@ -103,9 +103,21 @@ export type {
 export { Runtime } from "./runtime-facade.js";
 export type { AppRuntimeOptions } from "./runtime-facade.js";
 export { createAppLogger } from "./app-logger.js";
-export { createAgentFromTemplate, renderAgentPreview, resolvePromptRoot, resolveAgentConfig } from "./template.js";
+export {
+  createAgentFromTemplate,
+  renderAgentPreview,
+  resolvePromptRoot,
+  resolveAgentConfig,
+  patchAgentCustomConfig,
+  readAgentWorkspaceInstructions,
+  isAgentCustomKey,
+  AGENT_CUSTOM_KEYS,
+} from "./template.js";
 export { getTemplateRef } from "./template-ref.js";
-export type { CreateAgentOptions as CreateAgentFromTemplateOptions } from "./template.js";
+export type {
+  CreateAgentOptions as CreateAgentFromTemplateOptions,
+  AgentCustomKey,
+} from "./template.js";
 export {
   ensureAgentOverview,
   readAgentOverview,

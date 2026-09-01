@@ -47,6 +47,12 @@ describe("live settings adapters", () => {
     assert.match(snap.statusLabel, /live|xfyun/);
     assert.equal(snap.projectRoot, "/Users/me/proj");
     assert.equal(snap.approvalMode, "yolo");
+    assert.equal(snap.workspaceInstructions, true);
+  });
+
+  it("workspaceInstructions follows meta false", () => {
+    const snap = buildLiveSettingsSnapshot({ ...liveMeta, workspaceInstructions: false });
+    assert.equal(snap.workspaceInstructions, false);
   });
 
   it("empty / null meta is offline without fake openai gpt-5", () => {

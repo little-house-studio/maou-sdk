@@ -11,6 +11,7 @@ import { ModelCaller } from './caller.js'
 import { computeCost, type CostBreakdown } from './compute-cost.js'
 import { resolvePricingFromPreset } from './preset-normalize.js'
 import { normalizeCacheUsage } from './cache-usage.js'
+import { OutputRateClock, type OutputRate } from './output-rate.js'
 import { validateRequest } from './guardrails.js'
 import { reasoningParamsFor, type ReasoningLevel } from './reasoning.js'
 import type { ModelCallResult, CallerStreamEvent } from './caller.js'
@@ -67,6 +68,7 @@ export interface ChatMessage {
   attachments?: Attachment[]
   toolCalls?: LLMToolCall[]
   usage?: LLMUsage
+  outputRate?: OutputRate
   timestamp: number
 }
 
@@ -75,6 +77,7 @@ export interface ChatResponse {
   content: string
   toolCalls: LLMToolCall[]
   usage: LLMUsage | null
+  outputRate: OutputRate
   rawResponse: string
   message: ChatMessage
 }
@@ -252,6 +255,8 @@ export class ChatSession {
     // 3. 调用 LLM（内部走流式以触发事件，但对外累积为完整响应）
     this._abortController = new AbortController()
     let firstTokenEmitted = false
+    const rateClock = new OutputRateClock()
+    rateClock.start()
     const safeToolSchemas = guard.sanitizedToolSchemas as Record<string, unknown>[] | undefined
     const stream = this.caller.callStream({
       sessionId: `chat-${Date.now()}`,
@@ -278,9 +283,11 @@ export class ChatSession {
       const event = result.value as CallerStreamEvent
       if (event.type === 'thinking_delta') {
         // 非流式 send 也透传思考事件（累积但不对外 yield）
+        if (event.data?.delta) rateClock.noteTokenDelta()
         this.emitter.emit('delta', { type: 'thinking', thinking: String(event.data.delta ?? '') })
       } else if (event.type === 'assistant_delta' && event.data?.delta) {
         const deltaText = String(event.data.delta)
+        rateClock.noteTokenDelta()
         accumulatedContent += deltaText
         if (!firstTokenEmitted) {
           this.emitter.emit('first_token', { content: deltaText })
@@ -289,6 +296,7 @@ export class ChatSession {
         }
         this.emitter.emit('delta', { type: 'delta', delta: deltaText, content: accumulatedContent })
       } else if (event.type === 'tool_pending') {
+        rateClock.noteTokenDelta()
         this.emitter.emit('tool_call', { type: 'tool_call', toolCall: event.data.tool })
       } else if (event.type === 'model.error') {
         this.emitter.emit('error', { type: 'error', error: event.data.error })
@@ -305,12 +313,15 @@ export class ChatSession {
     const content = callResult?.content ?? accumulatedContent
     const nativeToolCalls = callResult?.nativeToolCalls ?? []
     const usage = callResult?.usage ?? null
+    rateClock.complete()
+    const outputRate = rateClock.settle(usage)
 
     const assistantMessage: ChatMessage = {
       role: 'assistant',
       content,
       toolCalls: nativeToolCalls.length > 0 ? nativeToolCalls : undefined,
       usage: usage ?? undefined,
+      outputRate,
       timestamp: Date.now(),
     }
     this.messages.push(assistantMessage)
@@ -323,6 +334,7 @@ export class ChatSession {
       content,
       toolCalls: nativeToolCalls,
       usage,
+      outputRate,
       rawResponse: callResult?.rawResponse ?? content,
       message: assistantMessage,
     }
@@ -360,6 +372,8 @@ export class ChatSession {
 
     // 3. 调用 LLM 流式
     this._abortController = new AbortController()
+    const rateClock = new OutputRateClock()
+    rateClock.start()
     const safeToolSchemas = guard.sanitizedToolSchemas as Record<string, unknown>[] | undefined
     const stream = this.caller.callStream({
       sessionId: `chat-${Date.now()}`,
@@ -400,6 +414,7 @@ export class ChatSession {
       if (event.type === 'thinking_delta') {
         const thinkingDelta = String(event.data.delta ?? '')
         if (thinkingDelta) {
+          rateClock.noteTokenDelta()
           if (!thinkingActive) {
             thinkingActive = true
             this.emitter.emit('thinking_start', { type: 'thinking_start' })
@@ -422,6 +437,7 @@ export class ChatSession {
         if (!delta) { result = await stream.next(); continue }
 
         accumulatedContent += delta
+        rateClock.noteTokenDelta()
 
         // 首字事件
         if (!firstTokenEmitted) {
@@ -479,6 +495,7 @@ export class ChatSession {
           }
         }
       } else if (event.type === 'tool_pending') {
+        rateClock.noteTokenDelta()
         const tc = event.data.tool as LLMToolCall
         if (thinkingActive) {
           thinkingActive = false
@@ -514,12 +531,16 @@ export class ChatSession {
       this.emitter.emit('output_end', { type: 'output_end' })
     }
 
+    rateClock.complete()
+    const outputRate = rateClock.settle(usage)
+
     // 5. 构建 assistant 消息
     const assistantMessage: ChatMessage = {
       role: 'assistant',
       content: accumulatedContent,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       usage: usage ?? undefined,
+      outputRate,
       timestamp: Date.now(),
     }
     this.messages.push(assistantMessage)

@@ -19,6 +19,7 @@ describe("session-event kind + author", () => {
 
   it("source maps to kind", () => {
     expect(resolveSessionEventKind({ role: "user", source: "message_bus" })).toBe("agent_message");
+    expect(resolveSessionEventKind({ role: "user", source: "report_to_parent" })).toBe("agent_message");
     expect(resolveSessionEventKind({ role: "user", source: "empty_retry" })).toBe("runtime_control");
     expect(resolveSessionEventKind({ role: "user", source: "todo_notice" })).toBe("system_notice");
     expect(resolveSessionEventKind({ role: "tool", source: "terminal-notification" })).toBe(
@@ -81,5 +82,23 @@ describe("session-event kind + author", () => {
     expect(defaultWireRole("tool_async_notify")).toBe("tool");
     expect(defaultWireRole("system_notice")).toBe("user");
     expect(defaultWireRole("assistant_turn")).toBe("assistant");
+  });
+
+  it("content sniff: from= is agent, name= stays human", () => {
+    expect(
+      resolveSessionEventKind({
+        role: "user",
+        content: `<message from="reviewer">查完了</message>`,
+      }),
+    ).toBe("agent_message");
+    expect(
+      resolveSessionEventKind({
+        role: "user",
+        content: `<message name="门磁">人回来了</message>`,
+      }),
+    ).toBe("human_user");
+    expect(resolveSessionEventKind({ role: "user", content: "[来自 help]\n旧日志" })).toBe(
+      "agent_message",
+    );
   });
 });

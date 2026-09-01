@@ -4,6 +4,8 @@ import {
   backfillUserLoopDuration,
   historyToLines,
   inferToolDurationsFromStartGaps,
+  mergeOlderChatLines,
+  oldestSeqFromLines,
   stampLoopWallClock,
   type ChatLine,
 } from "./ChatPanel";
@@ -156,5 +158,18 @@ describe("historyToLines / stampLoopWallClock", () => {
     };
     backfillUserLoopDuration([user, asst]);
     assert.equal(user.durationMs, 50);
+  });
+
+  it("keeps seq so older pages can prepend", () => {
+    const lines = historyToLines([
+      { id: "a", role: "assistant", content: "old", seq: 11 },
+      { id: "b", role: "user", content: "new", seq: 12 },
+    ]);
+    assert.equal(oldestSeqFromLines(lines), 11);
+    const merged = mergeOlderChatLines(lines, [
+      { id: "z", role: "user", text: "earlier", seq: 10 },
+      { id: "a", role: "assistant", text: "dup", seq: 11 },
+    ]);
+    assert.equal(merged.map((l) => l.id).join(","), "z,a,b");
   });
 });

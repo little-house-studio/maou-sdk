@@ -201,6 +201,7 @@ export function LiveSettingsPanel({
     runLlmSvgProbe,
     saveLlmConfig,
     setPermissionPreset,
+    setWorkspaceInstructions,
     setModel,
     setSvgProbeReference,
     testLlmConnection,
@@ -799,6 +800,29 @@ export function LiveSettingsPanel({
       }));
       onMetaChangeRef.current?.(meta);
       setStatus(`新会话默认套餐 → ${permissionPresetLabel(id)}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onWorkspaceInstructionsChange = async (enabled: boolean) => {
+    if (enabled === snap.workspaceInstructions) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const meta = await setWorkspaceInstructions(enabled);
+      setSnap((s) => ({
+        ...s,
+        workspaceInstructions: meta.workspaceInstructions !== false,
+      }));
+      onMetaChangeRef.current?.(meta);
+      setStatus(
+        enabled
+          ? t("settings.workspaceInstructions.on")
+          : t("settings.workspaceInstructions.off"),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -1896,6 +1920,32 @@ export function LiveSettingsPanel({
                 <p className="wire-settings-desc">
                   {permissionPresetHint(snap.permissionPreset || "workspace+ask")}
                 </p>
+
+                <hr className="wire-settings-sep" />
+                <h4 className="wire-settings-h" data-live-block="workspace-instructions">
+                  {t("settings.workspaceInstructions")}
+                </h4>
+                <p className="wire-settings-desc">
+                  {t("settings.workspaceInstructions.hint")}
+                </p>
+                <label className="wire-settings-field">
+                  <span className="wire-settings-label">
+                    {t("settings.workspaceInstructions.label")}
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={snap.workspaceInstructions}
+                    className={`wire-settings-theme-pick${snap.workspaceInstructions ? " active" : ""}`}
+                    disabled={busy || snap.offline}
+                    data-live-workspace-instructions={snap.workspaceInstructions ? "on" : "off"}
+                    onClick={() => void onWorkspaceInstructionsChange(!snap.workspaceInstructions)}
+                  >
+                    {snap.workspaceInstructions
+                      ? t("settings.workspaceInstructions.on")
+                      : t("settings.workspaceInstructions.off")}
+                  </button>
+                </label>
 
                 <hr className="wire-settings-sep" />
                 <h4 className="wire-settings-h">本会话当前模型</h4>

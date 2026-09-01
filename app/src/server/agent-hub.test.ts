@@ -4,7 +4,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { sessionPlan } from "@little-house-studio/context";
@@ -174,6 +174,35 @@ describe("AgentHub sessions model approval", () => {
     const m = hub.getMeta();
     assert.equal(m.provider, "test-provider");
     assert.equal(m.model, "test-model");
+  });
+
+  it("setWorkspaceInstructions persists and shows in meta", () => {
+    const prev = process.env.MAOU_LLM_CONFIG;
+    delete process.env.MAOU_LLM_CONFIG;
+    try {
+      const hub = new AgentHub({
+        projectRoot: project,
+        maouRoot: maou,
+        sandboxMode: "yolo",
+      });
+      assert.equal(hub.getMeta().workspaceInstructions, true);
+      assert.equal(hub.setWorkspaceInstructions(false), false);
+      assert.equal(hub.getMeta().workspaceInstructions, false);
+      const customPath = join(project, ".maou", "agents", "coding", "agent.custom.json");
+      assert.equal(existsSync(customPath), true);
+      const custom = JSON.parse(readFileSync(customPath, "utf-8")) as { workspace_instructions?: boolean };
+      assert.equal(custom.workspace_instructions, false);
+      const userConfig = join(maou, "config.json");
+      if (existsSync(userConfig)) {
+        const raw = JSON.parse(readFileSync(userConfig, "utf-8")) as { workspaceInstructions?: unknown };
+        assert.equal(raw.workspaceInstructions, undefined);
+      }
+      assert.equal(hub.setWorkspaceInstructions(true), true);
+      assert.equal(hub.getMeta().workspaceInstructions, true);
+    } finally {
+      if (prev === undefined) delete process.env.MAOU_LLM_CONFIG;
+      else process.env.MAOU_LLM_CONFIG = prev;
+    }
   });
 
   it("setApprovalMode cycles normal/auto/yolo", () => {

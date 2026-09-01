@@ -179,7 +179,6 @@ const AppConfigSchema = z.object({
   security: SecurityConfigSchema.optional(),
   ui: z.record(z.unknown()).optional(),
   terminal: TerminalConfigSchema.optional(),
-  workspaceInstructions: z.boolean().optional(),
 }).passthrough()
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -66,7 +66,7 @@ import {
 } from "@little-house-studio/llm";
 import type { ContextWindowSource } from "@little-house-studio/llm";
 import { getTemplateRef } from "./template-ref.js";
-import { renderAgentPreview, watchAgentPreview } from "./template.js";
+import { renderAgentPreview, watchAgentPreview, readAgentWorkspaceInstructions } from "./template.js";
 import { runAgentCommand } from "./command-runner.js";
 import { CommandRegistry, registerBuiltinCommands, type CommandContext, type CommandResult } from "./command-registry.js";
 import {
@@ -175,6 +175,7 @@ import {
   authorHuman,
   authorAgent,
   authorSystem,
+  formatSenderEnvelope,
 } from "@little-house-studio/context";
 import type { GoalClosePending, GoalMessageSource } from "@little-house-studio/types";
 import { decideGoalSettle, goalRoundPromptKind, parseTaskCompletion } from "@little-house-studio/types";
@@ -184,7 +185,7 @@ import { createAgentSkillManager, applyAgentSkillOptions } from "../bootstrap/sk
 import type { SubagentExecutorLike } from "@little-house-studio/types";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { MessageImage } from "@little-house-studio/types";
-import { Profiler, resolveUserMaouRoot, detectExpression, ConfigStore } from "@little-house-studio/types";
+import { Profiler, resolveUserMaouRoot, detectExpression } from "@little-house-studio/types";
 import { Hooks, type HookUi, appendHookSystemPrompt, takeHookMessage, isHookContinue } from "./hooks.js";
 import { loadHookScripts } from "./hook-loader.js";
 import { FileDiffWatch } from "../agent_factory/file-diff-watch.js";
@@ -659,14 +660,27 @@ export class AgentRuntime {
     this.bindTerminalHooks();
     try { installContextContracts(); } catch { /* 契约登记失败不影响运行 */ }
     try { installToolsContracts(); } catch { /* 契约登记失败不影响运行 */ }
-    bindReportWake((parentId, message, fromSessionId) => {
+    bindReportWake((parentId, message, fromSessionId, fromAgent) => {
       this.messageQueue.rememberSessionDir(parentId, this.sessions.sessionDir);
-      this.messageQueue.enqueue(parentId, message, {
-        mode: "after_round_complete",
-        source: "report_to_parent",
-        metadata: { fromSessionId, wake: true },
-        sessionDir: this.sessions.sessionDir,
-      });
+      this.messageQueue.enqueue(
+        parentId,
+        formatSenderEnvelope({
+          body: message,
+          from: fromAgent?.trim() || fromSessionId,
+          type: "report",
+        }),
+        {
+          mode: "after_round_complete",
+          source: "report_to_parent",
+          metadata: {
+            fromSessionId,
+            fromAgent,
+            from: fromAgent?.trim() || fromSessionId,
+            wake: true,
+          },
+          sessionDir: this.sessions.sessionDir,
+        },
+      );
     });
   }
 
@@ -1855,23 +1869,9 @@ export class AgentRuntime {
       this.log("info", `[RUN] agent=${agentName} round_limit=${effectiveRoundLimit}`);
     }
     // 思考回灌：RunOptions 覆盖 agent.json，缺省 first_round
-    const agentWorkspaceFlag = (() => {
-      // AgentEntry 的 index signature 是 unknown，typeof 收窄即可，不要断言
-      const camel = agentEntry.workspaceInstructions;
-      if (typeof camel === "boolean") return camel;
-      const snake = agentEntry.workspace_instructions;
-      if (typeof snake === "boolean") return snake;
-      return null;
-    })();
+    const agentWorkspaceFlag = readAgentWorkspaceInstructions(agentEntry);
     let workspaceInstructionsOn = resolveWorkspaceInstructionsEnabled({
       agent: agentWorkspaceFlag,
-      user: (() => {
-        try {
-          return new ConfigStore(this.projectRoot).get().workspaceInstructions ?? null;
-        } catch {
-          return null;
-        }
-      })(),
     });
     const timeCtxRaw =
       (agentEntry as { timeContext?: { enabled?: boolean; minIntervalMs?: number } }).timeContext ??
@@ -2611,13 +2611,17 @@ export class AgentRuntime {
     while (roundCount < maxRounds) {
       // ── P1-3 消息总线：每轮 poll 自己的 mailbox，把队友消息作为 user 消息注入 ──
       // 队友通过 agent_manage message action 走 MessageBus.send 投递（带 from 说话人）。
-      // 这里排空 mailbox，content 标注来源 [来自 {from}]，让主 Agent 知道是谁说的。
+      // 正文包成 <message from="…">，模型侧认发送者。
       // 不替代 callMainAgent（supervisor→main 仍走紧耦合路径）。
       const pendingBus = MessageBus.global().inbox(runAgentName);
       for (const busMsg of pendingBus) {
-        const tagged = busMsg.replyTo
-          ? `[来自 ${busMsg.from}（回复 ${busMsg.replyTo.slice(0, 8)}）]\n${busMsg.body}`
-          : `[来自 ${busMsg.from}]\n${busMsg.body}`;
+        const tagged = formatSenderEnvelope({
+          body: busMsg.body,
+          from: busMsg.from,
+          to: busMsg.to && busMsg.to !== "*" ? busMsg.to : undefined,
+          type: busMsg.replyTo ? "reply" : undefined,
+          inReplyTo: busMsg.replyTo ? busMsg.replyTo.slice(0, 8) : undefined,
+        });
         appendSessionEvent(this.sessions, sessionId!, {
           kind: "agent_message",
           content: tagged,
@@ -3044,7 +3048,7 @@ export class AgentRuntime {
         replaceWorkspaceBaseline: sessionId ? this.instructionRebaseline.has(sessionId) : false,
         compressedHistory,
       }), { round: currentRound });
-      if (sessionId && this.instructionRebaseline.has(sessionId) && workspaceInstructionsOn) {
+      if (sessionId && this.instructionRebaseline.has(sessionId)) {
         this.instructionRebaseline.delete(sessionId);
       }
       if (sessionId) this.assertContextStructure(sessionId);

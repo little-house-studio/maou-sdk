@@ -26,6 +26,7 @@ import { computeCost } from "./compute-cost.js";
 import { resolvePricingFromPreset } from "./preset-normalize.js";
 import { normalizeStopReason } from "./stop-reason.js";
 import { normalizeCacheUsage } from "./cache-usage.js";
+import { OutputRateClock, type OutputRate } from "./output-rate.js";
 
 // ─── Context / Message 类型 ──────────────────────────────────────────────────
 
@@ -61,6 +62,7 @@ export interface AssistantMessage {
   model?: string;
   usage?: Usage;
   stopReason?: StopReason;
+  outputRate?: OutputRate;
 }
 /** 工具结果消息 */
 export interface ToolResultMessage {
@@ -196,6 +198,7 @@ export type StreamEvent =
   | { type: "thinking"; delta: string; content: string }
   | { type: "toolCall"; tool: LLMToolCall }
   | { type: "usage"; usage: Usage }
+  | { type: "output_rate"; rate: OutputRate }
   | { type: "done"; message: AssistantMessage }
   | { type: "error"; error: string; stopReason: StopReason };
 
@@ -315,6 +318,8 @@ export function stream(model: StreamModel, context: Context, options: StreamOpti
     let thinkingContent = "";
     let result: ModelCallResult | null = null;
     let aborted = false;
+    const rateClock = new OutputRateClock();
+    rateClock.start();
 
     try {
       const iter = caller.callStream({
@@ -337,13 +342,16 @@ export function stream(model: StreamModel, context: Context, options: StreamOpti
         const ev: CallerStreamEvent = it.value;
         if (ev.type === "assistant_delta" && ev.data?.delta) {
           const d = String(ev.data.delta);
+          if (d) rateClock.noteTokenDelta();
           content += d;
           yield { type: "text", delta: d, content };
         } else if (ev.type === "thinking_delta" && ev.data?.delta) {
           const d = String(ev.data.delta);
+          if (d) rateClock.noteTokenDelta();
           thinkingContent += d;
           yield { type: "thinking", delta: d, content: thinkingContent };
         } else if (ev.type === "tool_pending") {
+          rateClock.noteTokenDelta();
           yield { type: "toolCall", tool: ev.data.tool as LLMToolCall };
         } else if (ev.type === "model.error") {
           yield { type: "error", error: String(ev.data.error), stopReason: "error" };
@@ -375,6 +383,8 @@ export function stream(model: StreamModel, context: Context, options: StreamOpti
       blocks.push({ type: "toolCall", id: c.id, name: c.name, parameters: c.parameters });
     }
     const usage = computeUsage(result?.usage ?? null, preset);
+    rateClock.complete();
+    const outputRate = rateClock.settle(result?.usage ?? null);
     // 统一 stop_reason：优先用适配器的原始 finishReason 做平台映射，
     // 然后用 aborted / toolCalls / error 做修正覆盖
     const stopReason: StopReason = aborted
@@ -391,8 +401,10 @@ export function stream(model: StreamModel, context: Context, options: StreamOpti
       model: preset.model,
       usage,
       stopReason,
+      outputRate,
     };
 
+    yield { type: "output_rate", rate: outputRate };
     yield { type: "usage", usage };
     yield { type: "done", message };
   });

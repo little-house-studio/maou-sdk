@@ -176,6 +176,7 @@ describe("session durable / cover / product", () => {
     s.appendMessage(session.id, "user", "hello-list");
     const listed = s.list();
     expect(listed.some((row) => row.id === session.id && row.title === "list-title")).toBe(true);
+    expect(listed.find((row) => row.id === session.id)?.userTurns).toBe(1);
     expect(existsSync(join(s.sessionDir, LIST_CACHE_FILE))).toBe(true);
     expect(readListCache(s.sessionDir)?.items.some((row) => row.id === session.id)).toBe(true);
     const slim = s.readMetaSlim(session.id);
@@ -183,6 +184,46 @@ describe("session durable / cover / product", () => {
     const heavy = `"last_raw_response":${JSON.stringify("x".repeat(200))}`;
     expect(stripHeavySessionMetaText(`{${heavy},"id":"a"}`)).not.toContain("xxx");
     expect(JSON.parse(stripHeavySessionMetaText(`{${heavy},"id":"a"}`)).last_raw_response).toBe("");
+  });
+
+  it("lists userTurns as user sends, not ledger volume", () => {
+    const s = store();
+    const session = s.create({ title: "t" });
+    s.appendMessage(session.id, "user", "u1");
+    s.appendMessage(session.id, "assistant", "a1");
+    s.appendMessage(session.id, "user", "u2");
+    const row = s.list().find((x) => x.id === session.id);
+    expect(row?.userTurns).toBe(2);
+    expect(row?.messageCount).toBeGreaterThan(row!.userTurns);
+  });
+
+  it("lists userTurns from offset when lifetime is zero", () => {
+    const s = store();
+    const session = s.create({ title: "t" });
+    s.appendMessage(session.id, "user", "u1");
+    s.appendMessage(session.id, "assistant", "a1");
+    const metaPath = join(s.sessionRoot(session.id), "session.json");
+    const meta = JSON.parse(readFileSync(metaPath, "utf-8")) as {
+      lifetime?: { userTurns: number };
+    };
+    writeFileSync(
+      metaPath,
+      JSON.stringify({
+        ...meta,
+        lifetime: {
+          userTurns: 0,
+          assistantTurns: 0,
+          toolCalls: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          modelMs: 0,
+          toolMs: 0,
+          ttftMs: 0,
+        },
+      }),
+    );
+    rmSync(join(s.sessionDir, LIST_CACHE_FILE), { force: true });
+    expect(s.list().find((x) => x.id === session.id)?.userTurns).toBe(1);
   });
 
   it("treats compact/start without end as a lock and keeps the original log", () => {

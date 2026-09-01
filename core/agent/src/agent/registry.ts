@@ -93,6 +93,9 @@ export interface AgentEntry {
   mcp_catalog_full_threshold?: number;
   /** agent 轮次上限（可选），0=无限 */
   round_limit?: number;
+  /** 是否注入仓库根 AGENTS.md / CLAUDE.md。默认 true */
+  workspace_instructions?: boolean;
+  workspaceInstructions?: boolean;
   /** 模型配置（可选），覆盖 preset 中的 model */
   model?: string;
   /** 辅助模型配置（可选）—— 用于压缩/loop判定/路由等辅助调用。

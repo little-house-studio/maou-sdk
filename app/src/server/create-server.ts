@@ -167,8 +167,6 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     res.json({
       ...meta,
       agentName: hub.agentName || agentName,
-      // 启动恢复：附带活动会话历史，供前端首屏 hydrate
-      messages: hub.loadSessionMessages(meta.sessionId),
     });
   });
 
@@ -235,8 +233,6 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         activeSwitchId: hub.activeSwitchId,
         activeProjectPath: hub.activeProjectPath,
         ...meta,
-        // Hydrate chat for the switched agent (frontend remounts ChatPanel)
-        messages: hub.loadSessionMessages(meta.sessionId),
         agents: hub.listAgents(),
       });
     } catch (e) {
@@ -426,7 +422,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         ...hub.getMeta(),
         sessionId,
         sessions: hub.listSessions(),
-        messages: hub.loadSessionMessages(sessionId),
+        ...hub.loadSessionPage(sessionId),
       });
     } catch (e) {
       res.status(500).json({
@@ -448,7 +444,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         ok: true,
         ...hub.getMeta(),
         sessionId,
-        messages: hub.loadSessionMessages(sessionId),
+        ...hub.loadSessionPage(sessionId),
       });
     } catch (e) {
       res.status(400).json({
@@ -467,7 +463,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         ok: true,
         ...hub.getMeta(),
         sessionId,
-        messages: hub.loadSessionMessages(sessionId),
+        ...hub.loadSessionPage(sessionId),
         sessions: hub.listSessions(),
       });
     } catch (e) {
@@ -560,19 +556,19 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     try {
       const r = hub.deleteSession(id);
       let sessionId = r.sessionId;
-      let messages = hub.loadSessionMessages(sessionId);
+      let page = hub.loadSessionPage(sessionId);
       // 删光了才新建；还有别的会话时 hub 已经坐过去了
       if (!sessionId) {
         const n = hub.newSession();
         sessionId = n.sessionId;
-        messages = [];
+        page = { messages: [], oldestSeq: null, hasMore: false };
       }
       res.json({
         ok: true,
         deleted: r.deleted,
         ...hub.getMeta(),
         sessionId,
-        messages,
+        ...page,
         sessions: hub.listSessions(),
       });
     } catch (e) {
@@ -686,6 +682,20 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
           ? hub.setDefaultPermissionPreset(id, confirm)
           : hub.setSessionPermissionPreset(id, confirm);
       res.json({ ok: true, ...next, ...hub.getMeta() });
+    } catch (e) {
+      res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  app.post("/api/workspace-instructions", (req, res) => {
+    const raw = req.body?.enabled;
+    if (typeof raw !== "boolean") {
+      res.status(400).json({ ok: false, error: "enabled must be boolean" });
+      return;
+    }
+    try {
+      const enabled = hub.setWorkspaceInstructions(raw);
+      res.json({ ok: true, workspaceInstructions: enabled, ...hub.getMeta() });
     } catch (e) {
       res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
     }

@@ -192,6 +192,18 @@ export {
 } from './preset-normalize.js'
 export { normalizeCacheUsage, cacheHitPct } from './cache-usage.js'
 export type { NormalizedCacheUsage } from './cache-usage.js'
+export {
+  usageOutputTokens,
+  OutputRateClock,
+  settleOutputRate,
+  addOutputRateSample,
+  emptyOutputRateFold,
+  emptyOutputRate,
+  foldTokensPerSecond,
+  foldTtftAverageMs,
+  formatTokensPerSecond,
+} from './output-rate.js'
+export type { OutputRate, OutputRateFold } from './output-rate.js'
 
 // ─── 上下文窗口（压缩 / 计量 / UI 共用同一个数）───────────────────────────────
 export {

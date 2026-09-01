@@ -6,6 +6,7 @@ import {
   type SessionTreeGuide,
 } from "../session-ancestry";
 import { t } from "../../i18n";
+import { CascadeMenu, type CascadeItem } from "./CascadeMenu";
 
 export type SessionListHit = {
   key: string;
@@ -227,7 +228,11 @@ export function SessionList({
                   onDoubleClick={
                     onRename ? () => onRename(s.id, s.title) : undefined
                   }
-                  title={s.title}
+                  title={
+                    s.messageCount != null
+                      ? `${s.title} · ${s.messageCount}`
+                      : s.title
+                  }
                 >
                   <span
                     className={`wire-session-lamp is-${s.lamp ?? (running.has(s.id) ? "running" : "idle")}`}
@@ -235,53 +240,79 @@ export function SessionList({
                     aria-hidden
                   />
                   <span className="wire-session-title">{s.title}</span>
+                  {s.messageCount != null ? (
+                    <span className="wire-session-count">{s.messageCount}</span>
+                  ) : null}
                   <span className="wire-session-time">
                     {s.lamp === "running" || running.has(s.id)
                       ? t("session.running")
                       : s.timeLabel}
                   </span>
                 </button>
-                {onFork ? (
-                  <button
-                    type="button"
-                    className="wire-session-fork"
-                    title="派生"
-                    aria-label={`派生 ${s.title}`}
-                    onClick={() => onFork(s.id)}
-                  >
-                    派生
-                  </button>
-                ) : null}
-                {onNewChild ? (
-                  <button
-                    type="button"
-                    className="wire-session-child"
-                    title="新建子会话"
-                    aria-label={`新建 ${s.title} 的子会话`}
-                    onClick={() => onNewChild(s.id)}
-                  >
-                    子
-                  </button>
-                ) : null}
-                {onDelete && (
-                  <button
-                    type="button"
-                    className="wire-session-del"
-                    title="删除"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDelete(s.id);
-                    }}
-                  >
-                    ×
-                  </button>
-                )}
+                <SessionRowMore
+                  title={s.title}
+                  onRename={
+                    onRename ? () => onRename(s.id, s.title) : undefined
+                  }
+                  onFork={onFork ? () => onFork(s.id) : undefined}
+                  onNewChild={
+                    onNewChild ? () => onNewChild(s.id) : undefined
+                  }
+                  onDelete={onDelete ? () => onDelete(s.id) : undefined}
+                />
               </div>
             );
           })
         )}
       </div>
     </section>
+  );
+}
+
+function SessionRowMore({
+  title,
+  onRename,
+  onFork,
+  onNewChild,
+  onDelete,
+}: {
+  title: string;
+  onRename?: () => void;
+  onFork?: () => void;
+  onNewChild?: () => void;
+  onDelete?: () => void;
+}) {
+  const items: CascadeItem[] = [];
+  if (onRename) items.push({ id: "rename", label: t("session.rename"), onSelect: onRename });
+  if (onFork) items.push({ id: "fork", label: t("session.fork"), onSelect: onFork });
+  if (onNewChild) {
+    items.push({ id: "child", label: t("session.newChild"), onSelect: onNewChild });
+  }
+  if (onDelete) {
+    items.push({
+      id: "delete",
+      label: t("session.delete"),
+      danger: true,
+      onSelect: onDelete,
+    });
+  }
+  if (items.length === 0) return null;
+  return (
+    <div
+      className="wire-session-more-host"
+      onClick={(e) => e.stopPropagation()}
+      onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+    >
+      <CascadeMenu
+        className="wire-session-more"
+        triggerClassName="wire-session-more-btn"
+        triggerLabel="⋯"
+        triggerTitle={t("session.more")}
+        ariaLabel={`${t("session.more")} ${title}`}
+        columns={[{ key: "acts", items }]}
+      />
+    </div>
   );
 }
 

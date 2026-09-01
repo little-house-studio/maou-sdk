@@ -2062,34 +2062,65 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   box-shadow: none;
 }
 
-.wire-session-fork,
-.wire-session-child {
+.wire-session-more-host {
   position: absolute;
+  right: 2px;
   top: 50%;
   transform: translateY(-50%);
-  display: none;
+  z-index: 2;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.wire-session-row:hover .wire-session-more-host,
+.wire-session-row:focus-within .wire-session-more-host,
+.wire-session-row:has(.wire-session-more.is-open) .wire-session-more-host {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.wire-session-row:hover:has(.wire-session-more-host) .wire-session-time,
+.wire-session-row:focus-within:has(.wire-session-more-host) .wire-session-time,
+.wire-session-row:has(.wire-session-more.is-open) .wire-session-time {
+  visibility: hidden;
+}
+
+.wire-session-more {
+  position: relative;
+  display: inline-flex;
+  z-index: 2;
+}
+
+.wire-session-more .wire-cascade-trigger,
+.wire-session-more-btn {
+  display: inline-flex;
   align-items: center;
-  height: 22px;
-  padding: 0 6px;
-  border: 1px solid var(--n-line);
-  background: var(--n-bg);
-  color: var(--n-label);
-  font-size: 10px;
-  letter-spacing: 0.04em;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--n-tertiary);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1;
   cursor: pointer;
 }
 
-.wire-session-fork {
-  right: 56px;
+.wire-session-more .wire-cascade-trigger-label {
+  overflow: visible;
 }
 
-.wire-session-child {
-  right: 32px;
-}
-
-.wire-session-row:hover .wire-session-fork,
-.wire-session-row:hover .wire-session-child {
-  display: flex;
+.wire-session-more .wire-cascade-trigger:hover,
+.wire-session-more.is-open .wire-cascade-trigger,
+.wire-session-row:hover .wire-session-more-btn {
+  color: var(--n-label);
+  background: transparent;
 }
 
 .wire-session-icon {
@@ -2112,6 +2143,7 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   animation: wire-session-run-pulse 1.2s ease-in-out infinite;
 }
 
+.wire-session-row.is-running .wire-session-count,
 .wire-session-row.is-running .wire-session-time {
   color: var(--n-accent, #c7ff20);
   font-weight: 700;
@@ -2143,6 +2175,16 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   white-space: nowrap;
 }
 
+.wire-session-count {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--n-quaternary);
+  white-space: nowrap;
+  min-width: 1.25em;
+  text-align: right;
+}
+
 .wire-session-time {
   flex-shrink: 0;
   font-size: 10px;
@@ -2153,46 +2195,18 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   text-overflow: ellipsis;
 }
 
+.wire-session-row.active .wire-session-count,
 .wire-session-row.active .wire-session-time {
   color: var(--n-secondary);
 }
 
+.wire-session-row.active.is-running .wire-session-count,
 .wire-session-row.active.is-running .wire-session-time {
   color: var(--n-accent, #c7ff20);
 }
 
 .wire-session-meta {
   display: none;
-}
-
-.wire-session-del {
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
-  border: none;
-  background: transparent;
-  color: var(--n-tertiary);
-  width: 28px;
-  height: 28px;
-  border-radius: 0;
-  cursor: pointer;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  opacity: 0;
-  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
-}
-
-.wire-session-row:hover .wire-session-del {
-  display: flex;
-  opacity: 1;
-}
-
-.wire-session-del:hover {
-  color: var(--n-err);
-  background: var(--n-err-dim);
 }
 
 /* Floating layers over context */
@@ -4429,10 +4443,19 @@ html[data-theme="dark"] .wire-ask-tick::after {
   cursor: pointer;
 }
 
+.wire-cascade-item.is-danger {
+  color: var(--n-err);
+}
+
 .wire-cascade-item:hover,
 .wire-cascade-item.is-active:not(.is-selected) {
   background: transparent;
   color: var(--n-info);
+}
+
+.wire-cascade-item.is-danger:hover,
+.wire-cascade-item.is-danger.is-active {
+  color: var(--n-err);
 }
 
 .wire-cascade-item.is-selected,
@@ -11074,6 +11097,7 @@ html[data-app-chrome="darwin"] .wire-topbar input,
 .wire-shell.draft-shell .wire-session-row.active .wire-session-title {
   color: var(--n-label) !important;
 }
+.wire-shell.draft-shell .wire-session-row.active .wire-session-count,
 .wire-shell.draft-shell .wire-session-row.active .wire-session-time {
   color: var(--n-secondary) !important;
 }

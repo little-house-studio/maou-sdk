@@ -11,5 +11,11 @@ describe("t()", () => {
   it("shares the same keys in zh and en", () => {
     assert.equal(t("composer.send", "zh"), "发送");
     assert.equal(t("composer.send", "en"), "Send");
+    assert.equal(t("session.more", "zh"), "更多");
+    assert.equal(t("session.more", "en"), "More");
+    assert.equal(t("session.delete", "zh"), "删除");
+    assert.equal(t("session.delete", "en"), "Delete");
+    assert.equal(t("settings.workspaceInstructions.on", "zh"), "注入");
+    assert.equal(t("settings.workspaceInstructions.on", "en"), "On");
   });
 });

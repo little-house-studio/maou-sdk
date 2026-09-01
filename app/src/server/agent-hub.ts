@@ -12,6 +12,10 @@ import {
   resolvePresetForCli,
   listProvidersForCli,
   listModelsForCli,
+  AgentRegistry,
+  patchAgentCustomConfig,
+  readAgentWorkspaceInstructions,
+  resolveAgentConfig,
   MESSAGE_QUEUE,
   normalizeSendTurn,
   sendDelivery,
@@ -43,6 +47,7 @@ import {
   exportSessionZip,
   preflightSessionExport,
   sessionZipFilename,
+  resolveWorkspaceInstructionsEnabled,
   type ExportPreflight,
 } from "@little-house-studio/context";
 import {
@@ -169,6 +174,8 @@ export type SessionSummary = {
   title: string;
   updatedAt?: string;
   messageCount: number;
+  /** 用户发出条数，列表展示用 */
+  userTurns: number;
   lastMsgAt?: string;
   parentSessionId?: string;
   lamp?: SessionLamp;
@@ -515,12 +522,14 @@ export class AgentHub implements WebhookHost {
     }
     this.restoredSession = true;
     const fromPtr = readLastSessionPointer(this.projectRoot);
-    if (fromPtr && this.sessionStore?.load(fromPtr)) {
+    if (fromPtr && this.sessionStore?.exists(fromPtr)) {
+      this.sessionStore.recoverCold(fromPtr);
       this.sessionId = fromPtr;
       return;
     }
     const latest = latestSessionId(this.projectRoot);
-    if (latest && this.sessionStore?.load(latest)) {
+    if (latest && this.sessionStore?.exists(latest)) {
+      this.sessionStore.recoverCold(latest);
       this.sessionId = latest;
       writeLastSessionPointer(this.projectRoot, latest, this.agentName);
     }
@@ -664,7 +673,34 @@ export class AgentHub implements WebhookHost {
       oneshot: meta?.oneshot === true || meta?.agent_name === "helper",
       plan: this.sessionId ? sessionPlan.get(this.sessionStore!.sessionDir, this.sessionId) : undefined,
       goal: this.sessionId ? sessionGoals.get(this.sessionStore!.sessionDir, this.sessionId) : undefined,
+      workspaceInstructions: this.readWorkspaceInstructionsEnabled(),
     };
+  }
+
+  private currentAgentDir(): string {
+    const registry = new AgentRegistry(this.maouRoot, this.projectRoot);
+    const existing = registry.resolveAgentDir(this.agentName);
+    if (existsSync(existing)) return existing;
+    if (this.projectRoot) {
+      return join(this.projectRoot, ".maou", "agents", this.agentName);
+    }
+    return existing;
+  }
+
+  readWorkspaceInstructionsEnabled(): boolean {
+    try {
+      const config = resolveAgentConfig(this.currentAgentDir());
+      return resolveWorkspaceInstructionsEnabled({
+        agent: readAgentWorkspaceInstructions(config),
+      });
+    } catch {
+      return true;
+    }
+  }
+
+  setWorkspaceInstructions(enabled: boolean): boolean {
+    patchAgentCustomConfig(this.currentAgentDir(), { workspace_instructions: enabled });
+    return enabled;
   }
 
   listModels(provider?: string) {
@@ -923,6 +959,7 @@ export class AgentHub implements WebhookHost {
           title: s.title || "新对话",
           updatedAt: s.updatedAt,
           messageCount: s.messageCount ?? 0,
+          userTurns: s.userTurns ?? 0,
           lastMsgAt: s.lastMsgAt,
           lamp,
           ...(helperCount ? { helperCount } : {}),

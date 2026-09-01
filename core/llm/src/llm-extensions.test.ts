@@ -115,6 +115,12 @@ describe("ChatSession + faux", () => {
     const session = new ChatSession({ preset: { model: "any", url: "http://faux", protocol: "faux", key: "x" } });
     const resp = await session.send("hi");
     expect(resp.content).toContain("你好呀");
+    expect(resp.outputRate).toEqual({
+      ttftMs: expect.any(Number),
+      decodeMs: expect.any(Number),
+      outputTokens: null,
+      tokensPerSecond: null,
+    });
   });
 
   it("流式 sendStream 累积一致", async () => {

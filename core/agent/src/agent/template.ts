@@ -26,6 +26,67 @@ import { ensureAgentOverview } from "./overview.js";
 export { renderAgentPreview, watchAgentPreview } from "./preview.js";
 export { getTemplateRef } from "./template-ref.js";
 
+/** agent.custom.json 可覆盖的字段（含 terminal_mode / thinking_* 等模式）。 */
+export const AGENT_CUSTOM_KEYS = [
+  "round_limit",
+  "max_retries",
+  "terminal_mode",
+  "thinking_level",
+  "thinking_context_mode",
+  "role",
+  "display_name",
+  "reviewer_role",
+  "tools",
+  "tool_compression",
+  "verify_command",
+  "working_dir",
+  "system_append",
+  "system_override",
+  "tools_add",
+  "tools_remove",
+  "mcp_tool_strategy",
+  "mcp",
+  "workspace_instructions",
+] as const;
+
+export type AgentCustomKey = (typeof AGENT_CUSTOM_KEYS)[number];
+
+const AGENT_CUSTOM_KEY_SET = new Set<string>(AGENT_CUSTOM_KEYS);
+
+export function isAgentCustomKey(key: string): key is AgentCustomKey {
+  return AGENT_CUSTOM_KEY_SET.has(key);
+}
+
+export function readAgentWorkspaceInstructions(config: Record<string, unknown>): boolean | null {
+  const camel = config.workspaceInstructions;
+  if (typeof camel === "boolean") return camel;
+  const snake = config.workspace_instructions;
+  if (typeof snake === "boolean") return snake;
+  return null;
+}
+
+/** 把允许的字段写入实例 agent.custom.json，再返回合并后的配置。 */
+export function patchAgentCustomConfig(
+  agentDir: string,
+  fields: Record<string, unknown>,
+): Record<string, unknown> {
+  mkdirSync(agentDir, { recursive: true });
+  const customPath = join(agentDir, "agent.custom.json");
+  let custom: Record<string, unknown> = {};
+  if (existsSync(customPath)) {
+    try {
+      custom = JSON.parse(readFileSync(customPath, "utf-8")) as Record<string, unknown>;
+    } catch { /* ignore */ }
+  }
+  for (const [key, value] of Object.entries(fields)) {
+    if (!isAgentCustomKey(key) || value === undefined) continue;
+    custom[key] = value;
+  }
+  custom.updated_at = new Date().toISOString();
+  writeFileSync(customPath, JSON.stringify(custom, null, 2), "utf-8");
+  return resolveAgentConfig(agentDir);
+}
+
 export interface CreateAgentOptions {
   /** 模板源目录（必填，如 maou-agent/templates/coding/） */
   templateDir: string;
@@ -181,18 +242,7 @@ export function resolveAgentConfig(agentDir: string): Record<string, unknown> {
   if (existsSync(customPath)) {
     try {
       const custom = JSON.parse(readFileSync(customPath, "utf-8"));
-      // 只覆盖允许的字段
-      const ALLOWED_KEYS = [
-        "round_limit", "max_retries", "terminal_mode", "thinking_level",
-        "thinking_context_mode",
-        "role", "display_name", "reviewer_role", "tools",
-        "tool_compression", "verify_command", "working_dir",
-        "system_append", "system_override",
-        "tools_add", "tools_remove",
-        // MCP 暴露策略：flat | gateway（单工具 mcp）
-        "mcp_tool_strategy", "mcp",
-      ];
-      for (const key of ALLOWED_KEYS) {
+      for (const key of AGENT_CUSTOM_KEYS) {
         if (custom[key] !== undefined) {
           base[key] = custom[key];
         }

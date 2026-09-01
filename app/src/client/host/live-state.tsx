@@ -75,12 +75,14 @@ export function useLiveHostBag(): WireHostBag {
   const [activeProjectPath, setActiveProjectPath] = useState<string | null>(
     null,
   );
+  const [agentsReady, setAgentsReady] = useState(false);
   const termLines = useMemo(() => {
     if (!chatLogLines.length) return termLinesRaw;
     return [...chatLogLines.slice(-12), ...termLinesRaw.slice(0, 12)];
   }, [chatLogLines, termLinesRaw]);
 
   useEffect(() => {
+    if (!agentsReady) return;
     void fetchMeta()
       .then((m) => {
         setMeta(m);
@@ -91,7 +93,7 @@ export function useLiveHostBag(): WireHostBag {
         setMeta(null);
         setMetaOffline(true);
       });
-  }, [fetchMeta]);
+  }, [agentsReady, fetchMeta]);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +101,7 @@ export function useLiveHostBag(): WireHostBag {
       try {
         const r = await fetchAgents();
         if (cancelled) return;
+        setAgentsReady(true);
         setLiveAgentRows((prev) => {
           const next = r.agents;
           if (
@@ -130,6 +133,7 @@ export function useLiveHostBag(): WireHostBag {
           setActiveProjectPath((prev) => (prev === proj ? prev : proj));
         }
       } catch {
+        if (!cancelled) setAgentsReady(true);
         /* keep previous agents on poll failure */
       }
     };
@@ -342,13 +346,15 @@ export function useLiveHostBag(): WireHostBag {
         return;
       }
       try {
-        const [m, a] = await Promise.all([fetchMeta(), fetchAgents()]);
-        setMeta(m);
-        setMetaOffline(false);
+        const a = await fetchAgents();
         setLiveAgentRows(a.agents);
+        setAgentsReady(true);
         if (a.activeAgentName) setActiveAgentName(a.activeAgentName);
         if (a.activeSwitchId) setActiveSwitchId(a.activeSwitchId);
         setActiveProjectPath(a.activeProjectPath ?? null);
+        const m = await fetchMeta();
+        setMeta(m);
+        setMetaOffline(false);
       } catch (e) {
         console.error("[app] add project refresh failed", e);
       }
@@ -492,6 +498,7 @@ export function useLiveHostBag(): WireHostBag {
       onBusyChange: setAgentBusy,
       onTodayUsageChange: applyTodayUsage,
       onDockLogLines: setChatLogLines,
+      bootReady: agentsReady,
     },
     liveSettings: {
       presentation: "page",
