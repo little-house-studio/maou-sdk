@@ -6,6 +6,7 @@ import {
   inferToolDurationsFromStartGaps,
   mergeOlderChatLines,
   oldestSeqFromLines,
+  resolveOldestSeq,
   stampLoopWallClock,
   type ChatLine,
 } from "./ChatPanel";
@@ -171,5 +172,15 @@ describe("historyToLines / stampLoopWallClock", () => {
       { id: "a", role: "assistant", text: "dup", seq: 11 },
     ]);
     assert.equal(merged.map((l) => l.id).join(","), "z,a,b");
+  });
+
+  it("resolveOldestSeq falls back to page lines when server omits the cursor", () => {
+    const older = historyToLines([
+      { id: "z", role: "user", content: "earlier", seq: 10 },
+      { id: "a", role: "assistant", content: "old", seq: 11 },
+    ]);
+    assert.equal(resolveOldestSeq(null, older), 10);
+    assert.equal(resolveOldestSeq(8, older), 8);
+    assert.equal(resolveOldestSeq(null, []), null);
   });
 });

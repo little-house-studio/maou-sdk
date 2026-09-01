@@ -351,6 +351,14 @@ export function oldestSeqFromLines(lines: ChatLine[]): number | null {
   return null;
 }
 
+/** Page cursor, or first finite seq in the page lines when the server omits it. */
+export function resolveOldestSeq(
+  pageOldest: number | null | undefined,
+  lines: ChatLine[],
+): number | null {
+  return pageOldest ?? oldestSeqFromLines(lines);
+}
+
 /** 把本 loop 最后一条 loopDurationMs 写到对应用户行。historyToLines 调用。 */
 export function backfillUserLoopDuration(lines: ChatLine[]): void {
   let user: ChatLine | undefined;
@@ -1049,7 +1057,7 @@ export function ChatPanel({
     ) => {
       const next = historyToLines(page.messages);
       setLines(next);
-      oldestSeqRef.current = page.oldestSeq ?? oldestSeqFromLines(next);
+      oldestSeqRef.current = resolveOldestSeq(page.oldestSeq, next);
       hasMoreRef.current = page.hasMore;
       setHasMoreHistory(page.hasMore);
       stickBottomRef.current = true;
@@ -1072,7 +1080,7 @@ export function ChatPanel({
       const prevH = el?.scrollHeight ?? 0;
       const prevTop = el?.scrollTop ?? 0;
       const older = historyToLines(page.messages);
-      oldestSeqRef.current = page.oldestSeq;
+      oldestSeqRef.current = resolveOldestSeq(page.oldestSeq, older);
       hasMoreRef.current = page.hasMore;
       setHasMoreHistory(page.hasMore);
       setLines((prev) => mergeOlderChatLines(prev, older));
