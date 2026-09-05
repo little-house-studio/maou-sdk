@@ -8,8 +8,8 @@ import {
   shouldOpenNewAssistantTurn,
   type ChatLine,
 } from "./ChatPanel";
-import { chatLinesToDraftMessages } from "./drafts/panels/WireThreadView";
-import { groupLoopTurns, groupThreadBlocks } from "./drafts/thread-blocks";
+import { chatLinesToDraftMessages } from "./wire/thread/WireThreadView";
+import { groupLoopTurns, groupThreadBlocks } from "./wire/thread/thread-blocks";
 
 function line(
   id: string,

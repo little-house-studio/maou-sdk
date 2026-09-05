@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { presenceProps, usePresence } from "../motion";
 import type { CaretBox } from "./caret";
 import type { AppCommand } from "./commands";
 
@@ -31,6 +32,7 @@ export function CommandFlyout({
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [pos, setPos] = useState<Pos | null>(null);
+  const presence = usePresence(open && items.length > 0);
 
   useLayoutEffect(() => {
     const box = caret ?? (anchor ? anchor.getBoundingClientRect() : null);
@@ -76,7 +78,9 @@ export function CommandFlyout({
     return () => el.removeEventListener("wheel", onWheel);
   }, [open, items.length]);
 
-  if (!open || items.length === 0 || typeof document === "undefined") return null;
+  if (!presence.shown || items.length === 0 || typeof document === "undefined") {
+    return null;
+  }
 
   const sel =
     items[Math.min(Math.max(0, activeIdx), items.length - 1)] ?? items[0];
@@ -88,6 +92,9 @@ export function CommandFlyout({
       role="listbox"
       data-composer-overlay="command"
       aria-label="指令"
+      aria-hidden={presence.phase !== "open"}
+      inert={presence.phase !== "open" ? true : undefined}
+      {...presenceProps(presence)}
       style={
         pos
           ? { position: "fixed", left: pos.left, top: pos.top, zIndex: 10060 }

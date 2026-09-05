@@ -96,6 +96,27 @@ describe("live adapters", () => {
     assert.equal(list[2]!.group, "project");
   });
 
+  it("liveAgentsToDraftAgents drops install", () => {
+    const list = liveAgentsToDraftAgents([
+      {
+        id: "system:ops",
+        name: "ops",
+        displayName: "Ops Agent",
+        group: "system",
+      },
+      {
+        id: "system:install",
+        name: "install",
+        displayName: "Install Agent",
+        group: "system",
+      },
+    ]);
+    assert.deepEqual(
+      list.map((a) => a.name),
+      ["ops"],
+    );
+  });
+
   it("terminalsToTermLines and bgTasks from TerminalInfo", () => {
     const terms: TerminalInfo[] = [
       {

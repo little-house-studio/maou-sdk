@@ -40,7 +40,7 @@ describe("live shell production wiring", () => {
   ]);
   const chat = readGraph([
     "ChatPanel.tsx",
-    "drafts/panels/SessionList.tsx",
+    "wire/sidebar/SessionList.tsx",
     "conversation/ConversationPane.tsx",
     "conversation/ThreadBoard.tsx",
     "conversation/UserStick.tsx",
@@ -69,6 +69,10 @@ describe("live shell production wiring", () => {
     const liveCss = read("live-shell.css");
     assert.match(
       liveCss,
+      /\.live-shell \.wire-composer-frame[\s\S]*?width:\s*calc\(100% - 2 \* var\(--center-gutter\)\)/s,
+    );
+    assert.match(
+      liveCss,
       /\.live-shell \.wire-body\s*\{[^}]*flex-direction:\s*row/s,
     );
     assert.doesNotMatch(
@@ -83,12 +87,12 @@ describe("live shell production wiring", () => {
     assert.match(app, /BottomInfoBar/);
     assert.match(app, /UiMode/);
     // Mode surfaces（主动已迁到底栏卡片，不在顶栏 mode）
-    for (const m of ["chat", "project", "team", "settings"] as const) {
+    for (const m of ["chat", "project", "plugins", "settings"] as const) {
       assert.match(app, new RegExp(`["']${m}["']|mode === ["']${m}["']`));
     }
     assert.doesNotMatch(app, /mode === ["']proactive["']/);
-    assert.match(app, /LiveSettingsPanel|LiveProjectHost|TeamBoard|ProactiveHost/);
-    assert.match(app, /TeamBoard/);
+    assert.match(app, /LiveSettingsPanel|LiveProjectHost|PluginsPanel|ProactiveHost/);
+    assert.match(app, /PluginsPanel/);
     assert.match(app, /ProactiveHost/);
     assert.match(app, /dockFaces|faces=\{dockFaces\}|faces=\{\{/);
     assert.match(app, /presentation=["']card["']/);
@@ -147,6 +151,10 @@ describe("live shell production wiring", () => {
     assert.match(app, /TerminalPanel/);
     assert.match(app, /onOpenTerminal/);
     assert.match(app, /showFiles|rightTab|FILES_ACTIVITY_ID/);
+    assert.match(
+      read("host/live-state.tsx"),
+      /\[rightTab, setRightTab\] = useState<string \| null>\(null\)/,
+    );
     assert.match(app, /ActivityBar|aside\.right\.tab|registerAsideTab/);
     assert.match(app, /RightAside|wire-aside/);
     assert.match(app, /LeftAside|leftTab|onLeftTab/);
@@ -155,14 +163,22 @@ describe("live shell production wiring", () => {
     assert.match(read("host/live-slots.tsx"), /from\s+["']lucide-react["']/);
     assert.match(read("shell/activity.ts"), /SIDEBAR_ACTIVITY_ID/);
     assert.match(read("shell/activity.ts"), /toggleAsideTab/);
+    assert.match(read("shell/activity.ts"), /modeShowsLeftRail/);
+    assert.match(read("shell/LeftAside.tsx"), /modeShowsLeftRail/);
+    assert.match(read("host/live-state.tsx"), /activeAgentName === ["']ops["']/);
     assert.doesNotMatch(read("shell/activity.ts"), /SESSIONS_ACTIVITY_ID|智能体/);
-    assert.match(read("shell/SidebarFrame.tsx"), /wire-v-split/);
     assert.match(read("shell/SidebarFrame.tsx"), /sidebar\.agents/);
     assert.match(read("shell/SidebarFrame.tsx"), /sidebar\.sessions/);
-    assert.match(read("shell/SidebarFrame.tsx"), /gridTemplateRows/);
-    assert.match(read("shell/SidebarFrame.tsx"), /minmax\(0/);
+    assert.match(read("shell/SidebarFrame.tsx"), /is-agents-only/);
+    assert.match(read("shell/SidebarFrame.tsx"), /is-sessions-only/);
+    assert.doesNotMatch(read("shell/SidebarFrame.tsx"), /wire-v-split/);
     assert.doesNotMatch(read("shell/SidebarFrame.tsx"), /flex:\s*`0 0/);
     assert.match(read("shell/AsidePane.tsx"), /is-animating/);
+    assert.match(read("shell/AsidePane.tsx"), /useAsideLatch/);
+    assert.match(read("shell/AsidePane.tsx"), /usePresence/);
+    assert.match(read("wire/wire.css"), /@keyframes wire-mid-enter/);
+    assert.match(read("shell/LeftAside.tsx"), /useAsideLatch/);
+    assert.match(read("shell/RightAside.tsx"), /useAsideLatch/);
     assert.match(read("shell/WireShell.tsx"), /data-focus-region|ShellFocusContext/);
     assert.doesNotMatch(read("shell/WireShell.tsx"), /shell\.activity/);
     assert.match(app, /fetchMeta|onMetaChange/);
@@ -197,11 +213,11 @@ describe("live shell production wiring", () => {
     assert.match(app, /import\s+type\s+\{[^}]*OpenTerminalRequest/);
     // App must not import ProjectWorkbench via drafts barrel (CodeMirror path)
     assert.doesNotMatch(appEntry, /from\s+["']\.\/drafts["']/);
-    assert.match(app, /from\s+["']\.\.\/drafts\/panels\/BottomInfoBar["']/);
+    assert.match(app, /from\s+["']\.\.\/wire\/dock\/BottomInfoBar["']/);
     // Source editors are async-only
     const lazyEd = read("markdown/editor/LazySourceEditor.tsx");
     assert.match(lazyEd, /import\s*\(\s*["']\.\/SourceEditor["']\s*\)/);
-    const workbench = read("drafts/panels/ProjectWorkbench.tsx");
+    const workbench = read("wire/project/ProjectWorkbench.tsx");
     assert.match(workbench, /LazySourceEditor/);
     assert.doesNotMatch(
       workbench,
@@ -217,8 +233,9 @@ describe("live shell production wiring", () => {
     assert.match(app, /liveAgentsToDraftAgents/);
     assert.match(app, /setActiveAgent/);
     assert.match(app, /onSelectAgent|liveAgentRows|activeSwitchId/);
-    // Agent click remounts ChatPanel so sessions/history rebind
-    assert.match(app, /key=\{activeSwitchId|remountKey:\s*activeSwitchId/);
+    // 聊天页只跟 ops，不随项目 agent 切换重挂
+    assert.match(app, /remountKey:\s*["']ops["']/);
+    assert.match(app, /defaultAgent:\s*["']ops["']/);
     // Still may fall back to metaToAgents when list empty
     assert.match(app, /metaToAgents/);
     // No bare name-only highlight when switch_id misses (multi-project safe)
@@ -272,7 +289,10 @@ describe("live shell production wiring", () => {
     assert.match(chat, /ThreadBoard|AskScrollRail/);
     assert.match(chat, /busy && !isWire/);
     assert.match(chat, /WireThreadView|groupThreadBlocks|chatLinesToDraftMessages/);
+    assert.match(chat, /reuseDraftMessages/);
     assert.match(chat, /PlanReviewCard/);
+    assert.match(chat, /planReview=\{planReviewCard\}/);
+    assert.match(chat, /planReviewFollow=\{/);
     assert.doesNotMatch(chat, /planReviewDock/);
     assert.match(chat, /\/plan approve/);
     assert.match(chat, /onDockLogLines/);
@@ -282,18 +302,18 @@ describe("live shell production wiring", () => {
     assert.match(chat, /SessionTreeCrumbs/);
   });
 
-  it("ThreadRail wire mode uses SessionList single-line rows (no thread-item mix)", () => {
+  it("ThreadRail wire mode uses SessionList two-line rows (no thread-item mix)", () => {
     // Wire branch must not paint dual-class thread-item + wire-session-btn
-    // (32px row + column flex clipped Chinese titles into garbage glyphs).
-    assert.match(chat, /wire = SessionList single-line|SessionList single-line/);
+    // (column flex clipped Chinese titles into garbage glyphs).
+    assert.match(chat, /wire = SessionList two-line|SessionList two-line/);
     assert.match(chat, /className=\{`wire-session-row/);
     assert.match(chat, /className=["']wire-session-btn["']/);
     assert.match(chat, /className=["']wire-session-title["']/);
     assert.match(chat, /className=["']wire-session-count["']/);
-    assert.match(chat, /className=["']wire-session-time["']/);
+    assert.match(chat, /className=["']wire-session-sub["']/);
     assert.match(chat, /wire-session-guides|wire-session-guide/);
     assert.match(chat, /data-guide/);
-    const sessionList = read("drafts/panels/SessionList.tsx");
+    const sessionList = read("wire/sidebar/SessionList.tsx");
     const qAt = sessionList.indexOf("wire-session-qwrap");
     const newAt = sessionList.indexOf("wire-new-task-btn");
     const listAt = sessionList.indexOf("wire-session-scroll");
@@ -310,7 +330,7 @@ describe("live shell production wiring", () => {
     assert.doesNotMatch(wireBranch, /thread-title/);
     assert.doesNotMatch(wireBranch, /thread-meta/);
     const liveCss = read("live-shell.css");
-    const draftCss = read("drafts/draft.css");
+    const draftCss = read("wire/wire.css");
     const inverse = draftCss.slice(
       draftCss.indexOf("Selected chrome: inverse fill"),
     );
@@ -320,11 +340,11 @@ describe("live shell production wiring", () => {
     );
     assert.match(
       draftCss,
-      /\.wire-session-row\.active\s*\{[^}]*inset 2px 0 0 var\(--n-label\)/s,
+      /\.wire-session-row\.active\s*\{[^}]*color-mix\(in srgb, var\(--n-label\) 10%/s,
     );
     assert.match(
       liveCss,
-      /\.live-shell \.wire-session-row\.active\s*\{[^}]*inset 2px 0 0 var\(--n-label\)/s,
+      /\.live-shell \.wire-session-row\.active\s*\{[^}]*color-mix\(in srgb, var\(--n-label\) 10%/s,
     );
   });
 
@@ -401,7 +421,7 @@ describe("live shell production wiring", () => {
     assert.match(liveProj, /fetchMdTree|readFsFile/);
     assert.match(liveProj, /writeFsFile|onPersistMarkdown/);
     assert.match(liveProj, /project-host-docs|ensureContent|onActivePathChange/);
-    const workbench = read("drafts/panels/ProjectWorkbench.tsx");
+    const workbench = read("wire/project/ProjectWorkbench.tsx");
     assert.match(workbench, /onActivePathChange/);
   });
 
@@ -420,7 +440,7 @@ describe("live shell production wiring", () => {
 
   it("live topbar shows today in/out from TokenTracker day bucket", () => {
     const liveState = read("host/live-state.tsx");
-    const topbar = read("drafts/layout/WireTopbar.tsx");
+    const topbar = read("wire/chrome/WireTopbar.tsx");
     const hub = read("../server/agent-hub.ts");
     assert.match(liveState, /fetchTodayUsage/);
     assert.match(liveState, /todayInput/);
@@ -435,7 +455,7 @@ describe("live shell production wiring", () => {
   });
 
   it("ContextPanel message tree shares WireThreadView with live", () => {
-    const ctx = read("drafts/panels/ContextPanel.tsx");
+    const ctx = read("wire/chat/ContextPanel.tsx");
     assert.match(ctx, /WireThreadView/);
     assert.doesNotMatch(ctx, /function MessageRow/);
   });

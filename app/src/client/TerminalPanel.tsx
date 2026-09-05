@@ -8,6 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 import "./terminal-wire.css";
 import { useAppPorts } from "./ports";
 import type { TerminalCapabilities, TerminalInfo } from "./api";
+import { visiblePoll } from "./live/poll";
 
 export type OpenTerminalRequest = {
   id: string;
@@ -56,6 +57,27 @@ function statusLabel(
   return isHumanId(active.id, active.kind) ? "人壳" : "Agent 会话";
 }
 
+function sameTerminal(a: TerminalInfo, b: TerminalInfo): boolean {
+  return (
+    a.id === b.id &&
+    a.agentName === b.agentName &&
+    a.command === b.command &&
+    a.description === b.description &&
+    a.state === b.state &&
+    a.exitCode === b.exitCode &&
+    a.cwd === b.cwd &&
+    a.createdAt === b.createdAt &&
+    a.updatedAt === b.updatedAt &&
+    a.kind === b.kind &&
+    a.waitState === b.waitState &&
+    a.overflowPath === b.overflowPath
+  );
+}
+
+function sameTerminalList(a: readonly TerminalInfo[], b: readonly TerminalInfo[]): boolean {
+  return a.length === b.length && a.every((item, i) => sameTerminal(item, b[i]!));
+}
+
 type Active = { id: string; agent: string; kind?: "agent" | "human"; cwd?: string };
 
 export function TerminalPanel({
@@ -92,16 +114,15 @@ export function TerminalPanel({
   const refreshList = useCallback(async () => {
     try {
       const ts = await fetchTerminals(undefined, { all: true });
-      setList(ts.slice().reverse());
+      const next = ts.slice().reverse();
+      setList((prev) => (sameTerminalList(prev, next) ? prev : next));
     } catch {
-      setList([]);
+      setList((prev) => (prev.length === 0 ? prev : []));
     }
-  }, []);
+  }, [fetchTerminals]);
 
   useEffect(() => {
-    void refreshList();
-    const t = setInterval(() => void refreshList(), 1500);
-    return () => clearInterval(t);
+    return visiblePoll(refreshList, 1500);
   }, [refreshList]);
 
   useEffect(() => {

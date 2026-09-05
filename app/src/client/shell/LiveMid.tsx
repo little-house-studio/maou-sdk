@@ -4,7 +4,7 @@ import { LeftAside } from "./LeftAside";
 import { RightAside } from "./RightAside";
 import type { WireHostBag } from "./types";
 
-/** Live body: chat stays mounted; settings/project/team are sibling mids. */
+/** Live body: chat stays mounted; settings/project/plugins are sibling mids. */
 export function LiveMid(bag: WireHostBag) {
   const chatVisible = bag.mode === "chat";
   return (
@@ -23,9 +23,9 @@ export function LiveMid(bag: WireHostBag) {
           </div>
         ) : null}
 
-        {bag.mode === "team" ? (
-          <div className="wire-mid is-team" data-live-region="team">
-            <SlotOutlet name="shell.center" props={bag} slotKey="team" />
+        {bag.mode === "plugins" ? (
+          <div className="wire-mid is-plugins" data-live-region="plugins">
+            <SlotOutlet name="shell.center" props={bag} slotKey="plugins" />
           </div>
         ) : null}
 

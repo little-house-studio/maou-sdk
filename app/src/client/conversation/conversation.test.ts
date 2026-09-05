@@ -15,6 +15,10 @@ import {
   stackFlowOffset,
   stickHomeScrollTop,
   wheelStaysInScroller,
+  easeOutCubic,
+  stickHomeDurationMs,
+  STICK_HOME_MS_MAX,
+  STICK_HOME_MS_MIN,
 } from "./scroll-offset";
 import {
   emptyNestedWheelLatch,
@@ -22,7 +26,9 @@ import {
   resolveNestedClipWheel,
   wheelDeltaPx,
 } from "./nested-wheel";
+import { paneWheelAction } from "./pane-wheel";
 import { ASK_PREVIEW_MAX, clipAskPreview } from "./ask-preview";
+import { stickClickGoesHome } from "./stick-click";
 import {
   ASK_ANCHOR_SEL,
   askAnchorProps,
@@ -30,6 +36,12 @@ import {
   USER_MSG_CLIP_CLASS,
   USER_STICK_CLASS,
 } from "./contract";
+import {
+  emptyEnterBook,
+  MSG_ENTER_MAX,
+  MSG_ENTER_MS,
+  nextEnterIds,
+} from "./enter";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -85,7 +97,16 @@ describe("UserStick", () => {
     const src = readFileSync(join(here, "UserStick.tsx"), "utf8");
     assert.match(src, /onClickCapture/);
     assert.match(src, /scrollStickHome/);
-    assert.match(src, /USER_MSG_CLIP_CLASS/);
+    assert.match(src, /stickClickGoesHome/);
+    assert.doesNotMatch(src, /USER_MSG_CLIP_CLASS/);
+  });
+
+  it("jumps from body clicks and ignores nested controls", () => {
+    const stick = { id: "stick" };
+    const chip = { id: "chip" };
+    assert.equal(stickClickGoesHome(null, stick), true);
+    assert.equal(stickClickGoesHome(stick, stick), true);
+    assert.equal(stickClickGoesHome(chip, stick), false);
   });
 
   it("jumps a stuck stick back to its in-flow top", () => {
@@ -111,6 +132,16 @@ describe("UserStick", () => {
     const src = readFileSync(join(here, "scroll-offset.ts"), "utf8");
     assert.match(src, /position === "sticky"/);
     assert.match(src, /inFlowOffsetInParent/);
+    assert.match(src, /animateScrollTop/);
+  });
+
+  it("eases stick-home duration by distance", () => {
+    assert.equal(easeOutCubic(0), 0);
+    assert.equal(easeOutCubic(1), 1);
+    assert.ok(easeOutCubic(0.5) > 0.5);
+    assert.equal(stickHomeDurationMs(0), 0);
+    assert.ok(stickHomeDurationMs(80) >= STICK_HOME_MS_MIN);
+    assert.equal(stickHomeDurationMs(20_000), STICK_HOME_MS_MAX);
   });
 });
 
@@ -125,6 +156,7 @@ describe("ConversationPane", () => {
         rail: createElement("aside", { "data-ask-rail": "" }),
       }),
     );
+    assert.match(html, /wire-conversation/);
     assert.match(html, /wire-thread-stage/);
     assert.match(html, /wire-thread-rail-host/);
     assert.match(html, /data-ask-rail/);
@@ -195,6 +227,17 @@ describe("stick-to-bottom", () => {
     assert.equal(wheelDeltaPx(1, 2, 200), 200);
   });
 
+  it("forwards pane gutter wheel unless an inner scroller can still move", () => {
+    const inner = { scrollHeight: 400, scrollTop: 40, clientHeight: 120 };
+    assert.equal(paneWheelAction(true, null, 20), "native");
+    assert.equal(paneWheelAction(false, null, 20), "forward");
+    assert.equal(paneWheelAction(false, inner, 20), "native");
+    assert.equal(
+      paneWheelAction(false, { ...inner, scrollTop: 280 }, 20),
+      "forward",
+    );
+  });
+
   it("does not spend a second gesture re-arming after a bounce at the edge", () => {
     const top = { scrollHeight: 400, scrollTop: 0, clientHeight: 120 };
     const latch = emptyNestedWheelLatch();
@@ -220,11 +263,14 @@ describe("conversation source boundaries", () => {
       "ConversationPane.tsx",
       "ThreadBoard.tsx",
       "UserStick.tsx",
+      "stick-click.ts",
       "UserMsgClip.tsx",
       "nested-wheel.ts",
+      "pane-wheel.ts",
       "contract.ts",
       "ask-preview.ts",
       "scroll-offset.ts",
+      "enter.ts",
     ]) {
       const src = readFileSync(join(here, file), "utf8");
       assert.doesNotMatch(src, /from ["']\.\.\/drafts/);
@@ -232,12 +278,39 @@ describe("conversation source boundaries", () => {
   });
 
   it("ask rail only reads the published ask contract", () => {
-    const rail = readFileSync(join(here, "../drafts/AskScrollRail.tsx"), "utf8");
+    const rail = readFileSync(join(here, "../wire/thread/AskScrollRail.tsx"), "utf8");
     assert.match(rail, /ASK_ANCHOR_SEL/);
     assert.match(rail, /readAskAnchor/);
     assert.doesNotMatch(rail, /createPortal/);
     assert.doesNotMatch(rail, /wire-thread-stage/);
     assert.doesNotMatch(rail, /data-msg-role/);
     assert.doesNotMatch(rail, /WireThreadView/);
+  });
+});
+
+describe("message enter", () => {
+  it("first paint and session replace stay quiet; tail send enters", () => {
+    const empty = emptyEnterBook();
+    const hydrate = nextEnterIds(empty, "s1", ["u1", "u2"], false);
+    assert.deepEqual(hydrate.enter, []);
+    assert.equal(hydrate.book.seen.size, 2);
+
+    const send = nextEnterIds(hydrate.book, "s1", ["u1", "u2", "u3"], true);
+    assert.deepEqual(send.enter, ["u3"]);
+
+    const older = nextEnterIds(send.book, "s1", ["u0", "u1", "u2", "u3"], true);
+    assert.deepEqual(older.enter, []);
+
+    const swap = nextEnterIds(older.book, "s2", ["x1", "x2"], true);
+    assert.deepEqual(swap.enter, []);
+
+    const blank = nextEnterIds(empty, "s1", [], false);
+    const first = nextEnterIds(blank.book, "s1", ["u1"], true);
+    assert.deepEqual(first.enter, ["u1"]);
+
+    const minted = nextEnterIds(blank.book, "s-new", ["u1"], true);
+    assert.deepEqual(minted.enter, ["u1"]);
+    assert.equal(MSG_ENTER_MAX, 1);
+    assert.equal(MSG_ENTER_MS, 280);
   });
 });

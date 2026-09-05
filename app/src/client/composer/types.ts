@@ -1,6 +1,6 @@
 import type { ChangeEvent, ClipboardEvent, KeyboardEvent, RefObject } from "react";
-import type { ModelCascadeMenuHandle } from "../drafts/panels/ModelCascadeMenu";
-import type { DraftAgent } from "../drafts/types";
+import type { ModelCascadeMenuHandle } from "../wire/menus/ModelCascadeMenu";
+import type { DraftAgent } from "../wire/types";
 import type { AppCommand } from "./commands";
 import type { ComposerImage } from "./images";
 

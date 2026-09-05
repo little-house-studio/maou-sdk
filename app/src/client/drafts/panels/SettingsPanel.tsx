@@ -14,7 +14,7 @@ import {
   updateApiPreset,
   validateApiPreset,
 } from "../api-settings";
-import { ChromeMark } from "../icons/Marks";
+import { ChromeMark } from "../../wire/icons/Marks";
 import { PasteFillCard } from "../../settings/PasteFillCard";
 import {
   applyDraftPasteToPresets,

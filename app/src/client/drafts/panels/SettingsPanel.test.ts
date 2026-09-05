@@ -9,7 +9,7 @@ import { describe, it } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SettingsPanel } from "./SettingsPanel";
-import { WireTopbar } from "../layout/WireTopbar";
+import { WireTopbar } from "../../wire/chrome/WireTopbar";
 import {
   addApiPreset,
   defaultApiConfig,
@@ -108,7 +108,7 @@ describe("SettingsPanel API 设置", () => {
 });
 
 describe("WireTopbar settings mode tab", () => {
-  it("ships 设置 as a mode tab next to 聊天/项目/Team", () => {
+  it("ships 设置 as a mode tab next to 聊天/项目/插件", () => {
     const html = renderToStaticMarkup(
       createElement(WireTopbar, {
         mode: "chat",
@@ -124,7 +124,7 @@ describe("WireTopbar settings mode tab", () => {
     );
     assert.match(html, />聊天</);
     assert.match(html, />项目</);
-    assert.match(html, />Team</);
+    assert.match(html, />插件</);
     assert.match(html, />设置</);
     assert.doesNotMatch(html, />文件</);
     assert.doesNotMatch(html, /data-led-strip|wire-led-strip/);
@@ -154,7 +154,7 @@ describe("DraftShell settings mode path (shipped source)", () => {
     readFileSync(join(here, "../../host/draft-state.ts"), "utf8"),
     readFileSync(join(here, "../../shell/DraftMid.tsx"), "utf8"),
   ].join("\n");
-  const topbarSrc = readFileSync(join(here, "../layout/WireTopbar.tsx"), "utf8");
+  const topbarSrc = readFileSync(join(here, "../../wire/chrome/WireTopbar.tsx"), "utf8");
 
   it("DraftShell mounts SettingsPanel as mode mid content", () => {
     assert.match(shellSrc, /from\s+["'][^"']*\/panels\/SettingsPanel["']/);
@@ -170,14 +170,17 @@ describe("DraftShell settings mode path (shipped source)", () => {
   it("topbar includes settings in MODES list", () => {
     assert.match(topbarSrc, /id:\s*["']settings["']/);
     assert.match(topbarSrc, /label:\s*["']设置["']/);
+    assert.match(topbarSrc, /id:\s*["']plugins["']/);
+    assert.match(topbarSrc, /label:\s*["']插件["']/);
+    assert.doesNotMatch(topbarSrc, /id:\s*["']team["']/);
     assert.doesNotMatch(topbarSrc, /onOpenSettings/);
     assert.doesNotMatch(topbarSrc, /LedStrip|agentBusy/);
     assert.doesNotMatch(topbarSrc, /onToggleFiles|showFiles/);
   });
 
-  it("mode switch keeps chat/project/team paths", () => {
+  it("mode switch keeps chat/project/plugins paths", () => {
     assert.match(shellSrc, /mode === ["']project["']|key:\s*["']project["']/);
-    assert.match(shellSrc, /mode === ["']team["']|key:\s*["']team["']/);
+    assert.match(shellSrc, /mode === ["']plugins["']|key:\s*["']plugins["']/);
     assert.match(shellSrc, /wire-mid is-chat|is-chat/);
   });
 });

@@ -5,6 +5,7 @@
 
 import type { Tool, ToolContext, ToolResponse, ToolCall } from "./base.js";
 import { resolveToolRuntimePorts } from "./base.js";
+import { applyElapsedReport, wantsElapsedReport } from "./elapsed.js";
 import { ensureToolError, toolFail, toolFailFromThrown } from "./errors.js";
 import type { ToolRegistry } from "./registry.js";
 import { applySpillGuard } from "./spill-guard.js";
@@ -111,17 +112,21 @@ export class ToolExecutor {
     try {
       const raw = await this._executeWithTimeout(tool, toolCall, ctx);
       // 超大返回体先收口（全文落盘 + 正文给出路），再统一补 error 字段
-      const result = applySpillGuard(raw, toolCall, ctx);
-      const wrapped = { toolCall, events: [], result: ensureToolError(result) };
-      noteToolExec(ctx, toolCall, wrapped.result, Date.now() - started);
+      const guarded = ensureToolError(applySpillGuard(raw, toolCall, ctx));
+      const durationMs = Date.now() - started;
+      const result = stampCallElapsed(guarded, toolCall, tool, durationMs);
+      const wrapped = { toolCall, events: [], result };
+      noteToolExec(ctx, toolCall, wrapped.result, durationMs);
       return wrapped;
     } catch (err: unknown) {
-      const result = toolFailFromThrown(err, {
+      const failed = toolFailFromThrown(err, {
         prefix: `工具 ${toolCall.name} 执行异常`,
         fallbackCategory: "execution",
         extras: { details: { toolName: toolCall.name } },
       });
-      noteToolExec(ctx, toolCall, result, Date.now() - started);
+      const durationMs = Date.now() - started;
+      const result = stampCallElapsed(failed, toolCall, tool, durationMs);
+      noteToolExec(ctx, toolCall, result, durationMs);
       return {
         toolCall,
         events: [],
@@ -189,6 +194,18 @@ export class ToolExecutor {
         });
     });
   }
+}
+
+function stampCallElapsed(
+  result: ToolResponse,
+  toolCall: ToolCall,
+  tool: Tool,
+  durationMs: number,
+): ToolResponse {
+  if (!wantsElapsedReport(toolCall.parameters, tool.definition.reportElapsed)) {
+    return result;
+  }
+  return applyElapsedReport(result, durationMs);
 }
 
 /** 所有工具执行自动入账；新工具不必再写落盘函数 */

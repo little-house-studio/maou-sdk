@@ -3,8 +3,8 @@
  * Run: tsx --test src/client/drafts/fixtures.test.ts
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import {
@@ -29,9 +29,9 @@ import {
   sessionTitle,
   sessionsForAgent,
 } from "./fixtures";
-import { groupThreadBlocks } from "./thread-blocks";
-import { buildFileTree, fileIconKind } from "./file-tree";
-import { buildAgentListRows } from "./agent-tree";
+import { groupThreadBlocks } from "../wire/thread/thread-blocks";
+import { buildFileTree, fileIconKind } from "../wire/sidebar/file-tree";
+import { buildAgentListRows } from "../wire/sidebar/agent-tree";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -390,31 +390,18 @@ describe("file-tree helpers", () => {
 
 describe("draft tree isolation", () => {
   it("draft modules do not import live api or ChatPanel", () => {
-    const files = [
-      "DraftShell.tsx",
-      "fixtures.ts",
-      "index.ts",
-      "mock-data.ts",
-      "layout/WireTopbar.tsx",
-      "layout/SessionTreeCrumbs.tsx",
-      "layout/ResizeHandle.tsx",
-      "session-ancestry.ts",
-      "panels/AgentList.tsx",
-      "panels/SessionList.tsx",
-      "panels/BackgroundTasks.tsx",
-      "panels/ContextPanel.tsx",
-      "panels/ComposerBar.tsx",
-      "panels/BottomInfoBar.tsx",
-      "panels/FilesRail.tsx",
-      "panels/ApprovalBanner.tsx",
-      "panels/SettingsPanel.tsx",
-      "api-settings.ts",
-      "bottom-dock.ts",
-      "file-tree.ts",
-      "agent-tree.ts",
-      "visual-marks.ts",
-      "icons/Marks.tsx",
-    ];
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, entry.name);
+        if (entry.isDirectory()) walk(p);
+        else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+          files.push(relative(here, p));
+        }
+      }
+    };
+    walk(here);
+    assert.ok(files.length > 0, "draft station should have source files");
     const bannedImportRes = [
       /\bfrom\s+["'][^"']*\/api["']/,
       /\bfrom\s+["'][^"']*ChatPanel["']/,

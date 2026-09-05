@@ -11,7 +11,7 @@ import {
   titleFromPath,
   withDocContent,
 } from "./project-host-docs.js";
-import { DEFAULT_PROJECT_DOC_PATH } from "../drafts/project-docs.js";
+import { DEFAULT_PROJECT_DOC_PATH } from "../wire/project/project-docs.js";
 
 describe("project-host-docs (live project on-demand)", () => {
   it("stubsFromPaths builds empty-content list for tree paint only", () => {

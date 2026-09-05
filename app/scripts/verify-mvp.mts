@@ -180,6 +180,7 @@ const termPanel = readFileSync(
   "utf8",
 );
 const app = readFileSync(join(root, "src/client/App.tsx"), "utf8");
+const liveSlots = readFileSync(join(root, "src/client/host/live-slots.tsx"), "utf8");
 assert.ok(apiClient.includes("/api/chat"));
 assert.ok(apiClient.includes("/api/chat/abort"));
 assert.ok(apiClient.includes("/api/terminals"));
@@ -199,8 +200,8 @@ assert.ok(
 assert.ok(app.includes("WireTopbar"), "WireTopbar mode chrome");
 assert.ok(app.includes("BottomInfoBar"), "bottom dock host");
 assert.ok(
-  app.includes("SettingsPanel") && app.includes("TeamBoard"),
-  "settings + team mode surfaces",
+  liveSlots.includes("LiveSettingsPanel") && liveSlots.includes("PluginsPanel"),
+  "settings + plugins mode surfaces",
 );
 assert.ok(
   (app.includes('"chat"') || app.includes("'chat'")) &&

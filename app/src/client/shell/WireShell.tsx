@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { SlotOutlet } from "../slots";
+import { modeShowsLeftRail } from "./activity";
 import { SHELL_ACTIVITY } from "./metrics";
 import { ShellFocusContext, useShellFocus, useShellRegion } from "./focus";
 import type { WireHostBag } from "./types";
@@ -20,10 +21,11 @@ function ShellRegion({
 
 export function WireShell(bag: WireHostBag) {
   const live = bag.variant === "live";
+  const leftRails = modeShowsLeftRail(bag.mode);
   const chatRails = bag.mode === "chat";
   const focus = useShellFocus("center");
   const rails = {
-    ["--shell-left"]: `${chatRails && bag.showLeft ? bag.leftW : 0}px`,
+    ["--shell-left"]: `${leftRails && bag.showLeft ? bag.leftW : 0}px`,
     ["--shell-files"]: `${chatRails && bag.showFiles ? bag.railW : 0}px`,
     ["--shell-activity"]: `${SHELL_ACTIVITY.width}px`,
   } as CSSProperties;

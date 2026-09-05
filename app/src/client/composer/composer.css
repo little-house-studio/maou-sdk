@@ -20,7 +20,7 @@
   width: 100%;
   --composer-line: var(--n-line-solid, #9b9b9b);
   --composer-line-strong: var(--n-label, #000000);
-  --composer-fill: var(--n-bg, #ededed);
+  --composer-fill: var(--n-paper, #ffffff);
   --composer-ink: var(--n-label, #000000);
   --composer-muted: var(--n-secondary, #828282);
   overflow: visible;

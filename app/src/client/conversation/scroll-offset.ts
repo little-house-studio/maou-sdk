@@ -148,6 +148,78 @@ export function followStickBottom(
   return true;
 }
 
+export const STICK_HOME_MS_MIN = 220;
+export const STICK_HOME_MS_MAX = 480;
+
+export function easeOutCubic(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return 1 - (1 - x) ** 3;
+}
+
+/** Short hops stay quick; long threads cap so the ease does not drag. */
+export function stickHomeDurationMs(distance: number): number {
+  const d = Math.abs(distance);
+  if (d < 2) return 0;
+  return Math.round(
+    Math.min(STICK_HOME_MS_MAX, Math.max(STICK_HOME_MS_MIN, 160 + Math.sqrt(d) * 14)),
+  );
+}
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof matchMedia === "function" &&
+    matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+type ScrollAnim = { raf: number; off: () => void };
+
+const scrollAnims = new WeakMap<HTMLElement, ScrollAnim>();
+
+function stopScrollAnim(el: HTMLElement): void {
+  const run = scrollAnims.get(el);
+  if (!run) return;
+  cancelAnimationFrame(run.raf);
+  run.off();
+  scrollAnims.delete(el);
+}
+
+/** Ease scrollTop. Wheel / pointer on the scroller cancels. */
+export function animateScrollTop(el: HTMLElement, to: number): void {
+  const target = Math.max(0, Math.round(to));
+  const from = el.scrollTop;
+  const dist = target - from;
+  const ms = prefersReducedMotion() ? 0 : stickHomeDurationMs(dist);
+  stopScrollAnim(el);
+  if (ms <= 0 || Math.abs(dist) < 1) {
+    el.scrollTop = target;
+    return;
+  }
+  const start = performance.now();
+  const cancel = () => stopScrollAnim(el);
+  const off = () => {
+    el.removeEventListener("wheel", cancel);
+    el.removeEventListener("touchstart", cancel);
+    el.removeEventListener("pointerdown", cancel);
+  };
+  const step = (now: number) => {
+    const run = scrollAnims.get(el);
+    if (!run) return;
+    const t = Math.min(1, (now - start) / ms);
+    el.scrollTop = from + dist * easeOutCubic(t);
+    if (t < 1) {
+      run.raf = requestAnimationFrame(step);
+    } else {
+      off();
+      scrollAnims.delete(el);
+    }
+  };
+  el.addEventListener("wheel", cancel, { passive: true });
+  el.addEventListener("touchstart", cancel, { passive: true });
+  el.addEventListener("pointerdown", cancel, { passive: true });
+  scrollAnims.set(el, { raf: requestAnimationFrame(step), off });
+}
+
 export function scrollStickHome(stick: HTMLElement): void {
   const scroller = stick.closest(`[${THREAD_SCROLL_ATTR}]`);
   if (!(scroller instanceof HTMLElement)) return;
@@ -158,5 +230,5 @@ export function scrollStickHome(stick: HTMLElement): void {
     max,
   );
   if (next == null) return;
-  scroller.scrollTop = next;
+  animateScrollTop(scroller, next);
 }

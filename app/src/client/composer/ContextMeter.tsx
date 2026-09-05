@@ -1,5 +1,5 @@
 import React from "react";
-import { HoverTip } from "../drafts/HoverTip";
+import { HoverTip } from "../wire/thread/HoverTip";
 import {
   ContextBreakdownPanel,
   fallbackContextBreakdown,

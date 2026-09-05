@@ -1,6 +1,6 @@
 /**
  * Production live shell bridges:
- * - draft wire chrome (draft.css) as product layout
+ * - wire chrome (wire/wire.css) as product layout
  * - ChatPanel / ThreadRail / TerminalPanel / MarkdownWorkbench live widgets
  */
 
@@ -52,18 +52,20 @@
 .live-shell .thread-new,
 .live-shell .wire-new-task-btn.thread-new,
 .live-shell .wire-session-list .wire-new-task-btn {
+  display: flex;
+  align-items: center;
   width: 100%;
   margin: 0;
   border: 0;
   background: transparent;
   color: var(--n-label, #000000);
-  border-radius: 0;
+  border-radius: 6px;
   font: inherit;
   font-weight: 400;
-  padding: 0 0.2em;
-  min-height: calc(1.3125em * 1.35);
+  padding: 6px 8px;
+  min-height: 32px;
   justify-content: flex-start;
-  gap: 0.4em;
+  gap: 8px;
 }
 
 .live-shell .thread-new::before {
@@ -71,9 +73,10 @@
 }
 
 .live-shell .thread-new:hover,
-.live-shell .wire-new-task-btn.thread-new:hover {
-  background: transparent;
-  color: var(--n-info, #0291FF);
+.live-shell .wire-new-task-btn.thread-new:hover,
+.live-shell .wire-session-list .wire-new-task-btn:hover {
+  background: color-mix(in srgb, var(--n-label) 6%, transparent);
+  color: var(--n-label, #000000);
 }
 
 .live-shell .wire-session-agent-label {
@@ -93,11 +96,15 @@
 }
 
 /* Session rail (portal): 方案 A 行 + 树枝；不要把 thread-item 列规则套回来。 */
+.live-shell .wire-left-stack.is-sessions-only .wire-left-sessions {
+  border-top: 0;
+}
+
 .live-shell .wire-session-list .wire-session-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  padding: 0 0 12px;
+  padding: 2px 6px 16px;
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
@@ -108,6 +115,20 @@
   align-items: center !important;
   max-height: none;
   overflow: hidden;
+}
+
+.live-shell .wire-session-new-kbd {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  color: var(--n-quaternary, #828282);
+}
+
+.live-shell .wire-session-list .wire-session-sub {
+  color: var(--n-tertiary, #828282);
 }
 
 .live-shell .wire-session-list .wire-session-title {
@@ -211,7 +232,7 @@
   flex-direction: column;
   border-top: 1px solid var(--n-line-solid, #9b9b9b);
   overflow: hidden;
-  background: var(--n-bg, #ededed);
+  background: transparent;
 }
 
 .live-shell .live-files-editor-head {
@@ -223,7 +244,7 @@
   font-size: 11px;
   color: var(--n-secondary, #c9c2b6);
   flex: 0 0 auto;
-  background: var(--n-elevated, #ededed);
+  background: var(--n-rail-lift, var(--n-rail, #f6f6f6));
   border-bottom: 1px solid var(--n-line-solid, #9b9b9b);
 }
 
@@ -240,7 +261,7 @@
   min-height: 0;
   overflow: auto;
   padding: 12px 14px;
-  background: var(--n-bg, #ededed);
+  background: transparent;
   color: var(--n-label, #000000);
 }
 
@@ -276,7 +297,7 @@
 
 .live-shell .wire-mid.is-project,
 .live-shell .wire-mid.is-settings,
-.live-shell .wire-mid.is-team {
+.live-shell .wire-mid.is-plugins {
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
@@ -1490,7 +1511,7 @@
   }
 }
 
-/* Column flush; composer card is inset 24px so it floats in the mid cell. */
+/* 纸面铺满中栏；正文与输入条收成中间列，左右留白。 */
 .live-shell .wire-center,
 .live-shell .wire-context,
 .live-shell [data-composer],
@@ -1501,17 +1522,14 @@
 .live-shell .composer.codex-composer {
   width: 100% !important;
   max-width: none !important;
-  margin-left: 0 !important;
-  margin-right: 0 !important;
-  left: 0 !important;
-  right: 0 !important;
   box-sizing: border-box !important;
 }
 .live-shell .wire-composer-frame,
 .live-shell .wire-float-bottom {
-  width: 100% !important;
+  width: calc(100% - 2 * var(--center-gutter)) !important;
   max-width: none !important;
-  margin: 0 !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
   padding: 0 var(--thread-inset, 24px) 24px !important;
   box-sizing: border-box !important;
 }
@@ -1519,7 +1537,7 @@
 .live-shell [data-composer] .composer-row.wire-composer-card {
   border: 1px solid var(--n-line-solid, #9b9b9b) !important;
   border-radius: 0 !important;
-  background: var(--n-bg, #ededed) !important;
+  background: var(--n-paper, #ffffff) !important;
 }
 .live-shell [data-composer] .composer-row:focus-within,
 .live-shell [data-composer] .composer-row.wire-composer-card:focus-within {
@@ -1571,8 +1589,8 @@
 }
 
 .live-shell .wire-session-row.active {
-  background: transparent !important;
-  box-shadow: inset 2px 0 0 var(--n-label) !important;
+  background: color-mix(in srgb, var(--n-label) 10%, var(--n-bg)) !important;
+  box-shadow: none !important;
 }
 .live-shell .wire-session-row.active .wire-session-btn {
   background: transparent !important;
@@ -1584,7 +1602,8 @@
   color: var(--n-label) !important;
 }
 .live-shell .wire-session-row.active .wire-session-count,
-.live-shell .wire-session-row.active .wire-session-time {
+.live-shell .wire-session-row.active .wire-session-time,
+.live-shell .wire-session-row.active .wire-session-sub {
   color: var(--n-secondary) !important;
 }
 .live-shell .wire-session-more-btn,

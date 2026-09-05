@@ -1,9 +1,9 @@
-import { lazy, Suspense } from "react";
+import { lazy, memo, Suspense } from "react";
 import { ChatPanel } from "../ChatPanel";
-import { WireTopbar } from "../drafts/layout/WireTopbar";
-import { AgentList } from "../drafts/panels/AgentList";
-import { BottomInfoBar } from "../drafts/panels/BottomInfoBar";
-import { TeamBoard } from "../drafts/panels/TeamBoard";
+import { WireTopbar } from "../wire/chrome/WireTopbar";
+import { AgentList } from "../wire/sidebar/AgentList";
+import { BottomInfoBar } from "../wire/dock/BottomInfoBar";
+import { PluginsPanel } from "../wire/plugins/PluginsPanel";
 import { LiveFilesRail } from "../live/LiveFilesRail";
 import { LiveSettingsPanel } from "../live/LiveSettingsPanel";
 import { applySlotPlugins, SlotRegistry, type SlotPlugin } from "../slots";
@@ -47,15 +47,26 @@ const LiveProjectHostLazy = lazy(() =>
   })),
 );
 
-function TopbarSeat(bag: WireHostBag) {
+/*
+ * Seats receive the whole host bag but each renders exactly one slice.
+ * They are memo'd on that slice (useLiveHostBag memoizes the slices), so a
+ * root re-render caused by, say, the today-token poll leaves ChatPanel /
+ * BottomInfoBar / AgentList untouched. If a seat starts reading another bag
+ * field, add it to that seat's comparator.
+ */
+function sliceEq<K extends keyof WireHostBag>(key: K) {
+  return (a: WireHostBag, b: WireHostBag) => a[key] === b[key];
+}
+
+const TopbarSeat = memo(function TopbarSeat(bag: WireHostBag) {
   return <WireTopbar {...bag.topbar} />;
-}
+}, sliceEq("topbar"));
 
-function AgentsSeat(bag: WireHostBag) {
+const AgentsSeat = memo(function AgentsSeat(bag: WireHostBag) {
   return <AgentList {...bag.agentList} />;
-}
+}, sliceEq("agentList"));
 
-function LiveSessionRailSeat(bag: WireHostBag) {
+const LiveSessionRailSeat = memo(function LiveSessionRailSeat(bag: WireHostBag) {
   return (
     <div
       id={bag.sessionRailId || LIVE_SESSION_RAIL_ID}
@@ -63,21 +74,21 @@ function LiveSessionRailSeat(bag: WireHostBag) {
       data-live-session-rail="true"
     />
   );
-}
+}, sliceEq("sessionRailId"));
 
-function LiveChatSeat(bag: WireHostBag) {
+const LiveChatSeat = memo(function LiveChatSeat(bag: WireHostBag) {
   const chat = bag.chat;
   if (!chat) return null;
   const { remountKey, ...props } = chat;
   return <ChatPanel key={remountKey} {...props} />;
-}
+}, sliceEq("chat"));
 
-function LiveSettingsSeat(bag: WireHostBag) {
+const LiveSettingsSeat = memo(function LiveSettingsSeat(bag: WireHostBag) {
   if (!bag.liveSettings) return null;
   return <LiveSettingsPanel {...bag.liveSettings} />;
-}
+}, sliceEq("liveSettings"));
 
-function LiveProjectSeat(bag: WireHostBag) {
+const LiveProjectSeat = memo(function LiveProjectSeat(bag: WireHostBag) {
   return (
     <Suspense
       fallback={
@@ -94,26 +105,19 @@ function LiveProjectSeat(bag: WireHostBag) {
       />
     </Suspense>
   );
-}
+}, sliceEq("project"));
 
-function TeamSeat(bag: WireHostBag) {
-  return (
-    <TeamBoard
-      agents={bag.agentList.agents}
-      activeId={bag.agentList.activeId}
-      onSelectAgent={bag.agentList.onSelect}
-      onOpenChat={() => bag.topbar.onModeChange("chat")}
-    />
-  );
+function PluginsSeat() {
+  return <PluginsPanel />;
 }
 
 function LiveFilesSeat() {
   return <LiveFilesRail />;
 }
 
-function BottomSeat(bag: WireHostBag) {
+const BottomSeat = memo(function BottomSeat(bag: WireHostBag) {
   return <BottomInfoBar {...bag.dock} />;
-}
+}, sliceEq("dock"));
 
 export function createLiveHostSlots(
   plugins?: readonly SlotPlugin[],
@@ -218,8 +222,8 @@ export function createLiveHostSlots(
     LiveProjectSeat,
   );
   slots.register(
-    { name: "shell.center", key: "team", registrant: "team" },
-    TeamSeat,
+    { name: "shell.center", key: "plugins", registrant: "plugins" },
+    PluginsSeat,
   );
   slots.register(
     { name: "shell.center", key: "settings", registrant: "settings" },

@@ -126,13 +126,28 @@ export function renderSlot(
   return opts.fallback ?? null;
 }
 
+/**
+ * One child renderer per entry. Recreating it each render made the injected
+ * `renderSlot` prop a fresh function every time, which defeated React.memo on
+ * every seat. The renderer only closes over `slots` + `entry`, both stable
+ * for the entry's lifetime.
+ */
+const childRenderers = new WeakMap<
+  SlotEntry,
+  (child: string, childProps?: Record<string, unknown>, opts?: RenderSlotOpts) => unknown
+>();
+
 function makeChildRenderer(slots: SlotRegistry, entry: SlotEntry) {
-  return (child: string, childProps?: Record<string, unknown>, opts?: RenderSlotOpts) => {
+  const cached = childRenderers.get(entry);
+  if (cached) return cached;
+  const fn = (child: string, childProps?: Record<string, unknown>, opts?: RenderSlotOpts) => {
     if (!entry.children || !(child in entry.children)) {
       throw new SlotOwnershipError(opts?.owner ?? "(entry)", child);
     }
     return renderSlot(slots, child, childProps ?? {}, opts);
   };
+  childRenderers.set(entry, fn);
+  return fn;
 }
 
 /** Render a declared slot when present; otherwise children. Safe without SlotsProvider. */

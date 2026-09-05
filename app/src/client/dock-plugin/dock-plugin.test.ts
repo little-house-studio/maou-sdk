@@ -21,7 +21,7 @@ import {
   resetHtmlInCanvasPolyfillCache,
   tryDrawHtmlElementToCanvas,
 } from "./index";
-import { DOCK_CARDS, buildFolderPath, FOLDER_PATH_TAB } from "../drafts/bottom-dock";
+import { DOCK_CARDS, buildFolderPath, FOLDER_PATH_TAB } from "./bottom-dock";
 
 describe("dock-plugin registry", () => {
   it("default registry covers all DOCK_CARDS with content kinds + layouts", () => {

@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Fold } from "../motion";
 import type { ComposerProps } from "./types";
 
 export function GoalBar(props: Pick<ComposerProps, "goal" | "onGoalAction">) {
@@ -56,22 +57,24 @@ export function FamilyTree(props: {
         ))}
       </nav>
       {props.children.length ? (
-        <button type="button" onClick={() => setOpen((v) => !v)}>
-          下级 {props.children.length}
-        </button>
-      ) : null}
-      {open ? (
-        <ul className="session-kids">
-          {props.children.map((c) => (
-            <li key={c.id}>
-              <button type="button" onClick={() => props.onOpen(c.id)}>
-                {c.title}
-                {c.oneshot ? " · 一次性 · 不能再后续" : " · 可继续"}
-                {c.running ? " · 忙" : ""}
-              </button>
-            </li>
-          ))}
-        </ul>
+        <>
+          <button type="button" onClick={() => setOpen((v) => !v)}>
+            下级 {props.children.length}
+          </button>
+          <Fold open={open}>
+            <ul className="session-kids">
+              {props.children.map((c) => (
+                <li key={c.id}>
+                  <button type="button" onClick={() => props.onOpen(c.id)}>
+                    {c.title}
+                    {c.oneshot ? " · 一次性 · 不能再后续" : " · 可继续"}
+                    {c.running ? " · 忙" : ""}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </Fold>
+        </>
       ) : null}
     </div>
   );

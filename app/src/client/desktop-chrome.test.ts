@@ -28,7 +28,7 @@ describe("desktop chrome", () => {
   });
 
   it("darwin topbar is a drag strip with traffic-light inset", () => {
-    const css = readFileSync(join(here, "drafts/draft.css"), "utf8");
+    const css = readFileSync(join(here, "wire/wire.css"), "utf8");
     assert.match(css, /\[data-app-chrome="darwin"\][\s\S]*-webkit-app-region:\s*drag/);
     assert.match(css, /\[data-app-chrome="darwin"\][\s\S]*padding-left:\s*80px/);
     assert.match(css, /\[data-app-chrome="darwin"\][\s\S]*-webkit-app-region:\s*no-drag/);

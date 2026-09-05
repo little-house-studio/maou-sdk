@@ -1,12 +1,12 @@
-import { WireTopbar } from "../drafts/layout/WireTopbar";
-import { AgentList } from "../drafts/panels/AgentList";
-import { SessionList } from "../drafts/panels/SessionList";
-import { ContextPanel } from "../drafts/panels/ContextPanel";
-import { FilesRail } from "../drafts/panels/FilesRail";
-import { ProjectWorkbench } from "../drafts/panels/ProjectWorkbench";
+import { WireTopbar } from "../wire/chrome/WireTopbar";
+import { AgentList } from "../wire/sidebar/AgentList";
+import { SessionList } from "../wire/sidebar/SessionList";
+import { ContextPanel } from "../wire/chat/ContextPanel";
+import { FilesRail } from "../wire/sidebar/FilesRail";
+import { ProjectWorkbench } from "../wire/project/ProjectWorkbench";
 import { SettingsPanel } from "../drafts/panels/SettingsPanel";
-import { TeamBoard } from "../drafts/panels/TeamBoard";
-import { BottomInfoBar } from "../drafts/panels/BottomInfoBar";
+import { PluginsPanel } from "../wire/plugins/PluginsPanel";
+import { BottomInfoBar } from "../wire/dock/BottomInfoBar";
 import { applySlotPlugins, SlotRegistry, type SlotPlugin } from "../slots";
 import {
   ApprovalToolSeat,
@@ -80,15 +80,8 @@ function DraftProjectSeat(bag: WireHostBag) {
   );
 }
 
-function TeamSeat(bag: WireHostBag) {
-  return (
-    <TeamBoard
-      agents={bag.agentList.agents}
-      activeId={bag.agentList.activeId}
-      onSelectAgent={bag.agentList.onSelect}
-      onOpenChat={() => bag.topbar.onModeChange("chat")}
-    />
-  );
+function PluginsSeat() {
+  return <PluginsPanel />;
 }
 
 function DraftFilesSeat(bag: WireHostBag) {
@@ -203,8 +196,8 @@ export function createDraftHostSlots(
     DraftProjectSeat,
   );
   slots.register(
-    { name: "shell.center", key: "team", registrant: "team" },
-    TeamSeat,
+    { name: "shell.center", key: "plugins", registrant: "plugins" },
+    PluginsSeat,
   );
   slots.register(
     { name: "shell.center", key: "settings", registrant: "settings" },

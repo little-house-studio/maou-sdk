@@ -2,8 +2,8 @@
  * Pure helpers for LiveProjectHost: tree stubs + on-demand content fill.
  * Keeps initial project shell cheap (paths/meta only; body load separate).
  */
-import type { ProjectDoc, ProjectDocKind } from "../drafts/project-docs";
-import { DEFAULT_PROJECT_DOC_PATH } from "../drafts/project-docs";
+import type { ProjectDoc, ProjectDocKind } from "../wire/project/project-docs";
+import { DEFAULT_PROJECT_DOC_PATH } from "../wire/project/project-docs";
 
 export function kindFromPath(path: string): ProjectDocKind {
   const base = (path.split("/").pop() || "").toUpperCase();

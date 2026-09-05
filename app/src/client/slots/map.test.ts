@@ -15,7 +15,7 @@ import {
 } from "./map";
 
 const draftCss = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "../drafts/draft.css"),
+  join(dirname(fileURLToPath(import.meta.url)), "../wire/wire.css"),
   "utf8",
 );
 
@@ -35,7 +35,7 @@ describe("shell SlotMap", () => {
     );
     assert.match(
       draftCss,
-      /\.wire-aside-pane\.is-animating\s*\{[^}]*transition:\s*width 180ms/s,
+      /\.wire-aside-pane\s*\{[^}]*transition:\s*width var\(--n-dur-slow\)/s,
     );
     assert.match(draftCss, /\.wire-v-split/);
   });
@@ -81,7 +81,7 @@ describe("shell SlotMap", () => {
     assert.deepEqual([...CENTER_MODE_KEYS], [
       "chat",
       "project",
-      "team",
+      "plugins",
       "settings",
     ]);
     assert.deepEqual(Object.keys(CONVERSATION_CHILDREN).sort(), [

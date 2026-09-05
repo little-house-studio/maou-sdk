@@ -10,7 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ChromeMark } from "../drafts/icons/Marks";
+import { ChromeMark } from "../wire/icons/Marks";
 import { useAppPorts } from "../ports";
 import {
   PROACTIVE_ZONES,
@@ -20,6 +20,7 @@ import {
   type ProactiveZone,
 } from "./proactive-model";
 import type { ProactiveSnapshot } from "./proactive-api";
+import { visiblePoll } from "./poll";
 
 function jobLabel(job: ProactiveSnapshot["job"]): string {
   if (job.status === "idle") return "空闲";
@@ -56,7 +57,6 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
   const [sending, setSending] = useState(false);
   const [busyAction, setBusyAction] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -69,13 +69,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
   }, []);
 
   useEffect(() => {
-    void load();
-    pollRef.current = setInterval(() => {
-      void load();
-    }, 2000);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    return visiblePoll(load, 2000);
   }, [load]);
 
   useEffect(() => {

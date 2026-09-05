@@ -12,7 +12,7 @@ export type LiveModelOpt = { id: string; name?: string };
  * Settings page sections (nav).
  * 「方案与审批」置顶：Agent 方案 + 模板默认 + 终端审批合一。
  */
-export type LiveSettingsSectionId = "appearance" | "runtime_defaults" | "llm" | "plugins";
+export type LiveSettingsSectionId = "appearance" | "runtime_defaults" | "llm";
 
 export const LIVE_SETTINGS_SECTIONS: ReadonlyArray<{
   id: LiveSettingsSectionId;
@@ -21,7 +21,6 @@ export const LIVE_SETTINGS_SECTIONS: ReadonlyArray<{
   { id: "appearance", label: "外观" },
   { id: "runtime_defaults", label: "方案与审批" },
   { id: "llm", label: "LLM 模型" },
-  { id: "plugins", label: "插件" },
 ];
 
 /** Backend-backed terminal approval modes (POST /api/approval). */

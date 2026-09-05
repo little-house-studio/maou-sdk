@@ -695,7 +695,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     }
     try {
       const enabled = hub.setWorkspaceInstructions(raw);
-      res.json({ ok: true, workspaceInstructions: enabled, ...hub.getMeta() });
+      res.json({ ok: true, ...hub.getMeta(), workspaceInstructions: enabled });
     } catch (e) {
       res.status(400).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
     }

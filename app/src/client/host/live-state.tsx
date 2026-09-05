@@ -8,7 +8,7 @@ import {
 } from "react";
 import type { OpenTerminalRequest } from "../TerminalPanel";
 import type { LiveAgentInfo, Meta } from "../api";
-import type { DraftBgTask, UiMode } from "../drafts/types";
+import type { DraftBgTask, UiMode } from "../wire/types";
 import type { DockCardId } from "../dock-plugin/ids";
 import { useAppPorts } from "../ports";
 import {
@@ -18,15 +18,26 @@ import {
   terminalsToBgTasks,
   terminalsToTermLines,
 } from "../live/adapters";
-import { localDayKey } from "../drafts/layout/today-tokens";
+import { sameStrings, visiblePoll } from "../live/poll";
+import { localDayKey } from "../wire/chrome/today-tokens";
 import { pickAndOpenProject } from "../live/FolderBrowse";
 import { SHELL_LEFT, LIVE_FILES_RAIL } from "../shell/metrics";
 import {
   FILES_ACTIVITY_ID,
   SIDEBAR_ACTIVITY_ID,
+  modeShowsLeftRail,
   toggleAsideTab,
 } from "../shell/activity";
 import type { WireHostBag } from "../shell/types";
+
+function opsSwitchId(
+  rows: Array<{ name: string; group?: string; id: string; switchId?: string }> | null,
+): string {
+  const ops = rows?.find(
+    (a) => a.name === "ops" && (a.group === "system" || !a.group),
+  );
+  return ops?.switchId || ops?.id || "system:ops";
+}
 
 export const LIVE_SESSION_RAIL_ID = "live-session-rail";
 
@@ -53,7 +64,7 @@ export function useLiveHostBag(): WireHostBag {
     tab: DockCardId;
     nonce: number;
   } | null>(null);
-  const [rightTab, setRightTab] = useState<string | null>(FILES_ACTIVITY_ID);
+  const [rightTab, setRightTab] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<string | null>(SIDEBAR_ACTIVITY_ID);
   const [agentBusy, setAgentBusy] = useState(false);
   const [todayInput, setTodayInput] = useState(0);
@@ -137,11 +148,10 @@ export function useLiveHostBag(): WireHostBag {
         /* keep previous agents on poll failure */
       }
     };
-    void tick();
-    const id = window.setInterval(() => void tick(), 2500);
+    const stop = visiblePoll(tick, 2500);
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      stop();
     };
   }, [fetchAgents]);
 
@@ -157,12 +167,7 @@ export function useLiveHostBag(): WireHostBag {
         if (cancelled) return;
         const nextLines = terminalsToTermLines(ts);
         const nextTasks = terminalsToBgTasks(ts);
-        setTermLinesRaw((prev) =>
-          prev.length === nextLines.length &&
-          prev.every((l, i) => l === nextLines[i])
-            ? prev
-            : nextLines,
-        );
+        setTermLinesRaw((prev) => (sameStrings(prev, nextLines) ? prev : nextLines));
         setBgTasks((prev) => {
           if (
             prev.length === nextTasks.length &&
@@ -187,11 +192,10 @@ export function useLiveHostBag(): WireHostBag {
         }
       }
     };
-    void tick();
-    const id = window.setInterval(() => void tick(), 2000);
+    const stop = visiblePoll(tick, 2000);
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      stop();
     };
   }, [fetchTerminals, meta?.agentName]);
 
@@ -388,11 +392,10 @@ export function useLiveHostBag(): WireHostBag {
         /* keep last totals */
       }
     };
-    void tick();
-    const id = window.setInterval(() => void tick(), 2500);
+    const stop = visiblePoll(tick, 2500);
     return () => {
       cancelled = true;
-      window.clearInterval(id);
+      stop();
     };
   }, [applyTodayUsage, fetchTodayUsage, todayDate]);
 
@@ -405,6 +408,12 @@ export function useLiveHostBag(): WireHostBag {
   const onModeChange = useCallback((m: UiMode) => {
     setMode(m);
   }, []);
+
+  useEffect(() => {
+    if (mode !== "chat" || !agentsReady) return;
+    if (activeAgentName === "ops") return;
+    void onSelectAgent(opsSwitchId(liveAgentRows));
+  }, [mode, agentsReady, activeAgentName, liveAgentRows, onSelectAgent]);
 
   const onSettingsMetaChange = useCallback((m: Meta) => {
     setMeta(m);
@@ -422,12 +431,12 @@ export function useLiveHostBag(): WireHostBag {
   }, []);
 
   const onLeftTab = useCallback((id: string) => {
-    if (mode !== "chat") {
-      setMode("chat");
-      setLeftTab(id);
+    if (modeShowsLeftRail(mode)) {
+      setLeftTab((cur) => toggleAsideTab(cur, id));
       return;
     }
-    setLeftTab((cur) => toggleAsideTab(cur, id));
+    setMode("chat");
+    setLeftTab(id);
   }, [mode]);
 
   const onRightTab = useCallback((id: string) => {
@@ -438,6 +447,125 @@ export function useLiveHostBag(): WireHostBag {
     }
     setRightTab((cur) => toggleAsideTab(cur, id));
   }, [mode]);
+
+  // ChatPanel already dedupes, but keep the array identity stable here too so
+  // an identical summary never rebuilds the dock slice.
+  const onDockLogLines = useCallback((next: string[]) => {
+    setChatLogLines((prev) => (sameStrings(prev, next) ? prev : next));
+  }, []);
+
+  const onAgentListSelect = useCallback(
+    (id: string) => {
+      const hit = agents.find((a) => a.id === id);
+      void onSelectAgent(id);
+      if (hit?.name === "ops" && hit.group === "system") setMode("chat");
+    },
+    [agents, onSelectAgent],
+  );
+
+  const onOpenChat = useCallback(() => setMode("chat"), []);
+
+  /*
+   * Each slice below is memoized on its own inputs so a token stream (which
+   * touches only `agentBusy` / dock log lines) leaves topbar / agentList /
+   * project untouched. Seats in live-slots.tsx are React.memo'd on the same
+   * slices — keep the two in step when adding fields.
+   */
+  const topbar = useMemo<WireHostBag["topbar"]>(
+    () => ({ mode, onModeChange, todayInput, todayOutput }),
+    [mode, onModeChange, todayInput, todayOutput],
+  );
+
+  const agentList = useMemo<WireHostBag["agentList"]>(
+    () => ({
+      agents,
+      activeId: activeAgent?.id ?? activeSwitchId ?? "",
+      defaultTab: "project",
+      onSelect: onAgentListSelect,
+      onOpenChat,
+      terminalAgentNames,
+      onAddProject,
+    }),
+    [
+      agents,
+      activeAgent?.id,
+      activeSwitchId,
+      onAgentListSelect,
+      onOpenChat,
+      terminalAgentNames,
+      onAddProject,
+    ],
+  );
+
+  const dock = useMemo<WireHostBag["dock"]>(
+    () => ({
+      termLines,
+      bgTasks,
+      meta: draftMeta,
+      activeAgent,
+      agentBusy,
+      agents,
+      onTabChange: onDockTabChange,
+      faces: dockFaces,
+      openTabRequest: dockOpenReq,
+    }),
+    [
+      termLines,
+      bgTasks,
+      draftMeta,
+      activeAgent,
+      agentBusy,
+      agents,
+      onDockTabChange,
+      dockFaces,
+      dockOpenReq,
+    ],
+  );
+
+  const chatThreadRailId = mode === "chat" ? LIVE_SESSION_RAIL_ID : "";
+  const chatModeReady = mode !== "chat" || activeAgentName === "ops";
+  const chat = useMemo<WireHostBag["chat"]>(
+    () => ({
+      remountKey: "ops",
+      layout: "codex",
+      chrome: "wire",
+      className: "wire-context",
+      defaultAgent: "ops",
+      onOpenTerminal,
+      onMetaChange: onChatMetaChange,
+      threadRailId: chatThreadRailId,
+      onBusyChange: setAgentBusy,
+      onTodayUsageChange: applyTodayUsage,
+      onDockLogLines,
+      bootReady: agentsReady && chatModeReady,
+    }),
+    [
+      onOpenTerminal,
+      onChatMetaChange,
+      chatThreadRailId,
+      applyTodayUsage,
+      onDockLogLines,
+      agentsReady,
+      chatModeReady,
+    ],
+  );
+
+  const liveSettings = useMemo<WireHostBag["liveSettings"]>(
+    () => ({
+      presentation: "page",
+      onClose: onSettingsClose,
+      onMetaChange: onSettingsMetaChange,
+    }),
+    [onSettingsClose, onSettingsMetaChange],
+  );
+
+  const project = useMemo<WireHostBag["project"]>(
+    () => ({
+      projectLabel: draftMeta.projectLabel,
+      projectPath: draftMeta.projectPath,
+    }),
+    [draftMeta.projectLabel, draftMeta.projectPath],
+  );
 
   return {
     variant: "live",
@@ -459,55 +587,11 @@ export function useLiveHostBag(): WireHostBag {
     onRailResize: setRailW,
     onAgentSplitDrag,
     sessionRailId: LIVE_SESSION_RAIL_ID,
-    topbar: {
-      mode,
-      onModeChange,
-      todayInput,
-      todayOutput,
-    },
-    agentList: {
-      agents,
-      activeId: activeAgent?.id ?? activeSwitchId ?? "",
-      onSelect: (id) => {
-        void onSelectAgent(id);
-      },
-      onOpenChat: () => setMode("chat"),
-      terminalAgentNames,
-      onAddProject,
-    },
-    dock: {
-      termLines,
-      bgTasks,
-      meta: draftMeta,
-      activeAgent,
-      agentBusy,
-      agents,
-      onTabChange: onDockTabChange,
-      faces: dockFaces,
-      openTabRequest: dockOpenReq,
-    },
-    chat: {
-      remountKey: activeSwitchId || activeAgentName || "agent",
-      layout: "codex",
-      chrome: "wire",
-      className: "wire-context",
-      defaultAgent: activeAgentName || meta?.agentName || "coding",
-      onOpenTerminal,
-      onMetaChange: onChatMetaChange,
-      threadRailId: LIVE_SESSION_RAIL_ID,
-      onBusyChange: setAgentBusy,
-      onTodayUsageChange: applyTodayUsage,
-      onDockLogLines: setChatLogLines,
-      bootReady: agentsReady,
-    },
-    liveSettings: {
-      presentation: "page",
-      onClose: onSettingsClose,
-      onMetaChange: onSettingsMetaChange,
-    },
-    project: {
-      projectLabel: draftMeta.projectLabel,
-      projectPath: draftMeta.projectPath,
-    },
+    topbar,
+    agentList,
+    dock,
+    chat,
+    liveSettings,
+    project,
   };
 }

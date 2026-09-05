@@ -918,11 +918,7 @@ export function LiveSettingsPanel({
                 data-live-settings-nav={s.id}
                 onClick={() => setSection(s.id)}
               >
-                {s.id === "appearance"
-                  ? t("settings.appearance")
-                  : s.id === "plugins"
-                    ? t("settings.plugins")
-                    : s.label}
+                {s.id === "appearance" ? t("settings.appearance") : s.label}
               </button>
             ))}
           </nav>
@@ -1006,10 +1002,6 @@ export function LiveSettingsPanel({
                 ) : null}
               </div>
             </section>
-          ) : null}
-
-          {section === "plugins" ? (
-            <PluginSettingsSection />
           ) : null}
 
           {/* ── 1. LLM：厂商连接 + 组内多模型 ── */}
@@ -2007,69 +1999,5 @@ export function LiveSettingsPanel({
         </div>
       </div>
     </div>
-  );
-}
-
-function PluginSettingsSection() {
-  const [rows, setRows] = useState<
-    Array<{ id: string; name: string; phase: string; enabled: boolean; error?: string }>
-  >([]);
-  const load = useCallback(() => {
-    void fetch("/api/plugins")
-      .then((r) => r.json())
-      .then((j) => {
-        if (Array.isArray(j.plugins)) setRows(j.plugins);
-      })
-      .catch(() => setRows([]));
-  }, []);
-  useEffect(() => {
-    load();
-  }, [load]);
-  return (
-    <section className="wire-settings-section" data-live-settings-section="plugins">
-      <div className="wire-settings-section-head">
-        <h3 className="wire-settings-h">{t("settings.plugins")}</h3>
-        <button
-          type="button"
-          className="wire-settings-theme-pick"
-          onClick={() => {
-            void fetch("/api/plugins/reload", { method: "POST" }).then(() => {
-              load();
-              void refreshThemeAndPlugins();
-            });
-          }}
-        >
-          {t("settings.plugins.reload")}
-        </button>
-      </div>
-      {rows.length === 0 ? (
-        <p className="wire-settings-desc">{t("settings.plugins.empty")}</p>
-      ) : (
-        <ul className="wire-plugin-list">
-          {rows.map((p) => (
-            <li key={p.id} className={`wire-plugin-row is-${p.phase}`}>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={p.enabled}
-                  onChange={(e) => {
-                    void fetch("/api/plugins/toggle", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ id: p.id, enabled: e.target.checked }),
-                    }).then(() => {
-                      load();
-                      void refreshThemeAndPlugins();
-                    });
-                  }}
-                />
-                {p.name} · {p.phase}
-                {p.error ? ` · ${p.error}` : ""}
-              </label>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
   );
 }

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
-import { ModelCascadeMenu } from "../drafts/panels/ModelCascadeMenu";
-import { ChromeMark } from "../drafts/icons/Marks";
+import { presenceProps, usePresence } from "../motion";
+import { ModelCascadeMenu } from "../wire/menus/ModelCascadeMenu";
+import { ChromeMark } from "../wire/icons/Marks";
 import { ContextMeter } from "./ContextMeter";
 import { CommandFlyout } from "./CommandFlyout";
 import type { AppCommand } from "./commands";
@@ -226,6 +227,7 @@ export function ImageAttachTool(props: ComposerProps) {
 
 export function MoreTools(props: ComposerProps) {
   const [open, setOpen] = useState(false);
+  const presence = usePresence(open);
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -248,8 +250,14 @@ export function MoreTools(props: ComposerProps) {
       >
         ⋯
       </button>
-      {open ? (
-        <div className="composer-more-menu" role="menu">
+      {presence.shown ? (
+        <div
+          className="composer-more-menu"
+          role="menu"
+          aria-hidden={presence.phase !== "open"}
+          inert={presence.phase !== "open" ? true : undefined}
+          {...presenceProps(presence)}
+        >
           <button
             type="button"
             role="menuitem"

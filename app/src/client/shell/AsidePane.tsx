@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { usePresence } from "../motion";
 import { SHELL_ASIDE_ANIM_MS } from "./metrics";
+
+/** Keep chrome (resize strip) until the width ease finishes. */
+export function useAsideLatch(open: boolean): boolean {
+  return usePresence(open, SHELL_ASIDE_ANIM_MS).shown;
+}
 
 export function AsidePane({
   open,

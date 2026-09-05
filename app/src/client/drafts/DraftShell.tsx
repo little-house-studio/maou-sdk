@@ -5,7 +5,7 @@ import { createDraftPorts } from "../ports/draft";
 import { SlotsProvider, SlotOutlet } from "../slots";
 import { createDraftHostSlots } from "../host/draft-slots";
 import { useDraftHostBag } from "../host/draft-state";
-import "./draft.css";
+import "../wire/wire.css";
 import "../composer/composer.css";
 
 /**

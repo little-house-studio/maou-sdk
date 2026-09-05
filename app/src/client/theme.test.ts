@@ -12,7 +12,7 @@ import {
 } from "./theme.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const draftCss = readFileSync(join(here, "drafts/draft.css"), "utf8");
+const draftCss = readFileSync(join(here, "wire/wire.css"), "utf8");
 
 describe("sheet theme", () => {
   it("defaults to light; only dark is the other value", () => {
@@ -114,11 +114,11 @@ describe("sheet theme", () => {
   it("scrollbar track is opaque paper, not transparent", () => {
     assert.match(
       draftCss,
-      /\.wire-context-scroll\.chat-log\.codex-log\s*\{[^}]*scrollbar-color:\s*#9b9b9b\s+#ededed/s,
+      /\.wire-context-scroll\.chat-log\.codex-log\s*\{[^}]*scrollbar-color:\s*#9b9b9b\s+#ffffff/s,
     );
     assert.match(
       draftCss,
-      /::-webkit-scrollbar-track:hover[\s\S]*?background:\s*#ededed !important/,
+      /::-webkit-scrollbar-track:hover[\s\S]*?background:\s*#e4e4e4 !important/,
     );
     assert.doesNotMatch(
       draftCss,
@@ -152,14 +152,14 @@ describe("sheet theme", () => {
     );
   });
 
-  it("session trail is a gray strip; jump-prev stays on paper", () => {
+  it("session trail sits on paper; jump-prev stays on paper", () => {
     assert.match(
       draftCss,
-      /\.wire-session-tree\s*\{[^}]*background:\s*#d8d8d8/s,
+      /\.wire-session-tree\s*\{[^}]*background:\s*var\(--n-paper/s,
     );
     assert.match(
       draftCss,
-      /\.wire-jump-prev\s*\{[^}]*background:\s*var\(--n-bg\)/s,
+      /\.wire-jump-prev\s*\{[^}]*background:\s*var\(--n-paper/s,
     );
     assert.match(draftCss, /\.wire-thread-stage\s*\{/);
   });
@@ -247,6 +247,13 @@ describe("sheet theme", () => {
   });
 
   it("round chips hang in the left thread gutter; left and right insets match", () => {
+    assert.match(draftCss, /--center-max:\s*52rem/);
+    assert.match(draftCss, /--center-gutter-max:\s*104px/);
+    assert.match(
+      draftCss,
+      /--center-gutter:\s*clamp\(\s*0px,\s*\(100% - var\(--center-max\)\) \/ 2,\s*var\(--center-gutter-max\)\s*\)/,
+    );
+    assert.doesNotMatch(draftCss, /--center-pad-x/);
     assert.match(draftCss, /--thread-inset:\s*24px/);
     assert.match(
       draftCss,
@@ -258,7 +265,19 @@ describe("sheet theme", () => {
     );
     assert.match(
       draftCss,
-      /\.wire-shell\.draft-shell \.wire-context-scroll\s*\{[^}]*padding:\s*0 var\(--thread-inset\)/s,
+      /\.wire-context-scroll\s*\{[^}]*width:\s*100%/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-context-scroll\s*\{[^}]*padding-left:\s*calc\(var\(--center-gutter\) \+ var\(--thread-inset\)\)/s,
+    );
+    assert.doesNotMatch(
+      draftCss,
+      /\.wire-context-scroll\s*\{[^}]*width:\s*min\(\s*var\(--center-max\)/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-shell\.draft-shell \.wire-composer-frame[\s\S]*?width:\s*calc\(100% - 2 \* var\(--center-gutter\)\)/s,
     );
     assert.match(
       draftCss,
@@ -289,6 +308,88 @@ describe("sheet theme", () => {
     assert.match(
       draftCss,
       /html\[data-theme="dark"\] \.wire-cascade-panel[\s\S]*background:\s*#0b0b0b/,
+    );
+  });
+
+  it("motion tokens drive presence, fold, and mid fade", () => {
+    assert.match(draftCss, /--n-ease:\s*cubic-bezier\(0\.22, 1, 0\.36, 1\)/);
+    assert.match(draftCss, /--n-dur-fast:\s*120ms/);
+    assert.match(draftCss, /--n-dur:\s*200ms/);
+    assert.match(draftCss, /--n-dur-slow:\s*240ms/);
+    assert.match(draftCss, /\[data-presence="leave"\]/);
+    assert.match(draftCss, /\.n-fold\[data-open\]/);
+    assert.match(draftCss, /@keyframes wire-mid-enter/);
+    assert.match(
+      draftCss,
+      /\.wire-mid:not\(\.is-hidden-mode\)[\s\S]*?animation:\s*wire-mid-enter/s,
+    );
+    assert.match(
+      draftCss,
+      /prefers-reduced-motion: reduce[\s\S]*?\.wire-mid:not\(\.is-hidden-mode\)[\s\S]*?animation:\s*none/s,
+    );
+  });
+
+  it("sent user turns ease up from the composer", () => {
+    assert.match(draftCss, /@keyframes wire-msg-enter/);
+    assert.match(
+      draftCss,
+      /\.wire-loop\.is-enter[\s\S]*?animation:\s*wire-msg-enter 280ms/s,
+    );
+    assert.match(
+      draftCss,
+      /prefers-reduced-motion: reduce[\s\S]*?\.wire-loop\.is-enter[\s\S]*?animation:\s*none/s,
+    );
+  });
+
+  it("side rails are layered; only the chat column is paper", () => {
+    const light = draftCss.match(
+      /\.wire-shell\.draft-shell\s*\{[\s\S]*?--n-file-folder:[^}]+\}/,
+    )?.[0];
+    assert.ok(light);
+    assert.match(light, /--n-paper:\s*#ffffff/);
+    assert.match(light, /--n-rail-edge:\s*#e8e8e8/);
+    assert.match(light, /--n-rail:\s*#f6f6f6/);
+    assert.match(light, /--n-rail-alt:\s*#eeeeee/);
+    assert.match(light, /--n-rail-lift:\s*#fcfcfc/);
+    assert.match(
+      draftCss,
+      /\.wire-left\s*\{[^}]*background:\s*var\(--n-rail/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-right\s*\{[^}]*background:\s*var\(--n-rail/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-mid\.is-chat\s*\{[^}]*background:\s*var\(--n-paper/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-center\s*\{[^}]*background:\s*var\(--n-paper/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-shell\.draft-shell \.wire-aside\s*\{[^}]*background:\s*var\(--n-rail-edge/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-shell\.draft-shell \.wire-activity\s*\{[^}]*background:\s*var\(--n-rail-edge/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-shell\.draft-shell \.wire-left-sessions\s*\{[^}]*background:\s*var\(--n-rail-alt/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-shell\.draft-shell \.wire-files-head\s*\{[^}]*background:\s*var\(--n-rail-lift/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-shell\.draft-shell \.vsc-explorer-body\s*\{[^}]*background:\s*var\(--n-rail-alt/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-shell\.draft-shell \.wire-center,\s*\.wire-shell\.draft-shell \.wire-context,\s*\.wire-shell\.draft-shell \.wire-context \.codex-thread-scroll\s*\{[^}]*background:\s*var\(--n-paper/s,
     );
   });
 });

@@ -111,6 +111,8 @@ app/
     platforms/          darwin.ts / win32.ts / linux.ts
   src/server/           AgentHub + Express（桌面走 socket）
   src/client/           Vite + React + xterm
+    wire/               共享组件库（thread/sidebar/dock/chrome/project…），live 与草稿站共用
+    drafts/             草稿站：fixtures 场景 + DraftShell，单向依赖 wire，生产不引用
     slots/              SlotCore / register / inject（声明=授权）
     ports/              AppPorts：live=/api，draft=fixtures
     shell/              薄壳只开洞，只渲染 root

@@ -1,10 +1,10 @@
-import type { AgentListProps } from "../drafts/panels/AgentList";
-import type { SessionListProps } from "../drafts/panels/SessionList";
-import type { FilesRailProps } from "../drafts/panels/FilesRail";
-import type { BottomInfoBarProps } from "../drafts/panels/BottomInfoBar";
-import type { WireTopbarProps } from "../drafts/layout/WireTopbar";
-import type { ContextPanelProps } from "../drafts/panels/ContextPanel";
-import type { DraftApiConfig, UiMode } from "../drafts/types";
+import type { AgentListProps } from "../wire/sidebar/AgentList";
+import type { SessionListProps } from "../wire/sidebar/SessionList";
+import type { FilesRailProps } from "../wire/sidebar/FilesRail";
+import type { BottomInfoBarProps } from "../wire/dock/BottomInfoBar";
+import type { WireTopbarProps } from "../wire/chrome/WireTopbar";
+import type { ContextPanelProps } from "../wire/chat/ContextPanel";
+import type { DraftApiConfig, UiMode } from "../wire/types";
 import type { ChatPanelProps } from "../ChatPanel";
 import type { LiveSettingsPanelProps } from "../live/LiveSettingsPanel";
 export type WireShellVariant = "draft" | "live";

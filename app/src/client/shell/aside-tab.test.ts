@@ -7,7 +7,7 @@ import {
   ASIDE_RIGHT_PANE,
   ASIDE_RIGHT_TAB,
 } from "../slots/map";
-import { toggleAsideTab } from "./activity";
+import { modeShowsLeftRail, toggleAsideTab } from "./activity";
 import { registerAsideTab } from "./aside-tab";
 
 const Icon = () => null;
@@ -35,6 +35,13 @@ describe("registerAsideTab", () => {
     assert.equal(toggleAsideTab(null, "search"), "search");
     assert.equal(toggleAsideTab("search", "search"), null);
     assert.equal(toggleAsideTab("files", "search"), "search");
+  });
+
+  it("left rail is for chat and project only", () => {
+    assert.equal(modeShowsLeftRail("chat"), true);
+    assert.equal(modeShowsLeftRail("project"), true);
+    assert.equal(modeShowsLeftRail("plugins"), false);
+    assert.equal(modeShowsLeftRail("settings"), false);
   });
 
   it("posts a tab button and a pane under the same id", () => {

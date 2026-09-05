@@ -1,14 +1,16 @@
-import { ResizeHandle } from "../drafts/layout/ResizeHandle";
+import { ResizeHandle } from "../wire/chrome/ResizeHandle";
 import { ASIDE_LEFT_PANE } from "../slots/map";
 import { ActivityBar } from "./ActivityBar";
-import { AsidePane } from "./AsidePane";
+import { modeShowsLeftRail } from "./activity";
+import { AsidePane, useAsideLatch } from "./AsidePane";
 import { AsidePaneStack } from "./aside-tab";
 import { useShellRegion } from "./focus";
 import type { WireHostBag } from "./types";
 
 /** Activity icons + the open left pane, below the topbar. */
 export function LeftAside(bag: WireHostBag) {
-  const open = bag.mode === "chat" && bag.leftTab != null;
+  const open = modeShowsLeftRail(bag.mode) && bag.leftTab != null;
+  const latch = useAsideLatch(open);
   return (
     <aside
       className="wire-aside is-left"
@@ -30,7 +32,7 @@ export function LeftAside(bag: WireHostBag) {
           />
         </div>
       </AsidePane>
-      {open ? (
+      {latch ? (
         <ResizeHandle
           edge="right"
           size={bag.leftW}

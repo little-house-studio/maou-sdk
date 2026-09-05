@@ -5,6 +5,7 @@ export { DraftMid } from "./DraftMid";
 export { LeftAside } from "./LeftAside";
 export { RightAside } from "./RightAside";
 export { ActivityBar } from "./ActivityBar";
+export { AsidePane, useAsideLatch } from "./AsidePane";
 export { registerAsideTab, AsidePaneStack } from "./aside-tab";
 export {
   FILES_ACTIVITY_ID,

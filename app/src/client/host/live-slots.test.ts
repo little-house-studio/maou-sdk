@@ -39,7 +39,7 @@ describe("live host slots", () => {
     const center = slots.entriesOfSlot("shell.center");
     assert.deepEqual(
       center.map((e) => e.options.key).sort(),
-      ["chat", "project", "settings", "team"],
+      ["chat", "plugins", "project", "settings"],
     );
     assert.deepEqual(
       slots.entriesOfSlot("aside.left.tab").map((e) => e.options.id),

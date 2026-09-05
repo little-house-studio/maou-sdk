@@ -3,7 +3,20 @@
  * 工具基础类型从 @little-house-studio/types 引入（见 base.ts）。
  */
 
-export { Tool, createToolResponse, toolDir, resolveToolRuntimePorts, toolFail } from './base.js'
+export {
+  Tool,
+  createToolResponse,
+  toolDir,
+  resolveToolRuntimePorts,
+  toolFail,
+  CALL_ELAPSED_PARAM,
+  CALL_ELAPSED_PARAM_NAME,
+  applyElapsedReport,
+  elapsedFooter,
+  ensureCallElapsedSchema,
+  formatElapsed,
+  wantsElapsedReport,
+} from './base.js'
 export type {
   JsonSchema,
   ToolDefinition,

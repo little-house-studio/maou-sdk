@@ -8,7 +8,7 @@ import {
   DOCK_EXPAND_H_UI,
   DOCK_EXPAND_W_UI,
   DOCK_TAB_H,
-} from "../drafts/bottom-dock";
+} from "./bottom-dock";
 import type { DockCardId } from "./ids";
 
 /** How the face content should sit on the manila folder fill. */

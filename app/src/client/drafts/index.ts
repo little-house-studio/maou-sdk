@@ -1,3 +1,7 @@
+/**
+ * 草稿站公开面：DraftShell + 场景 fixture + 草稿设置模型。
+ * 共享组件库在 ../wire；生产代码不依赖本目录（boundary.test.ts 守护）。
+ */
 export { DraftShell } from "./DraftShell";
 export {
   SCENARIO_CATALOG,
@@ -24,212 +28,6 @@ export {
   pickSessionForAgent,
 } from "./fixtures";
 export {
-  statusMarkKind,
-  statusTone,
-  statusShape,
-  roleMarkKind,
-  roleTone,
-  roleLabelZh,
-  hierarchyMarkKind,
-  hierarchyTone,
-  hierarchyIndentPx,
-  fileMarkKind,
-  fileTone,
-  taskMarkKind,
-  chromeMarkForMode,
-} from "./visual-marks";
-export {
-  resolveToolCard,
-  toolTitleMeta,
-  toolIntentLabel,
-  toolDurationLabel,
-  toolFoldMark,
-  toolResultSizeLabel,
-  extractToolCallIntent,
-  slicePreview,
-} from "./tool-card";
-export {
-  findOlderUserIndex,
-  buildPrevUserJumpLabel,
-  shouldShowJumpBar,
-  shouldShowBackToBottom,
-  pickOlderUser,
-  scrollTopToAlignMessage,
-  measureScrollFromBottom,
-  shouldStickToBottom,
-  STICK_TO_BOTTOM_PX,
-} from "./jump-prev-user";
-export {
-  ASK_GUTTER_PX,
-  ASK_PREVIEW_MAX,
-  canShowAskRail,
-  clipAskPreview,
-  layoutAskMarks,
-  pointerOverAskGutter,
-  scrollThumbLayout,
-} from "./ask-scroll-rail";
-export {
-  DOCK_CARDS,
-  DOCK_PREVIEW_W,
-  DOCK_PREVIEW_W_MIN,
-  DOCK_EXPAND_W_UI,
-  DOCK_TAB_W,
-  DOCK_TRACK_H,
-  DOCK_STRIP_BODY_H,
-  DOCK_EAR_RISE_H,
-  DOCK_CLICK_SLOP_PX,
-  FOLDER_EAR,
-  FOLDER_PATH_TAB,
-  FOLDER_PATH_PREVIEW,
-  FOLDER_PATH_EXPAND,
-  FOLDER_PATH_D,
-  FOLDER_PATH_UI,
-  FOLDER_PATH_VIEWBOX,
-  FOLDER_SCALE,
-  buildFolderPath,
-  folderViewBox,
-  rightXFromCssWidth,
-  bottomYFromCssHeight,
-  dockCardWidth,
-  rubberBand,
-  detentPull,
-  isPullBreakaway,
-  easeCloseProgress,
-  easeCloseHeight,
-  easeOpenHeight,
-  springStep,
-  releaseTarget,
-  releaseResizeTarget,
-  displayPullHeight,
-  displayResizeHeight,
-  DOCK_BREAKAWAY_RAW,
-  DOCK_DETENT_PEEK,
-  STOW_EASE_S,
-  isClickGesture,
-  createDockDragSession,
-  applyDockDragMove,
-  resolveDockPointerUp,
-} from "./bottom-dock";
-export type { DockCardId } from "./bottom-dock";
-export { BottomInfoBar } from "./panels/BottomInfoBar";
-// Re-export dock-plugin surface (app plugin area)
-export {
-  createDefaultDockRegistry,
-  registerDockPlugin,
-  listDockPlugins,
-  getDockPlugin,
-  dockPluginIds,
-  paintDockCanvasUiFace,
-  linesForDockCard,
-  loadHtmlInCanvasPolyfill,
-  DockCanvasFace,
-} from "../dock-plugin";
-export type {
-  DockPluginSlot,
-  DockPluginRegistry,
-  DockContentKind,
-  DockCanvasPaintInput,
-} from "../dock-plugin";
-export {
-  durationStr,
-  shortId,
-  loopMark,
-  timecode,
-  formatMessageHead,
-  formatThinkingHead,
-  formatUsageLine,
-  formatRoundTip,
-  formatLoopTip,
-  formatInfoHoverLabel,
-  roundTipRows,
-  loopTipRows,
-  summarizeLoop,
-  loopWallMs,
-} from "./message-meta";
-export type { InfoHoverRow } from "./message-meta";
-export { InfoHover } from "./InfoHover";
-export { HoverTip, HOVER_TIP_OPEN_MS } from "./HoverTip";
-export {
-  PROJECT_DOCS,
-  DEFAULT_PROJECT_DOC_PATH,
-  getProjectDoc,
-  parseProjectOutline,
-  buildProjectTree,
-  isMarkdownDirty,
-  markdownDocStats,
-  pathMatchesFilter,
-  isPathUnderFolder,
-  escapeCssAttrSelector,
-  filterProjectTree,
-  filterDocsForQuickOpen,
-  filterOutlineItems,
-  findHeadingLineByTitle,
-  renameHeadingAtLine,
-  syncHeadingRename,
-  setTaskChecked,
-  parseProjectViewMode,
-  findLineContaining,
-  findAllLinesContaining,
-  findNextLineContaining,
-  findPrevLineContaining,
-  appendHeading,
-} from "./project-docs";
-export type { ProjectViewMode } from "./project-docs";
-export {
-  emptyGraph,
-  createTextNode,
-  moveNode,
-  connectNodes,
-  deleteSelection,
-  deleteEdge,
-  duplicateSelection,
-  deepGrow,
-  broadGrow,
-  selectNode,
-  selectRoot,
-  graphFromOutline,
-  graphToMarkdownOutline,
-  graphToMermaid,
-  findParentId,
-  findNodeIdByText,
-  graphBounds,
-  historyInit,
-  historyCommit,
-  historyUndo,
-  historyRedo,
-  navigateTree,
-  cloneGraph,
-  layoutChildren,
-  reverseEdge,
-  snapNodeToGrid,
-  snapGraphToGrid,
-} from "./project-graph";
-export {
-  projectSessionKey,
-  parseProjectSession,
-  serializeProjectSession,
-  mergeDraftsWithFixtures,
-  outlineGraphDrift,
-  readProjectSession,
-  writeProjectSession,
-  clearProjectSession,
-  pushRecentPath,
-  cycleRecentPath,
-  closeRecentPath,
-  sanitizeRecentPaths,
-  listDirtyDocPaths,
-} from "./project-session";
-export type {
-  GraphNode,
-  GraphEdge,
-  ProjectGraphState,
-} from "./project-graph";
-// ProjectWorkbench / ProjectCanvas: import from panels/* (not this barrel).
-// Barrel re-export previously pulled CodeMirror into the live chat first-paint
-// graph via static SourceEditor when App imported BottomInfoBar from "./drafts".
-export { TeamBoard } from "./panels/TeamBoard";
-export { SettingsPanel } from "./panels/SettingsPanel";
-export {
   defaultApiConfig,
   cloneApiConfig,
   maskApiKey,
@@ -250,20 +48,17 @@ export {
   API_PROTOCOLS,
   PROTOCOL_LABEL,
 } from "./api-settings";
+export type { DraftShellProps, DraftScenario, ScenarioId } from "./types";
 export type {
-  DraftShellProps,
   DraftSession,
   DraftMessage,
   DraftMeta,
   DraftApproval,
-  DraftScenario,
   DraftAgent,
   DraftBgTask,
   DraftApiPreset,
   DraftApiConfig,
   DraftApiProtocol,
-  ScenarioId,
   UiMode,
   MessageRole,
-} from "./types";
-
+} from "../wire/types";

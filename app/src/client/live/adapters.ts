@@ -3,7 +3,8 @@
  * Pure mappers — unit-testable without React.
  */
 import type { Meta, TerminalInfo } from "../api";
-import type { DraftAgent, DraftBgTask, DraftMeta } from "../drafts/types";
+import { isHiddenManagerAgent } from "../wire/sidebar/agent-tree";
+import type { DraftAgent, DraftBgTask, DraftMeta } from "../wire/types";
 
 export function projectLabelFromRoot(projectRoot: string | undefined): string {
   if (!projectRoot) return "project";
@@ -100,7 +101,9 @@ export function liveAgentsToDraftAgents(
 ): DraftAgent[] {
   const activeName = opts?.activeAgentName || "";
   const activeSwitch = opts?.activeSwitchId || "";
-  return agents.map((a) => {
+  return agents
+    .filter((a) => !isHiddenManagerAgent(a.name, a.displayName))
+    .map((a) => {
     const switchId = a.switchId || a.id || `system:${a.name}`;
     let status: DraftAgent["status"] = a.status ?? "idle";
     // Reflect shell busy onto active agent even if presence disk is stale

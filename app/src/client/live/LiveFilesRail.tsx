@@ -3,10 +3,11 @@
  * 完整编辑请走项目模式 ProjectWorkbench。
  */
 import { useCallback, useEffect, useState } from "react";
-import { FilesRail } from "../drafts/panels/FilesRail";
-import { DraftMarkdown } from "../drafts/DraftMarkdown";
+import { FilesRail } from "../wire/sidebar/FilesRail";
+import { DraftMarkdown } from "../wire/DraftMarkdown";
 import { useAppPorts } from "../ports";
 import type { FsTreeNode } from "../markdown/api";
+import { visiblePoll } from "./poll";
 
 function flattenFsPaths(nodes: FsTreeNode[], acc: string[] = []): string[] {
   for (const n of nodes) {
@@ -74,9 +75,7 @@ export function LiveFilesRail() {
   }, [fetchMdTree, fetchProjectTree, fetchGitStatus]);
 
   useEffect(() => {
-    void refresh();
-    const t = window.setInterval(() => void refresh(), 8000);
-    return () => window.clearInterval(t);
+    return visiblePoll(refresh, 8000);
   }, [refresh]);
 
   useEffect(() => {

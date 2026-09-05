@@ -19,10 +19,10 @@ export function DraftMid(bag: WireHostBag) {
         <SlotOutlet name="shell.center" props={bag} slotKey="project" />
       </div>
     );
-  } else if (bag.mode === "team") {
+  } else if (bag.mode === "plugins") {
     mid = (
-      <div className="wire-mid is-team">
-        <SlotOutlet name="shell.center" props={bag} slotKey="team" />
+      <div className="wire-mid is-plugins">
+        <SlotOutlet name="shell.center" props={bag} slotKey="plugins" />
       </div>
     );
   } else {

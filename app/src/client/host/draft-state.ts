@@ -9,6 +9,7 @@ import {
   messagesForSession,
   pickSessionForAgent,
   sessionsForAgent,
+  type LocalDraftState,
 } from "../drafts/fixtures";
 import {
   cloneApiConfig,
@@ -21,9 +22,27 @@ import { DRAFT_FILES_RAIL, SHELL_LEFT } from "../shell/metrics";
 import {
   FILES_ACTIVITY_ID,
   SIDEBAR_ACTIVITY_ID,
+  modeShowsLeftRail,
   toggleAsideTab,
 } from "../shell/activity";
 import type { WireHostBag } from "../shell/types";
+
+function lockDraftToOps(prev: LocalDraftState): LocalDraftState {
+  const ops = prev.agents.find(
+    (a) => a.name === "ops" && a.group === "system" && !a.parent,
+  );
+  if (!ops || ops.id === prev.activeAgentId) return prev;
+  return {
+    ...prev,
+    activeAgentId: ops.id,
+    activeSessionId: pickSessionForAgent(
+      prev.sessions,
+      ops.name,
+      prev.activeSessionId,
+    ),
+    meta: { ...prev.meta, agentName: ops.name },
+  };
+}
 
 export function useDraftHostBag({
   initialScenarioId = "normal",
@@ -46,7 +65,7 @@ export function useDraftHostBag({
     defaultApiConfig(),
   );
   const [state, setState] = useState(() =>
-    hydrateFromScenario(initialScenarioId),
+    lockDraftToOps(hydrateFromScenario(initialScenarioId)),
   );
 
   useEffect(() => {
@@ -170,6 +189,7 @@ export function useDraftHostBag({
     setState((prev) => {
       const hit = prev.agents.find((a) => a.id === agentId);
       if (!hit) return prev;
+      if (hit.name === "ops" && hit.group === "system") setMode("chat");
       return {
         ...prev,
         activeAgentId: hit.id,
@@ -255,15 +275,20 @@ export function useDraftHostBag({
 
   const onLeftTab = useCallback(
     (id: string) => {
-      if (mode !== "chat") {
-        setMode("chat");
-        setLeftTab(id);
+      if (modeShowsLeftRail(mode)) {
+        setLeftTab((cur) => toggleAsideTab(cur, id));
         return;
       }
-      setLeftTab((cur) => toggleAsideTab(cur, id));
+      setMode("chat");
+      setLeftTab(id);
     },
     [mode],
   );
+
+  const onModeChange = useCallback((m: UiMode) => {
+    setMode(m);
+    if (m === "chat") setState((prev) => lockDraftToOps(prev));
+  }, []);
 
   const onRightTab = useCallback(
     (id: string) => {
@@ -304,13 +329,14 @@ export function useDraftHostBag({
     sessionRailId: "",
     topbar: {
       mode,
-      onModeChange: setMode,
+      onModeChange,
       todayInput: 0,
       todayOutput: 0,
     },
     agentList: {
       agents: state.agents,
       activeId: state.activeAgentId,
+      defaultTab: "project",
       onSelect: selectAgent,
       onOpenChat: () => setMode("chat"),
       onAddProject,
@@ -341,7 +367,7 @@ export function useDraftHostBag({
     draftSettings: {
       api: apiConfig,
       onApiChange,
-      onClose: () => setMode("chat"),
+      onClose: () => onModeChange("chat"),
     },
     draftContext: {
       messages,
@@ -352,7 +378,9 @@ export function useDraftHostBag({
       meta: state.meta,
       statusHint: state.statusHint,
       usageLabel: state.usageLabel,
-      agents: state.agents,
+      agents: state.agents.filter(
+        (a) => a.name === "ops" && a.group === "system",
+      ),
       onApprovalDecision,
       onDraftInputChange: setDraftInput,
       onSend,

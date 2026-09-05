@@ -3,6 +3,7 @@
  * wire chrome reuses draft DraftMarkdown / RoleAvatar / ToolCard for shell parity.
  */
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -14,6 +15,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
+import { useStableHandlers } from "./stable-handlers";
 import { useAppPorts } from "./ports";
 import type {
   ApprovalMode,
@@ -29,29 +31,28 @@ import type {
 } from "./api";
 import { searchSessions, type SessionSearchHit } from "./api";
 import { formatModelErrorForUi } from "./model-error-ui";
+import { coalesceStreamEvents, createFrameBatcher } from "./stream-batch";
+import { visiblePoll } from "./live/poll";
 import { stripTaskCompletionMarkup } from "./strip-task-completion";
 import {
   SessionUsageModal,
   type SessionUsageStats,
 } from "./SessionUsageModal";
 import {
-  buildPrevUserJumpLabel,
-  shouldShowJumpBar,
-} from "./drafts/jump-prev-user";
-import {
   WireThreadView,
   chatLinesToDraftMessages,
-} from "./drafts/panels/WireThreadView";
+  reuseDraftMessages,
+} from "./wire/thread/WireThreadView";
+import type { PayloadRequest } from "./wire/thread/WireThreadView";
 import {
   isModelCallProgressText,
   isPlaceholderAssistantBody,
-} from "./drafts/thread-blocks";
-import type { PayloadRequest } from "./drafts/panels/WireThreadView";
+} from "./wire/thread/thread-blocks";
 import {
   asToolParams,
   extractToolCallIntent,
   readToolIntent,
-} from "./drafts/tool-card";
+} from "./wire/thread/tool-card";
 import {
   applySessionPayloadIndex,
   fetchSessionPayloadDetail,
@@ -63,9 +64,9 @@ import {
   applySessionToolMeta,
   fetchSessionToolMeta,
 } from "./session-intents";
-import { ApprovalBanner } from "./drafts/panels/ApprovalBanner";
-import { PlanReviewCard } from "./drafts/panels/PlanReviewCard";
-import type { PlanDecision } from "./drafts/panels/PlanReviewCard";
+import { ApprovalBanner } from "./wire/thread/ApprovalBanner";
+import { PlanReviewCard } from "./wire/thread/PlanReviewCard";
+import type { PlanDecision } from "./wire/thread/PlanReviewCard";
 import {
   pickPlanAsk,
   resolvePlanReview,
@@ -73,16 +74,16 @@ import {
   type PlanReviewSettled,
   type SessionPlanView,
 } from "./session-plan-review";
-import { ApprovalPhysicsSwitch } from "./drafts/panels/ApprovalPhysicsSwitch";
+import { ApprovalPhysicsSwitch } from "./composer/ApprovalPhysicsSwitch";
 import {
   ModelCascadeMenu,
   type ModelCascadeMenuHandle,
-} from "./drafts/panels/ModelCascadeMenu";
-import { ChromeMark } from "./drafts/icons/Marks";
-import { SessionTreeCrumbs } from "./drafts/layout/SessionTreeCrumbs";
-import { SessionList } from "./drafts/panels/SessionList";
-import { flattenSessionForest } from "./drafts/session-ancestry";
-import type { DraftApproval, DraftSession } from "./drafts/types";
+} from "./wire/menus/ModelCascadeMenu";
+import { ChromeMark } from "./wire/icons/Marks";
+import { SessionTreeCrumbs } from "./wire/thread/SessionTreeCrumbs";
+import { SessionList } from "./wire/sidebar/SessionList";
+import { flattenSessionForest } from "./wire/thread/session-ancestry";
+import type { DraftApproval, DraftMessage, DraftSession } from "./wire/types";
 import { Composer, type ComposerProps, type ContextBreakdown } from "./composer";
 import {
   applyMentionPick,
@@ -113,7 +114,7 @@ import {
   gapFromBottom,
   isStickBottom,
 } from "./conversation";
-import { AskScrollRail } from "./drafts/AskScrollRail";
+import { AskScrollRail } from "./wire/thread/AskScrollRail";
 
 export type ChatLine = {
   id: string;
@@ -663,6 +664,9 @@ const HELP_TEXT = [
   "",
   "热键: Enter 发送（忙碌时入队） · / 补全 ↑↓ Tab/Enter · Ctrl+N 新会话 · Ctrl+M 模型 · Ctrl+. / Esc 停止 · Shift+Tab 审批 · Ctrl+Shift+C 复制 · R 重试",
 ].join("\n");
+
+/** 面包屑只在 sessions / 焦点 / 运行灯变化时重画，不跟每个 token 走 */
+const SessionTreeCrumbsMemo = memo(SessionTreeCrumbs);
 
 /** Cap pending user messages while a turn is running */
 const MAX_QUEUE = 20;
@@ -1310,39 +1314,32 @@ export function ChatPanel({
   }, [bootReady]);
 
   // 轮询 pending 审批 / 待审计划（工具阻塞在宿主上时才有东西）
+  // 窗口不可见时停表；bootstrap 已拉过一遍，所以不立即 tick
   useEffect(() => {
-    const t = setInterval(() => {
-      void refreshApproval().catch(() => {});
-      void refreshAsk();
-    }, 1500);
-    return () => clearInterval(t);
+    const stop = visiblePoll(
+      () => {
+        void refreshApproval().catch(() => {});
+        void refreshAsk();
+      },
+      1500,
+      { immediate: false },
+    );
+    return stop;
   }, [refreshApproval, refreshAsk]);
 
   const [showBackToBottom, setShowBackToBottom] = useState(false);
-  const [showJumpPrev, setShowJumpPrev] = useState(false);
-  const [jumpPrevLabel, setJumpPrevLabel] = useState("↑ 上一条 user（点击）");
-  const fromBottomRef = useRef(0);
 
   useEffect(() => {
     const el = logRef.current;
     if (!el) return;
+    // 滚动回调只做贴底判定；wire 布局的「上一条 user」条从不显示，
+    // 以前每次 scroll 都全量 querySelectorAll + offsetTop 读布局，纯浪费。
     const onScroll = () => {
       if (stickPinningRef.current) return;
       const gap = gapFromBottom(el);
-      fromBottomRef.current = gap;
       const stick = isStickBottom(gap);
       stickBottomRef.current = stick;
       setShowBackToBottom(!stick && el.scrollHeight > el.clientHeight + 48);
-      const empty = el.scrollHeight <= el.clientHeight + 8;
-      setShowJumpPrev(shouldShowJumpBar(empty, gap));
-      const nodes = el.querySelectorAll<HTMLElement>('[data-msg-role="user"]');
-      let preview: string | null = null;
-      for (const n of nodes) {
-        if (n.offsetTop + n.offsetHeight <= el.scrollTop + 8) {
-          preview = n.dataset.msgPreview || n.textContent || "";
-        } else break;
-      }
-      setJumpPrevLabel(buildPrevUserJumpLabel(preview));
       if (el.scrollTop < 80) void loadOlderRef.current("anchor");
     };
     const onWheel = (e: WheelEvent) => {
@@ -1365,34 +1362,44 @@ export function ChatPanel({
     followStickBottom(el, true);
     stickPinningRef.current = false;
     setShowBackToBottom(false);
-    setShowJumpPrev(false);
   }, [lines, pending]);
 
   // Dock log board: recent system / tool / err lines
+  // 只在摘要真的变了才通知宿主：每个 token 都回调会让整个 shell bag 重建。
+  const dockLogRef = useRef<string[]>([]);
   useEffect(() => {
     const cb = onDockLogLinesRef.current;
     if (!cb) return;
-    const bag = lines
-      .filter(
-        (l) =>
-          l.role === "system" ||
-          l.role === "tool" ||
-          l.role === "thinking" ||
-          l.err,
-      )
-      .slice(-24)
-      .map((l) => {
-        const tag = l.err ? "err" : l.role;
-        const body = (l.text || "").replace(/\s+/g, " ").trim().slice(0, 80);
-        return body ? `[${tag}] ${body}` : `[${tag}]`;
-      });
-    cb(
-      bag.length
-        ? bag
-        : busy
-          ? ["[status] agent running…"]
-          : ["[status] idle · no system lines"],
-    );
+    const bag: string[] = [];
+    for (let i = lines.length - 1; i >= 0 && bag.length < 24; i--) {
+      const l = lines[i]!;
+      if (
+        l.role !== "system" &&
+        l.role !== "tool" &&
+        l.role !== "thinking" &&
+        !l.err
+      ) {
+        continue;
+      }
+      const tag = l.err ? "err" : l.role;
+      const body = (l.text || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      bag.push(body ? `[${tag}] ${body}` : `[${tag}]`);
+    }
+    bag.reverse();
+    const next = bag.length
+      ? bag
+      : busy
+        ? ["[status] agent running…"]
+        : ["[status] idle · no system lines"];
+    const prev = dockLogRef.current;
+    if (
+      prev.length === next.length &&
+      prev.every((v, i) => v === next[i])
+    ) {
+      return;
+    }
+    dockLogRef.current = next;
+    cb(next);
   }, [lines, busy]);
 
   const scrollThreadToBottom = useCallback(() => {
@@ -1401,27 +1408,6 @@ export function ChatPanel({
     el.scrollTop = el.scrollHeight;
     stickBottomRef.current = true;
     setShowBackToBottom(false);
-    setShowJumpPrev(false);
-  }, []);
-
-  const jumpPrevUser = useCallback(() => {
-    const el = logRef.current;
-    if (!el) return;
-    const nodes = el.querySelectorAll<HTMLElement>('[data-msg-role="user"]');
-    let target: HTMLElement | null = null;
-    for (const n of nodes) {
-      if (n.offsetTop + n.offsetHeight <= el.scrollTop + 8) {
-        target = n;
-      } else break;
-    }
-    if (!target && nodes.length > 0) {
-      target = nodes[0]!;
-    }
-    if (!target) return;
-    el.scrollTop = Math.max(0, target.offsetTop - 12);
-    stickBottomRef.current = false;
-    setShowBackToBottom(true);
-    setShowJumpPrev(true);
   }, []);
 
   const append = useCallback((line: ChatLine) => {
@@ -1838,8 +1824,6 @@ export function ChatPanel({
               max: Number.isFinite(maxCtx) && maxCtx > 0 ? maxCtx : undefined,
             });
           }
-          void refreshContextUsage();
-          void refreshPlan();
           {
             const now = Date.now();
             setLines((prev) => {
@@ -1874,6 +1858,12 @@ export function ChatPanel({
               return stampLoopWallClock(next, now);
             });
           }
+          const sid = activeSessionRef.current;
+          window.setTimeout(() => {
+            if (activeSessionRef.current !== sid) return;
+            void refreshContextUsage();
+            void refreshPlan();
+          }, 0);
           break;
         }
         case "queued_user": {
@@ -2299,19 +2289,33 @@ export function ChatPanel({
         activeSessionRef.current === sessionId ||
         sessionId === "__pending__"
       ) {
-        append({
+        const sentAt = Date.now();
+        const userLine: ChatLine = {
           id: uid(),
           role: "user",
           text,
-          startedAt: Date.now(),
+          startedAt: sentAt,
           ...(images?.length ? { images } : {}),
-        });
-        append({ id: uid(), role: "assistant", text: "", startedAt: Date.now() });
+        };
+        const asstLine: ChatLine = {
+          id: uid(),
+          role: "assistant",
+          text: "",
+          startedAt: sentAt,
+        };
+        setLines((prev) => [...prev, userLine, asstLine]);
         busyRef.current = true;
         setBusy(true);
         setTurnUsage(null);
       }
       setSlashOpen(false);
+
+      // 事件按帧合批：同帧内多条 delta 合成一次 setState，避免每个 token 都整面板重渲染。
+      // 只对「当前正在看的会话」入队；flush 时再核对一次焦点。
+      const batch = createFrameBatcher<StreamEvent>((items) => {
+        if (activeSessionRef.current !== sessionId) return;
+        for (const ev of coalesceStreamEvents(items)) onEvent(ev);
+      });
 
       try {
         for await (const ev of streamChat(text, ac.signal, images)) {
@@ -2324,6 +2328,8 @@ export function ChatPanel({
               (ev as { sessionId?: unknown }).sessionId ?? "",
             ).trim();
             if (real) {
+              // 键要换了：先把 __pending__ 名下已排队的事件冲掉
+              batch.flush();
               sessionRunsRef.current.delete("__pending__");
               sessionRunsRef.current.set(real, { gen, ac });
               markSessionRunning("__pending__", false);
@@ -2337,22 +2343,30 @@ export function ChatPanel({
 
           // 只把事件应用到「当前正在看的会话」
           if (activeSessionRef.current === sessionId) {
-            onEvent(ev);
+            batch.push(ev);
           }
         }
+        batch.flush();
         if (sessionRunsRef.current.get(sessionId)?.gen === gen) {
           void refreshApproval();
           void refreshSessions();
           // 若用户仍在本会话，结束时清空气泡；若已切走，回看时会 reload history
           if (activeSessionRef.current === sessionId) {
             setLines((prev) => dropIdleAssistantPlaceholders(prev));
-            void refreshContextUsage();
-            hydratePayloadLines(setLines, sessionId, projectRootRef.current);
+            const sid = sessionId;
+            const root = projectRootRef.current;
+            window.setTimeout(() => {
+              if (activeSessionRef.current !== sid) return;
+              void refreshContextUsage();
+              hydratePayloadLines(setLines, sid, root);
+            }, 0);
           } else {
             // 后台结束：用户切回时 history 会带上完整回复
           }
         }
       } catch (e) {
+        // 先把已收到的内容画上，再叠错误行
+        batch.flush();
         if (
           sessionRunsRef.current.get(sessionId)?.gen === gen &&
           (e as Error)?.name !== "AbortError"
@@ -2387,6 +2401,7 @@ export function ChatPanel({
           }
         }
       } finally {
+        batch.flush();
         const cur = sessionRunsRef.current.get(sessionId);
         if (cur && cur.gen === gen) {
           sessionRunsRef.current.delete(sessionId);
@@ -2876,6 +2891,16 @@ export function ChatPanel({
 
   const isCodex = layout === "codex";
 
+  // 会话栏 / 面包屑的回调用稳定包装：它们是 memo 组件，内联箭头会让 memo 白费。
+  const railHandlers = useStableHandlers({
+    onNew: () => void onNewSession(),
+    onSelect: (id: string) => void onSessionChange(id),
+    onDelete: (id: string) => void onDeleteSession(id),
+    onRename: (id: string, title: string) => void onRenameSession(id, title),
+    onFork: (id: string) => void onForkSession(id),
+    onNewChild: (id: string) => void onNewChildSession(id),
+  });
+
   const threadRail =
     isCodex && threadRailId ? (
       <ThreadRail
@@ -2885,12 +2910,12 @@ export function ChatPanel({
         runningSessionIds={runningSessionIds}
         wire={isWire}
         agentLabel={meta?.agentName || defaultAgent}
-        onNew={() => void onNewSession()}
-        onSelect={(id) => void onSessionChange(id)}
-        onDelete={(id) => void onDeleteSession(id)}
-        onRename={(id, title) => void onRenameSession(id, title)}
-        onFork={(id) => void onForkSession(id)}
-        onNewChild={(id) => void onNewChildSession(id)}
+        onNew={railHandlers.onNew}
+        onSelect={railHandlers.onSelect}
+        onDelete={railHandlers.onDelete}
+        onRename={railHandlers.onRename}
+        onFork={railHandlers.onFork}
+        onNewChild={railHandlers.onNewChild}
       />
     ) : null;
 
@@ -2970,34 +2995,57 @@ export function ChatPanel({
     settled: planSettled,
   });
   const showPlanReview = planReview.show;
-  const planReviewProps = {
-    markdown: planReview.markdown,
-    objective: planReview.objective,
-    revision: planReview.revision,
-    blocking: planReview.blocking,
-    settled: planReview.settled,
-    note: planReview.note,
-    ...(planReview.blocking
-      ? {
-          busy: false,
-          onStart: () => decidePlan("approve"),
-          onReject: () => decidePlan("reject"),
-          onChat: (note?: string) => decidePlan("chat", note),
-          onHold: () => decidePlan("chat"),
-        }
-      : {
-          busy: busy || planLaunching,
-          onStart: () => void sendPlanApprove(),
-          onHold: () => {
-            const rev = sessionPlanView?.plan?.revision ?? 0;
-            setPlanSettled({ revision: rev, outcome: "hold" });
-            setPlanDismissedRevision(rev);
-          },
-        }),
-  };
-  const planReviewCard = showPlanReview ? (
-    <PlanReviewCard {...planReviewProps} />
-  ) : null;
+  const {
+    markdown: planMarkdown,
+    objective: planObjective,
+    revision: planRevision,
+    blocking: planBlocking,
+    settled: planSettledView,
+    note: planNote,
+  } = planReview;
+  // 引用稳定：这张卡挂进 WireThreadView 的 memo props，每次重建会让整棵线程树重画。
+  const planReviewCard = useMemo(() => {
+    if (!showPlanReview) return null;
+    const planReviewProps = {
+      markdown: planMarkdown,
+      objective: planObjective,
+      revision: planRevision,
+      blocking: planBlocking,
+      settled: planSettledView,
+      note: planNote,
+      ...(planBlocking
+        ? {
+            busy: false,
+            onStart: () => decidePlan("approve"),
+            onReject: () => decidePlan("reject"),
+            onChat: (note?: string) => decidePlan("chat", note),
+            onHold: () => decidePlan("chat"),
+          }
+        : {
+            busy: busy || planLaunching,
+            onStart: () => void sendPlanApprove(),
+            onHold: () => {
+              const rev = sessionPlanView?.plan?.revision ?? 0;
+              setPlanSettled({ revision: rev, outcome: "hold" });
+              setPlanDismissedRevision(rev);
+            },
+          }),
+    };
+    return <PlanReviewCard {...planReviewProps} />;
+  }, [
+    showPlanReview,
+    planMarkdown,
+    planObjective,
+    planRevision,
+    planBlocking,
+    planSettledView,
+    planNote,
+    busy,
+    planLaunching,
+    decidePlan,
+    sendPlanApprove,
+    sessionPlanView,
+  ]);
 
   const avatarLabel = (role: ChatLine["role"]) => {
     if (role === "user") return "You";
@@ -3044,16 +3092,36 @@ export function ChatPanel({
   );
 
   // Wire: same groupThreadBlocks tree as draft ContextPanel
-  const wireDraftMessages = useMemo(
-    () =>
-      isWire
-        ? chatLinesToDraftMessages(lines, {
-            agentBusy: busy,
-            agentName: meta?.agentName || defaultAgent,
-          })
-        : [],
-    [isWire, lines, busy, meta?.agentName, defaultAgent],
-  );
+  const draftReuseRef = useRef<DraftMessage[]>([]);
+  const draftSourceRef = useRef<ChatLine[]>([]);
+  const draftBusyRef = useRef<boolean | undefined>(undefined);
+  const draftAgentRef = useRef<string | undefined>(undefined);
+  const wireDraftMessages = useMemo(() => {
+    if (!isWire) {
+      draftReuseRef.current = [];
+      draftSourceRef.current = [];
+      draftBusyRef.current = undefined;
+      draftAgentRef.current = undefined;
+      return [];
+    }
+    const agentName = meta?.agentName || defaultAgent;
+    const next = chatLinesToDraftMessages(lines, {
+      agentBusy: busy,
+      agentName,
+      reuse: {
+        lines: draftSourceRef.current,
+        messages: draftReuseRef.current,
+        agentBusy: draftBusyRef.current,
+        agentName: draftAgentRef.current,
+      },
+    });
+    const reused = reuseDraftMessages(draftReuseRef.current, next);
+    draftSourceRef.current = lines;
+    draftReuseRef.current = reused;
+    draftBusyRef.current = busy;
+    draftAgentRef.current = agentName;
+    return reused;
+  }, [isWire, lines, busy, meta?.agentName, defaultAgent]);
 
   const messageList = isWire ? (
     <>
@@ -3069,8 +3137,10 @@ export function ChatPanel({
         onOpenTerminal={onOpenTerminal}
         agentBusy={busy}
         onInspectPayload={onInspectPayload}
+        threadKey={meta?.sessionId ?? ""}
+        planReview={planReviewCard}
+        planReviewFollow={!planReview.settled}
       />
-      {planReviewCard}
     </>
   ) : (
     <div
@@ -3938,15 +4008,13 @@ export function ChatPanel({
       {isWire ? (
         <ConversationPane
           trail={
-            <SessionTreeCrumbs
+            <SessionTreeCrumbsMemo
               sessions={sessions}
               activeSessionId={meta?.sessionId ?? null}
               runningSessionIds={runningSessionIds}
-              onSelect={(id) => {
-                void onSessionChange(id);
-              }}
-              onFork={(id) => void onForkSession(id)}
-              onNewChild={(id) => void onNewChildSession(id)}
+              onSelect={railHandlers.onSelect}
+              onFork={railHandlers.onFork}
+              onNewChild={railHandlers.onNewChild}
             />
           }
           jumpPrev={null}
@@ -4041,7 +4109,8 @@ function renderSearchHighlight(text: string): React.ReactNode {
   );
 }
 
-function ThreadRail(props: {
+/** memo：ChatPanel 每个 token 都重渲染，会话栏只该在 sessions / 焦点 / 运行灯变时重画。 */
+const ThreadRail = memo(function ThreadRail(props: {
   sessions: SessionSummary[];
   activeId: string | null;
   busy: boolean;
@@ -4080,8 +4149,8 @@ function ThreadRail(props: {
     : "";
   const untitled = wire ? "未命名" : "Untitled";
   const forest = flattenSessionForest(props.sessions);
-  // Wire = SessionList single-line rows (title · count · time). Never mix
-  // thread-item column CSS with wire-session-btn 32px row — that
+  // Wire = SessionList two-line rows (title + status). Never mix
+  // thread-item column CSS with wire-session-btn — that
   // clipped Chinese glyphs into garbage (see live shell session rail).
   if (wire) {
     const mapped: DraftSession[] = props.sessions.map((s) => ({
@@ -4214,4 +4283,4 @@ function ThreadRail(props: {
       </div>
     </div>
   );
-}
+});

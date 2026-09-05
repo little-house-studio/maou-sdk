@@ -3,11 +3,11 @@
  * 文档来源优先 live FS（/api/fs/md-tree + 按需/预取正文）；失败时回退 PROJECT_DOCS 草稿数据。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ProjectWorkbench } from "../drafts/panels/ProjectWorkbench";
+import { ProjectWorkbench } from "../wire/project/ProjectWorkbench";
 import {
   PROJECT_DOCS,
   type ProjectDoc,
-} from "../drafts/project-docs";
+} from "../wire/project/project-docs";
 import { useAppPorts } from "../ports";
 import type { FsTreeNode } from "../markdown/api";
 import {

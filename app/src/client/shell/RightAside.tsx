@@ -1,7 +1,7 @@
-import { ResizeHandle } from "../drafts/layout/ResizeHandle";
+import { ResizeHandle } from "../wire/chrome/ResizeHandle";
 import { ASIDE_RIGHT_PANE } from "../slots/map";
 import { ActivityBar } from "./ActivityBar";
-import { AsidePane } from "./AsidePane";
+import { AsidePane, useAsideLatch } from "./AsidePane";
 import { AsidePaneStack } from "./aside-tab";
 import { useShellRegion } from "./focus";
 import type { WireHostBag } from "./types";
@@ -9,6 +9,7 @@ import type { WireHostBag } from "./types";
 /** Activity icons + the open right pane, below the topbar. */
 export function RightAside(bag: WireHostBag) {
   const open = bag.mode === "chat" && bag.rightTab != null;
+  const latch = useAsideLatch(open);
   return (
     <aside
       className="wire-aside"
@@ -16,7 +17,7 @@ export function RightAside(bag: WireHostBag) {
       aria-label="右侧栏"
       {...useShellRegion("right")}
     >
-      {open ? (
+      {latch ? (
         <ResizeHandle
           edge="left"
           size={bag.railW}

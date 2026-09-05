@@ -103,8 +103,8 @@ function inspect(win) {
           project: !!document.querySelector(
             ".wire-mid.is-project, [data-live-region='project']",
           ),
-          team: !!document.querySelector(
-            ".wire-mid.is-team, [data-live-region='team']",
+          plugins: !!document.querySelector(
+            ".wire-mid.is-plugins, [data-live-region='plugins']",
           ),
           chat: !!document.querySelector(".wire-mid.is-chat:not([hidden])"),
         },
@@ -167,8 +167,8 @@ async function driveDraft(win) {
   await rec(win, steps, "draft-project", () =>
     clickLabel(win, ".wire-mode-tabs button", "项目"),
   );
-  await rec(win, steps, "draft-team", () =>
-    clickLabel(win, ".wire-mode-tabs button", "Team"),
+  await rec(win, steps, "draft-plugins", () =>
+    clickLabel(win, ".wire-mode-tabs button", "插件"),
   );
   await rec(win, steps, "draft-settings", () =>
     clickLabel(win, ".wire-mode-tabs button", "设置"),
@@ -237,8 +237,8 @@ async function driveLive(win) {
   await rec(win, steps, "live-project", () =>
     clickLabel(win, ".wire-mode-tabs button", "项目"),
   );
-  await rec(win, steps, "live-team", () =>
-    clickLabel(win, ".wire-mode-tabs button", "Team"),
+  await rec(win, steps, "live-plugins", () =>
+    clickLabel(win, ".wire-mode-tabs button", "插件"),
   );
   await rec(win, steps, "live-settings", () =>
     clickLabel(win, ".wire-mode-tabs button", "设置"),
@@ -304,8 +304,8 @@ app.whenReady().then(async () => {
   if (!report.draft.find((s) => s.name === "draft-project")?.regions?.project) {
     report.fails.push("draft 项目 mid missing");
   }
-  if (!report.draft.find((s) => s.name === "draft-team")?.regions?.team) {
-    report.fails.push("draft Team mid missing");
+  if (!report.draft.find((s) => s.name === "draft-plugins")?.regions?.plugins) {
+    report.fails.push("draft 插件 mid missing");
   }
   if (!report.draft.find((s) => s.name === "draft-settings")?.regions?.settings) {
     report.fails.push("draft 设置 mid missing");

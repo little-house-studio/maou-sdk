@@ -1,5 +1,6 @@
-import React, { type ReactNode, type Ref } from "react";
+import React, { useEffect, useRef, type ReactNode, type Ref } from "react";
 import { PassSlot } from "../slots";
+import { applyPaneWheel } from "./pane-wheel";
 import { ThreadBoard } from "./ThreadBoard";
 
 export function ConversationPane({
@@ -23,8 +24,19 @@ export function ConversationPane({
   empty?: boolean;
   rail?: ReactNode;
 }) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const onWheel = (e: WheelEvent) => {
+      applyPaneWheel(host, e);
+    };
+    host.addEventListener("wheel", onWheel, { passive: false });
+    return () => host.removeEventListener("wheel", onWheel);
+  }, []);
+
   return (
-    <>
+    <div className="wire-conversation" ref={hostRef}>
       {trail != null ? (
         <PassSlot name="conversation.trail">{trail}</PassSlot>
       ) : null}
@@ -48,6 +60,6 @@ export function ConversationPane({
         ) : null}
         {composer}
       </div>
-    </>
+    </div>
   );
 }

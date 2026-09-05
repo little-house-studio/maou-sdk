@@ -33,7 +33,17 @@ export type {
 export { resolveToolRuntimePorts };
 
 import { ensureToolError } from "./errors.js";
+import { ensureCallElapsedSchema } from "./elapsed.js";
 export { toolFail } from "./errors.js";
+export {
+  CALL_ELAPSED_PARAM,
+  CALL_ELAPSED_PARAM_NAME,
+  applyElapsedReport,
+  elapsedFooter,
+  ensureCallElapsedSchema,
+  formatElapsed,
+  wantsElapsedReport,
+} from "./elapsed.js";
 
 /**
  * 从 import.meta.url 推算工具目录路径。
@@ -171,7 +181,10 @@ export abstract class Tool {
     if (!name) return [];
 
     const wrap = (schemas: JsonSchema[]): JsonSchema[] =>
-      schemas.map((s) => ensureCallDescriptionSchema(s as Record<string, unknown>) as JsonSchema);
+      schemas.map((s) => {
+        const withDesc = ensureCallDescriptionSchema(s as Record<string, unknown>);
+        return ensureCallElapsedSchema(withDesc) as JsonSchema;
+      });
 
     // 1. 优先从 schema.json 文件读取（最完整、最权威）
     if (this.schemaDir) {

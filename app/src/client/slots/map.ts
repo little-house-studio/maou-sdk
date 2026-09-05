@@ -63,7 +63,7 @@ export const COMPOSER_BAR_CHILDREN = {
 export const CENTER_MODE_KEYS = [
   "chat",
   "project",
-  "team",
+  "plugins",
   "settings",
 ] as const;
 

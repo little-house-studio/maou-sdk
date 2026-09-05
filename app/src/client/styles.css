@@ -298,12 +298,13 @@ button {
 }
 
 .wire-session-search {
-  padding: 0 0.5em 0.35em;
+  padding: 10px 10px 8px;
 }
 
 .wire-session-qwrap {
   border: 1px solid var(--n-line, var(--border));
-  background: var(--n-bg, var(--bg));
+  border-radius: 6px;
+  background: var(--n-paper, var(--bg, #ffffff));
 }
 
 .wire-session-qwrap:focus-within {
@@ -312,14 +313,14 @@ button {
 
 .wire-session-qwrap input {
   width: 100%;
-  min-height: calc(1.3125em * 1.35);
-  padding: 0 0.45em;
+  min-height: 32px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--n-label, var(--fg));
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .thread-search-hits,

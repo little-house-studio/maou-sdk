@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ChromeMark } from "../drafts/icons/Marks";
+import { ChromeMark } from "../wire/icons/Marks";
 import { CommandFlyout } from "./CommandFlyout";
 import { CommandLauncher } from "./CommandLauncher";
 import { OptionalOutlet } from "./OptionalOutlet";

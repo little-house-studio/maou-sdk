@@ -13,7 +13,7 @@ import type {
   MessageRole,
   ScenarioId,
 } from "./types";
-import { groupThreadBlocks } from "./thread-blocks";
+import { groupThreadBlocks } from "../wire/thread/thread-blocks";
 
 /** Required catalog entries for layout QA (tests assert completeness). */
 export const REQUIRED_SCENARIO_IDS: readonly ScenarioId[] = [
