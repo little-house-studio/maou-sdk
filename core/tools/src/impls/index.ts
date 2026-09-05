@@ -14,6 +14,7 @@ import { CodeSearchTool } from "../sqry/find_code/tool.js";
 import { LspTool } from "../lsp/lsp/tool.js";
 import { InternetSearchTool } from "../internet/search_internet/tool.js";
 import { BrowserTool } from "../browser/god_tool/use_browser/tool.js";
+import { ComputerTool } from "../desktop/use_computer/tool.js";
 import { BoardTool } from "../board/board/tool.js";
 import { LoadSkillTool } from "../skill/use_skill/tool.js";
 import { FindSkillTool } from "../skill/find_skill/tool.js";
@@ -76,6 +77,7 @@ export { CodeSearchTool } from "../sqry/find_code/tool.js";
 export { LspTool } from "../lsp/lsp/tool.js";
 export { InternetSearchTool } from "../internet/search_internet/tool.js";
 export { BrowserTool } from "../browser/god_tool/use_browser/tool.js";
+export { ComputerTool } from "../desktop/use_computer/tool.js";
 export { BoardTool } from "../board/board/tool.js";
 export { LoadSkillTool } from "../skill/use_skill/tool.js";
 export { FindSkillTool } from "../skill/find_skill/tool.js";
@@ -124,6 +126,7 @@ export function registerBuiltins(registry: ToolRegistry): void {
   const findCode = new CodeSearchTool();
   const lsp = new LspTool();
   const browser = new BrowserTool();
+  const computer = new ComputerTool();
 
   registry.register(reader);
   registry.register(new ReadFileTool());
@@ -143,6 +146,7 @@ export function registerBuiltins(registry: ToolRegistry): void {
   registry.register(new WriteFileTool());
   registry.register(new EditFileTool());
   registry.register(browser);
+  registry.register(computer);
   registry.register(board);
   registry.register(new SubagentTool());
   registry.register(new TeamManageTool());
@@ -172,6 +176,7 @@ export function registerBuiltins(registry: ToolRegistry): void {
     findCode,
     lsp,
     browser,
+    computer,
   })) {
     registry.register(verb);
   }

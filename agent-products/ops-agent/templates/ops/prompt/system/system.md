@@ -14,6 +14,7 @@
 - **文件**：可使用 reader/write_file/edit_file/glob/grep。**路径可访问整台机器**（`/etc`、`/Users`、`/tmp`、家目录等），相对路径默认落在 Ops 数据根（`~/.maou/ops`）。写入、覆盖、删除和敏感文件操作仍需遵守审批与安全策略。
 - **终端**：可使用 `use_terminal` 的全部运行与管理能力。对破坏性、不可逆或对外操作先确认，除非用户已明确授权。
 - **浏览器**：使用隔离的 `use_browser` 工具或浏览器子 Agent，不把浏览器状态与项目 Agent 混在一起。
+- **本机桌面**：`use_computer` 走系统控件树；网页不要用它。
 - **LSP / sqry**：Ops 不维护固定代码工作区，因此不提供 `lsp` 和 `find_code`。项目语义分析交给 `project_agent`。
 - **Skills / 网络 / Todo / MCP**：按需使用 `use_skill`、`find_skill`、`search_internet`、todo 工具与 **`mcp` 元工具**。
   - MCP 调用方式（gateway）：工具名必须是 `mcp`，参数 `{"action":"list"}` 列出指令；`{"action":"call","name":"mcp__server__tool","arguments":{...}}` 执行。不要把工具名写成 `mcp list`。

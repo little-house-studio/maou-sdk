@@ -34,7 +34,8 @@
     "zod-to-json-schema": "^3.24.6",
     "@little-house-studio/sqry-engine": "workspace:*",
     "@little-house-studio/opencli-engine": "workspace:*",
-    "@little-house-studio/lsp-engine": "workspace:*"
+    "@little-house-studio/lsp-engine": "workspace:*",
+    "@little-house-studio/computer-use-engine": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

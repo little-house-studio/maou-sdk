@@ -1,0 +1,81 @@
+{
+  "name": "use_computer",
+  "description": "控制本机桌面 App（macOS 控件树优先）。网页用 use_browser，不要用本工具操作浏览器 DOM。",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "description": "操作类型：snapshot|click|type|press|scroll|hotkey|set-value|activate|screenshot|record|apps|windows|permissions|help"
+      },
+      "reason": {
+        "type": "string",
+        "description": "为什么必须调用此工具？"
+      },
+      "target": {
+        "type": "string",
+        "description": "元素编号，如 [3]。先 snapshot 再点。"
+      },
+      "snapshot": {
+        "type": "string",
+        "description": "snapshot 返回的 snapshotId"
+      },
+      "text": {
+        "type": "string",
+        "description": "type / press 的文本或按键名"
+      },
+      "app": {
+        "type": "string",
+        "description": "应用名或 bundle id。省略则用前台应用。"
+      },
+      "window": {
+        "type": "string",
+        "description": "窗口标题（可选）"
+      },
+      "pid": {
+        "type": "integer",
+        "description": "目标进程 PID"
+      },
+      "keys": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "hotkey 组合，如 [\"cmd\",\"s\"]"
+      },
+      "amount": {
+        "type": "number",
+        "description": "scroll 行数，正数向上"
+      },
+      "x": {
+        "type": "number",
+        "description": "屏幕坐标 X（像素降级）"
+      },
+      "y": {
+        "type": "number",
+        "description": "屏幕坐标 Y（像素降级）"
+      },
+      "include_image": {
+        "type": "boolean",
+        "description": "snapshot 是否附带截图"
+      },
+      "duration_ms": {
+        "type": "integer",
+        "description": "record 时长，默认 2000"
+      },
+      "path": {
+        "type": "string",
+        "description": "screenshot/record 保存路径"
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["auto", "ax", "pixels"],
+        "description": "覆盖本次路线。默认走 MAOU_COMPUTER_USE / agent.json / config.json。"
+      },
+      "description": {
+        "type": "string",
+        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
+      }
+    },
+    "required": ["description", "action", "reason"],
+    "additionalProperties": false
+  }
+}

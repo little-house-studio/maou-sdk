@@ -42,6 +42,7 @@ describe("dual-surface tools", () => {
       "find_code",
       "lsp",
       "use_browser",
+      "use_computer",
       "agent_message",
       "agent_manage",
       "project_agent",
@@ -68,6 +69,7 @@ describe("dual-surface tools", () => {
       "find_callers",
       "lsp_check",
       "browser_open",
+      "computer_snapshot",
       "board_get",
     ]) {
       expect(names.has(verb), verb).toBe(true);
@@ -76,11 +78,13 @@ describe("dual-surface tools", () => {
 
   it("exposes prefix whitelist for verb families", () => {
     const reg = registry();
-    const schemas = reg.nativeToolSchemas(new Set(["terminal/*", "browser/*"]));
+    const schemas = reg.nativeToolSchemas(new Set(["terminal/*", "browser/*", "computer/*"]));
     const names = schemas.map((item) => String(item.name ?? ""));
     expect(names).toContain("terminal_write");
     expect(names).toContain("browser_click");
+    expect(names).toContain("computer_click");
     expect(names).not.toContain("use_terminal");
+    expect(names).not.toContain("use_computer");
     expect(names).not.toContain("reader");
   });
 

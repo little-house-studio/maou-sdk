@@ -100,6 +100,11 @@ export interface ToolDefinition {
    * use_terminal 可设 0（命令可能跑很久）。
    */
   timeoutMs?: number
+  /**
+   * 是否在返回给模型的结果里附带本次调用经过时间。
+   * 缺省 / true = 附带；false = 关闭。模型也可传 `report_elapsed=false` 单次关闭。
+   */
+  reportElapsed?: boolean
 }
 /**
  * Agent 运行时注入给工具的编排端口（收口服务定位器）。
@@ -196,6 +201,11 @@ export interface ToolContext {
    * 由 AgentRuntime 从 agent.json `terminalMode` 注入；与审批用的 `terminal_mode` 无关。
    */
   terminalBackend?: "full" | "mini"
+  /**
+   * 桌面控制路线：auto / ax / pixels。
+   * 由 AgentRuntime 从 agent.json `computerUse.mode` 注入。
+   */
+  computerUseMode?: "auto" | "ax" | "pixels"
   /**
    * maou 根目录（通常 ~/.maou）。由 AgentRuntime 注入。
    * use_skill / find_skill 等据此扫描全局 skills，勿用 sandboxRoot 顶替。

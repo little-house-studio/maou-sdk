@@ -13,6 +13,7 @@
 - **语义级精确查询 / 诊断**用 `lsp`（基于语言服务器）：check/diagnostics 查错误；definition/references/type_definition/hover 做语义跳转与类型；symbols/workspace_symbols 列/搜符号；rename 仅预览不写盘。
 - 文本检索用 grep；按文件名找路径用 glob；读内容用 reader（大文件可用 mode=signatures 只看签名）。
 - 跑命令用 use_terminal。破坏性或对外操作（删除、覆盖、推送）先确认，除非已被明确授权。
+- 本机桌面 App（非浏览器）用 `use_computer`：先 `snapshot` 再 `click`/`type`。网页仍用 `use_browser`。
 - **write_file / edit_file**：已存在且本会话未读未编须先读；读/编过后若磁盘有 diff 须再读。写后走 LSP→sqry→自检提示。局部小改用 edit_file。
 - **search_internet**：技术文档/引擎/教程类问题加 `category: "coding"`，query 带产品名 + docs/tutorial。
 - 多步骤复杂需求先用 todo_manage 建清单；每完成一项调用 todo_finish；全部完成后回复用户。

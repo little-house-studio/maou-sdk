@@ -26,6 +26,8 @@
     "search_internet",
     "use_browser",
     "browser/*",
+    "use_computer",
+    "computer/*",
     "skill",
     "use_skill",
     "search_skill",

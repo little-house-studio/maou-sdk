@@ -14,6 +14,7 @@ describe("install agent defaults", () => {
     expect(INSTALL_TOOL_WHITELIST).toContain("grep");
     expect(INSTALL_TOOL_WHITELIST).toContain("todo/*");
     expect(INSTALL_TOOL_WHITELIST).not.toContain("use_browser");
+    expect(INSTALL_TOOL_WHITELIST).not.toContain("use_computer");
     expect(INSTALL_TOOL_WHITELIST).not.toContain("lsp");
     expect(INSTALL_TOOL_WHITELIST).not.toContain("find_code");
     expect(INSTALL_TOOL_WHITELIST).not.toContain("submit_plan");

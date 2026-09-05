@@ -1,0 +1,32 @@
+{
+  "originHash" : "7d3bd174762e0f098cb41a16dcdddcdabc2f2009c44fc99618990230b6cf9841",
+  "pins" : [
+    {
+      "identity" : "axorcist",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/openclaw/AXorcist.git",
+      "state" : {
+        "revision" : "aa07d72fbb1861b56f5833b4cff8d9101c8dfbb3"
+      }
+    },
+    {
+      "identity" : "commander",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/steipete/Commander.git",
+      "state" : {
+        "revision" : "bd219c4ee9032fee3e009856f81fcc6ec09a85f4",
+        "version" : "0.2.4"
+      }
+    },
+    {
+      "identity" : "swift-log",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-log.git",
+      "state" : {
+        "revision" : "3ffafb9722d5d918c614feb496c8789a3b59d222",
+        "version" : "1.15.0"
+      }
+    }
+  ],
+  "version" : 3
+}

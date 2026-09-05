@@ -73,6 +73,13 @@ Thumbs.db
 .qoder/
 .grok/
 
+# ─── 参考克隆（不提交） ───
+.refs/
+
+# ─── computer-use 本机 Swift 构建 ───
+core/agent/computer-use-engine/native/darwin/.build/
+core/agent/computer-use-engine/native/darwin/bin/
+
 # ─── 临时文件 ───
 *.tmp
 *.bak

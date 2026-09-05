@@ -117,6 +117,30 @@ export function lspVerbSpecs(): VerbSpec[] {
   }));
 }
 
+export function computerVerbSpecs(): VerbSpec[] {
+  const actions = [
+    "snapshot",
+    "click",
+    "type",
+    "press",
+    "scroll",
+    "hotkey",
+    "set-value",
+    "activate",
+    "screenshot",
+    "record",
+    "apps",
+    "windows",
+    "permissions",
+    "help",
+  ];
+  return actions.map((action) => ({
+    name: `computer_${action.replace(/-/g, "_")}`,
+    description: `桌面操作：${action}`,
+    inject: { action },
+  }));
+}
+
 export function browserVerbSpecs(): VerbSpec[] {
   const actions = [
     "open",
@@ -169,6 +193,7 @@ export function bindDomainVerbs(gods: {
   findCode: Tool;
   lsp: Tool;
   browser: Tool;
+  computer: Tool;
 }): Tool[] {
   return [
     ...bindVerbs(gods.terminal, terminalVerbSpecs()),
@@ -178,5 +203,6 @@ export function bindDomainVerbs(gods: {
     ...bindVerbs(gods.findCode, findCodeVerbSpecs()),
     ...bindVerbs(gods.lsp, lspVerbSpecs()),
     ...bindVerbs(gods.browser, browserVerbSpecs()),
+    ...bindVerbs(gods.computer, computerVerbSpecs()),
   ];
 }

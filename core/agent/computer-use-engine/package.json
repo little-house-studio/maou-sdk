@@ -1,0 +1,31 @@
+{
+  "name": "@little-house-studio/computer-use-engine",
+  "version": "0.1.0",
+  "description": "本机桌面控件树引擎 — macOS AX 优先，可配置降级到截图/抽帧 + 键鼠",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "native/darwin/bin", "native/win32", "native/linux"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-helper.mjs",
+    "build:helper": "node scripts/build-helper.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

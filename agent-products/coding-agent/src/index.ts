@@ -50,6 +50,7 @@ export const CODING_TOOL_WHITELIST = [
   "use_terminal",
   "search_internet",
   "use_browser",
+  "use_computer",
   "use_skill",
   "find_skill",
   "todo_manage",

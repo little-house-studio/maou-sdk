@@ -12,6 +12,7 @@ describe("ops agent defaults", () => {
     expect(OPS_TOOL_WHITELIST).toContain("update_goal");
     expect(OPS_TOOL_WHITELIST).toContain("submit_plan");
     expect(OPS_TOOL_WHITELIST).toContain("use_browser");
+    expect(OPS_TOOL_WHITELIST).toContain("use_computer");
     expect(OPS_TOOL_WHITELIST).not.toContain("notebook");
     expect(OPS_TOOL_WHITELIST).not.toContain("undo_edit");
     expect(OPS_TOOL_WHITELIST).not.toContain("lsp");

@@ -463,6 +463,8 @@ export class AgentRuntime {
   private effectiveWorkingDir: string = "";
   /** agent.json terminalMode（full|mini），与审批用 terminal_mode 无关 */
   private agentTerminalBackend?: "full" | "mini";
+  /** agent.json computerUse.mode（auto|ax|pixels） */
+  private agentComputerUseMode?: "auto" | "ax" | "pixels";
   /** ContextEngine 闭环依赖（可选） */
   private harnessStore?: HarnessSessionStore;
   private taskStore?: TaskSessionStore;
@@ -1904,6 +1906,10 @@ export class AgentRuntime {
       this.agentTerminalBackend = undefined;
       try { setAgentTerminalMode(undefined); } catch { /* ignore */ }
     }
+    const cuRaw = (agentEntry as { computerUse?: { mode?: string }; computerUseMode?: string }).computerUse?.mode
+      ?? (agentEntry as { computerUseMode?: string }).computerUseMode;
+    const cu = typeof cuRaw === "string" ? cuRaw.trim().toLowerCase() : "";
+    this.agentComputerUseMode = cu === "auto" || cu === "ax" || cu === "pixels" ? cu : undefined;
     // working_dir：优先 agent.json 配置，否则 projectRoot（process.cwd）
     const agentWorkingDir = (agentEntry as { working_dir?: string }).working_dir;
     if (agentWorkingDir && typeof agentWorkingDir === "string" && agentWorkingDir.trim()) {
@@ -4407,6 +4413,7 @@ export class AgentRuntime {
       pathGuard: this.getSessionPathGuard(sessionId ?? ""),
       compressionLevel,
       terminalBackend: this.agentTerminalBackend,
+      computerUseMode: this.agentComputerUseMode,
       skillOptions: this.skillOptions,
       subagentExecutor: this.subagentExecutor as never,
       callMainAgentFn: this.callMainAgentFn,
