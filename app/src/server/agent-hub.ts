@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { addProject } from "@little-house-studio/types";
+import { addProject, runtimePresetRoute } from "@little-house-studio/types";
 import {
   createStandardAgentDeps,
   getRolePresetFromMaouConfig,
@@ -93,6 +93,7 @@ import {
 import { listAgentTerminals, rebindAgentTerminalPersist } from "./agent-terminals.js";
 import {
   backfillUserLoopDuration,
+  collectToolCallArgs,
   collectToolCallIntents,
   readHistoryToolMeta,
   readLoopDurationMs,
@@ -193,6 +194,8 @@ export type ChatHistoryLine = {
   toolCallId?: string;
   /** tool_call 参数 description */
   toolDescription?: string;
+  /** tool_call 参数 JSON */
+  toolArgs?: string;
   durationMs?: number;
   loopDurationMs?: number;
   toolCalls?: Array<{ id: string; description: string }>;
@@ -570,11 +573,12 @@ export class AgentHub implements WebhookHost {
     if (this.provider && this.model) return;
     try {
       const main = getRolePresetFromMaouConfig("main") as
-        | { name?: string; model?: string }
+        | { name?: string; model?: string; _providerName?: string }
         | undefined;
-      if (main?.name && main?.model) {
-        this.provider = main.name;
-        this.model = main.model;
+      const route = main ? runtimePresetRoute(main) : undefined;
+      if (route?.provider && route.model) {
+        this.provider = route.provider;
+        this.model = route.model;
         return;
       }
     } catch {
@@ -1072,6 +1076,7 @@ export class AgentHub implements WebhookHost {
     msgs: Array<Record<string, unknown>>,
   ): ChatHistoryLine[] {
     const callIntents = collectToolCallIntents(msgs);
+    const callArgs = collectToolCallArgs(msgs);
     const mapped = msgs.map((m, i) => {
       const raw = m.content;
       let content = "";
@@ -1112,7 +1117,7 @@ export class AgentHub implements WebhookHost {
         usage?.completion_tokens ?? usage?.output_tokens ?? usage?.output ?? 0,
       );
       const toolMeta =
-        role === "tool" ? readHistoryToolMeta(m, callIntents) : {};
+        role === "tool" ? readHistoryToolMeta(m, callIntents, callArgs) : {};
       const toolCalls =
         role === "assistant" ? slimAssistantToolCalls(m) : [];
       const durationMs =
@@ -1129,6 +1134,7 @@ export class AgentHub implements WebhookHost {
         ...(toolMeta.toolDescription
           ? { toolDescription: toolMeta.toolDescription }
           : {}),
+        ...(toolMeta.toolArgs ? { toolArgs: toolMeta.toolArgs } : {}),
         ...(durationMs != null ? { durationMs } : {}),
         ...(loopDurationMs != null ? { loopDurationMs } : {}),
         ...(toolCalls.length ? { toolCalls } : {}),

@@ -83,7 +83,6 @@ export function toModuleContext(
   extras?: {
     force?: boolean;
     knownTokens?: number;
-    activeTaskIds?: string[];
   },
 ): ContextCompressContext {
   return {
@@ -94,7 +93,6 @@ export function toModuleContext(
     currentStage,
     force: extras?.force,
     knownTokens: extras?.knownTokens ?? config.knownTokens,
-    activeTaskIds: extras?.activeTaskIds,
     config: moduleConfigFor(config, config.mode),
   };
 }

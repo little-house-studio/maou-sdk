@@ -61,10 +61,13 @@ describe("global API config (series-wide)", () => {
     expect(loadPresetsFromMaouConfig()[0]!.key).toBe("sk-test");
     expect(loadPresetsFromMaouConfig()[0]!.model).toBe("m");
     expect(isGlobalApiConfigured()).toBe(true);
-    const disk = JSON.parse(readFileSync(path, "utf-8")).api.presets[0];
-    // 磁盘仅嵌套 models[]，无旧式顶层-only model
+    const providers = JSON.parse(readFileSync(path, "utf-8")).api.providers as Record<
+      string,
+      { defaultModel?: string; models?: Array<{ id: string }>; model?: string }
+    >;
+    const disk = Object.values(providers)[0]!;
     expect(disk.defaultModel).toBe("m");
-    expect(disk.models[0].id).toBe("m");
+    expect(disk.models?.[0]?.id).toBe("m");
     expect(disk.model).toBeUndefined();
   });
 

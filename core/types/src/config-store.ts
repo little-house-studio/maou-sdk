@@ -8,12 +8,17 @@ import type {
   ContextSettings,
   PluginSettings,
   LLMProtocol,
+  ApiProvider,
 } from './index.js'
 import { resolveUserConfigPath } from './maou-paths.js'
 import { resolveApiRolePreset, type ApiModelRole } from './api-roles.js'
-import { expandAllPresets } from './preset-models.js'
 import { normalizeRuntimePreset } from './preset-normalize.js'
 import { migratePresetPlainKey } from './secrets-store.js'
+import {
+  apiDocumentForDisk,
+  coerceApiDocument,
+  providersToRuntimePresets,
+} from './api-providers.js'
 
 export { normalizeRuntimePreset, normalizeLoadedPreset } from './preset-normalize.js'
 
@@ -134,8 +139,15 @@ const PluginSettingsSchema = z.object({
   }).optional(),
 }).passthrough()
 
-/** preset 引用：name 字符串或数组下标 */
-const PresetRefSchema = z.union([z.string(), z.number().int().min(0)])
+/** 旧 roles：name / 下标；新 roles：{ provider, model } */
+const PresetRefSchema = z.union([
+  z.string(),
+  z.number().int().min(0),
+  z.object({
+    provider: z.string().min(1),
+    model: z.string().optional().default(''),
+  }),
+])
 
 const ApiModelRolesSchema = z
   .object({
@@ -147,15 +159,23 @@ const ApiModelRolesSchema = z
   .catchall(PresetRefSchema)
   .optional()
 
+const ApiProviderSchema = z
+  .object({
+    displayName: z.string().optional(),
+    url: z.string().default(''),
+    protocol: z.string().default('openai'),
+    key: z.string().optional().default(''),
+    keyRef: z.string().optional(),
+    models: z.array(LLMModelSpecSchema).min(1),
+    defaultModel: z.string().optional(),
+  })
+  .passthrough()
+
 const ApiConfigSchema = z.object({
+  providers: z.record(ApiProviderSchema).default({}),
   presets: z.array(LLMPresetSchema).default([]),
-  defaultPreset: z.number().int().min(0).default(0),
-  /**
-   * 全局辅助模型下标（legacy 读回退）。
-   * 新配置写 roles.helper；解析链见 resolveApiRolePreset / resolveGlobalHelperPreset。
-   */
+  defaultPreset: z.number().int().min(0).optional(),
   helperPreset: z.number().int().min(0).optional(),
-  /** 按用途绑定模型：main / fast / vision / helper …（推荐 SoT） */
   roles: ApiModelRolesSchema,
   agentRoundLimit: z.number().int().positive().default(50),
   contextSettings: ContextSettingsSchema.default({}),
@@ -234,18 +254,35 @@ function deepMerge(
   return result
 }
 
-function normalizePresetsInConfig(config: AppConfig): AppConfig {
-  const presets = config.api?.presets
-  if (!Array.isArray(presets) || presets.length === 0) return config
-  // 先展开 models[] → 扁平，再 normalize 字段（唯一实现：normalizeRuntimePreset）
-  const expanded = expandAllPresets(presets as unknown[])
+function migrateProviderKeys(providers: Record<string, ApiProvider>, userRoot: string): boolean {
+  let dirty = false
+  for (const p of Object.values(providers)) {
+    if (!p || typeof p !== 'object') continue
+    const rec = p as unknown as Record<string, unknown>
+    if (migratePresetPlainKey(rec, userRoot)) dirty = true
+    if (Array.isArray(rec.models)) {
+      for (const m of rec.models) {
+        if (m && typeof m === 'object' && migratePresetPlainKey(m as Record<string, unknown>, userRoot)) {
+          dirty = true
+        }
+      }
+    }
+  }
+  return dirty
+}
+
+function flattenProvidersInConfig(config: AppConfig, userRoot?: string): AppConfig {
+  const providers = (config.api?.providers ?? {}) as Record<string, ApiProvider>
+  if (userRoot) migrateProviderKeys(providers, userRoot)
+  const expanded = providersToRuntimePresets(providers)
   const next = expanded.map((item) =>
-    normalizeRuntimePreset(item) as (typeof presets)[number],
+    normalizeRuntimePreset(item) as LLMPreset,
   )
   return {
     ...config,
     api: {
       ...config.api,
+      providers,
       presets: next,
     },
   }
@@ -256,11 +293,11 @@ function normalizePresetsInConfig(config: AppConfig): AppConfig {
 /**
  * 配置存储
  * 加载 project_config.json（项目级开关）和
- * **全局** config.json（全系列产品共用：LLM api.presets 等），深度合并后用 Zod 校验。
+ * **全局** config.json（全系列产品共用：LLM api.providers 等），深度合并后用 Zod 校验。
  *
  * 分工：
  * - 用户态 config.json（~/.maou 或 $MAOU_HOME，可用 $MAOU_LLM_CONFIG 覆盖路径）：
- *   LLM 配置（api.presets）等全局应用配置的**唯一权威源**，所有 maou 系列产品共用。
+ *   LLM 配置（api.providers）等全局应用配置的**唯一权威源**，所有 maou 系列产品共用。
  * - project_config.json：项目级开关，跟着 git 走。**不放 api 段**。
  * - 项目态 <cwd>/.maou：会话等，**不放 API key**。
  */
@@ -289,21 +326,41 @@ export class ConfigStore {
   /** 加载并合并配置 */
   private load(): AppConfig {
     const userRaw = readJsonFile(this.userPath)
-    const projectRaw = readJsonFile(this.projectPath)
-    // 深合并：project 覆盖 user。
-    // 由于 project_config.json 不再放 api 段（见类注释），api 配置实际只来自 config.json，
-    // 因此 config.json 是 LLM 配置（api.presets）的唯一权威源——改它就生效，无矛盾。
-    const merged = deepMerge(userRaw, projectRaw)
+    if (userRaw.api && typeof userRaw.api === 'object') {
+      const prevApi = userRaw.api as Record<string, unknown>
+      const doc = coerceApiDocument(prevApi)
+      const keyDirty = migrateProviderKeys(doc.providers, dirname(this.userPath))
+      if (doc.dirty || keyDirty) {
+        userRaw.api = apiDocumentForDisk(prevApi, doc)
+        this.writeUserFile(userRaw)
+      } else {
+        userRaw.api = { ...prevApi, providers: doc.providers, roles: doc.roles }
+        delete (userRaw.api as Record<string, unknown>).presets
+        delete (userRaw.api as Record<string, unknown>).defaultPreset
+        delete (userRaw.api as Record<string, unknown>).helperPreset
+      }
+    }
 
-    // 配置文件使用 snake_case，schema 使用 camelCase
+    const projectRaw = readJsonFile(this.projectPath)
+    const merged = deepMerge(userRaw, projectRaw)
     const normalized = normalizeKeys(merged)
     const result = AppConfigSchema.safeParse(normalized)
+    const userRoot = dirname(this.userPath)
     if (result.success) {
-      return normalizePresetsInConfig(result.data)
+      return flattenProvidersInConfig(result.data, userRoot)
     }
-    // 校验失败时用默认值，打印警告
     console.warn('[ConfigStore] 配置校验失败，使用默认值:', result.error.flatten())
-    return normalizePresetsInConfig(AppConfigSchema.parse({}))
+    return flattenProvidersInConfig(AppConfigSchema.parse({}), userRoot)
+  }
+
+  private writeUserFile(data: Record<string, unknown>): void {
+    mkdirSync(dirname(this.userPath), { recursive: true })
+    writeFileSync(this.userPath, JSON.stringify(data, null, 2), 'utf-8')
+    try {
+      chmodSync(this.userPath, 0o600)
+    } catch {
+      /* Windows 等可能不支持 */
+    }
   }
 
   /** 重新加载配置 */
@@ -323,7 +380,7 @@ export class ConfigStore {
       const byRole = resolveApiRolePreset(this.config.api, 'main')
       if (byRole) return byRole
     }
-    const idx = index ?? this.config.api.defaultPreset
+    const idx = index ?? this.config.api.defaultPreset ?? 0
     return presets[idx] ?? presets[0] ?? {
       name: 'default',
       url: 'https://api.openai.com/v1',
@@ -385,25 +442,12 @@ export class ConfigStore {
   saveUserConfig(data: Record<string, unknown>): void {
     const userRoot = dirname(this.userPath)
     const api = data.api && typeof data.api === 'object' ? (data.api as Record<string, unknown>) : null
-    if (api && Array.isArray(api.presets)) {
-      for (const raw of api.presets) {
-        if (!raw || typeof raw !== 'object') continue
-        const preset = raw as Record<string, unknown>
-        migratePresetPlainKey(preset, userRoot)
-        if (Array.isArray(preset.models)) {
-          for (const m of preset.models) {
-            if (m && typeof m === 'object') migratePresetPlainKey(m as Record<string, unknown>, userRoot)
-          }
-        }
-      }
+    if (api) {
+      const doc = coerceApiDocument(api)
+      migrateProviderKeys(doc.providers, userRoot)
+      data.api = apiDocumentForDisk(api, doc)
     }
-    mkdirSync(dirname(this.userPath), { recursive: true })
-    writeFileSync(this.userPath, JSON.stringify(data, null, 2), 'utf-8')
-    try {
-      chmodSync(this.userPath, 0o600)
-    } catch {
-      /* Windows 等可能不支持 */
-    }
+    this.writeUserFile(data)
     this.reload()
   }
 

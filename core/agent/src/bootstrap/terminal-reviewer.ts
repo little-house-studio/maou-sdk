@@ -154,8 +154,8 @@ export function resolveTerminalReviewPreset(
   mainPreset: APIPreset | undefined,
   opts?: {
     helperPresetIdx?: number;
-    helperRole?: string | number;
-    fastRole?: string | number;
+    helperRole?: import("@little-house-studio/types").PresetRef;
+    fastRole?: import("@little-house-studio/types").PresetRef;
     agentHelperModel?: string;
   },
 ): APIPreset | undefined {

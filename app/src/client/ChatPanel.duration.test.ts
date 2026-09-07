@@ -88,6 +88,19 @@ describe("historyToLines / stampLoopWallClock", () => {
     assert.equal(lines[1]!.startedAt, Date.parse("2026-08-29T08:00:02.500Z"));
   });
 
+  it("keeps toolArgs so the card can title from path", () => {
+    const lines = historyToLines([
+      {
+        id: "t",
+        role: "tool",
+        content: "✓ read_file\n#",
+        toolName: "read_file",
+        toolArgs: JSON.stringify({ path: "/tmp/secrets.json" }),
+      },
+    ]);
+    assert.equal(lines[0]!.toolArgs, JSON.stringify({ path: "/tmp/secrets.json" }));
+  });
+
   it("backfills user duration from ledger loopDurationMs", () => {
     const lines = historyToLines([
       {

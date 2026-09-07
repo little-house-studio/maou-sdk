@@ -3,6 +3,7 @@
  */
 
 import { maouToLLMMessage, seqRangeOf, type MaouMessage } from "../types/message.js";
+import { holdAsPromptCache } from "@little-house-studio/context-components";
 import type {
   ContextCompressContext,
   ContextModule,
@@ -33,7 +34,7 @@ function idle(history: MaouMessage[], tokens: number): ContextModuleResult {
     droppedSummary: "",
     originalTokens: tokens,
     compressedTokens: tokens,
-    taskBlocks: [],
+    blockIds: [],
   };
 }
 
@@ -92,24 +93,27 @@ export const legacyContextModule: ContextModule<LegacyCompressConfig> = {
     const boundary = findRecentRoundsBoundary(ctx.history, ctx.config.keepRecentRounds);
     const recent = ctx.history.slice(boundary);
     const old = ctx.history.slice(0, boundary);
-    if (old.length === 0) return idle(ctx.history, originalTokens);
+    const hold = { currentTurn: ctx.microTurn, catalog: ctx.microCatalog, limitRounds: ctx.microRounds };
+    const held = old.filter((m) => holdAsPromptCache(m, hold));
+    const foldable = old.filter((m) => !holdAsPromptCache(m, hold));
+    if (foldable.length === 0) return idle(ctx.history, originalTokens);
 
     let summary: string;
     if (ctx.summarizer) {
       try {
         summary = await ctx.summarizer({
-          kind: "task",
-          messages: old.map(maouToLLMMessage),
+          kind: "summary",
+          messages: foldable.map(maouToLLMMessage),
           prompt: ctx.config.summarizerPrompt,
         });
       } catch {
-        summary = fallbackSummary(old);
+        summary = fallbackSummary(foldable);
       }
     } else {
-      summary = fallbackSummary(old);
+      summary = fallbackSummary(foldable);
     }
 
-    const history = [makeSummaryMsg(summary, old), ...recent];
+    const history = [...held, makeSummaryMsg(summary, foldable), ...recent];
     return {
       compressed: true,
       stage: "summaryStage",
@@ -117,7 +121,7 @@ export const legacyContextModule: ContextModule<LegacyCompressConfig> = {
       droppedSummary: summary,
       originalTokens,
       compressedTokens: 0,
-      taskBlocks: [],
+      blockIds: [],
     };
   },
 };

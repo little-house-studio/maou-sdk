@@ -26,6 +26,10 @@ export type { SessionVisibility, TreeFields } from "./session-tree.js";
 // Maou 层消息结构体与转换函数
 export type {
   MaouContent,
+  MaouTextSegment,
+  MaouTextSegmentAttributes,
+  MaouTextSegmentAnnotations,
+  MicroCompactableSegment,
   MaouMessage,
   MaouMeta,
   MaouTaskBlock,
@@ -37,6 +41,7 @@ export type {
 } from "./types/message.js";
 export {
   maouToLLMMessage,
+  segmentVisibleText,
   maouToSessionMessage,
   sessionToMaouMessage,
   sessionMessagesToMaou,
@@ -45,6 +50,7 @@ export {
 
 // 多会话管理
 export { SessionManager } from "./session-manager.js";
+export type { ActiveSession, SwitchResult } from "./session-manager.js";
 
 // 结构化记忆
 export { MemoryStore } from "./memory-store.js";
@@ -62,8 +68,6 @@ export type {
   ContextBuilder,
   MessagePriority,
   PriorityConfig,
-  ActiveSession,
-  SwitchResult,
   MemoryEntry,
   MemoryRecallResult,
   ExtractedMemory,
@@ -88,8 +92,44 @@ export {
   MAX_AUTO_CHECKPOINTS,
 } from "./constants.js";
 
-// 消息构建
-export { buildMessages } from "./message-builder.js";
+// 消息构建（传统槽位；魔改用 createTraditionalAssembly）
+export { buildMessages, createTraditionalAssembly, TRADITIONAL_SLOT } from "./message-builder.js";
+
+// 组件工厂（也可从 @little-house-studio/context-components 直接拿）
+export {
+  assemble,
+  builtinFoldSteps,
+  createAssembly,
+  createContextParts,
+  createFoldPipeline,
+  createMessageTree,
+  createSessionRecord,
+  createWorkingSet,
+  defineHook,
+  defineSlot,
+  maouSessionLayout,
+  traditionalFoldSteps,
+  applyFoldStage,
+  applyLlmMajorCompress,
+  DEFAULT_FOLD_STAGE,
+  resolveTraditionalMajorScheme,
+  TRADITIONAL_MAJOR_SCHEMES,
+} from "@little-house-studio/context-components";
+export type {
+  Assembly,
+  AssemblyHook,
+  AssemblyMessage,
+  AssemblySlot,
+  ContextParts,
+  ContextPartsOptions,
+  FoldPipeline,
+  FoldStageConfig,
+  FoldStep,
+  TraditionalMajorScheme,
+  SessionLayout,
+  SessionRecordFeatures,
+  SessionRecordOptions,
+} from "@little-house-studio/context-components";
 
 // 思考回灌上下文策略
 export {
@@ -216,12 +256,25 @@ export type { AppendToolResultOutcome } from "./tool-result.js";
 export {
   maybeCompress,
   compressMaou,
-  assignTaskIds,
+  makeSummaryMessage,
   activeWindowBoundary,
   activeWindowSeqIds,
   retainTailBoundary,
   historyVisiblyChanged,
 } from "./compressor.js";
+export type {
+  ContextSchemeExtension,
+  FoldContext,
+  FoldResult,
+  AfterCompressContext,
+  SummarizerKind,
+} from "./scheme-extension.js";
+export {
+  applyAfterSync,
+  applyFold,
+  applyAfterCompress,
+  applyOnClearSession,
+} from "./scheme-extension.js";
 export {
   pruneTextHeadTail,
   pruneToolResultText,
@@ -246,6 +299,35 @@ export {
   toolPairingBalancedAt,
 } from "./tool-pairing.js";
 export type { Summarizer, CompressOptions, CompressMaouResult, CompressionStage, CompressionResult, TaskSummary } from "./compressor.js";
+export {
+  applyRoundMicroCompact,
+  stampMicroBirth,
+  holdAsPromptCache,
+  keepFrozenPrefix,
+  catalogDynamicWindow,
+  resolveMicroCompactRounds,
+  policyForTool,
+  MICRO_COMPACT_PRESETS,
+  DEFAULT_MICRO_COMPACT_CATALOG,
+  DEFAULT_MICRO_COMPACT_ROUNDS,
+  TRADITIONAL_READ_MIN_CHARS,
+  TRADITIONAL_READ_REREAD_HINT,
+  formatMicroUnlockPrefix,
+  extractReadPath,
+  extractReadCharCount,
+  extractSegmentPath,
+  extractSegmentCharCount,
+  textSegment,
+  segmentMicroPolicy,
+  isMicroCompactableSegment,
+} from "./micro-compact.js";
+export type {
+  MicroCompactPolicy,
+  MicroCompactStrategy,
+  MicroCompactCatalog,
+  MicroCacheHold,
+  MicroUnlockItem,
+} from "./micro-compact.js";
 
 // 上下文占用（厂商 usage 权威 + 增量估算）
 export {
@@ -300,10 +382,6 @@ export type { ProjectContext, ProjectContextMode } from "./project-context.js";
 // 平台上下文（插件可注册平台特定上下文）
 export { PlatformContextRegistry, platformContextRegistry, buildPlatformContext } from "./platform-context.js";
 export type { PlatformContextRequest, PlatformContextProvider, BuildPlatformContextOptions } from "./platform-context.js";
-
-// 任务块存储
-export { TaskSessionStore } from "./task-session-store.js";
-export type { TaskPlanEntry } from "./task-session-store.js";
 
 // BakeFile：磁盘文件 → 文件缓存区 + 上下文动态区 diff
 export { BakeFile, bake } from "./bake-file.js";

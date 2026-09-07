@@ -13,8 +13,8 @@
 
 import { PromptCompiler } from "@little-house-studio/prompt";
 import { SessionStore } from "@little-house-studio/context";
-import { HarnessSessionStore, TaskSessionStore } from "@little-house-studio/context";
-import type { TaskPlanEntry, Summarizer } from "@little-house-studio/context";
+import { HarnessSessionStore } from "@little-house-studio/context";
+import type { ContextSchemeExtension, Summarizer } from "@little-house-studio/context";
 import { ModelCaller, AuxModelCaller, resolveHelperPreset } from "@little-house-studio/llm";
 import type { APIPreset } from "@little-house-studio/llm";
 import type { LLMClient } from "@little-house-studio/llm";
@@ -23,7 +23,6 @@ import type { LLMPostLogRecord } from "@little-house-studio/llm";
 import type { MessageImage } from "@little-house-studio/types";
 import {
   ToolExecutor,
-  TASK_MANAGER,
   formatTodoNoticeMessage,
   initTerminalEngine,
   resolveTerminalPersistPath,
@@ -31,10 +30,10 @@ import {
 } from "@little-house-studio/tools";
 import { TODO_ORCHESTRATOR } from "./todo/index.js";
 import { appendSessionEvent, authorSystem } from "@little-house-studio/context";
-import type { ToolRegistry, Task } from "@little-house-studio/tools";
+import type { ToolRegistry } from "@little-house-studio/tools";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { ConfigStore } from "@little-house-studio/types";
-import { resolveUserMaouRoot } from "@little-house-studio/types";
+import { resolveApiRolePreset, resolveUserMaouRoot } from "@little-house-studio/types";
 import { AgentRuntime } from "./runtime.js";
 import { AgentRegistry } from "./registry.js";
 import { AgentFactory } from "./factory.js";
@@ -65,13 +64,11 @@ export interface AppRuntimeOptions {
   enablePostLogger?: boolean;
   /**
    * ContextEngine 压缩闭环开关。
-   * - true（缺省）：自动按 agentName 构造 HarnessSessionStore + TaskSessionStore，
-   *   并装配 TASK_MANAGER 持久化回调 + 会话启动时自动恢复 task_plan。
-   * - false：不启用压缩闭环（无 harnessStore/taskStore）。
-   * 注：显式传入 harnessStore/taskStore 时优先用注入值。
+   * - true（缺省）：自动构造 HarnessSessionStore。
+   * - false：不启用压缩闭环（无 harnessStore）。
+   * 显式传入 harnessStore 时优先用注入值。
    */
   enableCompression?: boolean;
-  /** 与 enableCompression 配套的 agent 名（用于 TaskSessionStore 路径隔离）。 */
   agentName?: string;
   /**
    * Agent 实例作用域。project（默认）会解析/物化 <project>/.maou/agents；
@@ -80,8 +77,10 @@ export interface AppRuntimeOptions {
   agentScope?: "project" | "global";
   /** 显式注入 harnessStore（覆盖 enableCompression 自动构造）。 */
   harnessStore?: HarnessSessionStore;
-  /** 显式注入 taskStore（覆盖 enableCompression 自动构造）。 */
-  taskStore?: TaskSessionStore;
+  /** 传统方案扩展（任务插件等）。 */
+  contextExtensions?: ContextSchemeExtension[];
+  /** 新会话创建后回调（任务插件可在此恢复 task_plan）。 */
+  onSessionStarted?: (sessionId: string) => void;
   /** 可插拔 LLM 摘要器（缺省回退确定性 truncate）。 */
   summarizer?: Summarizer;
   /**
@@ -124,7 +123,8 @@ export class Runtime {
   private maouRoot: string;
   private projectRoot: string;
   private harnessStore?: HarnessSessionStore;
-  private taskStore?: TaskSessionStore;
+  private contextExtensions?: ContextSchemeExtension[];
+  private onSessionStarted?: (sessionId: string) => void;
   private summarizer?: Summarizer;
   private callMainAgentFn?: (mainSessionId: string, message: string, abortSignal?: AbortSignal) => AsyncGenerator<StreamEvent, string>;
   private skillOptions?: import("../bootstrap/skills.js").AgentSkillOptions;
@@ -178,26 +178,11 @@ export class Runtime {
       );
     } catch { /* 已初始化或引擎不可用，忽略 */ }
 
-    // ContextEngine 压缩闭环装配：
-    // - 显式注入 harnessStore/taskStore 时优先用注入值
-    // - 否则 enableCompression !== false 时按 agentName 自动构造
     const compressionOn = options.enableCompression !== false;
-    const explicitStores = Boolean(options.harnessStore || options.taskStore);
-
-    if (explicitStores) {
-      this.harnessStore = options.harnessStore;
-      this.taskStore = options.taskStore;
-    } else if (compressionOn) {
-      const agentName = options.agentName ?? "";
-      this.harnessStore = new HarnessSessionStore({ maouRoot: this.maouRoot });
-      this.taskStore = new TaskSessionStore(this.maouRoot, agentName);
-    }
-
-    // 装配 TaskManager 持久化回调：每次 todo_manage/todo_finish CRUD 时同步写 task_plan.json
-    // 解耦设计：TaskManager（tools 包）不直接依赖 TaskSessionStore（context 包）
-    if (this.taskStore) {
-      this.installTaskPersistCallback(this.taskStore);
-    }
+    this.harnessStore = options.harnessStore
+      ?? (compressionOn ? new HarnessSessionStore({ maouRoot: this.maouRoot }) : undefined);
+    this.contextExtensions = options.contextExtensions;
+    this.onSessionStarted = options.onSessionStarted;
 
     // 机器级管家：默认全机 pathGuard（open）。
     // - createOpsAgent: agentScope=global + 显式 setDefaultPathGuard（幂等）
@@ -214,42 +199,11 @@ export class Runtime {
   }
 
   /**
-   * 安装 TaskManager 持久化回调。
-   *
-   * 含 relatedBlockIds 合并：ContextEngine 压缩时会自动往 task_plan.json 的未完成 todo
-   * 追加 blockId，但 TaskManager 内存里没有这些——写盘前先合并，避免覆盖系统追加的关联。
-   */
-  private installTaskPersistCallback(taskStore: TaskSessionStore): void {
-    TASK_MANAGER.setPersistCallback((sessionId, tasks) => {
-      const existing = taskStore.loadTaskPlan(sessionId);
-      const existingMap = new Map(existing.map((t) => [t.id, t.relatedBlockIds ?? []]));
-      for (const t of tasks) {
-        if (!t.relatedBlockIds) t.relatedBlockIds = [];
-        const oldIds = existingMap.get(t.id) ?? [];
-        for (const id of oldIds) {
-          if (!t.relatedBlockIds.includes(id)) t.relatedBlockIds.push(id);
-        }
-      }
-      // Task 与 TaskPlanEntry 字段结构一致，可直接 cast
-      taskStore.saveTaskPlan(sessionId, tasks as unknown as TaskPlanEntry[]);
-    });
-  }
-
-  /**
    * 启动新会话。
-   *
-   * 通用 helper：所有 agent 应用都可复用。会自动从 task_plan.json 恢复
-   * 未完成 todo 到 TaskManager 内存，无需各 agent 自己实现恢复逻辑。
    */
   startSession(agentName: string | undefined, title?: string): string {
     const session = this.sessionStore.create({ agentName, title });
-    if (this.taskStore) {
-      const pending = this.taskStore.loadPendingTaskPlan(session.id);
-      if (pending.length > 0) {
-        // TaskPlanEntry 与 Task 字段结构一致，可直接 cast
-        TASK_MANAGER.restore(session.id, pending as unknown as Task[]);
-      }
-    }
+    this.onSessionStarted?.(session.id);
     try {
       void this.atCacheRebuildPoint({
         reason: "session_new",
@@ -460,7 +414,7 @@ export class Runtime {
         maouRoot: this.maouRoot,
         projectRoot: this.projectRoot,
         harnessStore: this.harnessStore,
-        taskStore: this.taskStore,
+        contextExtensions: this.contextExtensions,
         summarizer: this.summarizer,
         auxModelCaller: auxCaller,
         resolveHelperPreset: resolveHelperPresetFn,
@@ -481,9 +435,9 @@ export class Runtime {
         getPreset: () => {
           try {
             const config = configStore.get();
-            const presets = config.api.presets ?? [];
-            const idx = config.api.defaultPreset ?? 0;
-            return (presets[idx] ?? presets[0]) as unknown as APIPreset | undefined;
+            return resolveApiRolePreset(config.api, "main") as unknown as
+              | APIPreset
+              | undefined;
           } catch {
             return undefined;
           }
@@ -506,9 +460,9 @@ export class Runtime {
         resolveHelperPreset: () => {
           try {
             const config = configStore.get();
-            const presets = config.api.presets ?? [];
-            const idx = config.api.defaultPreset ?? 0;
-            const main = (presets[idx] ?? presets[0]) as unknown as APIPreset | undefined;
+            const main = resolveApiRolePreset(config.api, "main") as unknown as
+              | APIPreset
+              | undefined;
             if (!main) return undefined;
             return resolveHelperPresetFn(this.agentName, main);
           } catch {

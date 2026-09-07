@@ -16,6 +16,7 @@
 import type { SessionLedgerPort } from './session-ledger.js'
 import type { SessionGoalPort } from './session-goal.js'
 import type { SessionPlanPort } from './session-plan.js'
+import type { ApiProvider, ApiRoleRef } from './api-providers.js'
 
 // ─── 领域类型（Session/Message/Tool/StreamEvent）────────────────────────────
 export interface Session {
@@ -920,44 +921,29 @@ export interface SecurityConfig {
 }
 
 /**
- * 按用途绑定 preset：值为 preset 的 name，或 presets 数组下标。
- * 全系列产品共用；未配置的角色回退到 main / defaultPreset。
+ * 按用途绑定模型：磁盘为 { provider, model }。
+ * 读旧盘时 name / 下标会迁成这个形状。
  */
 export interface ApiModelRoles {
-  /** 主对话 / agent loop */
-  main?: string | number
-  /** 快速/便宜：压缩、分类、简单判定 */
-  fast?: string | number
-  /** 多模态看图 */
-  vision?: string | number
-  /**
-   * 辅助（loop 检测、压缩、终端审核等）。
-   * 全局链：roles.helper → helperPreset(legacy) → roles.fast → main；
-   * agent.json helperModel 覆盖见 resolveHelperPreset。
-   */
-  helper?: string | number
-  /** 允许扩展自定义角色 */
-  [role: string]: string | number | undefined
+  main?: ApiRoleRef | string | number
+  fast?: ApiRoleRef | string | number
+  vision?: ApiRoleRef | string | number
+  helper?: ApiRoleRef | string | number
+  [role: string]: ApiRoleRef | string | number | undefined
 }
 
 export interface ApiConfig {
+  /** 磁盘 SoT：稳定厂商路由 */
+  providers?: Record<string, ApiProvider>
+  /**
+   * 运行时扁平名单（load 时由 providers 展开，不写盘）。
+   * 旧调用方仍可读；新代码用 providers + roles。
+   */
   presets: LLMPreset[]
-  /**
-   * main 未设 roles.main 时的回退下标（legacy；推荐用 roles.main 绑 name）。
-   * 解析：roles.main → defaultPreset → presets[0]
-   */
-  defaultPreset: number
-  /**
-   * 全局辅助模型 preset 下标（legacy 读回退）。
-   * 新配置请写 roles.helper（name）；写路径不应再新增此字段。
-   * 完整 helper 链：agent.helperModel > roles.helper > helperPreset > roles.fast > main
-   */
+  /** @deprecated 读旧盘回退；新写不落 */
+  defaultPreset?: number
+  /** @deprecated 读旧盘回退；新写不落 */
   helperPreset?: number
-  /**
-   * 模型角色映射（推荐 SoT）。
-   * 值优先 runtime name；下标 / model id 为 legacy，见 findPresetByRef。
-   * 例：{ "main": "ds-flash", "fast": "cheap", "vision": "see", "helper": "cheap" }
-   */
   roles?: ApiModelRoles
   agentRoundLimit: number
   contextSettings: ContextSettings
@@ -1032,6 +1018,31 @@ export {
   listConfiguredApiRoles,
 } from './api-roles.js'
 export type { ApiModelRole, PresetRef } from './api-roles.js'
+export {
+  KNOWN_API_PROTOCOLS,
+  isKnownApiProtocol,
+  assertKnownApiProtocol,
+  slugProviderId,
+  migratePresetsToProviders,
+  providersToRuntimePresets,
+  resolveProviderModel,
+  toAPIPreset,
+  runtimePresetRoute,
+  isApiRoleRef,
+  parseRoleBinding,
+  roleBindingKey,
+  migrateRolesToBindings,
+  coerceApiDocument,
+  apiDocumentForDisk,
+  firstProviderModel,
+} from './api-providers.js'
+export type {
+  ApiProvider,
+  ApiProviderModel,
+  ApiRoleRef,
+  CatalogHint,
+  CoercedApiDocument,
+} from './api-providers.js'
 export {
   expandPresetModels,
   expandAllPresets,

@@ -21,6 +21,7 @@ import {
   findPresetByRef,
   resolveGlobalHelperPreset,
   type LLMPreset,
+  type PresetRef,
 } from "@little-house-studio/types";
 import type { LLMClient } from "./client.js";
 import type { APIPreset, LLMUsage } from "./adapters/types.js";
@@ -283,8 +284,8 @@ export function resolveHelperPreset(
   presets: APIPreset[],
   helperPresetIdx: number | undefined,
   mainPreset: APIPreset,
-  helperRoleRef?: string | number,
-  fastRoleRef?: string | number,
+  helperRoleRef?: PresetRef,
+  fastRoleRef?: PresetRef,
 ): APIPreset {
   const list = presets as unknown as LLMPreset[];
 

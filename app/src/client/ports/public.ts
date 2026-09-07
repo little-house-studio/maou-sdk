@@ -1,9 +1,8 @@
 /**
  * Public host-port contract (types only).
  * Live implementation is `createLivePorts` in the SPA host — not this export.
- * Draft fixtures are not part of the public SDK.
  */
-export type AppPortKind = "draft" | "live";
+export type AppPortKind = "live";
 
 export type AppPorts = {
   kind: AppPortKind;

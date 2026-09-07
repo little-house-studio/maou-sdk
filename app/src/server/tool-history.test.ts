@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   backfillUserLoopDuration,
+  collectToolCallArgs,
   collectToolCallIntents,
   readHistoryToolMeta,
   readLoopDurationMs,
@@ -44,6 +45,28 @@ describe("tool-history", () => {
     );
     assert.equal(meta.toolDescription, "读前台窗口标题");
     assert.equal(meta.durationMs, 1130);
+  });
+
+  it("keeps toolArgs when description is missing", () => {
+    const meta = readHistoryToolMeta(
+      {
+        role: "tool",
+        tool_call_id: "c4",
+        tool_parameters: { path: "~/.ssh/id_rsa" },
+      },
+      new Map(),
+    );
+    assert.equal(meta.toolDescription, undefined);
+    assert.match(meta.toolArgs || "", /id_rsa/);
+    const args = collectToolCallArgs([
+      {
+        role: "assistant",
+        toolCalls: [
+          { id: "c5", arguments: { pattern: "**/*.env", glob: true } },
+        ],
+      },
+    ]);
+    assert.match(args.get("c5") || "", /\*\*\/\*\.env/);
   });
 
   it("prefers tool_parameters on the tool row itself", () => {

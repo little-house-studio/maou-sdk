@@ -79,7 +79,7 @@ export type BottomInfoBarProps = {
    */
   faces?: DockFaceMap;
   /**
-   * @deprecated use `faces.terminal` — kept for DraftShell / gradual migration
+   * @deprecated use `faces.terminal`
    */
   terminalFace?: React.ReactNode;
   /**

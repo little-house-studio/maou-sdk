@@ -9,10 +9,12 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useAppPorts } from "../ports";
 import type {
-  LlmConfigPresetDto,
+  LlmCatalogEntry,
   LlmConfigRoles,
   LlmConfigSnapshot,
   LlmConnectionTestResult,
+  LlmProviderDto,
+  LlmRoleBinding,
   Meta,
   SvgProbeGalleryItem,
   TerminalInfo,
@@ -52,6 +54,8 @@ export type LiveSettingsPanelProps = {
 };
 
 type DraftRow = {
+  providerId: string;
+  displayName: string;
   name: string;
   vendor: string;
   protocol: string;
@@ -81,42 +85,65 @@ type DraftRow = {
   showAdvanced: boolean;
 };
 
-function dtoToDraft(p: LlmConfigPresetDto): DraftRow {
-  return {
-    name: p.name,
-    vendor: p.vendor || "custom",
+function roleKey(r?: LlmRoleBinding): string {
+  if (!r?.provider) return "";
+  return r.model ? `${r.provider}/${r.model}` : r.provider;
+}
+
+function parseRoleKey(v: string): LlmRoleBinding | undefined {
+  const t = v.trim();
+  if (!t) return undefined;
+  const i = t.indexOf("/");
+  if (i <= 0) return { provider: t, model: "" };
+  return { provider: t.slice(0, i), model: t.slice(i + 1) };
+}
+
+function providerToDrafts(p: LlmProviderDto): DraftRow[] {
+  const models = p.models.length ? p.models : [];
+  return models.map((m) => ({
+    providerId: p.id,
+    displayName: p.displayName || p.id,
+    name: models.length === 1 ? p.id : `${p.id}/${m.id}`,
+    vendor: p.id,
     protocol: p.protocol || "openai",
     url: p.url,
     urlParams: p.urlParams || "",
-    model: p.model,
+    model: m.id,
     keyEdit: "",
     keyMasked: p.keyMasked,
     hasKey: p.hasKey,
     keyRef: p.keyRef || "",
-    maxContext: p.maxContext,
-    maxTokens: p.maxTokens,
-    supportsImage: p.supportsImage,
-    supportsAudio: p.supportsAudio,
-    supportsVideo: p.supportsVideo,
-    supportsReasoning: p.supportsReasoning,
-    nativeToolCalling: p.nativeToolCalling,
-    inputPricePerMt: p.inputPricePerMt || "",
-    outputPricePerMt: p.outputPricePerMt || "",
-    cacheHitPricePerMt: p.cacheHitPricePerMt || "",
+    maxContext: m.maxContext,
+    maxTokens: m.maxTokens,
+    supportsImage: m.supportsImage,
+    supportsAudio: m.supportsAudio,
+    supportsVideo: m.supportsVideo,
+    supportsReasoning: m.supportsReasoning,
+    nativeToolCalling: m.nativeToolCalling,
+    inputPricePerMt: m.inputPricePerMt || "",
+    outputPricePerMt: m.outputPricePerMt || "",
+    cacheHitPricePerMt: m.cacheHitPricePerMt || "",
     maxConcurrent: p.maxConcurrent || "",
-    temperature: p.temperature || "",
-    topP: p.topP || "",
-    presencePenalty: p.presencePenalty || "",
-    frequencyPenalty: p.frequencyPenalty || "",
-    customRequestJson: p.customRequestJson || "",
+    temperature: m.temperature || "",
+    topP: m.topP || "",
+    presencePenalty: m.presencePenalty || "",
+    frequencyPenalty: m.frequencyPenalty || "",
+    customRequestJson: m.customRequestJson || "",
     showAdvanced: false,
-  };
+  }));
+}
+
+function dtoToDraft(p: LlmProviderDto): DraftRow[] {
+  return providerToDrafts(p);
 }
 
 function emptyDraft(n: number): DraftRow {
+  const id = `custom${n > 1 ? `-${n}` : ""}`;
   return {
-    name: `model-${n}`,
-    vendor: "openai",
+    providerId: id,
+    displayName: id,
+    name: id,
+    vendor: id,
     protocol: "openai",
     url: "https://api.openai.com/v1",
     urlParams: "",
@@ -145,11 +172,6 @@ function emptyDraft(n: number): DraftRow {
   };
 }
 
-/** 厂商连接指纹：同 URL/协议/厂商 归为一组（组内可多模型） */
-function connectionKey(r: DraftRow): string {
-  return `${r.protocol || "openai"}|${r.vendor || "custom"}|${(r.url || "").trim()}`;
-}
-
 type VendorGroup = {
   key: string;
   label: string;
@@ -160,7 +182,7 @@ function buildVendorGroups(rows: DraftRow[]): VendorGroup[] {
   const order: string[] = [];
   const map = new Map<string, number[]>();
   rows.forEach((r, i) => {
-    const k = connectionKey(r);
+    const k = r.providerId || r.name.split("/")[0] || `row-${i}`;
     if (!map.has(k)) {
       map.set(k, []);
       order.push(k);
@@ -170,11 +192,16 @@ function buildVendorGroups(rows: DraftRow[]): VendorGroup[] {
   return order.map((k) => {
     const indices = map.get(k)!;
     const first = rows[indices[0]!];
-    // 组名：优先「不含 / 的 name」，否则 name 前缀
-    const raw = (first?.name || "厂商").trim();
-    const label = raw.includes("/") ? raw.split("/")[0]! : raw;
-    return { key: k, label: label || "厂商", indices };
+    return {
+      key: k,
+      label: first?.displayName || first?.providerId || k,
+      indices,
+    };
   });
+}
+
+function isValidRouteId(id: string): boolean {
+  return /^[a-z][a-z0-9-]{0,63}$/.test(id.trim());
 }
 
 function uniquePresetName(base: string, existing: string[]): string {
@@ -197,6 +224,7 @@ export function LiveSettingsPanel({
     fetchMeta,
     fetchModels,
     parseLlmClipboard,
+    scanLlmModels,
     fetchSvgProbeGallery,
     runLlmSvgProbe,
     saveLlmConfig,
@@ -241,8 +269,10 @@ export function LiveSettingsPanel({
   const [rows, setRows] = useState<DraftRow[]>([]);
   const [selected, setSelected] = useState(0);
   const [roles, setRoles] = useState<LlmConfigRoles>({});
-  const [vendors, setVendors] = useState<LlmConfigSnapshot["vendors"]>([]);
+  const [catalog, setCatalog] = useState<LlmCatalogEntry[]>([]);
+  const [protocols, setProtocols] = useState<LlmConfigSnapshot["protocols"]>([]);
   const [roleDefs, setRoleDefs] = useState<LlmConfigSnapshot["roleDefs"]>([]);
+  const [scanBusy, setScanBusy] = useState(false);
   const [revealKey, setRevealKey] = useState(false);
   const [termRows, setTermRows] = useState<TerminalInfo[]>([]);
   const [pasteFlash, setPasteFlash] = useState<string[]>([]);
@@ -284,14 +314,17 @@ export function LiveSettingsPanel({
 
   const applyLlmSnap = useCallback((s: LlmConfigSnapshot) => {
     setCfgPath(s.configPath);
-    setRows(s.presets.map(dtoToDraft));
+    const nextRows =
+      s.providers?.length
+        ? s.providers.flatMap(dtoToDraft)
+        : [];
+    setRows(nextRows);
     setRoles(s.roles || {});
-    setVendors(s.vendors || []);
+    setCatalog(s.catalog || []);
+    setProtocols(s.protocols || []);
     setRoleDefs(s.roleDefs || []);
     setSelected((i) =>
-      s.presets.length === 0
-        ? 0
-        : Math.min(i, Math.max(0, s.presets.length - 1)),
+      nextRows.length === 0 ? 0 : Math.min(i, Math.max(0, nextRows.length - 1)),
     );
   }, []);
 
@@ -339,8 +372,16 @@ export function LiveSettingsPanel({
 
   const selectedSafe = Math.min(selected, Math.max(0, rows.length - 1));
   const row = rows[selectedSafe] ?? null;
-  const presetNames = rows.map((r) => r.name.trim()).filter(Boolean);
+  const presetNames = rows
+    .map((r) =>
+      r.model.trim()
+        ? `${r.providerId || r.name}/${r.model.trim()}`
+        : r.providerId || r.name,
+    )
+    .filter(Boolean);
   const vendorGroups = buildVendorGroups(rows);
+  const configuredIds = new Set(vendorGroups.map((g) => g.key));
+  const dormantCatalog = catalog.filter((c) => !configuredIds.has(c.id));
   const activeGroup =
     vendorGroups.find((g) => g.indices.includes(selectedSafe)) ??
     vendorGroups[0] ??
@@ -371,27 +412,49 @@ export function LiveSettingsPanel({
     });
   };
 
-  const onVendorChange = (vendorId: string) => {
-    const v = vendors.find((x) => x.id === vendorId);
-    if (!v) {
-      patchConnection({ vendor: vendorId });
-      return;
-    }
-    patchConnection({
-      vendor: v.id,
-      protocol: v.protocol,
-      url: v.defaultUrl || row?.url || "",
-    });
+  const onProtocolChange = (protocolId: string) => {
+    patchConnection({ protocol: protocolId || "openai" });
   };
 
   const onAddVendor = () => {
     const n = rows.length + 1;
     const draft = emptyDraft(n);
-    draft.name = uniquePresetName(`provider-${n}`, presetNames);
+    const id = uniquePresetName(draft.providerId, rows.map((r) => r.providerId));
+    draft.providerId = id;
+    draft.displayName = id;
+    draft.name = id;
+    draft.vendor = id;
     setRows((prev) => [...prev, draft]);
     setSelected(rows.length);
     setRevealKey(false);
     setTestResult(null);
+  };
+
+  const onActivateCatalog = (entry: LlmCatalogEntry) => {
+    if (configuredIds.has(entry.id)) {
+      const g = vendorGroups.find((x) => x.key === entry.id);
+      if (g) setSelected(g.indices[0]!);
+      return;
+    }
+    const models = entry.models.length ? entry.models : [{ id: "" }];
+    const added: DraftRow[] = models.map((m, i) => ({
+      ...emptyDraft(1),
+      providerId: entry.id,
+      displayName: entry.label || entry.id,
+      name: models.length === 1 ? entry.id : `${entry.id}/${m.id}`,
+      vendor: entry.id,
+      protocol: entry.protocol || "openai",
+      url: entry.defaultUrl || "",
+      model: m.id,
+      supportsImage: Boolean(m.supportsImage),
+      supportsReasoning: Boolean(m.supportsReasoning),
+      showAdvanced: i === 0 ? false : false,
+    }));
+    setRows((prev) => [...prev, ...added]);
+    setSelected(rows.length);
+    setRevealKey(false);
+    setTestResult(null);
+    setStatus(`已带入 ${entry.label}，填密钥后保存`);
   };
 
   const onAddModelInVendor = () => {
@@ -401,10 +464,12 @@ export function LiveSettingsPanel({
     }
     const base = rows[activeGroup.indices[0]!]!;
     const names = rows.map((r) => r.name);
-    const label = activeGroup.label || base.name || "model";
+    const label = base.providerId || activeGroup.label || base.name || "model";
     const newName = uniquePresetName(`${label}/model`, names);
     const draft: DraftRow = {
       ...base,
+      providerId: base.providerId,
+      displayName: base.displayName,
       name: newName,
       model: "",
       maxContext: base.maxContext || 128_000,
@@ -459,50 +524,62 @@ export function LiveSettingsPanel({
     }`;
 
   const buildWritePayload = () => {
-    for (const r of rows) {
-      if (!r.name.trim() || !r.url.trim() || !r.model.trim()) {
-        throw new Error("每个模型需要：自定义名称、URL、model name");
+    const groups = buildVendorGroups(rows);
+    const providers = groups.map((g) => {
+      const first = rows[g.indices[0]!]!;
+      const id = (first.providerId || g.key).trim();
+      if (!isValidRouteId(id)) {
+        throw new Error(`路由 id「${id}」需小写字母开头，仅字母数字和连字符`);
       }
-    }
-    const mainName = roles.main || rows[0]?.name;
-    const defaultPreset = Math.max(
-      0,
-      rows.findIndex((r) => r.name.trim() === mainName),
-    );
+      if (!first.url.trim()) {
+        throw new Error(`厂商 "${id}" 需要 url`);
+      }
+      const models = g.indices
+        .map((i) => rows[i]!)
+        .filter((r) => r.model.trim());
+      if (models.length === 0) {
+        throw new Error(`厂商 "${id}" 至少需要一个 model id`);
+      }
+      return {
+        id,
+        displayName: first.displayName || id,
+        protocol: first.protocol || "openai",
+        url: first.url.trim(),
+        urlParams: first.urlParams.trim(),
+        key: first.keyEdit.trim() ? first.keyEdit.trim() : "",
+        keyRef: first.keyRef || `file:${id}`,
+        defaultModel: models[0]!.model.trim(),
+        maxConcurrent: first.maxConcurrent,
+        models: models.map((r) => ({
+          id: r.model.trim(),
+          name: r.model.trim(),
+          maxContext: r.maxContext,
+          maxTokens: r.maxTokens,
+          supportsImage: r.supportsImage,
+          supportsAudio: r.supportsAudio,
+          supportsVideo: r.supportsVideo,
+          supportsReasoning: r.supportsReasoning,
+          nativeToolCalling: r.nativeToolCalling,
+          inputPricePerMt: r.inputPricePerMt,
+          outputPricePerMt: r.outputPricePerMt,
+          cacheHitPricePerMt: r.cacheHitPricePerMt,
+          temperature: r.temperature,
+          topP: r.topP,
+          presencePenalty: r.presencePenalty,
+          frequencyPenalty: r.frequencyPenalty,
+          customRequestJson: r.customRequestJson,
+        })),
+      };
+    });
     return {
       replace: true as const,
-      defaultPreset: defaultPreset < 0 ? 0 : defaultPreset,
       roles: {
         main: roles.main || undefined,
         fast: roles.fast || undefined,
         vision: roles.vision || undefined,
         helper: roles.helper || roles.fast || undefined,
       },
-      presets: rows.map((r) => ({
-        name: r.name.trim(),
-        vendor: r.vendor,
-        protocol: r.protocol || "openai",
-        url: r.url.trim(),
-        urlParams: r.urlParams.trim(),
-        model: r.model.trim(),
-        key: r.keyEdit.trim() ? r.keyEdit.trim() : "",
-        maxContext: r.maxContext,
-        maxTokens: r.maxTokens,
-        supportsImage: r.supportsImage,
-        supportsAudio: r.supportsAudio,
-        supportsVideo: r.supportsVideo,
-        supportsReasoning: r.supportsReasoning,
-        nativeToolCalling: r.nativeToolCalling,
-        inputPricePerMt: r.inputPricePerMt,
-        outputPricePerMt: r.outputPricePerMt,
-        cacheHitPricePerMt: r.cacheHitPricePerMt,
-        maxConcurrent: r.maxConcurrent,
-        temperature: r.temperature,
-        topP: r.topP,
-        presencePenalty: r.presencePenalty,
-        frequencyPenalty: r.frequencyPenalty,
-        customRequestJson: r.customRequestJson,
-      })),
+      providers,
     };
   };
 
@@ -710,7 +787,9 @@ export function LiveSettingsPanel({
       setRoles((r) => {
         const next = { ...r };
         for (const k of ["main", "fast", "vision", "helper"] as const) {
-          if (next[k] === removed) delete next[k];
+          if (roleKey(next[k]) === removed || next[k]?.provider === removed) {
+            delete next[k];
+          }
         }
         return next;
       });
@@ -733,10 +812,72 @@ export function LiveSettingsPanel({
     setRoles((r) => {
       const next = { ...r };
       for (const k of ["main", "fast", "vision", "helper"] as const) {
-        if (next[k] && removedNames.includes(next[k]!)) delete next[k];
+        const key = roleKey(next[k]);
+        if (key && (removedNames.includes(key) || removedNames.includes(next[k]!.provider))) {
+          delete next[k];
+        }
       }
       return next;
     });
+  };
+
+  const onScanModels = async () => {
+    if (!row) return;
+    setScanBusy(true);
+    setError(null);
+    try {
+      const result = await scanLlmModels({
+        url: row.url,
+        key: row.keyEdit.trim() || undefined,
+        protocol: row.protocol,
+        urlParams: row.urlParams,
+        name: row.providerId,
+      });
+      if (!result.supported) {
+        setStatus(result.reason || "该协议无模型列表 API");
+        return;
+      }
+      const ids = result.models.map((m) => m.id).filter(Boolean);
+      if (!ids.length) {
+        setStatus(result.reason || "未扫到模型");
+        return;
+      }
+      const gid = row.providerId;
+      setRows((prev) => {
+        const group = prev
+          .map((r, i) => ({ r, i }))
+          .filter((x) => x.r.providerId === gid);
+        const have = new Set(
+          group.map((x) => x.r.model.trim().toLowerCase()).filter(Boolean),
+        );
+        const next = [...prev];
+        const base = next[selectedSafe] ?? group[0]?.r ?? emptyDraft(1);
+        for (const id of ids) {
+          if (have.has(id.toLowerCase())) continue;
+          const emptyAt = next.findIndex(
+            (r) => r.providerId === gid && !r.model.trim(),
+          );
+          if (emptyAt >= 0) {
+            next[emptyAt] = { ...next[emptyAt]!, model: id };
+            have.add(id.toLowerCase());
+            continue;
+          }
+          next.push({
+            ...base,
+            name: `${gid}/${id}`,
+            model: id,
+            showAdvanced: false,
+          });
+          have.add(id.toLowerCase());
+        }
+        return next;
+      });
+      setStatus(`已写入 ${ids.length} 个可用模型`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setScanBusy(false);
+    }
   };
 
   const onProviderChange = async (provider: string) => {
@@ -847,13 +988,13 @@ export function LiveSettingsPanel({
       <span className="wire-settings-label">{label}</span>
       <select
         className="wire-settings-input"
-        value={roles[roleId] || ""}
+        value={roleKey(roles[roleId])}
         disabled={busy || presetNames.length === 0}
         data-live-role={roleId}
         onChange={(e) =>
           setRoles((r) => ({
             ...r,
-            [roleId]: e.target.value || undefined,
+            [roleId]: parseRoleKey(e.target.value),
           }))
         }
       >
@@ -1013,9 +1154,9 @@ export function LiveSettingsPanel({
               <div className="wire-settings-section-head compact">
                 <h3 className="wire-settings-h">LLM</h3>
                 <p className="wire-settings-desc">
-                  厂商 preset 内多模型（
-                  <code>api.presets[].models[]</code>
-                  ）· 连接共用 · 上下文独立 ·{" "}
+                  预设厂商目录休眠可点 · 路由写{" "}
+                  <code>api.providers</code>
+                  · 连接共用 ·{" "}
                   <code>{cfgPath || "config.json"}</code>
                 </p>
               </div>
@@ -1028,7 +1169,7 @@ export function LiveSettingsPanel({
                 {/* 左：厂商列表 */}
                 <aside className="wire-settings-preset-list" role="list">
                   <div className="wire-settings-list-head">
-                    <span>厂商</span>
+                    <span>预设厂商</span>
                     <div className="wire-settings-list-actions">
                       <button
                         type="button"
@@ -1036,7 +1177,7 @@ export function LiveSettingsPanel({
                         disabled={busy}
                         onClick={onAddVendor}
                       >
-                        + 厂商
+                        + 添加自定义
                       </button>
                       <button
                         type="button"
@@ -1048,8 +1189,21 @@ export function LiveSettingsPanel({
                       </button>
                     </div>
                   </div>
-                  {vendorGroups.length === 0 ? (
-                    <div className="wire-settings-empty">暂无 · 添加厂商</div>
+                  {dormantCatalog.map((c) => (
+                    <button
+                      key={`cat-${c.id}`}
+                      type="button"
+                      role="listitem"
+                      className="wire-settings-preset-item is-dormant"
+                      data-live-catalog={c.id}
+                      onClick={() => onActivateCatalog(c)}
+                    >
+                      <span className="wire-settings-preset-name">{c.label}</span>
+                      <span className="wire-settings-preset-meta">休眠目录 · 点选带入</span>
+                    </button>
+                  ))}
+                  {vendorGroups.length === 0 && dormantCatalog.length === 0 ? (
+                    <div className="wire-settings-empty">暂无 · 添加自定义</div>
                   ) : (
                     vendorGroups.map((g) => {
                       const firstIdx = g.indices[0]!;
@@ -1101,70 +1255,54 @@ export function LiveSettingsPanel({
                           <div className="wire-settings-grid-2">
                             <label className="wire-settings-field dense">
                               <span className="wire-settings-label">
-                                厂商名称
+                                路由 id
                               </span>
                               <input
                                 className="wire-settings-input"
-                                value={activeGroup.label}
+                                value={row.providerId}
                                 disabled={busy}
                                 data-live-vendor-label=""
                                 onChange={(e) => {
-                                  const label = e.target.value.trim() || "厂商";
-                                  const first = activeGroup.indices[0]!;
+                                  const id = e.target.value.trim().toLowerCase();
                                   setRows((prev) => {
                                     const next = [...prev];
-                                    if (activeGroup.indices.length === 1) {
-                                      next[first] = {
-                                        ...next[first]!,
-                                        name: label,
-                                      };
-                                      return next;
-                                    }
                                     for (const i of activeGroup.indices) {
                                       const cur = next[i]!;
-                                      const suffix =
-                                        cur.model?.trim() ||
-                                        (cur.name.includes("/")
-                                          ? cur.name.split("/").slice(1).join("/")
-                                          : cur.name) ||
-                                        "model";
                                       next[i] = {
                                         ...cur,
-                                        name: `${label}/${suffix}`,
+                                        providerId: id,
+                                        vendor: id,
+                                        displayName: cur.displayName === cur.providerId
+                                          ? id
+                                          : cur.displayName,
+                                        name:
+                                          activeGroup.indices.length === 1
+                                            ? id
+                                            : `${id}/${cur.model || "model"}`,
                                       };
                                     }
                                     return next;
                                   });
                                 }}
-                                title="列表展示名；多模型时预设名为 厂商/模型ID"
+                                title="稳定身份：settings /model / roles / keyRef"
                               />
                             </label>
                             <label className={`wire-settings-field dense${fieldFlash("protocol")}`}>
                               <span className="wire-settings-label">
-                                协议 / 标准
+                                协议
                               </span>
                               <select
                                 className="wire-settings-input"
-                                value={row.vendor}
+                                value={row.protocol}
                                 disabled={busy}
                                 data-live-preset-vendor=""
-                                onChange={(e) => onVendorChange(e.target.value)}
+                                onChange={(e) => onProtocolChange(e.target.value)}
                               >
-                                {(vendors.length
-                                  ? vendors
+                                {(protocols.length
+                                  ? protocols
                                   : [
-                                      {
-                                        id: "openai",
-                                        label: "OpenAI 兼容",
-                                        protocol: "openai",
-                                        defaultUrl: "",
-                                      },
-                                      {
-                                        id: "custom",
-                                        label: "自定义",
-                                        protocol: "openai",
-                                        defaultUrl: "",
-                                      },
+                                      { id: "openai", label: "OpenAI 兼容" },
+                                      { id: "anthropic", label: "Anthropic" },
                                     ]
                                 ).map((v) => (
                                   <option key={v.id} value={v.id}>
@@ -1262,6 +1400,14 @@ export function LiveSettingsPanel({
                           >
                             + 添加模型
                           </button>
+                          <button
+                            type="button"
+                            className="wire-text-btn"
+                            disabled={busy || scanBusy || !row.url.trim()}
+                            onClick={() => void onScanModels()}
+                          >
+                            {scanBusy ? "探测中…" : "获取可用模型"}
+                          </button>
                         </div>
                         <div className="wire-settings-card-body">
                           <div
@@ -1280,7 +1426,12 @@ export function LiveSettingsPanel({
                                   aria-selected={on}
                                   className={`wire-settings-model-chip${
                                     on ? " is-on" : ""
-                                  }${roles.main === m.name ? " is-main" : ""}`}
+                                  }${
+                                    roleKey(roles.main) ===
+                                    `${m.providerId}/${m.model}`
+                                      ? " is-main"
+                                      : ""
+                                  }`}
                                   data-live-preset={m.name}
                                   onClick={() => {
                                     setSelected(idx);
@@ -1292,7 +1443,10 @@ export function LiveSettingsPanel({
                                   </span>
                                   <span className="wire-settings-model-chip-meta">
                                     ctx {(m.maxContext / 1000).toFixed(0)}k
-                                    {roles.main === m.name ? " · 主" : ""}
+                                    {roleKey(roles.main) ===
+                                    `${m.providerId}/${m.model}`
+                                      ? " · 主"
+                                      : ""}
                                   </span>
                                 </button>
                               );
@@ -1820,15 +1974,15 @@ export function LiveSettingsPanel({
                   <p className="wire-settings-desc">
                     当前：主=
                     <strong data-live-role-value="main">
-                      {roles.main || "—"}
+                      {roleKey(roles.main) || "—"}
                     </strong>{" "}
                     · 小=
                     <strong data-live-role-value="fast">
-                      {roles.fast || "—"}
+                      {roleKey(roles.fast) || "—"}
                     </strong>{" "}
                     · 多模态=
                     <strong data-live-role-value="vision">
-                      {roles.vision || "—"}
+                      {roleKey(roles.vision) || "—"}
                     </strong>
                   </p>
                 </div>

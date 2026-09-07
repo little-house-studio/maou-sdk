@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContextEngine } from "./context-engine.js";
 import { HarnessSessionStore } from "./harness-session-store.js";
-import { TaskSessionStore } from "./task-session-store.js";
 
 function makeLongSession(): Array<Record<string, unknown>> {
   const msgs: Array<Record<string, unknown>> = [];
@@ -65,10 +64,9 @@ describe("scenario: long session force compress", () => {
   it("shrinks working set a lot but keeps latest user text + reuses harness next seed", async () => {
     const sessionId = "long-1";
     const harness = new HarnessSessionStore({ maouRoot: root });
-    const taskStore = new TaskSessionStore(root, "ops");
     const session = makeLongSession();
 
-    const e1 = new ContextEngine({ sessionId, harnessStore: harness, taskStore });
+    const e1 = new ContextEngine({ sessionId, harnessStore: harness });
     e1.seedWorkingSet(session);
     const beforeLen = e1.getHistory().length;
     const beforeChars = e1
@@ -110,7 +108,7 @@ describe("scenario: long session force compress", () => {
         createdAt: new Date().toISOString(),
       },
     ];
-    const e2 = new ContextEngine({ sessionId, harnessStore: harness, taskStore });
+    const e2 = new ContextEngine({ sessionId, harnessStore: harness });
     const seed = e2.seedWorkingSet(session2);
     expect(seed.fromHarness).toBe(true);
     expect(seed.appended).toBeGreaterThanOrEqual(1);

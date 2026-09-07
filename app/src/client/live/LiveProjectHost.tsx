@@ -1,6 +1,6 @@
 /**
- * 项目模式：与草稿 DraftShell 相同的 ProjectWorkbench 布局/功能。
- * 文档来源优先 live FS（/api/fs/md-tree + 按需/预取正文）；失败时回退 PROJECT_DOCS 草稿数据。
+ * 项目模式：整页 ProjectWorkbench。
+ * 文档来源优先 live FS（/api/fs/md-tree + 按需/预取正文）；失败时回退 PROJECT_DOCS。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ProjectWorkbench } from "../wire/project/ProjectWorkbench";
@@ -57,7 +57,7 @@ export function LiveProjectHost({
   projectPath,
 }: LiveProjectHostProps) {
   const { fetchMdTree, readFsFile, writeFsFile } = useAppPorts().files;
-  // 先用草稿 fixtures 占位，保证立刻有完整 UI（与 draft 对齐）
+  // 先用 PROJECT_DOCS 占位，保证立刻有完整 UI
   const [docs, setDocs] = useState<ProjectDoc[]>(() => PROJECT_DOCS);
   const [source, setSource] = useState<"draft" | "live">("draft");
   const [hint, setHint] = useState("加载项目文档…");
@@ -90,7 +90,7 @@ export function LiveProjectHost({
       if (paths.length === 0) {
         setDocs(PROJECT_DOCS);
         setSource("draft");
-        setHint("无 live markdown · 使用草稿文档");
+        setHint("无 live markdown · 使用内置文档");
         return;
       }
       const bodies = await prefetchContents(paths, readFsFile, 16);
@@ -115,7 +115,7 @@ export function LiveProjectHost({
       setDocs(PROJECT_DOCS);
       setSource("draft");
       setHint(
-        `live 加载失败 · 草稿数据：${
+        `live 加载失败 · 内置文档：${
           e instanceof Error ? e.message : String(e)
         }`,
       );
@@ -147,7 +147,6 @@ export function LiveProjectHost({
     [docs, ensureContent, source],
   );
 
-  // 与草稿 DraftShell 一致：整页就是 ProjectWorkbench，无额外全屏黑层
   return (
     <div
       className="live-project-host is-workbench"

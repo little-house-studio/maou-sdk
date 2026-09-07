@@ -12,6 +12,7 @@ import type {
   WebhookAgentMessage,
   WebhookSendMode,
 } from "@little-house-studio/types";
+import { runtimePresetRoute } from "@little-house-studio/types";
 import { type SessionStore } from "@little-house-studio/context";
 import { normalizeSendTurn, sendDelivery } from "./send-turn.js";
 import {
@@ -768,11 +769,12 @@ export class WebhookAgentHost implements WebhookHost {
     if (this.provider && this.model) return;
     try {
       const main = getRolePresetFromMaouConfig("main") as
-        | { name?: string; model?: string }
+        | { name?: string; model?: string; _providerName?: string }
         | undefined;
-      if (main?.name && main?.model) {
-        this.provider = main.name;
-        this.model = main.model;
+      const route = main ? runtimePresetRoute(main) : undefined;
+      if (route?.provider && route.model) {
+        this.provider = route.provider;
+        this.model = route.model;
         return;
       }
     } catch {

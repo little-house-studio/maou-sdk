@@ -6,10 +6,10 @@
  *   maybeCompress()    — sync compat shim（truncate-only），保持旧签名兼容。
  *
  * 压缩阶段（按 token 占比逐步升级）——对齐 DESIGN：
- *   activeStage  : < 70% maxTokens，不压缩；并定义「最新原文区」边界。
- *   compactStage : >= 70%，微压缩——仅 active 区以外；标注/超长/工具结果。
- *   summaryStage : 仍 >= 80%，大压缩——仅 active 区以外按 task 摘要；**active 原文整段保留**。
- *   archiveStage : 仍 >= 90%，归档旧侧；**仍保留 active 原文区**。
+ *   activeStage  : < 80% maxTokens，不压缩；并定义「最新原文区」边界。
+ *   compactStage : >= 80%，先窗压剪超大工具结果；重测后仍超线再走折叠 / 摘要。
+ *   summaryStage : >= 80%。fold 方案把还没折过的旧侧收成折叠卡（不新开 LLM）；llm 方案立刻摘要。
+ *   archiveStage : fold 方案在折叠区占窗口过半时 LLM 总结并写查表；llm 方案第一次大压缩就是归档卡。
  *   staticStage  : 静态阶段不参与压缩。
  */
 
@@ -32,6 +32,18 @@ import { pruneBodyText, pruneToolResultText } from "./prune-text.js";
 import { estimateTokens } from "./token-estimate.js";
 import { applyWindowPressure } from "./window-pressure.js";
 import { snapRetainStartForToolPairs } from "./tool-pairing.js";
+import {
+  applyFoldStage,
+  applyLlmMajorCompress,
+  holdAsPromptCache,
+  resolveFoldStage,
+  resolveTraditionalMajorScheme,
+  type CustomFoldFn,
+  type FoldStageConfig,
+  type MicroCacheHold,
+  type MicroCompactCatalog,
+  type TraditionalMajorScheme,
+} from "@little-house-studio/context-components";
 import type { CompressResult } from "./types.js";
 import type {
   CompressionStage,
@@ -39,17 +51,10 @@ import type {
   TaskSummary,
 } from "./types/compression.js";
 import type { MaouMessage, MaouContent, LLMMessage } from "./types/message.js";
-import { maouToLLMMessage, seqRangeOf } from "./types/message.js";
+import { maouToLLMMessage, segmentVisibleText, seqRangeOf } from "./types/message.js";
+import type { FoldContext, FoldResult, Summarizer } from "./scheme-extension.js";
 
-// ─── 可插拔摘要器 ────────────────────────────────────────────────────────────
-
-export type Summarizer = (input: {
-  kind: 'task' | 'micro';
-  taskId?: string;
-  messages: LLMMessage[];
-  /** 可选：覆盖默认压缩提示词（由 agent 的 compression/compression.md 注入）。 */
-  prompt?: string;
-}) => Promise<string>;
+export type { Summarizer } from "./scheme-extension.js";
 
 export interface CompressOptions {
   maxTokens: number;
@@ -57,20 +62,15 @@ export interface CompressOptions {
   sessionId?: string;
   /** 最大压缩阶段（逐级递进时限制只压到某一级） */
   maxStage?: CompressionStage;
-  /**
-   * 当前活跃的 task 块 ID 列表（#4：压缩时屏蔽无关 task）。
-   * 传入时：只有 activeTaskIds 中的 task 摘要进入压缩区显示，
-   * 非 active task 的摘要只进 droppedSummary（归档），不进工作上下文。
-   * 未传：所有 task 摘要都进压缩区（兼容旧行为）。
-   */
-  activeTaskIds?: string[];
+  /** 大压缩/归档折叠；缺省走线性一条摘要 */
+  fold?: (ctx: FoldContext) => Promise<FoldResult | null>;
   /**
    * 上一条回报的占用（input + output）。门槛只认这个数。
    */
   knownTokens?: number;
   /**
-   * 强制至少尝试微压缩（/compact、UI）。
-   * 跳过 activeStage 的「未达 70% 不压」早退；压完没变矮则仍回 activeStage。
+   * /compact 与超窗抢救：未达 80% 也至少尝试便宜剪；尾巴只留最新一条。
+   * 自动压不要开。压完没变矮则仍回 activeStage。
    */
   force?: boolean;
   /**
@@ -80,6 +80,19 @@ export interface CompressOptions {
   retainCount?: number;
   /** @deprecated 当作 retainCount（条数） */
   retainTokens?: number;
+  /** 微压缩时钟：出动态轮的消息当缓存前缀，这边不改 */
+  microTurn?: number;
+  microCatalog?: MicroCompactCatalog;
+  microRounds?: number;
+  /**
+   * 传统大压缩方案：`fold` 先折满了再 LLM；`llm` 一到阈值就摘要并写查表路径。
+   * 缺省 fold。`foldStage: false` 等同 llm。
+   */
+  majorScheme?: TraditionalMajorScheme;
+  /** @deprecated 用 majorScheme。false = llm 方案 */
+  foldStage?: Partial<FoldStageConfig> | false;
+  /** 会话目录：写原记录 / 归档查表 */
+  sessionRoot?: string;
 }
 
 function resolveRetainCount(
@@ -103,8 +116,8 @@ export interface CompressMaouResult {
   history: MaouMessage[];
   stage: CompressionStage;
   droppedSummary: string;
-  taskBlocks: string[];
-  perTaskOriginals: Map<string, MaouMessage[]>;
+  blockIds: string[];
+  foldedOriginals: Map<string, MaouMessage[]>;
   originalTokens: number;
   compressedTokens: number;
 }
@@ -150,8 +163,8 @@ export async function compressMaou(
     history,
     stage: "activeStage",
     droppedSummary: "",
-    taskBlocks: [],
-    perTaskOriginals: new Map(),
+    blockIds: [],
+    foldedOriginals: new Map(),
     originalTokens: occupancy,
     compressedTokens: occupancy,
   });
@@ -163,11 +176,22 @@ export async function compressMaou(
   }
   if (target === "activeStage") return noChange();
 
-  const pressed = applyWindowPressure(history, occupancy, threshold);
+  const hold: MicroCacheHold = {
+    currentTurn: opts.microTurn,
+    catalog: opts.microCatalog,
+    limitRounds: opts.microRounds,
+  };
+  const pressed = applyWindowPressure(
+    history,
+    occupancy,
+    threshold,
+    (m) => holdAsPromptCache(m, hold),
+    opts.sessionRoot,
+  );
   const working = pressed.history;
 
   const retainCount = resolveRetainCount(working.length, opts);
-  const afterMicro = await microCompactAll(working, opts.summarizer, retainCount);
+  const afterMicro = await microCompactAll(working, opts.summarizer, retainCount, hold);
   const microChanged = historyVisiblyChanged(history, afterMicro);
 
   /**
@@ -187,8 +211,8 @@ export async function compressMaou(
     history: afterMicro,
     stage: "compactStage",
     droppedSummary: "",
-    taskBlocks: [],
-    perTaskOriginals: new Map(),
+    blockIds: [],
+    foldedOriginals: new Map(),
     originalTokens: occupancy,
     compressedTokens: projected,
   });
@@ -206,40 +230,59 @@ export async function compressMaou(
     }
   }
 
-  const afterSummary = await summaryCompressHarness(
-    afterMicro,
-    opts.summarizer,
-    opts.activeTaskIds,
+  const majorScheme = resolveTraditionalMajorScheme(opts.majorScheme, opts.foldStage);
+  const foldCfg = resolveFoldStage(opts.foldStage);
+  const majorOpts = {
+    occupancy,
+    window: threshold,
+    config: foldCfg,
+    sessionRoot: opts.sessionRoot,
+    sessionId: opts.sessionId,
     retainCount,
-  );
-  const summaryChanged = historyVisiblyChanged(afterMicro, afterSummary.messages);
-
-  if (target === "summaryStage") {
-    if (!summaryChanged) {
-      if (!microChanged) return noChange();
-      return compactResult(projectOccupancy(afterMicro));
-    }
+    customFold: opts.fold
+      ? (async ({ stage, compressible, history: hist }) => {
+          const r = await opts.fold!({
+            stage,
+            compressible,
+            history: hist,
+            summarizer: opts.summarizer,
+            sessionId: opts.sessionId,
+          });
+          if (!r) return null;
+          return { replacement: r.replacement, droppedSummary: r.droppedSummary };
+        }) satisfies CustomFoldFn
+      : undefined,
+    summarizer: opts.summarizer
+      ? async ({ messages }: { messages: Array<{ role: string; content: string }> }) =>
+          opts.summarizer!({
+            kind: "summary",
+            messages: messages.map((m) => ({
+              role: (
+                m.role === "assistant" || m.role === "system" || m.role === "tool" ? m.role : "user"
+              ) as LLMMessage["role"],
+              content: m.content,
+            })),
+          })
+      : undefined,
+  };
+  const major =
+    majorScheme === "llm"
+      ? await applyLlmMajorCompress(afterMicro, majorOpts)
+      : await applyFoldStage(afterMicro, majorOpts);
+  if (major.changed) {
+    const stage = major.stage === "archive" ? "archiveStage" : "summaryStage";
     return {
-      history: afterSummary.messages,
-      stage: "summaryStage",
-      droppedSummary: afterSummary.summary,
-      taskBlocks: afterSummary.taskBlocks,
-      perTaskOriginals: afterSummary.perTaskOriginals,
+      history: major.history,
+      stage,
+      droppedSummary: major.summary,
+      blockIds: [],
+      foldedOriginals: new Map(),
       originalTokens: occupancy,
-      compressedTokens: projectOccupancy(afterSummary.messages),
+      compressedTokens: projectOccupancy(major.history),
     };
   }
-
-  const afterArchive = archiveCompressHarness(afterSummary);
-  return {
-    history: afterArchive.messages,
-    stage: "archiveStage",
-    droppedSummary: afterArchive.summary,
-    taskBlocks: afterArchive.taskBlocks,
-    perTaskOriginals: afterSummary.perTaskOriginals,
-    originalTokens: occupancy,
-    compressedTokens: projectOccupancy(afterArchive.messages),
-  };
+  if (!microChanged) return noChange();
+  return compactResult(projectOccupancy(afterMicro));
 }
 
 // ─── 旧签名 compat shim（sync，truncate-only） ──────────────────────────────
@@ -288,7 +331,7 @@ export function maybeCompress(
     return buildLegacyResult(afterMicro, occupancy, "compactStage");
   }
 
-  const afterSummary = summaryCompressSync(afterMicro, retainCount);
+  const afterSummary = summaryCompressLinear(afterMicro, retainCount);
   if (target === "summaryStage") {
     if (!historyVisiblyChanged(afterMicro, afterSummary.messages)) {
       if (!microChanged) {
@@ -308,17 +351,17 @@ export function maybeCompress(
       occupancy,
       "summaryStage",
       afterSummary.summary,
-      afterSummary.taskBlocks,
+      afterSummary.blockIds,
     );
   }
 
-  const afterArchive = archiveCompressHarness(afterSummary);
+  const afterArchive = archiveCompressLinear(afterSummary);
   return buildLegacyResult(
     afterArchive.messages,
     occupancy,
     "archiveStage",
     afterArchive.summary,
-    afterArchive.taskBlocks,
+    afterArchive.blockIds,
   );
 }
 
@@ -393,14 +436,16 @@ async function microCompactAll(
   messages: MaouMessage[],
   _summarizer?: Summarizer,
   retainTokens?: number,
+  hold?: MicroCacheHold,
 ): Promise<MaouMessage[]> {
   void _summarizer;
-  return microCompactAllSync(messages, retainTokens);
+  return microCompactAllSync(messages, retainTokens, hold);
 }
 
 function microCompactAllSync(
   messages: MaouMessage[],
   retainTokens?: number,
+  hold?: MicroCacheHold,
 ): MaouMessage[] {
   const boundary =
     retainTokens != null && retainTokens > 0
@@ -409,7 +454,7 @@ function microCompactAllSync(
 
   return messages.map((m, i) => {
     if (i >= boundary) return m;
-    if (shouldSkipCompress(m)) return m;
+    if (shouldSkipCompress(m, hold)) return m;
     const hasSummary = m.contents.some((c) => c.microCompact?.enabled && c.microCompact.summary);
     if (hasSummary) return m;
 
@@ -432,9 +477,10 @@ function microCompactAllSync(
   });
 }
 
-function shouldSkipCompress(m: MaouMessage): boolean {
+function shouldSkipCompress(m: MaouMessage, hold?: MicroCacheHold): boolean {
   if (m.category === "system") return true;
   if (m.pinned || m.keepAfterCompress) return true;
+  if (holdAsPromptCache(m, hold)) return true;
   return false;
 }
 
@@ -461,130 +507,125 @@ function compactByCategory(m: MaouMessage): string {
 interface SummaryCompressResult {
   messages: MaouMessage[];
   summary: string;
-  taskBlocks: string[];
-  perTaskOriginals: Map<string, MaouMessage[]>;
-  /** 每个 task 的摘要文本（#1：archiveStage 保留每 task 摘要片段 + task id 展示层级） */
-  perTaskSummaries: Map<string, string>;
-  /** DESIGN active 原文区（与 micro 同边界），大压缩/归档后仍附在工作集尾部 */
+  blockIds: string[];
+  foldedOriginals: Map<string, MaouMessage[]>;
+  extras?: Record<string, unknown>;
   activeRawMsgs: MaouMessage[];
+}
+
+function assembleFoldedHistory(
+  parts: ReturnType<typeof partitionMessages>,
+  replacement: MaouMessage[],
+): MaouMessage[] {
+  return [
+    ...parts.systemMsgs,
+    ...parts.pinnedOrCritical,
+    ...replacement,
+    ...parts.recentToolMsgs,
+    ...parts.activeRawMsgs,
+  ].sort((a, b) => a.seqId - b.seqId);
+}
+
+function fallbackLinearSummary(msgs: MaouMessage[]): string {
+  const parts: string[] = [];
+  let users = 0;
+  let assistants = 0;
+  let tools = 0;
+  for (const m of msgs) {
+    const text = m.contents.map((c) => c.text).join("\n");
+    switch (m.category) {
+      case "user":
+        users++;
+        parts.push(`用户: ${truncate(text, 100)}`);
+        break;
+      case "assistant":
+        assistants++;
+        parts.push(`助手: ${truncate(text, 150)}`);
+        break;
+      case "tool_call":
+      case "tool_result":
+        tools++;
+        break;
+    }
+  }
+  const head = `[历史 ${users} 条用户 / ${assistants} 条助手 / ${tools} 条工具]`;
+  return truncate(`${head}\n${parts.slice(0, 8).join("\n")}`, SUMMARY_MAX_CHARS);
+}
+
+function attachSummaryRange(summaryMsg: MaouMessage, originals: MaouMessage[], summary: string): MaouMessage {
+  const range = seqRangeOf(originals);
+  if (!range) return summaryMsg;
+  return { ...summaryMsg, compact: { type: "major", summary, seqRange: range } };
+}
+
+function summaryFromFold(
+  parts: ReturnType<typeof partitionMessages>,
+  folded: FoldResult,
+): SummaryCompressResult {
+  return {
+    messages: assembleFoldedHistory(parts, folded.replacement),
+    summary: folded.droppedSummary,
+    blockIds: folded.blockIds ?? [],
+    foldedOriginals: folded.foldedOriginals ?? new Map(),
+    extras: folded.extras,
+    activeRawMsgs: parts.activeRawMsgs,
+  };
 }
 
 async function summaryCompressHarness(
   messages: MaouMessage[],
   summarizer?: Summarizer,
-  activeTaskIds?: string[],
   retainTokens?: number,
+  fold?: (ctx: FoldContext) => Promise<FoldResult | null>,
+  sessionId?: string,
+  hold?: MicroCacheHold,
 ): Promise<SummaryCompressResult> {
-  const {
-    systemMsgs,
-    pinnedOrCritical,
-    compressible,
-    recentToolMsgs,
-    activeRawMsgs,
-  } = partitionMessages(messages, { protectActiveWindow: true, retainTokens });
-  const groups = groupByTask(compressible);
-  const taskBlocks: string[] = [];
-  const summaryLines: string[] = [];
-  const perTaskOriginals = new Map<string, MaouMessage[]>();
-  const perTaskSummaries = new Map<string, string>();
-  const activeSet = new Set(activeTaskIds ?? []);
-  const filterActive = activeSet.size > 0;
-
-  // #1：并行调 summarizer（第一次压缩用 agent 写摘要/大纲，并行加速）
-  const taskEntries = [...groups];
-  const summaryResults = await Promise.all(taskEntries.map(async ([taskId, msgs]) => {
-    perTaskOriginals.set(taskId, msgs);
-    let taskSummaryText: string;
-    if (summarizer) {
-      try {
-        const llmMsgs = msgs.map(maouToLLMMessage);
-        taskSummaryText = await summarizer({ kind: 'task', taskId, messages: llmMsgs });
-      } catch { taskSummaryText = summarizeTaskFallback(taskId, msgs).summary; }
-    } else {
-      taskSummaryText = summarizeTaskFallback(taskId, msgs).summary;
-    }
-    return { taskId, msgs, summary: taskSummaryText };
-  }));
-
-  // 每个 task 生成独立摘要消息（#1：按时间流程排序显示在压缩区）
-  // #4：非 active task 的摘要不进压缩区（屏蔽归档），只进 droppedSummary
-  const taskSummaryMsgs: MaouMessage[] = [];
-  for (const { taskId, msgs, summary: taskSummaryText } of summaryResults) {
-    perTaskSummaries.set(taskId, taskSummaryText);
-    summaryLines.push(taskSummaryText);
-    taskBlocks.push(taskId);
-    if (!filterActive || activeSet.has(taskId)) {
-      // active task 或未传 activeTaskIds：进压缩区显示
-      taskSummaryMsgs.push(makeTaskSummaryMessage(taskId, taskSummaryText, msgs));
+  const parts = partitionMessages(messages, { protectActiveWindow: true, retainTokens, hold });
+  if (fold) {
+    const folded = await fold({
+      stage: "summary",
+      compressible: parts.compressible,
+      history: messages,
+      summarizer,
+      sessionId,
+    });
+    if (folded) return summaryFromFold(parts, folded);
+  }
+  if (summarizer) {
+    try {
+      const summaryText = await summarizer({
+        kind: "summary",
+        messages: parts.compressible.map(maouToLLMMessage),
+      });
+      return finishLinearSummary(parts, summaryText);
+    } catch {
+      /* 回退确定性摘要 */
     }
   }
+  return finishLinearSummary(parts, fallbackLinearSummary(parts.compressible));
+}
 
-  const summary = summaryLines.join("\n\n");
-  // 工作集 = 旧侧摘要 + pin + 近 tool + **active 原文区**（DESIGN）
-  const result: MaouMessage[] = [
-    ...systemMsgs,
-    ...pinnedOrCritical,
-    ...taskSummaryMsgs,
-    ...recentToolMsgs,
-    ...activeRawMsgs,
-  ];
-
+function finishLinearSummary(
+  parts: ReturnType<typeof partitionMessages>,
+  summaryText: string,
+): SummaryCompressResult {
+  const summaryMsg = attachSummaryRange(makeSummaryMessage(summaryText), parts.compressible, summaryText);
   return {
-    messages: result.sort((a, b) => a.seqId - b.seqId),
-    summary: buildDroppedSummary(compressible, summary),
-    taskBlocks,
-    perTaskOriginals,
-    perTaskSummaries,
-    activeRawMsgs,
+    messages: assembleFoldedHistory(parts, [summaryMsg]),
+    summary: buildDroppedSummary(parts.compressible, summaryText),
+    blockIds: [],
+    foldedOriginals: new Map(),
+    activeRawMsgs: parts.activeRawMsgs,
   };
 }
 
-function summaryCompressSync(
+function summaryCompressLinear(
   messages: MaouMessage[],
   retainTokens?: number,
+  hold?: MicroCacheHold,
 ): SummaryCompressResult {
-  const {
-    systemMsgs,
-    pinnedOrCritical,
-    recentToolMsgs,
-    compressible,
-    activeRawMsgs,
-  } = partitionMessages(messages, { protectActiveWindow: true, retainTokens });
-  const groups = groupByTask(compressible);
-  const taskBlocks: string[] = [];
-  const summaryLines: string[] = [];
-  const perTaskOriginals = new Map<string, MaouMessage[]>();
-  const perTaskSummaries = new Map<string, string>();
-
-  for (const [taskId, msgs] of groups) {
-    perTaskOriginals.set(taskId, msgs);
-    const taskSummaryText = summarizeTaskFallback(taskId, msgs).summary;
-    perTaskSummaries.set(taskId, taskSummaryText);
-    summaryLines.push(taskSummaryText);
-    taskBlocks.push(taskId);
-  }
-
-  const summary = summaryLines.join("\n\n");
-  // sync 版不筛选 activeTaskIds（maybeCompress 旧路径）
-  const taskSummaryMsgs = taskBlocks.map((taskId) =>
-    makeTaskSummaryMessage(taskId, perTaskSummaries.get(taskId)!, groups.get(taskId)!),
-  );
-  const result: MaouMessage[] = [
-    ...systemMsgs,
-    ...pinnedOrCritical,
-    ...taskSummaryMsgs,
-    ...recentToolMsgs,
-    ...activeRawMsgs,
-  ];
-
-  return {
-    messages: result.sort((a, b) => a.seqId - b.seqId),
-    summary: buildDroppedSummary(compressible, summary),
-    taskBlocks,
-    perTaskOriginals,
-    perTaskSummaries,
-    activeRawMsgs,
-  };
+  const parts = partitionMessages(messages, { protectActiveWindow: true, retainTokens, hold });
+  return finishLinearSummary(parts, fallbackLinearSummary(parts.compressible));
 }
 
 /**
@@ -593,7 +634,7 @@ function summaryCompressSync(
  */
 function partitionMessages(
   messages: MaouMessage[],
-  opts?: { protectActiveWindow?: boolean; retainTokens?: number },
+  opts?: { protectActiveWindow?: boolean; retainTokens?: number; hold?: MicroCacheHold },
 ) {
   const systemMsgs: MaouMessage[] = [];
   const pinnedOrCritical: MaouMessage[] = [];
@@ -616,12 +657,12 @@ function partitionMessages(
       systemMsgs.push(m);
       continue;
     }
-    if (m.pinned || m.keepAfterCompress) {
+    if (m.pinned || m.keepAfterCompress || holdAsPromptCache(m, opts?.hold)) {
       // 已是 task_summary 等 keep 消息：若落在 active 区仍算 pin 集合，避免重复进 activeRaw
       pinnedOrCritical.push(m);
       continue;
     }
-    // DESIGN active 原文区：整段保留，不进 task 摘要池
+    // DESIGN active 原文区：整段保留，不进可压池
     if (protect && activeSeq.has(m.seqId)) {
       activeRawMsgs.push(m);
       continue;
@@ -672,22 +713,52 @@ function collectRecentToolChain(messages: MaouMessage[], protectedIds: Set<strin
 
 // ─── 死阶段归档 ────────────────────────────────────────────────────────────────
 
-function archiveCompressHarness(input: SummaryCompressResult): { messages: MaouMessage[]; summary: string; taskBlocks: string[] } {
+async function archiveCompressHarness(
+  input: SummaryCompressResult,
+  fold?: (ctx: FoldContext) => Promise<FoldResult | null>,
+  sessionId?: string,
+  hold?: MicroCacheHold,
+): Promise<{ messages: MaouMessage[]; summary: string; blockIds: string[] }> {
+  if (fold) {
+    const folded = await fold({
+      stage: "archive",
+      compressible: [],
+      history: input.messages,
+      sessionId,
+      prior: {
+        replacement: input.messages,
+        droppedSummary: input.summary,
+        foldedOriginals: input.foldedOriginals,
+        blockIds: input.blockIds,
+        extras: {
+          ...input.extras,
+          activeRawSeqs: input.activeRawMsgs.map((m) => m.seqId),
+        },
+      },
+    });
+    if (folded) {
+      return {
+        messages: folded.replacement,
+        summary: folded.droppedSummary,
+        blockIds: folded.blockIds ?? input.blockIds,
+      };
+    }
+  }
+  return archiveCompressLinear(input, hold);
+}
+
+function archiveCompressLinear(
+  input: SummaryCompressResult,
+  hold?: MicroCacheHold,
+): { messages: MaouMessage[]; summary: string; blockIds: string[] } {
   const systemMsgs = input.messages.filter((m) => m.category === "system");
-  // pin / task_summary 等；但不要把 active 原文误标成 pin 再丢
   const pinned = input.messages.filter(
     (m) =>
-      (m.pinned || m.keepAfterCompress) &&
+      (m.pinned || m.keepAfterCompress || holdAsPromptCache(m, hold)) &&
       !input.activeRawMsgs.some((a) => a.seqId === m.seqId),
   );
-  // #1：旧侧 → 任务极简清单；DESIGN：active 原文区仍保留
-  const archiveLines: string[] = [`[已归档任务: ${input.taskBlocks.length} 个]`];
-  for (const taskId of input.taskBlocks) {
-    const summary = input.perTaskSummaries.get(taskId) ?? "";
-    const snippet = summary.length > 120 ? summary.slice(0, 120) + "…" : summary;
-    archiveLines.push(`- ${taskId}: ${snippet}`);
-  }
-  const archiveText = archiveLines.join("\n");
+  const snippet = input.summary.length > 400 ? `${input.summary.slice(0, 400)}…` : input.summary;
+  const archiveText = snippet ? `[已归档]\n${snippet}` : "[已归档]";
   return {
     messages: [
       ...systemMsgs,
@@ -696,91 +767,7 @@ function archiveCompressHarness(input: SummaryCompressResult): { messages: MaouM
       ...input.activeRawMsgs,
     ].sort((a, b) => a.seqId - b.seqId),
     summary: archiveText,
-    taskBlocks: input.taskBlocks,
-  };
-}
-
-// ─── task_id 赋值（供 ContextEngine 调用） ──────────────────────────────────
-
-export function assignTaskIds(messages: MaouMessage[]): MaouMessage[] {
-  let currentTaskId = "";
-  // 非真人 user 不应开新 task（empty_retry / todo_notice / bus 等）
-  const NON_HUMAN_SOURCES = new Set([
-    "hook",
-    "injected",
-    "empty_retry",
-    "verification",
-    "todo_notice",
-    "message_bus",
-    "terminal-notification",
-    "runtime_control",
-    "system_notice",
-    "agent_message",
-  ]);
-  return messages.map(m => {
-    const src = String(m.source ?? "");
-    const isHumanUser =
-      m.category === "user" &&
-      !NON_HUMAN_SOURCES.has(src) &&
-      src !== "compact";
-    if (isHumanUser) {
-      currentTaskId = `t${m.seqId}`;
-    }
-    if (!currentTaskId) return m;
-    if (m.taskIds.length > 0) return m;
-    return { ...m, taskIds: [currentTaskId] };
-  });
-}
-
-// ─── 辅助 ────────────────────────────────────────────────────────────────────
-
-function groupByTask(messages: MaouMessage[]): Map<string, MaouMessage[]> {
-  const groups = new Map<string, MaouMessage[]>();
-  for (const m of messages) {
-    if (m.taskIds.length === 0) {
-      const arr = groups.get("__no_task__") ?? [];
-      arr.push(m);
-      groups.set("__no_task__", arr);
-    } else {
-      for (const tid of m.taskIds) {
-        const arr = groups.get(tid) ?? [];
-        arr.push(m);
-        groups.set(tid, arr);
-      }
-    }
-  }
-  return groups;
-}
-
-function summarizeTaskFallback(taskId: string, msgs: MaouMessage[]): TaskSummary {
-  const userInputs: string[] = [];
-  const assistantResponses: string[] = [];
-  let toolCallCount = 0;
-  let toolResultCount = 0;
-
-  for (const m of msgs) {
-    const text = m.contents.map(c => c.text).join('\n');
-    switch (m.category) {
-      case "user": userInputs.push(truncate(text, 100)); break;
-      case "assistant": assistantResponses.push(truncate(text, 150)); break;
-      case "tool_call": toolCallCount++; break;
-      case "tool_result": toolResultCount++; break;
-    }
-  }
-
-  const parts: string[] = [];
-  if (userInputs.length > 0) parts.push(`用户输入(${userInputs.length}): ${userInputs.slice(0, 3).join("; ")}`);
-  if (assistantResponses.length > 0) parts.push(`助手回复(${assistantResponses.length}): ${assistantResponses.slice(0, 2).join("; ")}`);
-  if (toolCallCount > 0) parts.push(`工具调用(${toolCallCount})`);
-  if (toolResultCount > 0) parts.push(`工具结果(${toolResultCount})`);
-
-  return {
-    taskId,
-    status: "done",
-    startTime: msgs[0]?.createdAt ?? new Date().toISOString(),
-    summary: truncate(`[${taskId}] ${parts.join(" | ")}`, SUMMARY_MAX_CHARS),
-    goal: "",
-    outline: msgs.slice(0, 10).map(m => `- [${m.category}] ${truncate(m.contents.map(c => c.text).join('\n'), 50)}`),
+    blockIds: [],
   };
 }
 
@@ -805,7 +792,7 @@ function buildDroppedSummary(dropped: MaouMessage[], taskSummary: string): strin
 
   const lines: string[] = [];
   lines.push(`[被压缩掉的历史：${userCount} 条 user + ${assistantCount} 条 assistant]`);
-  if (taskSummary.trim()) lines.push("\n任务摘要：\n" + taskSummary);
+  if (taskSummary.trim()) lines.push("\n摘要：\n" + taskSummary);
   if (userSnippets.length > 0) {
     lines.push("用户此前说过：");
     for (const s of userSnippets.slice(0, SUMMARY_MAX_ENTRIES_PER_ROLE)) lines.push(`- ${s}`);
@@ -819,7 +806,7 @@ function buildDroppedSummary(dropped: MaouMessage[], taskSummary: string): strin
   return lines.join("\n");
 }
 
-function makeSummaryMessage(summary: string): MaouMessage {
+export function makeSummaryMessage(summary: string): MaouMessage {
   return {
     seqId: -1,
     taskIds: [],
@@ -842,23 +829,6 @@ function makeSummaryMessage(summary: string): MaouMessage {
  * 用 task 块第一条消息的 seqId 作为排序键，使压缩区内
  * 多个 task 摘要按原始时间顺序排列，展示任务执行流程。
  */
-function makeTaskSummaryMessage(taskId: string, summary: string, originalMsgs: MaouMessage[]): MaouMessage {
-  const seqId = originalMsgs[0]?.seqId ?? -1;
-  const msg: MaouMessage = {
-    seqId,
-    taskIds: [taskId],
-    contents: [{
-      text: `<task_summary task="${taskId}">\n${summary}\n</task_summary>`,
-    }],
-    keepAfterCompress: true,
-    category: "injected",
-    originalRole: "user",
-  };
-  const range = seqRangeOf(originalMsgs);
-  if (range) msg.compact = { type: "major", summary, seqRange: range };
-  return msg;
-}
-
 function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return text.slice(0, maxLength - 1) + "…";
@@ -920,10 +890,7 @@ function normalizeToolCalls(calls: Array<Record<string, unknown>> | undefined): 
 }
 
 function maouToRaw(mmsg: MaouMessage): Record<string, unknown> {
-  const fullText = mmsg.contents.map(c => {
-    if (c.microCompact?.enabled && c.microCompact.summary) return c.microCompact.summary;
-    return c.text;
-  }).join('\n');
+  const fullText = mmsg.contents.map(segmentVisibleText).join("\n");
   const out: Record<string, unknown> = {
     role: mmsg.originalRole ?? categoryToRole(mmsg.category),
     content: fullText,

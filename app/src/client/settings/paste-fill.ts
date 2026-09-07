@@ -74,16 +74,6 @@ export function mapLiveProtocol(raw: string): string {
   return s || "openai";
 }
 
-/** 草稿站协议枚举 */
-export function mapDraftProtocol(
-  raw: string,
-): "openai" | "anthropic" | "openai-responses" {
-  const s = mapLiveProtocol(raw);
-  if (s === "anthropic") return "anthropic";
-  if (s === "responses" || s === "openai-responses") return "openai-responses";
-  return "openai";
-}
-
 export function guessVendorFromProtocol(protocol: string): string {
   const p = mapLiveProtocol(protocol);
   if (p === "anthropic") return "anthropic";
@@ -132,32 +122,6 @@ export function livePatchFromPaste(
     patch.protocol = mapLiveProtocol(protocol);
     patch.vendor = guessVendorFromProtocol(protocol);
   }
-  const name = guessPresetName(url || current.url || "", model || current.model || "", protocol);
-  if (name && looksAutoPresetName(current.name || "")) patch.name = name;
-  return patch;
-}
-
-export type DraftPastePatch = {
-  url?: string;
-  key?: string;
-  model?: string;
-  protocol?: "openai" | "anthropic" | "openai-responses";
-  name?: string;
-};
-
-export function draftPatchFromPaste(
-  current: { name?: string; url?: string; model?: string },
-  parsed: ClipboardParseResult,
-): DraftPastePatch {
-  const url = fieldValue(parsed, "base_url");
-  const key = fieldValue(parsed, "api_key");
-  const model = fieldValue(parsed, "model");
-  const protocol = fieldValue(parsed, "protocol");
-  const patch: DraftPastePatch = {};
-  if (url) patch.url = url;
-  if (key) patch.key = key;
-  if (model) patch.model = model;
-  if (protocol) patch.protocol = mapDraftProtocol(protocol);
   const name = guessPresetName(url || current.url || "", model || current.model || "", protocol);
   if (name && looksAutoPresetName(current.name || "")) patch.name = name;
   return patch;
@@ -264,71 +228,6 @@ export function applyLivePasteToRows<T extends LivePasteRow>(input: {
     rows: [...head, ...out, ...tail],
     selected: start + Math.max(0, local),
   };
-}
-
-export type DraftPastePreset = {
-  name: string;
-  url: string;
-  key: string;
-  model: string;
-  protocol: "openai" | "anthropic" | "openai-responses";
-};
-
-/** 草稿站：共用连接字段，按模型 id 追加 preset。 */
-export function applyDraftPasteToPresets<T extends DraftPastePreset>(
-  presets: T[],
-  selected: number,
-  parsed: ClipboardParseResult,
-  seed: (n: number) => T,
-): { presets: T[]; selected: number } {
-  const models = modelsFromParse(parsed);
-  if (!presets.length) {
-    const ids = models.length ? models : [fieldValue(parsed, "model")].filter(Boolean);
-    const rows = (ids.length ? ids : [""]).map((m, i) => {
-      const row = { ...seed(i + 1) };
-      const patch = draftPatchFromPaste(row, parsed);
-      const next = { ...row, ...patch, model: m || patch.model || row.model };
-      const name = guessPresetName(next.url, next.model, next.protocol);
-      return { ...next, name: name || next.name };
-    });
-    return { presets: rows, selected: 0 };
-  }
-
-  const idx = Math.min(Math.max(0, selected), presets.length - 1);
-  const current = presets[idx]!;
-  const patch = draftPatchFromPaste(current, parsed);
-  const next = presets.map((p) => ({ ...p }));
-  next[idx] = {
-    ...current,
-    ...patch,
-    model: models[0] ?? patch.model ?? current.model,
-  };
-
-  const url = (patch.url ?? next[idx]!.url).trim();
-  const proto = patch.protocol ?? next[idx]!.protocol;
-  const key = patch.key ?? next[idx]!.key;
-  const sameConn = (p: T) => p.url.trim() === url && p.protocol === proto;
-  const have = new Set(
-    next.filter(sameConn).map((p) => p.model.trim().toLowerCase()).filter(Boolean),
-  );
-
-  for (const m of models) {
-    if (have.has(m.toLowerCase())) continue;
-    const n = next.length + 1;
-    const name = guessPresetName(url, m, proto) || `preset-${n}`;
-    next.push({
-      ...seed(n),
-      ...current,
-      ...patch,
-      url,
-      key,
-      protocol: proto,
-      model: m,
-      name,
-    });
-    have.add(m.toLowerCase());
-  }
-  return { presets: next, selected: idx };
 }
 
 export function serializeParseFields(

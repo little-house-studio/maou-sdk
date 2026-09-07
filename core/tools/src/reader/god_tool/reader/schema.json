@@ -12,21 +12,32 @@
         "type": "string",
         "description": "为什么必须调用此工具而不是直接回复用户？说明工具不可替代的作用。"
       },
+      "offset": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "起始行号（从 1 开始）。与 start_line 相同。默认 1。页脚给出续读 offset。"
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 2000,
+        "description": "本次读取行数。默认 2000，最大 2000。"
+      },
       "start_line": {
         "type": "integer",
         "minimum": 1,
-        "description": "起始行号。默认 1。返回体尾部的页脚会给出续读用的 start_line。"
+        "description": "起始行号（从 1 开始）。与 offset 相同。"
       },
       "end_line": {
         "type": "integer",
         "minimum": 1,
-        "description": "结束行号。默认文件末尾。"
+        "description": "结束行号（包含）。也可用 limit 表示读多少行。"
       },
       "max_chars": {
         "type": "integer",
         "minimum": 500,
-        "maximum": 100000,
-        "description": "最大返回字符数。不传则不限（由通用输出收口兜底）。"
+        "maximum": 51200,
+        "description": "更紧的字符上限。不传则按 50KiB / 2000 行封顶。"
       },
       "mode": {
         "type": "string",

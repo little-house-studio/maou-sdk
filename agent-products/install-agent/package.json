@@ -32,6 +32,7 @@
     "@little-house-studio/llm": "workspace:*",
     "@little-house-studio/tools": "workspace:*",
     "@little-house-studio/context": "workspace:*",
+    "@little-house-studio/context-task": "workspace:*",
     "@little-house-studio/agent": "workspace:*"
   },
   "devDependencies": {

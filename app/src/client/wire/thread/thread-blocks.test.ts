@@ -21,7 +21,7 @@ import {
   replyWaitStatus,
   summarizeReplyTurn,
 } from "./thread-blocks";
-import { FULL_CONTEXT_MESSAGES } from "../../drafts/fixtures";
+import { THREAD_MESSAGES } from "../test-thread";
 import type { DraftMessage } from "../types";
 import type { ReplyBlock } from "./thread-blocks";
 
@@ -66,8 +66,8 @@ describe("groupThreadBlocks", () => {
     }
   });
 
-  it("FULL_CONTEXT_MESSAGES yields nested + orphan reply blocks", () => {
-    const blocks = groupThreadBlocks(FULL_CONTEXT_MESSAGES);
+  it("THREAD_MESSAGES yields nested + orphan reply blocks", () => {
+    const blocks = groupThreadBlocks(THREAD_MESSAGES);
     assert.ok(blocks.length >= 6);
     const nested = blocks.find(
       (b) =>

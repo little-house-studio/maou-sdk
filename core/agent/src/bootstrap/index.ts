@@ -15,6 +15,8 @@ export type {
 export {
   loadPresetsFromMaouConfig,
   loadRawPresetsFromMaouConfig,
+  loadProvidersFromMaouConfig,
+  loadApiDocument,
   getApiPreset,
   getDefaultPresetFromMaouConfig,
   getDefaultPresetFromConfigStore,

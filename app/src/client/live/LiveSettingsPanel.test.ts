@@ -45,6 +45,8 @@ describe("LiveSettingsPanel structure", () => {
 
   it("LLM section: vendor + model + multimodal + price + advanced", () => {
     assert.match(src, /厂商配置|预设厂商|厂商连接/);
+    assert.match(src, /获取可用模型/);
+    assert.match(src, /休眠目录|添加自定义/);
     assert.match(src, /urlParams|URL 附加/);
     assert.match(src, /data-live-cap-image|图片/);
     assert.match(src, /data-live-cap-audio|音频/);
@@ -101,6 +103,7 @@ describe("LiveSettingsPanel structure", () => {
     assert.match(src, /fetchLlmConfig/);
     assert.match(src, /saveLlmConfig/);
     assert.match(api, /\/api\/config\/llm/);
+    assert.match(api, /scan-models/);
     assert.match(api, /roles\?:/);
     assert.match(api, /inputPricePerMt/);
     assert.match(llmCfg, /saveGlobalApiConfig/);

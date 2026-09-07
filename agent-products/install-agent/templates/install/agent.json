@@ -7,6 +7,7 @@
   "max_retries": 10,
   "tool_compression": "normal",
   "thinking_context_mode": "first_round",
+  "micro_compact_rounds": 3,
   "terminalMode": "mini",
   "terminal_mode": "auto",
   "tools": [

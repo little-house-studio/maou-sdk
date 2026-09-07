@@ -19,8 +19,7 @@ describe("compressMaou knownTokens / force", () => {
     expect(r.stage).toBe("activeStage");
   });
 
-  it("enters compact when knownTokens exceeds 70% even if history tiny", async () => {
-    // 足够长的可压缩正文，否则 micro 可能无实质变化但仍应离开 activeStage（force/known）
+  it("stays idle at 75% and only acts at the 80% DSH pressure line", async () => {
     const big = "代码块 ".repeat(200);
     const history = [
       msg("user", big),
@@ -28,13 +27,17 @@ describe("compressMaou knownTokens / force", () => {
       msg("user", big),
       msg("assistant", big),
     ];
-    const r = await compressMaou(history, {
+    const below = await compressMaou(history, {
       maxTokens: 200_000,
-      knownTokens: 150_000, // 75% of 200k
+      knownTokens: 150_000,
     });
-    // 门槛用 knownTokens → 应尝试压缩；stage 至少不是因门槛卡在 active
-    // 若 micro 无可压内容仍可能 activeStage；force 可保证进入
-    expect(r.originalTokens).toBeGreaterThanOrEqual(150_000);
+    expect(below.stage).toBe("activeStage");
+    const atLine = await compressMaou(history, {
+      maxTokens: 200_000,
+      knownTokens: 160_000,
+    });
+    expect(atLine.originalTokens).toBeGreaterThanOrEqual(160_000);
+    expect(atLine.stage).not.toBe("activeStage");
   });
 
   it("force skips active early-exit", async () => {
@@ -48,7 +51,7 @@ describe("compressMaou knownTokens / force", () => {
     });
     // force 无 knownTokens：占用为 0，只按条数尝试微压
     expect(r.originalTokens).toBe(0);
-    // 无 force 且远低于 70% 应 active
+    // 无 force 且远低于 80% 应 active
     const r2 = await compressMaou(history, { maxTokens: 1_000_000 });
     expect(r2.stage).toBe("activeStage");
   });
@@ -92,9 +95,35 @@ describe("compressMaou remeasures after the cheap pass", () => {
     expect(r.compressedTokens).toBeLessThan(r.originalTokens);
   });
 
-  it("still pays for the summarizer when there is nothing cheap to omit", async () => {
+  it("auto pressure at 80% keeps a 16% verbatim tail; force keeps one", async () => {
+    const bulk = "内容".repeat(2_000);
+    const history = Array.from({ length: 30 }, (_, i) => ({
+      ...msg(i % 2 === 0 ? "user" : "assistant", `${i} ${bulk}`),
+      id: `tail-${i}`,
+      seqId: i,
+    })) as MaouMessage[];
+    const auto = await compressMaou(history, {
+      maxTokens: 200_000,
+      knownTokens: 160_000,
+    });
+    expect(auto.stage).toBe("summaryStage");
+    const autoTail = auto.history.filter((m) => m.compact?.type !== "fold" && m.compact?.type !== "archive");
+    expect(autoTail.length).toBeGreaterThanOrEqual(Math.floor(30 * 0.16));
+    expect(auto.history.some((m) => m.contents[0]?.text.startsWith("29 "))).toBe(true);
+    expect(auto.history.some((m) => m.contents[0]?.text.startsWith("0 "))).toBe(false);
+
+    const forced = await compressMaou(history, {
+      maxTokens: 200_000,
+      knownTokens: 160_000,
+      force: true,
+    });
+    const forcedTail = forced.history.filter((m) => m.compact?.type !== "fold" && m.compact?.type !== "archive");
+    expect(forcedTail.length).toBe(1);
+    expect(forcedTail[0]!.contents[0]!.text.startsWith("29 ")).toBe(true);
+  });
+
+  it("folds the unfolded span at 80% without calling the summarizer", async () => {
     let summarizerCalls = 0;
-    // 没有超大 tool_result → 便宜路径无从下手，重测不该被用来跳过摘要
     const bulk = "内容".repeat(2_000);
     const history = Array.from({ length: 30 }, (_, i) => ({
       ...msg(i % 2 === 0 ? "user" : "assistant", bulk),
@@ -109,9 +138,34 @@ describe("compressMaou remeasures after the cheap pass", () => {
         return "summary";
       },
     });
-    expect(summarizerCalls).toBeGreaterThan(0);
+    expect(summarizerCalls).toBe(0);
     expect(r.stage).toBe("summaryStage");
+    expect(r.history.some((m) => m.compact?.type === "fold")).toBe(true);
     expect(r.compressedTokens).toBeGreaterThan(0);
+  });
+
+  it("llm scheme summarizes at 80% and leaves an archive card", async () => {
+    let summarizerCalls = 0;
+    const bulk = "内容".repeat(2_000);
+    const history = Array.from({ length: 30 }, (_, i) => ({
+      ...msg(i % 2 === 0 ? "user" : "assistant", bulk),
+      id: `llm-${i}`,
+      seqId: i,
+    })) as MaouMessage[];
+    const r = await compressMaou(history, {
+      maxTokens: 200_000,
+      knownTokens: 170_000,
+      majorScheme: "llm",
+      summarizer: async () => {
+        summarizerCalls++;
+        return "## Primary Request\n- llm-scheme";
+      },
+    });
+    expect(summarizerCalls).toBe(1);
+    expect(r.stage).toBe("archiveStage");
+    expect(r.history.some((m) => m.compact?.type === "archive")).toBe(true);
+    expect(r.history.some((m) => m.compact?.type === "fold")).toBe(false);
+    expect(r.droppedSummary).toContain("archived-context");
   });
 
   it("never reports a compressed size above the original", async () => {

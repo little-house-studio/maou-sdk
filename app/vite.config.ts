@@ -91,7 +91,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, "src/client/index.html"),
-        draft: resolve(__dirname, "src/client/draft.html"),
       },
       output: {
         /**

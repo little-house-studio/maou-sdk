@@ -8,12 +8,36 @@ import {
   isGlobalApiConfigured,
   saveGlobalApiConfig,
   resolveMaouConfigPath,
-  loadPresetsFromMaouConfig,
+  loadProvidersFromMaouConfig,
 } from "@little-house-studio/agent";
-import type { APIPreset } from "@little-house-studio/llm";
+import { builtinCatalog } from "@little-house-studio/llm";
 
 function print(msg: string): void {
   output.write(msg + "\n");
+}
+
+function catalogChoices(): Array<{
+  id: string;
+  label: string;
+  url: string;
+  protocol: string;
+  defaultModel: string;
+}> {
+  const rows = builtinCatalog().map((p) => ({
+    id: p.id,
+    label: p.name,
+    url: p.baseUrl,
+    protocol: String(p.protocol ?? "openai"),
+    defaultModel: p.models[0]?.id ?? "",
+  }));
+  rows.push({
+    id: "custom",
+    label: "自定义 OpenAI 兼容接口",
+    url: "",
+    protocol: "openai",
+    defaultModel: "gpt-4o",
+  });
+  return rows;
 }
 
 export async function ensureInstallApiConfigured(): Promise<boolean> {
@@ -33,41 +57,12 @@ export async function ensureInstallApiConfigured(): Promise<boolean> {
 
   const rl = readline.createInterface({ input, output });
   try {
-    print("选择提供商：");
-    print("  1) OpenAI");
-    print("  2) Anthropic");
-    print("  3) OpenRouter");
-    print("  4) 自定义 OpenAI 兼容接口");
+    const choices = catalogChoices();
+    print("选择提供商（目录 id 即路由）：");
+    choices.forEach((p, i) => print(`  ${i + 1}) ${p.label} (${p.id})`));
     const choiceRaw = (await rl.question("编号 [1]：")).trim() || "1";
-    const choice = Math.max(1, Math.min(4, parseInt(choiceRaw, 10) || 1));
-
-    const presets: Array<{
-      url: string;
-      protocol: APIPreset["protocol"];
-      model: string;
-      name: string;
-    }> = [
-      {
-        url: "https://api.openai.com/v1/chat/completions",
-        protocol: "openai",
-        model: "gpt-4o",
-        name: "openai",
-      },
-      {
-        url: "https://api.anthropic.com/v1/messages",
-        protocol: "anthropic",
-        model: "claude-sonnet-4-5",
-        name: "anthropic",
-      },
-      {
-        url: "https://openrouter.ai/api/v1/chat/completions",
-        protocol: "openai",
-        model: "openai/gpt-4o",
-        name: "openrouter",
-      },
-      { url: "", protocol: "openai", model: "gpt-4o", name: "custom" },
-    ];
-    const prov = presets[choice - 1]!;
+    const choice = Math.max(1, Math.min(choices.length, parseInt(choiceRaw, 10) || 1));
+    const prov = choices[choice - 1]!;
 
     let url = prov.url;
     if (!url) {
@@ -81,31 +76,32 @@ export async function ensureInstallApiConfigured(): Promise<boolean> {
       if (urlIn) url = urlIn;
     }
 
-    const key = (await rl.question("API Key：")).trim();
-    if (!key) {
-      print("API Key 不能为空");
-      return false;
+    const key = (await rl.question("API Key（可留空）：")).trim();
+    const model =
+      (await rl.question(`模型 id [${prov.defaultModel || "gpt-4o"}]：`)).trim() ||
+      prov.defaultModel ||
+      "gpt-4o";
+    let id = prov.id;
+    if (id === "custom") {
+      const rawId = (await rl.question("路由 id [custom]：")).trim() || "custom";
+      id = rawId.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "custom";
+      if (!/^[a-z]/.test(id)) id = `p-${id}`;
     }
 
-    const model = (await rl.question(`模型 id [${prov.model}]：`)).trim() || prov.model;
-    const name = (await rl.question(`Preset 名称 [${prov.name}]：`)).trim() || prov.name;
-
     const path = saveGlobalApiConfig({
-      presets: [
-        {
-          name,
+      providers: {
+        [id]: {
+          displayName: prov.label,
+          protocol: prov.protocol,
           url,
           key,
-          model,
-          protocol: prov.protocol,
-          maxTokens: 32768,
-          maxContext: 128000,
-          stream: true,
-          nativeToolCalling: true,
+          keyRef: `file:${id}`,
+          defaultModel: model,
+          models: [{ id: model, maxContext: 128000, maxTokens: 32768 }],
         },
-      ],
-      defaultPreset: 0,
-      replace: loadPresetsFromMaouConfig().length === 0,
+      },
+      roles: { main: { provider: id, model } },
+      replace: Object.keys(loadProvidersFromMaouConfig()).length === 0,
     });
     print(`已保存：${path}`);
     return isGlobalApiConfigured();
@@ -134,20 +130,18 @@ function setupFromEnv(): boolean {
     process.env.MAOU_MODEL?.trim() || (isAnthropic ? "claude-sonnet-4-5" : "gpt-4o");
   const name = process.env.MAOU_PRESET_NAME?.trim() || (isAnthropic ? "anthropic" : "default");
   saveGlobalApiConfig({
-    presets: [
-      {
-        name,
+    providers: {
+      [name]: {
+        displayName: name,
+        protocol: isAnthropic ? "anthropic" : "openai",
         url,
         key,
-        model,
-        protocol: isAnthropic ? "anthropic" : "openai",
-        maxTokens: 32768,
-        maxContext: 128000,
-        stream: true,
-        nativeToolCalling: true,
+        keyRef: `file:${name}`,
+        defaultModel: model,
+        models: [{ id: model, maxContext: 128000, maxTokens: 32768 }],
       },
-    ],
-    defaultPreset: 0,
+    },
+    roles: { main: { provider: name, model } },
     replace: false,
   });
   return true;

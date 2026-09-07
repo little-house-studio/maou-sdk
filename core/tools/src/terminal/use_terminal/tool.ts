@@ -19,11 +19,14 @@ import { compressTerminalOutput, compressOutput } from "../../compress/output-co
 import { createToolResponse, toolFail } from "../../base.js";
 import { formatMetadata, errToString } from "../../util/common.js";
 import {
-  applyOutputLimit,
+  ENGINE_OUTPUT_CHAR_BUDGET,
+  TERMINAL_LOG_FETCH_LINES,
   inferPromptWaitState,
   peekOverflow,
   peekWaitState,
   rememberWaitState,
+  resolveTerminalLineLimit,
+  retainTerminalOutput,
 } from "../overflow.js";
 import {
   getTerminalReviewer,
@@ -135,7 +138,7 @@ export class TerminalTool extends Tool {
         },
         result_limit: {
           type: "integer",
-          description: "返回结果限制字数，默认 5000，0 表示只返回状态提示",
+          description: "返回结果限制行数，默认 200。0 只返回状态提示。采集最多 256KiB，全文落在会话旁文件。",
         },
         return_when: {
           type: "string",
@@ -172,7 +175,7 @@ export class TerminalTool extends Tool {
         },
         limit: {
           type: "integer",
-          description: "logs 查看字数（manage logs 时可选，默认 5000）",
+          description: "logs 查看行数（manage logs 时可选，默认 200）。全文落在会话旁文件。",
         },
         data: {
           type: "string",
@@ -386,7 +389,7 @@ export class TerminalTool extends Tool {
 
     // description 缺失时用命令兜底（而非报错），减少模型多花一轮补参数。
     const description = aiDescription || `执行命令: ${command.slice(0, 60)}`;
-    const resultLimit = params.result_limit != null ? Number(params.result_limit) : 5000;
+    const resultLimit = resolveTerminalLineLimit(params.result_limit);
 
     // 条件返回路径
     if (returnWhen === "until" || returnWhen === "filter") {
@@ -512,7 +515,12 @@ export class TerminalTool extends Tool {
           cwd: opts.cwd,
           exit_code: bg.exitCode,
         });
-        const body = formatConditionHits(cond, opts.resultLimit);
+        const body = applyResultLimit(
+          formatConditionHits(cond),
+          opts.resultLimit,
+          opts.ctx,
+          terminalId,
+        );
         const meta = formatMetadata({
           terminal_id: terminalId,
           exit_code: bg.exitCode,
@@ -559,7 +567,12 @@ export class TerminalTool extends Tool {
             mode: "until",
             contextLines: opts.contextLines,
           });
-          const body = formatConditionHits(cond, opts.resultLimit);
+          const body = applyResultLimit(
+            formatConditionHits(cond),
+            opts.resultLimit,
+            opts.ctx,
+            terminalId,
+          );
           const meta = formatMetadata({
             terminal_id: terminalId,
             exit_code: t.exitCode ?? null,
@@ -632,11 +645,15 @@ export class TerminalTool extends Tool {
           }
         }
         const hit = cond.hits?.[0];
-        const body =
-          formatConditionHits(cond, opts.resultLimit) +
-          (hit?.context_before?.length
-            ? `\n\n── 上下文 ──\n${[...(hit.context_before ?? []), hit.text, ...(hit.context_after ?? [])].join("\n")}`
-            : "");
+        const body = applyResultLimit(
+          formatConditionHits(cond) +
+            (hit?.context_before?.length
+              ? `\n\n── 上下文 ──\n${[...(hit.context_before ?? []), hit.text, ...(hit.context_after ?? [])].join("\n")}`
+              : ""),
+          opts.resultLimit,
+          opts.ctx,
+          terminalId,
+        );
         const meta = formatMetadata({
           terminal_id: terminalId,
           cwd: opts.cwd,
@@ -751,7 +768,12 @@ export class TerminalTool extends Tool {
         maxHits: opts.maxHits,
         contextLines: opts.contextLines,
       });
-      const body = formatConditionHits(cond, opts.resultLimit);
+      const body = applyResultLimit(
+        formatConditionHits(cond),
+        opts.resultLimit,
+        opts.ctx,
+        result.terminalId,
+      );
       const meta = formatMetadata({
         terminal_id: result.terminalId,
         exit_code: result.exitCode ?? null,
@@ -1247,7 +1269,7 @@ export class TerminalTool extends Tool {
         cwd,
         description,
         timeoutMs,
-        resultLimit,
+        ENGINE_OUTPUT_CHAR_BUDGET,
       );
 
       if (isPromotedToBackground(result, ctx)) {
@@ -1342,6 +1364,7 @@ export class TerminalTool extends Tool {
           cwd,
           terminal_id: result.terminalId,
           duration_ms: Math.round(result.durationMs),
+          spillPath: peekOverflow(result.terminalId),
         },
       });
     } catch (err: unknown) {
@@ -1398,7 +1421,14 @@ export class TerminalTool extends Tool {
         });
         return createToolResponse(ok,
           `后台任务「${description}」${status}。\n${truncated ? `\n输出:\n${truncated}\n` : ""}\n${meta}`,
-          { payload: { terminal_id: result.terminalId, exit_code: result.exitCode, cwd } },
+          {
+            payload: {
+              terminal_id: result.terminalId,
+              exit_code: result.exitCode,
+              cwd,
+              spillPath: peekOverflow(result.terminalId),
+            },
+          },
         );
       }
 
@@ -1560,10 +1590,10 @@ export class TerminalTool extends Tool {
     const id = params.id ? String(params.id) : "";
     if (!id) return createToolResponse(false, "logs 操作缺少 id 参数");
 
-    const limit = Math.max(0, Number(params.limit ?? 5000) || 5000);
+    const limit = resolveTerminalLineLimit(params.limit);
 
     try {
-      const rawOutput = await be(ctx).logs(id, ctx.agentName, limit);
+      const rawOutput = await be(ctx).logs(id, ctx.agentName, TERMINAL_LOG_FETCH_LINES);
       const terminals = be(ctx).list(ctx.agentName);
       const term = terminals.find((t) => t.id === id);
       const stateLabel = term
@@ -1648,7 +1678,7 @@ function applyResultLimit(
   ctx?: ToolContext,
   terminalId?: string,
 ): string {
-  const r = applyOutputLimit(output, limit, {
+  const r = retainTerminalOutput(output, limit, {
     sessionId: ctx?.sessionId,
     projectRoot: ctx?.projectRoot,
     terminalId,

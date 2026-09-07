@@ -141,16 +141,21 @@ export function createCliSession(opts: CliSessionOpts): CliSession {
         model?: string;
         maxContext?: number;
         maxTokens?: number;
+        _providerName?: string;
       } | undefined;
-      if (main?.name && main?.model) {
-        const { resolveContextWindow } = await import("@little-house-studio/llm");
-        store.setAgentMeta(
-          config.name,
-          main.name,
-          main.model,
-          resolveContextWindow(main as Record<string, unknown>).window,
-        );
-        return;
+      if (main?.model) {
+        const { runtimePresetRoute } = await import("@little-house-studio/types");
+        const route = runtimePresetRoute(main);
+        if (route?.provider && route.model) {
+          const { resolveContextWindow } = await import("@little-house-studio/llm");
+          store.setAgentMeta(
+            config.name,
+            route.provider,
+            route.model,
+            resolveContextWindow(main as Record<string, unknown>).window,
+          );
+          return;
+        }
       }
     } catch {
       /* fall through */

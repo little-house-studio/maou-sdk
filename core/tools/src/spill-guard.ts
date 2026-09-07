@@ -1,7 +1,7 @@
 /**
  * 工具返回体的统一收口：超限时头尾进上下文，全文落盘并在正文里给出路。
  *
- * 只有 use_terminal 有过这个待遇，其余十几个工具是纯截断、字节永久丢失。
+ * 终端在工具内已经按行外溢；这里不再二次落盘。
  */
 
 import type { ToolCall, ToolContext, ToolResponse } from "./base.js";
@@ -22,6 +22,9 @@ const SPILL_EXEMPT = new Set([
   "read_web",
   "web_fetch",
   "fetch_url",
+  "use_terminal",
+  "bash",
+  "terminal_manage",
 ]);
 
 export function isSpillExempt(toolName: string): boolean {

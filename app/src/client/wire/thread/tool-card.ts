@@ -29,13 +29,25 @@ export function isWriteTool(name: string): boolean {
   return resolveToolCardDress(name) === "edit";
 }
 
+const TITLE_ARG_KEYS = [
+  "path",
+  "file",
+  "file_path",
+  "target",
+  "cwd",
+  "pattern",
+  "glob",
+  "query",
+  "command",
+] as const;
+
 export function extractToolPath(args: string, body = ""): string | undefined {
   const from = (raw: string): string | undefined => {
     const t = raw.trim();
     if (!t) return undefined;
     try {
       const v = JSON.parse(t) as Record<string, unknown>;
-      for (const key of ["path", "file", "file_path", "target", "cwd"]) {
+      for (const key of TITLE_ARG_KEYS) {
         const p = v[key];
         if (typeof p === "string" && p.trim()) return p.trim();
       }
@@ -48,6 +60,37 @@ export function extractToolPath(args: string, body = ""): string | undefined {
     return m?.[1]?.replace(/[.,)]+$/, "");
   };
   return from(args) || from(body);
+}
+
+/** 调用参数收成 JSON，给标题/输入区用。空对象不写。 */
+export function encodeToolArgs(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw.trim();
+  if (typeof raw !== "object") return "";
+  try {
+    const s = JSON.stringify(raw);
+    return s === "{}" || s === "[]" ? "" : s;
+  } catch {
+    return "";
+  }
+}
+
+/** 折叠标题：description，否则 path / pattern / command。 */
+export function toolTitleFromArgs(args: string): string {
+  if (!args.trim()) return "";
+  try {
+    const v = JSON.parse(args) as Record<string, unknown>;
+    if (typeof v.description === "string" && v.description.trim()) {
+      return v.description.trim();
+    }
+    for (const key of TITLE_ARG_KEYS) {
+      const p = v[key];
+      if (typeof p === "string" && p.trim()) return p.trim();
+    }
+  } catch {
+    /* free-form */
+  }
+  return extractToolPath(args) ?? "";
 }
 
 export function todoSummary(result: string): string | undefined {
@@ -122,7 +165,9 @@ export function resolveToolCard(message: DraftMessage): ResolvedToolCard {
   const args = t?.args ?? "";
   const result = t?.result ?? message.body ?? "";
   const description =
-    (t?.description ?? "").trim() || firstDescriptionFromArgs(args);
+    (t?.description ?? "").trim() ||
+    toolTitleFromArgs(args) ||
+    extractToolCallIntent(result);
   return {
     id: message.id,
     name,
@@ -133,17 +178,6 @@ export function resolveToolCard(message: DraftMessage): ResolvedToolCard {
     durationMs: t?.durationMs,
     description,
   };
-}
-
-function firstDescriptionFromArgs(args: string): string {
-  if (!args.trim()) return "";
-  try {
-    const v = JSON.parse(args) as { description?: unknown };
-    if (typeof v?.description === "string") return v.description.trim();
-  } catch {
-    /* free-form */
-  }
-  return "";
 }
 
 export function asToolParams(raw: unknown): Record<string, unknown> {
@@ -183,10 +217,10 @@ export function readToolIntent(raw: unknown): string {
   return "";
 }
 
-/** `▶ use_terminal · scan routes` 第一行里的调用意图 */
+/** `▶ use_terminal · scan routes` / `✓ read_file · ~/.ssh/config` 第一行里的调用意图 */
 export function extractToolCallIntent(text: string): string {
   const first = (text || "").split("\n")[0]?.trim() ?? "";
-  const m = first.match(/^▶\s*[a-zA-Z_][\w.-]*\s+·\s+(.+)$/);
+  const m = first.match(/^[▶✓✗×❌]\s*[a-zA-Z_][\w.-]*\s+·\s+(.+)$/);
   return m?.[1]?.trim() ?? "";
 }
 

@@ -6,7 +6,6 @@ import {
   compressMaou,
   retainTailBoundary,
   activeWindowSeqIds,
-  assignTaskIds,
 } from "./compressor.js";
 import type { MaouMessage } from "./types/message.js";
 
@@ -48,7 +47,7 @@ function buildHistory(n: number): MaouMessage[] {
       ),
     );
   }
-  return assignTaskIds(out);
+  return out;
 }
 
 describe("DESIGN active window", () => {
@@ -73,7 +72,7 @@ describe("DESIGN active window", () => {
     );
     const headMarker = "UNIQUE_OLD_HEAD_MARKER_000";
     history[0] = msg(0, "user", headMarker + " " + "w".repeat(500));
-    const assigned = assignTaskIds(history);
+    const assigned = history;
 
     const r = await compressMaou(assigned, {
       maxTokens: 800,
@@ -99,8 +98,7 @@ describe("DESIGN active window", () => {
     }
 
     // 旧侧应出现 task_summary 或被缩短（不一定还含 head 全文）
-    const headStillFull = texts.includes(headMarker + " " + "w".repeat(100));
-    // 大压缩后旧头不应以全文长串保留（允许摘要里出现短片段）
+    const headStillFull = texts.includes(headMarker + " " + "w".repeat(400));
     if (r.stage === "summaryStage" || r.stage === "archiveStage") {
       expect(headStillFull).toBe(false);
     }

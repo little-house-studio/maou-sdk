@@ -155,6 +155,8 @@ export {
   createCallMainAgent,
   loadPresetsFromMaouConfig,
   loadRawPresetsFromMaouConfig,
+  loadProvidersFromMaouConfig,
+  loadApiDocument,
   getApiPreset,
   getDefaultPresetFromMaouConfig,
   getDefaultPresetFromConfigStore,

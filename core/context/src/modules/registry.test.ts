@@ -47,7 +47,7 @@ describe("context modules", () => {
         droppedSummary: "",
         originalTokens: 0,
         compressedTokens: 0,
-        taskBlocks: ["custom"],
+        blockIds: ["custom"],
       }),
     };
     registerContextModule(stub);
@@ -68,7 +68,7 @@ describe("context modules", () => {
           droppedSummary: "echo-ok",
           originalTokens: 10,
           compressedTokens: 9,
-          taskBlocks: [],
+          blockIds: [],
         };
       },
     });

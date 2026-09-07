@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { compressMaou } from "./compressor.js";
 import { ContextEngine } from "./context-engine.js";
 import { HarnessSessionStore } from "./harness-session-store.js";
-import { TaskSessionStore } from "./task-session-store.js";
 import {
   contextStructure,
   describeContextDrift,
@@ -44,7 +43,7 @@ describe("seqRangeOf / removedSeqRange", () => {
   });
 });
 
-describe("task summaries point back at the seq range they replaced", () => {
+describe("summaries point back at the seq range they replaced", () => {
   it("fills compact.seqRange on the summary message", async () => {
     const history: MaouMessage[] = [];
     for (let i = 0; i < 40; i++) {
@@ -84,11 +83,9 @@ describe("getCompactedRange", () => {
 
   it("returns the pre-compression originals for the range the report names", async () => {
     const harnessStore = new HarnessSessionStore({ maouRoot: dir });
-    const taskStore = new TaskSessionStore(dir, "test-agent");
     const engine = new ContextEngine({
       sessionId: SID,
       harnessStore,
-      taskStore,
       summarizer: async () => "摘要",
     });
 

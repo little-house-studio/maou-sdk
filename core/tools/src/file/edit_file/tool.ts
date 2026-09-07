@@ -149,7 +149,7 @@ export class EditFileTool extends Tool {
           "可能的原因与对策：",
           "1. 缩进/空白差异：用 read 工具查看目标行的精确内容（含前导空格），再重新构造 old_text。",
           "2. 文本不存在：用 grep 工具确认文件中是否包含该关键字。",
-          "3. 文件过大：先用 read start_line/end_line 缩小范围定位目标行。",
+          "3. 文件过大：先用 read offset/limit 缩小范围定位目标行。",
         ].join("\n");
         return toolFail("precondition", `未找到要替换的文本。
 ${hint}`, {

@@ -6,6 +6,8 @@ export {
   resolveMaouConfigPath,
   loadPresetsFromMaouConfig,
   loadRawPresetsFromMaouConfig,
+  loadProvidersFromMaouConfig,
+  loadApiDocument,
   getApiPreset,
   getDefaultPresetFromMaouConfig,
   getRolePresetFromMaouConfig,

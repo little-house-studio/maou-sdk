@@ -43,12 +43,11 @@ function makeMsgs(n, tag = "") {
 }
 
 async function main() {
-  let ContextEngine, HarnessSessionStore, TaskSessionStore, estimateTokens;
+  let ContextEngine, HarnessSessionStore, estimateTokens;
   try {
     const mod = await import(rootPkg);
     ContextEngine = mod.ContextEngine;
     HarnessSessionStore = mod.HarnessSessionStore;
-    TaskSessionStore = mod.TaskSessionStore;
     estimateTokens = mod.estimateTokens;
   } catch (e) {
     console.error("需要先编译 context 包：");
@@ -60,10 +59,9 @@ async function main() {
   const root = mkdtempSync(join(tmpdir(), "maou-b1-demo-"));
   const sessionId = "demo-session";
   const harness = new HarnessSessionStore({ maouRoot: root });
-  const taskStore = new TaskSessionStore(root, "coding");
 
   const makeEngine = () =>
-    new ContextEngine({ sessionId, harnessStore: harness, taskStore });
+    new ContextEngine({ sessionId, harnessStore: harness });
 
   console.log(`
 ╔══════════════════════════════════════════════════════════╗

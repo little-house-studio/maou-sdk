@@ -5,6 +5,12 @@
 import type { Summarizer } from "../compressor.js";
 import type { CompressionStage } from "../types/compression.js";
 import type { MaouMessage } from "../types/message.js";
+import type { FoldContext, FoldResult } from "../scheme-extension.js";
+import type {
+  FoldStageConfig,
+  MicroCompactCatalog,
+  TraditionalMajorScheme,
+} from "@little-house-studio/context-components";
 
 export const DEFAULT_SUMMARIZER_PROMPT = `你在为编程助手做上下文压缩。把上方对话收成一份可续工的 checkpoint。
 
@@ -54,8 +60,14 @@ export interface ContextCompressContext<C = unknown> {
   currentStage: CompressionStage;
   force?: boolean;
   knownTokens?: number;
-  activeTaskIds?: string[];
+  fold?: (ctx: FoldContext) => Promise<FoldResult | null>;
   config: C;
+  microTurn?: number;
+  microCatalog?: MicroCompactCatalog;
+  microRounds?: number;
+  sessionRoot?: string;
+  foldStage?: Partial<FoldStageConfig> | false;
+  majorScheme?: TraditionalMajorScheme;
 }
 
 export interface ContextModuleResult {
@@ -65,8 +77,8 @@ export interface ContextModuleResult {
   droppedSummary: string;
   originalTokens: number;
   compressedTokens: number;
-  taskBlocks: string[];
-  perTaskOriginals?: Map<string, MaouMessage[]>;
+  blockIds: string[];
+  foldedOriginals?: Map<string, MaouMessage[]>;
 }
 
 export interface ContextModule<C = unknown> {

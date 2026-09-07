@@ -61,6 +61,7 @@ export function createLivePorts(): AppPorts {
       setWorkspaceInstructions: api.setWorkspaceInstructions,
       fetchLlmConfig: api.fetchLlmConfig,
       saveLlmConfig: api.saveLlmConfig,
+      scanLlmModels: api.scanLlmModels,
       parseLlmClipboard: api.parseLlmClipboard,
       testLlmConnection: api.testLlmConnection,
       fetchSvgProbeGallery: api.fetchSvgProbeGallery,

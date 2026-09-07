@@ -103,6 +103,7 @@ type ChatLineLike = {
   toolName?: string;
   toolCallId?: string;
   toolDescription?: string;
+  toolArgs?: string;
   thinkStartedAt?: number;
   thinkDurationMs?: number;
   thinkOutputTokens?: number;
@@ -1334,6 +1335,7 @@ export function chatLinesToDraftMessages(
         tool: {
           name: toolName,
           result: body,
+          args: (l.toolArgs || "").trim() || undefined,
           done: !inFlight,
           isError: isErr,
           description,

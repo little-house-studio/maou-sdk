@@ -23,6 +23,42 @@ export function readToolIntent(raw: unknown): string {
   return "";
 }
 
+export function encodeToolArgs(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw.trim();
+  if (typeof raw !== "object") return "";
+  try {
+    const s = JSON.stringify(raw);
+    return s === "{}" || s === "[]" ? "" : s;
+  } catch {
+    return "";
+  }
+}
+
+export function collectToolCallArgs(
+  msgs: Array<Record<string, unknown>>,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const m of msgs) {
+    const calls = m.toolCalls ?? m.tool_calls ?? m.native_tool_calls;
+    if (!Array.isArray(calls)) continue;
+    for (const tc of calls) {
+      if (!tc || typeof tc !== "object") continue;
+      const rec = tc as Record<string, unknown>;
+      const fn =
+        rec.function && typeof rec.function === "object"
+          ? (rec.function as Record<string, unknown>)
+          : undefined;
+      const id = String(rec.id ?? fn?.id ?? "").trim();
+      const args = encodeToolArgs(
+        rec.arguments ?? rec.parameters ?? fn?.arguments ?? fn?.parameters,
+      );
+      if (id && args) map.set(id, args);
+    }
+  }
+  return map;
+}
+
 export function collectToolCallIntents(
   msgs: Array<Record<string, unknown>>,
 ): Map<string, string> {
@@ -97,16 +133,21 @@ export function slimAssistantToolCalls(
 export function readHistoryToolMeta(
   m: Record<string, unknown>,
   intents: Map<string, string>,
-): { toolDescription?: string; durationMs?: number } {
+  argsByCall?: Map<string, string>,
+): { toolDescription?: string; durationMs?: number; toolArgs?: string } {
   const toolCallId = String(m.toolCallId ?? m.tool_call_id ?? "").trim();
-  const fromParams = readToolIntent(
-    m.tool_parameters ?? m.toolParameters ?? m.parameters,
-  );
+  const rawParams = m.tool_parameters ?? m.toolParameters ?? m.parameters;
+  const fromParams = readToolIntent(rawParams);
   const fromCall = toolCallId ? intents.get(toolCallId) : undefined;
   const toolDescription = fromParams || fromCall || undefined;
+  const toolArgs =
+    encodeToolArgs(rawParams) ||
+    (toolCallId ? argsByCall?.get(toolCallId) : undefined) ||
+    undefined;
   const durationMs = readToolElapsed(m);
   return {
     ...(toolDescription ? { toolDescription } : {}),
+    ...(toolArgs ? { toolArgs } : {}),
     ...(durationMs != null ? { durationMs } : {}),
   };
 }

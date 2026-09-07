@@ -1,7 +1,6 @@
 export { WireShell } from "./WireShell";
 export { SidebarFrame } from "./SidebarFrame";
 export { LiveMid } from "./LiveMid";
-export { DraftMid } from "./DraftMid";
 export { LeftAside } from "./LeftAside";
 export { RightAside } from "./RightAside";
 export { ActivityBar } from "./ActivityBar";
@@ -17,7 +16,6 @@ export {
   SHELL_ACTIVITY,
   SHELL_ASIDE_ANIM_MS,
   LIVE_FILES_RAIL,
-  DRAFT_FILES_RAIL,
 } from "./metrics";
 export {
   SHELL_FOCUS_REGIONS,

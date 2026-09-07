@@ -11,10 +11,10 @@ import { setDcgEvaluatorForTest, resetDcgBinaryCache } from "../../security/dcg/
 import { setMode, setTerminalPolicyRoot } from "../../security/index.js";
 import { resetTerminalBackendForTest } from "../resolve-backend.js";
 
-function stubCtx(agentName: string): ToolContext {
+function stubCtx(agentName: string, projectRoot: string): ToolContext {
   return {
-    projectRoot: process.cwd(),
-    workingDir: process.cwd(),
+    projectRoot,
+    workingDir: projectRoot,
     agentMode: "execute",
     agentName,
     sessionId: "term-returns-test",
@@ -61,7 +61,7 @@ describe("use_terminal 消息返回", () => {
   it("echo 成功：正文 + metadata + payload + footer + 临时终端销毁", async () => {
     const agent = `ret-echo-${Date.now()}`;
     setup(agent);
-    const ctx = stubCtx(agent);
+    const ctx = stubCtx(agent, tmp);
 
     const res = await tool.execute(
       {
@@ -109,7 +109,7 @@ describe("use_terminal 消息返回", () => {
     const cmd = "exit 7";
     const res = await tool.execute(
       { action: "run", command: cmd, description: "fail", reason: "unit test" },
-      stubCtx(agent),
+      stubCtx(agent, tmp),
     );
     expect(res.ok).toBe(false);
     expect(res.message).toMatch(/失败|退出码/);
@@ -120,7 +120,7 @@ describe("use_terminal 消息返回", () => {
   it("前台超时：转后台并汇报，进程仍在", async () => {
     const agent = `ret-to-${Date.now()}`;
     setup(agent);
-    const ctx = stubCtx(agent);
+    const ctx = stubCtx(agent, tmp);
     const cmd = process.platform === "win32" ? "ping -n 20 127.0.0.1" : "sleep 20";
     const res = await tool.execute(
       {
@@ -159,7 +159,7 @@ describe("use_terminal 消息返回", () => {
   it("后台 + logs + stop + rm 的 payload/正文", async () => {
     const agent = `ret-bg-${Date.now()}`;
     setup(agent);
-    const ctx = stubCtx(agent);
+    const ctx = stubCtx(agent, tmp);
     const cmd = process.platform === "win32" ? "ping -n 20 127.0.0.1" : "sleep 20";
     const started = await tool.execute(
       {
@@ -207,7 +207,7 @@ describe("use_terminal 消息返回", () => {
     setup(agent);
     const res = await tool.execute(
       { action: "write", id: "nope", data: "x", reason: "unit test" },
-      stubCtx(agent),
+      stubCtx(agent, tmp),
     );
     expect(res.ok).toBe(false);
     expect(res.message).toMatch(/不支持 write/);

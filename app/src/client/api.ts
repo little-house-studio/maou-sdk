@@ -108,6 +108,8 @@ export type ChatHistoryLine = {
   toolCallId?: string;
   /** tool_call 参数 description */
   toolDescription?: string;
+  /** tool_call 参数 JSON */
+  toolArgs?: string;
   durationMs?: number;
   loopDurationMs?: number;
   /** 助手消息上的 tool_calls，用来回填工具行意图 */
@@ -738,15 +740,68 @@ export type LlmConfigPresetDto = {
   keyRef?: string;
 };
 
+export type LlmRoleBinding = { provider: string; model: string };
+
 export type LlmConfigRoles = {
-  main?: string;
-  fast?: string;
-  vision?: string;
-  helper?: string;
+  main?: LlmRoleBinding;
+  fast?: LlmRoleBinding;
+  vision?: LlmRoleBinding;
+  helper?: LlmRoleBinding;
+};
+
+export type LlmCatalogEntry = {
+  id: string;
+  label: string;
+  protocol: string;
+  defaultUrl: string;
+  configured?: boolean;
+  models: Array<{
+    id: string;
+    name?: string;
+    supportsImage?: boolean;
+    supportsReasoning?: boolean;
+  }>;
+};
+
+export type LlmProviderModelDto = {
+  id: string;
+  name: string;
+  maxContext: number;
+  maxTokens: number;
+  supportsImage: boolean;
+  supportsAudio: boolean;
+  supportsVideo: boolean;
+  supportsReasoning: boolean;
+  nativeToolCalling: boolean;
+  inputPricePerMt: string;
+  outputPricePerMt: string;
+  cacheHitPricePerMt: string;
+  temperature: string;
+  topP: string;
+  presencePenalty: string;
+  frequencyPenalty: string;
+  customRequestJson: string;
+};
+
+export type LlmProviderDto = {
+  id: string;
+  displayName: string;
+  protocol: string;
+  url: string;
+  urlParams: string;
+  maxConcurrent: string;
+  keyMasked: string;
+  hasKey: boolean;
+  keyRef: string;
+  defaultModel: string;
+  models: LlmProviderModelDto[];
 };
 
 export type LlmConfigSnapshot = {
   configPath: string;
+  providers: LlmProviderDto[];
+  catalog: LlmCatalogEntry[];
+  protocols: Array<{ id: string; label: string }>;
   defaultPreset: number;
   presets: LlmConfigPresetDto[];
   roles: LlmConfigRoles;
@@ -757,6 +812,37 @@ export type LlmConfigSnapshot = {
     defaultUrl: string;
   }>;
   roleDefs: Array<{ id: string; label: string; hint: string }>;
+};
+
+export type LlmProviderWrite = {
+  id: string;
+  displayName?: string;
+  protocol?: string;
+  url: string;
+  urlParams?: string;
+  key?: string;
+  keyRef?: string;
+  defaultModel?: string;
+  maxConcurrent?: string;
+  models: Array<{
+    id: string;
+    name?: string;
+    maxContext?: number;
+    maxTokens?: number;
+    supportsImage?: boolean;
+    supportsAudio?: boolean;
+    supportsVideo?: boolean;
+    supportsReasoning?: boolean;
+    nativeToolCalling?: boolean;
+    inputPricePerMt?: string;
+    outputPricePerMt?: string;
+    cacheHitPricePerMt?: string;
+    temperature?: string;
+    topP?: string;
+    presencePenalty?: string;
+    frequencyPenalty?: string;
+    customRequestJson?: string;
+  }>;
 };
 
 export type LlmConfigPresetWrite = {
@@ -812,9 +898,10 @@ export async function parseLlmClipboard(text: string): Promise<LlmClipboardParse
   return jsonOrThrow<LlmClipboardParseResult & { ok: boolean }>(r);
 }
 
-/** Persist presets + roles via saveGlobalApiConfig. */
+/** Persist providers + roles via saveGlobalApiConfig. */
 export async function saveLlmConfig(body: {
-  presets: LlmConfigPresetWrite[];
+  providers?: LlmProviderWrite[];
+  presets?: LlmConfigPresetWrite[];
   defaultPreset?: number;
   roles?: LlmConfigRoles;
   replace?: boolean;
@@ -825,6 +912,26 @@ export async function saveLlmConfig(body: {
     body: JSON.stringify(body),
   });
   return jsonOrThrow<LlmConfigSnapshot & { ok: boolean }>(r);
+}
+
+export async function scanLlmModels(body: {
+  url?: string;
+  key?: string;
+  protocol?: string;
+  urlParams?: string;
+  name?: string;
+}): Promise<{ supported: boolean; models: Array<{ id: string }>; reason?: string }> {
+  const r = await fetch("/api/config/llm/scan-models", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow<{
+    ok: boolean;
+    supported: boolean;
+    models: Array<{ id: string }>;
+    reason?: string;
+  }>(r);
 }
 
 /** 真实 chat 探测 LLM preset（含延迟） */

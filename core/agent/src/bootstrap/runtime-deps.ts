@@ -3,14 +3,18 @@
  */
 
 import { join } from "node:path";
-import { ConfigStore, resolveUserMaouRoot } from "@little-house-studio/types";
+import {
+  ConfigStore,
+  resolveUserMaouRoot,
+  resolveProviderModel,
+} from "@little-house-studio/types";
 import { SessionStore } from "@little-house-studio/context";
 import {
   ToolRegistry,
   registerBuiltins,
   setTerminalPolicyRoot,
 } from "@little-house-studio/tools";
-import { LLMClient } from "@little-house-studio/llm";
+import { LLMClient, normalizeApiPreset } from "@little-house-studio/llm";
 import type { APIPreset } from "@little-house-studio/llm";
 import { AgentRegistry } from "../agent/registry.js";
 import type { AgentEntry } from "../agent/registry.js";
@@ -21,6 +25,7 @@ import {
 import {
   getDefaultPresetFromConfigStore,
   loadPresetsFromMaouConfig,
+  loadProvidersFromMaouConfig,
   getDefaultPresetFromMaouConfig,
 } from "./presets.js";
 import { applyAgentSkillOptions } from "./skills.js";
@@ -132,43 +137,64 @@ export function listAgentsForCli(
   }
 }
 
-/** CLI getPreset：按 name/model 匹配，否则第一个 */
+/** CLI getPreset：真路由 id + model id */
 export function resolvePresetForCli(
   provider: string,
   model: string,
   configPath?: string,
 ): APIPreset {
+  let providers: Record<string, import("@little-house-studio/types").ApiProvider>;
+  try {
+    providers = loadProvidersFromMaouConfig(configPath);
+  } catch {
+    providers = {};
+  }
+  const hit = resolveProviderModel(providers, provider, model);
+  if (hit) {
+    return normalizeApiPreset(hit as unknown as APIPreset);
+  }
   const presets = loadPresetsFromMaouConfig(configPath);
   const found =
-    presets.find((p) => p.name === model || p.model === model || p.name === provider) ??
-    presets[0];
+    presets.find(
+      (p) =>
+        p.model === model ||
+        p.name === model ||
+        p.name === provider ||
+        (p as { _providerName?: string })._providerName === provider,
+    ) ?? presets[0];
   if (!found) {
     throw new Error(
-      `未找到模型配置: ${model}（config.json 里有 ${presets.length} 个 preset）`,
+      `未找到模型配置: ${provider}/${model}（config.json 里有 ${Object.keys(providers).length} 个厂商）`,
     );
   }
   return found;
 }
 
 export function listProvidersForCli(configPath?: string): { id: string; name?: string }[] {
-  const presets = loadPresetsFromMaouConfig(configPath);
-  const seen = new Map<string, string>();
-  for (const p of presets) {
-    const id = p.name ?? p.model ?? "unknown";
-    seen.set(id, p.name ?? id);
+  try {
+    const providers = loadProvidersFromMaouConfig(configPath);
+    return Object.entries(providers).map(([id, p]) => ({
+      id,
+      name: p.displayName ?? id,
+    }));
+  } catch {
+    return [];
   }
-  return [...seen.entries()].map(([id, name]) => ({ id, name }));
 }
 
 export function listModelsForCli(
   provider: string,
   configPath?: string,
 ): { id: string; name?: string }[] {
-  const presets = loadPresetsFromMaouConfig(configPath);
-  return presets
-    .filter((p) => p.name === provider)
-    .map((p) => ({
-      id: p.model ?? p.name ?? "unknown",
-      name: p.model ?? p.name ?? "unknown",
+  try {
+    const providers = loadProvidersFromMaouConfig(configPath);
+    const p = providers[provider];
+    if (!p) return [];
+    return p.models.map((m) => ({
+      id: m.id,
+      name: m.name ?? m.id,
     }));
+  } catch {
+    return [];
+  }
 }

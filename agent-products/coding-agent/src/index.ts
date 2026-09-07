@@ -18,7 +18,12 @@ import {
 import type { AgentHandle } from "@little-house-studio/agent";
 import type { Summarizer } from "@little-house-studio/context";
 import type { SessionStore } from "@little-house-studio/context";
-import type { ToolRegistry } from "@little-house-studio/tools";
+import {
+  TaskSessionStore,
+  createTaskContextExtension,
+  createTaskPlanPersist,
+} from "@little-house-studio/context-task";
+import { TASK_MANAGER, type ToolRegistry } from "@little-house-studio/tools";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { ConfigStore } from "@little-house-studio/types";
 import { resolveUserMaouRoot } from "@little-house-studio/types";
@@ -94,6 +99,8 @@ export interface CodingAgentOptions {
   forceMaterialize?: boolean;
   toolCompression?: "off" | "normal" | "aggressive";
   enableCompression?: boolean;
+  /** 挂任务级上下文插件（打标、按 task 折叠、任务块落盘）。默认关。 */
+  enableTaskContext?: boolean;
   summarizer?: Summarizer;
   log?: (level: string, message: string) => void;
   enablePostLogger?: boolean;
@@ -136,6 +143,20 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
   // P1: doc_extract hooks（默认关；MAOU_DOC_EXTRACT=1 或 docExtractMode:true）
   const hooks = createCodingHooks({ docExtractMode: opts.docExtractMode });
 
+  let contextExtensions;
+  let onSessionStarted;
+  if (opts.enableTaskContext) {
+    const taskStore = new TaskSessionStore(maouRoot, name);
+    TASK_MANAGER.setPersistCallback(createTaskPlanPersist(taskStore));
+    contextExtensions = [createTaskContextExtension(taskStore)];
+    onSessionStarted = (sessionId: string) => {
+      const pending = taskStore.loadPendingTaskPlan(sessionId);
+      if (pending.length > 0) {
+        TASK_MANAGER.restore(sessionId, pending);
+      }
+    };
+  }
+
   const runtime = new Runtime({
     configStore: opts.configStore,
     sessionStore: opts.sessionStore,
@@ -144,6 +165,8 @@ export function createCodingAgent(opts: CodingAgentOptions): CodingAgent {
     maouRoot,
     projectRoot,
     enableCompression: opts.enableCompression,
+    contextExtensions,
+    onSessionStarted,
     agentName: name,
     summarizer: opts.summarizer,
     // coding 产品默认开启会话文件 diff 监听（DESIGN.md 变更感知）

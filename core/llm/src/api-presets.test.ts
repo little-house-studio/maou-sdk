@@ -42,10 +42,11 @@ describe("api-presets", () => {
     expect(loaded[0]?.key).toBe("sk-test");
     expect(getApiPreset("openai/gpt-4o", path)?.model).toBe("gpt-4o");
     const disk = JSON.parse(readFileSync(path, "utf-8")) as {
-      api: { presets: Array<{ key?: string; keyRef?: string }> };
+      api: { providers: Record<string, { key?: string; keyRef?: string }> };
     };
-    expect(disk.api.presets[0]?.key).toBeUndefined();
-    expect(disk.api.presets[0]?.keyRef).toMatch(/^file:/);
+    const first = Object.values(disk.api.providers)[0];
+    expect(first?.key).toBeUndefined();
+    expect(first?.keyRef).toMatch(/^file:/);
   });
 
   it("merges by name and can remove", () => {
@@ -83,9 +84,10 @@ describe("api-presets", () => {
       { configPath: path },
     );
     const disk = JSON.parse(readFileSync(path, "utf-8")) as {
-      api: { presets: Array<{ models?: unknown[] }> };
+      api: { providers: Record<string, { models?: unknown[] }> };
     };
-    expect(Array.isArray(disk.api.presets[0]?.models)).toBe(true);
+    const first = Object.values(disk.api.providers)[0];
+    expect(Array.isArray(first?.models)).toBe(true);
   });
 
   it("clears roles that pointed at a removed preset", () => {
@@ -115,9 +117,10 @@ describe("api-presets", () => {
     );
     removeApiPreset("gone", { configPath: path });
     const disk = JSON.parse(readFileSync(path, "utf-8")) as {
-      api: { roles?: Record<string, string> };
+      api: { roles?: Record<string, { provider?: string; model?: string } | string> };
     };
     expect(disk.api.roles?.fast).toBeUndefined();
-    expect(disk.api.roles?.main).toBe("keep");
+    const main = disk.api.roles?.main;
+    expect(typeof main === "object" ? main?.provider : main).toBe("keep");
   });
 });

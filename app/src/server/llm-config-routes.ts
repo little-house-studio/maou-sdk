@@ -14,8 +14,10 @@ import {
   loadLlmConfigSnapshot,
   resolvePresetForConnectionTest,
   saveLlmConfigFromClient,
+  scanDraftModels,
   type LlmConfigPresetWrite,
   type LlmConfigRoles,
+  type LlmProviderWrite,
 } from "./llm-config.js";
 import {
   listSvgProbeGallery,
@@ -234,16 +236,63 @@ export function mountLlmConfigRoutes(app: Express): void {
     }
   });
 
+  app.post("/api/config/llm/scan-models", async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as {
+        url?: string;
+        key?: string;
+        protocol?: string;
+        urlParams?: string;
+        name?: string;
+      };
+      const result = await scanDraftModels(body);
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
   app.put("/api/config/llm", (req, res) => {
     try {
       const body = (req.body ?? {}) as {
+        providers?: LlmProviderWrite[];
         presets?: LlmConfigPresetWrite[];
         defaultPreset?: number;
         roles?: LlmConfigRoles;
         replace?: boolean;
       };
+      if (Array.isArray(body.providers)) {
+        for (const p of body.providers) {
+          if (!p || typeof p !== "object") {
+            res.status(400).json({ ok: false, error: "invalid provider row" });
+            return;
+          }
+          if (!String(p.id ?? "").trim()) {
+            res.status(400).json({ ok: false, error: "provider.id required" });
+            return;
+          }
+          if (!String(p.url ?? "").trim()) {
+            res.status(400).json({ ok: false, error: "provider.url required" });
+            return;
+          }
+          if (!p.models?.some((m) => String(m.id ?? "").trim())) {
+            res.status(400).json({ ok: false, error: "provider 至少需要一个 model id" });
+            return;
+          }
+        }
+        const snap = saveLlmConfigFromClient({
+          providers: body.providers,
+          roles: body.roles,
+          replace: body.replace !== false,
+        });
+        res.json({ ok: true, ...snap });
+        return;
+      }
       if (!Array.isArray(body.presets)) {
-        res.status(400).json({ ok: false, error: "presets array required" });
+        res.status(400).json({ ok: false, error: "providers or presets array required" });
         return;
       }
       for (const p of body.presets) {

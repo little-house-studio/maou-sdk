@@ -1,46 +1,63 @@
 /**
- * ContextEngine —— 编排 assignTaskIds + compress + persist + toLLMHistory。
+ * ContextEngine —— 编排 seed + compress + persist + toLLMHistory。
  *
- * 把 HarnessSessionStore / TaskSessionStore / 上下文模块 接成闭环：
- *   seedWorkingSet(session) → （可选）compress → persist → toLLMHistory
- *   restoreTask(taskId)  → 从 TaskSessionStore 恢复原文
- *   getBySeqId(seqId)    → 从 HarnessSessionStore 回溯
- *
- * B1：工作集优先从 harness 恢复，再 append SessionStore 增量；
- * 压缩结果写入 harness（含 sourceSessionMessageCount），下一轮不再从全量 session 重压。
+ * 把 HarnessSessionStore / 上下文模块接成闭环。任务语义走 extensions。
  * SessionStore 仍是完整 UI/审计轨迹，本引擎不改写它。
  */
 
 import type { MaouMessage, LLMMessage } from "./types/message.js";
 import { maouToLLMMessage, removedSeqRange, sessionToMaouMessage } from "./types/message.js";
 import {
+  applyRoundMicroCompact,
+  stampMicroBirth,
+  keepFrozenPrefix,
+  holdAsPromptCache,
+  resolveMicroCompactRounds,
+  formatMicroUnlockPrefix,
+  DEFAULT_MICRO_COMPACT_CATALOG,
+  type MicroCompactCatalog,
+  type MicroUnlockItem,
+  type TraditionalMajorScheme,
+} from "@little-house-studio/context-components";
+import {
   isHarnessMetaAligned,
   sessionMessageFingerprint,
   type HarnessSessionStore,
   type HarnessWorkingSetMeta,
 } from "./harness-session-store.js";
-import type { TaskSessionStore, MaouTaskBlock } from "./task-session-store.js";
-import { assignTaskIds } from "./compressor.js";
 import type { Summarizer } from "./compressor.js";
 import type { CompressionStage } from "./types/compression.js";
 import { resolveContextModule, type ContextModule } from "./modules/index.js";
+import {
+  applyAfterCompress,
+  applyAfterSync,
+  applyFold,
+  applyOnClearSession,
+  type ContextSchemeExtension,
+} from "./scheme-extension.js";
 
 export interface ContextEngineOptions {
   sessionId: string;
   harnessStore: HarnessSessionStore;
-  taskStore: TaskSessionStore;
   summarizer?: Summarizer;
   /** 压缩模块或 id，默认 staged */
   module?: ContextModule | string;
   /** 传给模块的配置；staged 默认一次压到占用对应阶段 */
   moduleConfig?: unknown;
+  extensions?: ContextSchemeExtension[];
+  /** 轮次微压缩时钟初值；缺省从 harness 读 */
+  microTurn?: number;
+  /** 工具名 → 微压缩策略。缺省阅读类 traditional_read */
+  microCatalog?: MicroCompactCatalog;
+  /** Agent 级微压缩轮次；该 Agent 所有微压功能共用。缺省 3 */
+  microRounds?: number;
 }
 
 export interface CompressReport {
   stage: CompressionStage;
   originalTokens: number;
   compressedTokens: number;
-  taskBlocks: string[];
+  blockIds: string[];
   droppedSummary: string;
   /** 被这次压缩顶掉的 seqId 闭区间；没顶掉任何整条消息时缺省 */
   seqFrom?: number;
@@ -60,10 +77,10 @@ export interface SeedWorkingSetResult {
 export class ContextEngine {
   readonly sessionId: string;
   private harnessStore: HarnessSessionStore;
-  private taskStore: TaskSessionStore;
   private summarizer?: Summarizer;
   private module: ContextModule;
   private moduleConfig: unknown;
+  private extensions: ContextSchemeExtension[];
   private history: MaouMessage[] = [];
   private nextSeqId = 0;
   private lastCompressReport: CompressReport | null = null;
@@ -73,17 +90,29 @@ export class ContextEngine {
   private absorbedSeq = 0;
   /** 本轮 seed 是否来自 harness */
   private seededFromHarness = false;
+  private microTurn = 0;
+  private microCatalog: MicroCompactCatalog;
+  private microRounds: number;
+  private unlockHint: { atTurn: number; items: MicroUnlockItem[] } | null = null;
 
   constructor(opts: ContextEngineOptions) {
     this.sessionId = opts.sessionId;
     this.harnessStore = opts.harnessStore;
-    this.taskStore = opts.taskStore;
     this.summarizer = opts.summarizer;
+    this.extensions = opts.extensions ?? [];
     this.module =
       typeof opts.module === "object" && opts.module
         ? opts.module
         : resolveContextModule(typeof opts.module === "string" ? opts.module : "staged");
-    this.moduleConfig = opts.moduleConfig ?? this.module.defaultConfig ?? {};
+    const defaults =
+      this.module.defaultConfig && typeof this.module.defaultConfig === "object"
+        ? this.module.defaultConfig
+        : {};
+    const extra = opts.moduleConfig && typeof opts.moduleConfig === "object" ? opts.moduleConfig : {};
+    this.moduleConfig = { ...defaults, ...extra };
+    this.microCatalog = opts.microCatalog ?? DEFAULT_MICRO_COMPACT_CATALOG;
+    this.microTurn = opts.microTurn ?? 0;
+    this.microRounds = resolveMicroCompactRounds(opts.microRounds);
   }
 
   /**
@@ -99,6 +128,8 @@ export class ContextEngine {
       this.sourceTailFingerprint = record.sourceTailFingerprint ?? "";
       this.absorbedSeq = record.absorbedSeq ?? 0;
       this.seededFromHarness = true;
+      if (typeof record.microTurn === "number") this.microTurn = record.microTurn;
+      if (record.microUnlockHint?.items?.length) this.unlockHint = record.microUnlockHint;
     }
     return this.history;
   }
@@ -111,13 +142,15 @@ export class ContextEngine {
     this.history = sessionMessages.map((sm, idx) =>
       sessionToMaouMessage(sm as Parameters<typeof sessionToMaouMessage>[0], idx),
     );
-    this.history = assignTaskIds(this.history);
+    const beforeInit = this.snapshotHeld(this.history);
+    this.history = this.protectFrozen(applyAfterSync(this.history, this.extensions), beforeInit);
     this.nextSeqId =
       this.history.length > 0
         ? Math.max(...this.history.map((m) => m.seqId)) + 1
         : 0;
     this.markSourceCoverage(sessionMessages);
     this.seededFromHarness = false;
+    this.stampHistory();
     return this.history;
   }
 
@@ -151,6 +184,8 @@ export class ContextEngine {
           ? Math.max(...this.history.map((m) => m.seqId)) + 1
           : 0;
       this.seededFromHarness = true;
+      if (typeof record.microTurn === "number") this.microTurn = record.microTurn;
+      if (record.microUnlockHint?.items?.length) this.unlockHint = record.microUnlockHint;
 
       const start = Math.max(0, record.sourceSessionMessageCount);
       const delta = sessionMessages.slice(start);
@@ -188,14 +223,92 @@ export class ContextEngine {
 
   /**
    * 同步新增消息到工作上下文。
-   * 给消息分配 seqId，然后 assignTaskIds。
+   * 给消息分配 seqId，然后跑 afterSync 扩展。
    */
   sync(newMessages: MaouMessage[]): void {
     for (const m of newMessages) {
       m.seqId = this.nextSeqId++;
     }
     this.history.push(...newMessages);
-    this.history = assignTaskIds(this.history);
+    for (const m of newMessages) {
+      stampMicroBirth(m, this.microTurn, this.microCatalog, this.history, this.microRounds);
+    }
+    const beforeSync = this.snapshotHeld(this.history);
+    this.history = this.protectFrozen(applyAfterSync(this.history, this.extensions), beforeSync);
+  }
+
+  getMicroTurn(): number {
+    return this.microTurn;
+  }
+
+  getMicroRounds(): number {
+    return this.microRounds;
+  }
+
+  /** 用户又说话（本 run 第一条，且此前已有时钟） */
+  noteUserMicroTurn(): number {
+    this.microTurn += 1;
+    return this.microTurn;
+  }
+
+  /** 本轮 AI 开口 */
+  beginAgentMicroTurn(): number {
+    this.microTurn += 1;
+    this.stampHistory();
+    return this.microTurn;
+  }
+
+  /** 本轮 AI 结束后：到期的阅读结果等按策略微压 */
+  applyRoundMicroCompact(): boolean {
+    const out = applyRoundMicroCompact(this.history, this.microTurn, this.microCatalog, this.microRounds);
+    if (out.unlockItems.length > 0) {
+      this.unlockHint = { atTurn: this.microTurn + 1, items: out.unlockItems };
+    }
+    if (!out.changed) {
+      this.persistClock();
+      return false;
+    }
+    this.history = out.history;
+    this.persistWorkingSet();
+    return true;
+  }
+
+  private stampHistory(): void {
+    if (this.microTurn <= 0) return;
+    const hold = this.cacheHold();
+    for (const m of this.history) {
+      if (holdAsPromptCache(m, hold)) continue;
+      stampMicroBirth(m, this.microTurn, this.microCatalog, this.history, this.microRounds);
+    }
+  }
+
+  private cacheHold() {
+    return { currentTurn: this.microTurn, catalog: this.microCatalog, limitRounds: this.microRounds };
+  }
+
+  private protectFrozen(after: MaouMessage[], before: MaouMessage[]): MaouMessage[] {
+    return keepFrozenPrefix(before, after, this.cacheHold());
+  }
+
+  private snapshotHeld(history: MaouMessage[]): MaouMessage[] {
+    const hold = this.cacheHold();
+    return history.map((m) => {
+      if (!holdAsPromptCache(m, hold)) return m;
+      return {
+        ...m,
+        contents: m.contents.map((c) => ({
+          ...c,
+          attributes: c.attributes ? { ...c.attributes } : undefined,
+          annotations: c.annotations ? { ...c.annotations } : undefined,
+          microCompact: c.microCompact ? { ...c.microCompact } : undefined,
+        })),
+        toolCalls: m.toolCalls?.map((t) => ({ ...t })),
+      };
+    });
+  }
+
+  private persistClock(): void {
+    if (this.seededFromHarness) this.persistWorkingSet();
   }
 
   /**
@@ -210,10 +323,7 @@ export class ContextEngine {
   }
 
   /**
-   * 执行压缩。
-   * 备份 → compress → 落盘任务块原文 → 保存压缩后上下文（含对齐 meta）→ 写 compressed_zone。
-   *
-   * @param opts.sourceSessionMessages 若传入，压缩后用其更新 source 对齐（推荐 Runtime 总是传入）
+   * 执行压缩。备份 → 模块压 → 扩展 afterCompress → 写 harness。
    */
   async compress(
     maxTokens: number,
@@ -223,18 +333,7 @@ export class ContextEngine {
       sourceSessionMessages?: Array<Record<string, unknown>>;
     },
   ): Promise<CompressReport> {
-    // 1.5 收集当前活跃 todo 关联的 task 块 id（#4：压缩时屏蔽无关 task）
-    // 只有未完成 todo 关联的 task 块摘要进压缩区，其他 task 屏蔽归档
-    const planBefore = this.taskStore.loadTaskPlan(this.sessionId);
-    const activeTaskIds: string[] = [];
-    for (const todo of planBefore) {
-      if (todo.status !== "completed") {
-        for (const id of todo.relatedBlockIds ?? []) {
-          if (!activeTaskIds.includes(id)) activeTaskIds.push(id);
-        }
-      }
-    }
-
+    const beforeCompress = this.snapshotHeld(this.history);
     const result = await this.module.compress({
       history: this.history,
       maxTokens,
@@ -243,45 +342,34 @@ export class ContextEngine {
       currentStage: this.lastCompressReport?.stage ?? "activeStage",
       force: opts?.force,
       knownTokens: opts?.knownTokens,
-      activeTaskIds: activeTaskIds.length > 0 ? activeTaskIds : undefined,
+      fold: (ctx) => applyFold(ctx, this.extensions),
       config: this.moduleConfig,
+      microTurn: this.microTurn,
+      microCatalog: this.microCatalog,
+      microRounds: this.microRounds,
+      sessionRoot: this.harnessStore.sessionRoot(this.sessionId),
+      majorScheme:
+        this.moduleConfig &&
+        typeof this.moduleConfig === "object" &&
+        "majorScheme" in this.moduleConfig
+          ? (this.moduleConfig as { majorScheme?: TraditionalMajorScheme }).majorScheme
+          : undefined,
     });
 
-    // 3. 将被折叠的任务块原文写入 TaskSessionStore
-    const newBlockIds: string[] = [];
-    for (const [taskId, originals] of result.perTaskOriginals ?? []) {
-      if (taskId === "__no_task__") continue;
-      const llmMsgs = originals.map(maouToLLMMessage);
-      this.taskStore.createTaskBlock(this.sessionId, taskId, "", []);
-      for (const msg of llmMsgs) {
-        this.taskStore.appendMessage(this.sessionId, taskId, msg);
-      }
-      newBlockIds.push(taskId);
-    }
+    applyAfterCompress(
+      {
+        sessionId: this.sessionId,
+        history: result.history,
+        stage: result.stage,
+        foldedOriginals: result.foldedOriginals,
+        blockIds: result.blockIds,
+      },
+      this.extensions,
+    );
 
-    // 3.5 关联新 task 块到未完成 todo 的 relatedBlockIds
-    // 系统自动追加，不依赖 AI 显式声明——压缩产生的 task 块属于当前活跃的 todo
-    if (newBlockIds.length > 0) {
-      const plan = this.taskStore.loadTaskPlan(this.sessionId);
-      let changed = false;
-      for (const todo of plan) {
-        if (todo.status !== "completed") {
-          const existing = new Set(todo.relatedBlockIds ?? []);
-          const before = existing.size;
-          for (const id of newBlockIds) existing.add(id);
-          if (existing.size !== before) {
-            todo.relatedBlockIds = [...existing];
-            changed = true;
-          }
-        }
-      }
-      if (changed) this.taskStore.saveTaskPlan(this.sessionId, plan);
-    }
-
-    // 4. 保存压缩后上下文 + 对齐 meta（B1 关键）
     const beforeHistory = this.history;
     const removed = removedSeqRange(beforeHistory, result.history);
-    this.history = result.history;
+    this.history = this.protectFrozen(result.history, beforeCompress);
     if (opts?.sourceSessionMessages) {
       this.markSourceCoverage(opts.sourceSessionMessages);
     }
@@ -298,7 +386,7 @@ export class ContextEngine {
         this.sessionId,
         result.stage,
         result.droppedSummary,
-        result.taskBlocks,
+        result.blockIds,
       );
     }
 
@@ -306,7 +394,7 @@ export class ContextEngine {
       stage: result.stage,
       originalTokens: result.originalTokens,
       compressedTokens: result.compressedTokens,
-      taskBlocks: result.taskBlocks,
+      blockIds: result.blockIds,
       droppedSummary: result.droppedSummary,
       ...(removed ? { seqFrom: removed.start, seqTo: removed.end } : {}),
     };
@@ -318,7 +406,16 @@ export class ContextEngine {
    * 将当前工作上下文转为 LLMMessage[]，供 buildMessages 使用。
    */
   toLLMHistory(): LLMMessage[] {
-    return this.history.map(maouToLLMMessage);
+    const msgs = this.history.map(maouToLLMMessage);
+    const prefix = this.unlockPrefixIfDue();
+    if (prefix) msgs.push({ role: "user", content: prefix });
+    return msgs;
+  }
+
+  /** 下一轮动态尾上的解锁提示；不到点或已过点则为空。 */
+  unlockPrefixIfDue(): string {
+    if (!this.unlockHint || this.microTurn !== this.unlockHint.atTurn) return "";
+    return formatMicroUnlockPrefix(this.unlockHint.items);
   }
 
   /**
@@ -347,11 +444,8 @@ export class ContextEngine {
     return this.lastCompressReport?.droppedSummary ?? "";
   }
 
-  /**
-   * 恢复指定任务的原文（从 TaskSessionStore 读取）。
-   */
-  restoreTask(taskId: string): MaouTaskBlock | null {
-    return this.taskStore.getTaskBlock(this.sessionId, taskId);
+  clearSessionExtras(): void {
+    applyOnClearSession(this.sessionId, this.extensions);
   }
 
   /**
@@ -382,6 +476,8 @@ export class ContextEngine {
       sourceSessionMessageCount: this.sourceSessionMessageCount,
       sourceTailFingerprint: this.sourceTailFingerprint || undefined,
       absorbedSeq: this.absorbedSeq || undefined,
+      microTurn: this.microTurn || undefined,
+      microUnlockHint: this.unlockHint ?? undefined,
     });
   }
 }

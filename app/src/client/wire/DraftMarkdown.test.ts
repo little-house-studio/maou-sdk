@@ -1,5 +1,5 @@
 /**
- * Drive shipped DraftMarkdown on the real showcase assistant body.
+ * Drive shipped DraftMarkdown on a sample assistant body.
  * Run: tsx --test src/client/wire/DraftMarkdown.test.ts
  */
 import assert from "node:assert/strict";
@@ -7,11 +7,7 @@ import { describe, it } from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { DraftMarkdown } from "./DraftMarkdown";
-import {
-  FULL_CONTEXT_MESSAGES,
-  messagesForSession,
-  getScenario,
-} from "../drafts/fixtures";
+import { THREAD_MESSAGES } from "./test-thread";
 
 function renderMd(source: string): string {
   return renderToStaticMarkup(
@@ -19,10 +15,10 @@ function renderMd(source: string): string {
   );
 }
 
-describe("DraftMarkdown on showcase inventory", () => {
+describe("DraftMarkdown on sample thread", () => {
   it("renders ul.dm-list and ol.dm-list from fc-a1 pure list blocks", () => {
-    const a1 = FULL_CONTEXT_MESSAGES.find((m) => m.id === "fc-a1");
-    assert.ok(a1, "fc-a1 present in FULL_CONTEXT_MESSAGES");
+    const a1 = THREAD_MESSAGES.find((m) => m.id === "fc-a1");
+    assert.ok(a1, "fc-a1 present in THREAD_MESSAGES");
     const html = renderMd(a1!.body);
     assert.match(html, /class="dm-list"/);
     assert.match(html, /<ul class="dm-list">/);
@@ -32,20 +28,6 @@ describe("DraftMarkdown on showcase inventory", () => {
     assert.match(html, /class="dm-pre/);
     assert.match(html, /class="dm-link"/);
     assert.match(html, /href="https:\/\/example\.com"/);
-  });
-
-  it("renders list markup for hydrated normal primary assistant body", () => {
-    const s = getScenario("normal");
-    const msgs = messagesForSession(s.messagesBySession, s.initialSessionId);
-    const a1 = msgs.find((m) => m.id.endsWith("fc-a1") && m.role === "assistant");
-    assert.ok(a1, "hydrated primary session has fc-a1");
-    const html = renderMd(a1!.body);
-    assert.match(html, /<ul class="dm-list">/);
-    assert.match(html, /<ol class="dm-list">/);
-    assert.match(html, /<strong>/);
-    assert.match(html, /class="dm-code"/);
-    assert.match(html, /class="dm-pre/);
-    assert.match(html, /class="dm-link"/);
   });
 
   it("isolated pure list paragraphs become lists (GFM)", () => {

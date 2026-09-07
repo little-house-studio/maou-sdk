@@ -50,6 +50,7 @@ import {
 } from "./wire/thread/thread-blocks";
 import {
   asToolParams,
+  encodeToolArgs,
   extractToolCallIntent,
   readToolIntent,
 } from "./wire/thread/tool-card";
@@ -134,6 +135,8 @@ export type ChatLine = {
   toolCallId?: string;
   /** tool_call 参数 description：这一步在做什么 */
   toolDescription?: string;
+  /** tool_call 参数 JSON，标题缺 description 时用来回退 path / pattern / command */
+  toolArgs?: string;
   /** 可一点重试的用户原文（error 行） */
   retryText?: string;
   /** thinking 行元数据（耗时 / token） */
@@ -287,6 +290,8 @@ export function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
           extractToolCallIntent(text) ||
           undefined
         : undefined;
+    const toolArgs =
+      role === "tool" ? (m.toolArgs || "").trim() || undefined : undefined;
     const durationMs =
       m.durationMs != null && Number.isFinite(m.durationMs) && m.durationMs >= 0
         ? m.durationMs
@@ -304,6 +309,7 @@ export function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
       toolName,
       toolCallId: callId || undefined,
       ...(toolDescription ? { toolDescription } : {}),
+      ...(toolArgs ? { toolArgs } : {}),
       ...(durationMs != null ? { durationMs } : {}),
       ...(loopDurationMs != null ? { loopDurationMs } : {}),
       ...(m.images?.length ? { images: m.images } : {}),
@@ -1585,6 +1591,7 @@ export function ChatPanel({
             readToolIntent(paramsRaw) ||
             (typeof ev.description === "string" ? ev.description.trim() : "");
           const params = asToolParams(paramsRaw);
+          const toolArgs = encodeToolArgs(paramsRaw) || encodeToolArgs(params);
           const tid =
             typeof params.id === "string"
               ? params.id
@@ -1600,6 +1607,7 @@ export function ChatPanel({
             toolName: displayName,
             toolCallId: toolCallId || undefined,
             toolDescription: desc || undefined,
+            toolArgs: toolArgs || undefined,
             startedAt: Date.now(),
             terminalId: isTerm ? tid : undefined,
             agentName: defaultAgent,
@@ -1660,15 +1668,17 @@ export function ChatPanel({
                     : "") ||
                   undefined;
                 const label = finalName || "tool";
+                const desc = (cur.toolDescription || "").trim();
                 const next = [...prev];
                 next[idx] = {
                   ...cur,
-                  text: `${ok ? "✓" : "✗"} ${label}${tid ? ` · ${tid}` : ""}${snippet ? `\n${snippet}` : ""}`,
+                  text: `${ok ? "✓" : "✗"} ${label}${desc ? ` · ${desc}` : ""}${tid ? ` · ${tid}` : ""}${snippet ? `\n${snippet}` : ""}`,
                   toolName: finalName,
                   err: !ok,
                   terminalId: tid ?? cur.terminalId,
                   agentName: cur.agentName || defaultAgent,
                   toolDescription: cur.toolDescription,
+                  toolArgs: cur.toolArgs,
                   durationMs:
                     resultDuration ??
                     (cur.startedAt != null
@@ -1687,15 +1697,17 @@ export function ChatPanel({
                       l.role === "tool" && l.toolCallId === toolCallId,
                   )
               : undefined;
+            const desc = (call?.toolDescription || "").trim();
             return [
               ...prev,
               {
                 id: uid(),
                 role: "tool" as const,
-                text: `${ok ? "✓" : "✗"} ${label}${tid ? ` · ${tid}` : ""}${snippet ? `\n${snippet}` : ""}`,
+                text: `${ok ? "✓" : "✗"} ${label}${desc ? ` · ${desc}` : ""}${tid ? ` · ${tid}` : ""}${snippet ? `\n${snippet}` : ""}`,
                 toolName: name || undefined,
                 toolCallId: toolCallId || undefined,
                 toolDescription: call?.toolDescription,
+                toolArgs: call?.toolArgs,
                 durationMs:
                   resultDuration ??
                   (call?.startedAt != null

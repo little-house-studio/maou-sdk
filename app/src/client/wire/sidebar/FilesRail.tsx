@@ -18,7 +18,7 @@ export type FilesRailProps = {
   onFileOpen?: (path: string) => void;
 };
 
-const DEFAULT_DIFF = { add: 24, del: 8, file: "DraftShell.tsx" };
+const DEFAULT_DIFF = { add: 24, del: 8, file: "WireShell.tsx" };
 
 function TreeRow({
   node,

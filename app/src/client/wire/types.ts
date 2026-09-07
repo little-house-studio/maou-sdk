@@ -1,5 +1,5 @@
 /**
- * Wire 组件库的共享 prop 类型（live 与草稿站共用）。
+ * Wire 组件库的共享 prop 类型。
  * 组件只经 props 对话 —— 不 import live 后端。
  */
 
@@ -165,35 +165,4 @@ export type DraftApproval = {
   command: string;
   risk: "normal" | "high";
   agentName: string;
-};
-
-/**
- * Aligns with core/llm APIPreset + CustomPreset connection + capability fields.
- * @see core/llm/src/adapters/types.ts APIPreset
- * @see core/llm/src/llm-config.ts CustomPreset
- */
-export type DraftApiProtocol = "openai" | "anthropic" | "openai-responses";
-
-export type DraftApiPreset = {
-  name: string;
-  url: string;
-  key: string;
-  model: string;
-  protocol: DraftApiProtocol;
-  /** Input context window (tokens) — compression / usage budget; not sent to vendor. */
-  maxContext: number;
-  /** Max output tokens per call (max_tokens / max_output_tokens). */
-  maxTokens: number;
-  /** Image attachments (guardrails supportsVision). */
-  supportsVision: boolean;
-  /** Thinking / reasoning (guardrails supportsReasoning). */
-  supportsReasoning: boolean;
-  /** Native tool schemas (guardrails nativeToolCalling). */
-  nativeToolCalling: boolean;
-};
-
-/** Session-local API config (draft does not write ~/.maou/config.json). */
-export type DraftApiConfig = {
-  presets: DraftApiPreset[];
-  defaultPreset: number;
 };

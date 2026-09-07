@@ -1,7 +1,6 @@
 /**
  * Live settings view-model builders — pure, unit-testable.
  * Maps Meta + /api/models lists into production settings UI state.
- * Does NOT use draft showcase defaultApiConfig seeds.
  */
 import type { ApprovalMode, Meta } from "../api";
 

@@ -25,18 +25,53 @@ const IMAGE_MIMES: Record<string, string> = {
   ".ico": "image/x-icon",
 };
 
-/** 单行上限：minified 单行文件不能原样进上下文。 */
-const MAX_LINE_CHARS = 2000;
+/** 与 DSH read 默认一致：一次最多 2000 行、整窗 50KiB、单行 2000 字。 */
+export const READ_LIMIT_LINES = 2000;
+export const READ_MAX_LINE_CHARS = 2000;
+export const READ_MAX_BYTES = 50 * 1024;
+
+const MAX_LINE_CHARS = READ_MAX_LINE_CHARS;
+
+function utf8Bytes(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+function positiveInt(raw: unknown): number | undefined {
+  if (raw == null || raw === "") return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return undefined;
+  return Math.trunc(n);
+}
+
+/** 行窗口：offset/start_line + limit，或 end_line。一次最多 2000 行。 */
+export function resolveReadWindow(
+  params: Record<string, unknown>,
+  totalLines: number,
+): { start: number; end: number; limit: number } {
+  const safeTotal = Math.max(0, totalLines);
+  const start = Math.max(1, Math.min(positiveInt(params.offset ?? params.start_line) ?? 1, Math.max(1, safeTotal)));
+  const requestedLimit = positiveInt(params.limit);
+  const endLine = positiveInt(params.end_line);
+  let limit = READ_LIMIT_LINES;
+  if (requestedLimit != null) {
+    limit = Math.min(READ_LIMIT_LINES, requestedLimit);
+  } else if (endLine != null) {
+    limit = Math.min(READ_LIMIT_LINES, Math.max(1, endLine - start + 1));
+  }
+  const end = safeTotal === 0 ? 0 : Math.min(safeTotal, start + limit - 1);
+  return { start, end, limit };
+}
 
 /**
  * 分页页脚：说清看到哪儿了、下一段怎么取。
- * 没有这一句，start_line/end_line 造成的分页对模型是无声的。
+ * 没有这一句，offset/limit 造成的分页对模型是无声的。
  */
 function readPaginationFooter(opts: {
   from: number;
   to: number;
   totalLines: number;
   charTruncated: boolean;
+  byteTruncated: boolean;
   maxChars: number;
   segmentChars: number;
   longLinesCut: number;
@@ -46,10 +81,12 @@ function readPaginationFooter(opts: {
     parts.push(
       `Cut at max_chars=${opts.maxChars} (this range is ${opts.segmentChars} chars).`,
     );
+  } else if (opts.byteTruncated) {
+    parts.push(`Cut at ${READ_MAX_BYTES} bytes (50KiB per read).`);
   }
   if (opts.to < opts.totalLines) {
     parts.push(
-      `Showing lines ${opts.from}-${opts.to} of ${opts.totalLines}. Use start_line=${opts.to + 1} to continue.`,
+      `Showing lines ${opts.from}-${opts.to} of ${opts.totalLines}. Use offset=${opts.to + 1} to continue.`,
     );
   } else if (opts.from > 1 || opts.charTruncated) {
     parts.push(`Showing lines ${opts.from}-${opts.to} of ${opts.totalLines}. End of file.`);
@@ -90,7 +127,7 @@ export class ReadTool extends Tool {
     name: "reader",
     aliases: ["read"],
     description:
-      "读取文件、网页或图片。支持：本地文件（文本）、网页 URL（提取正文）、图片文件（base64）。",
+      "读取文件、网页或图片。本地文本按行分页：offset/limit（或 start_line/end_line），一次最多 2000 行 / 50KiB。",
     parameters: {
       type: "object",
       properties: {
@@ -98,17 +135,25 @@ export class ReadTool extends Tool {
           type: "string",
           description: "文件路径（相对于项目根目录）或 URL。",
         },
+        offset: {
+          type: "integer",
+          description: "起始行号（从 1 开始）。与 start_line 相同。默认 1。页脚给出续读 offset。",
+        },
+        limit: {
+          type: "integer",
+          description: "本次读取行数。默认 2000，最大 2000。",
+        },
         start_line: {
           type: "integer",
-          description: "起始行号（从 1 开始）。",
+          description: "起始行号（从 1 开始）。与 offset 相同。",
         },
         end_line: {
           type: "integer",
-          description: "结束行号（包含）。",
+          description: "结束行号（包含）。也可用 limit 表示读多少行。",
         },
         max_chars: {
           type: "integer",
-          description: "最大返回字符数。",
+          description: "更紧的字符上限。不传则按 50KiB / 2000 行封顶。",
         },
         mode: {
           type: "string",
@@ -182,6 +227,7 @@ export class ReadTool extends Tool {
       let content = readFileSync(fullPath, "utf-8");
       const lines = content.split("\n");
       const totalLines = lines.length;
+      const totalChars = [...content].length;
 
       // 签名模式：只给函数/类/接口签名，剥掉函数体，省 token。
       // 显式 mode/signatures/outline 触发；抽不到签名（非代码）则回退正常读取。
@@ -193,59 +239,74 @@ export class ReadTool extends Tool {
           const sigCount = sigs.split("\n").length;
           return createToolResponse(
             true,
-            `[path=${fullPath} | total_lines=${totalLines} | mode=signatures | ${sigCount} 个签名]\n${sigs}`,
-            { payload: { path: fullPath, total_lines: totalLines, mode: "signatures", signature_count: sigCount } },
+            `[path=${fullPath} | total_lines=${totalLines} | total_chars=${totalChars} | mode=signatures | ${sigCount} 个签名]\n${sigs}`,
+            { payload: { path: fullPath, total_lines: totalLines, total_chars: totalChars, mode: "signatures", signature_count: sigCount } },
           );
         }
       }
 
-      // Number.isFinite 防护：非数字字符串会得 NaN，导致 slice/ clamp 崩溃
-      const startLine = params.start_line != null && Number.isFinite(Number(params.start_line)) ? Number(params.start_line) : 1;
-      const endLine = params.end_line != null && Number.isFinite(Number(params.end_line)) ? Number(params.end_line) : totalLines;
-      const maxChars = params.max_chars != null && Number.isFinite(Number(params.max_chars)) ? Number(params.max_chars) : 0;
-
-      const clampedStart = Math.max(1, Math.min(startLine, totalLines));
-      const clampedEnd = Math.max(clampedStart, Math.min(endLine, totalLines));
+      const maxChars =
+        params.max_chars != null && Number.isFinite(Number(params.max_chars))
+          ? Number(params.max_chars)
+          : 0;
+      const { start: clampedStart, end: clampedEnd } = resolveReadWindow(params, totalLines);
 
       const selectedLines = lines.slice(clampedStart - 1, clampedEnd);
       let longLinesCut = 0;
-      const formatted = selectedLines
-        .map((line, i) => {
-          let body = line;
-          if (body.length > MAX_LINE_CHARS) {
-            longLinesCut++;
-            body = `${body.slice(0, MAX_LINE_CHARS)} …[line cut at ${MAX_LINE_CHARS} chars of ${line.length}]`;
-          }
-          return `${String(clampedStart + i).padStart(4)}→${body}`;
-        })
-        .join("\n");
+      const formattedLines: string[] = [];
+      let usedBytes = 0;
+      let lastShownLine = clampedStart - 1;
+      let byteTruncated = false;
+      for (let i = 0; i < selectedLines.length; i++) {
+        let body = selectedLines[i]!;
+        if (body.length > MAX_LINE_CHARS) {
+          longLinesCut++;
+          body = `${body.slice(0, MAX_LINE_CHARS)} …[line cut at ${MAX_LINE_CHARS} chars of ${selectedLines[i]!.length}]`;
+        }
+        const formatted = `${String(clampedStart + i).padStart(4)}→${body}`;
+        const add = utf8Bytes(formatted) + (formattedLines.length > 0 ? 1 : 0);
+        if (usedBytes + add > READ_MAX_BYTES) {
+          byteTruncated = true;
+          break;
+        }
+        formattedLines.push(formatted);
+        usedBytes += add;
+        lastShownLine = clampedStart + i;
+      }
+      if (formattedLines.length === 0 && selectedLines.length > 0) {
+        byteTruncated = true;
+      }
 
-      let result = formatted;
+      let result = formattedLines.join("\n");
       let charTruncated = false;
-      let lastShownLine = clampedEnd;
       if (maxChars > 0 && result.length > maxChars) {
         charTruncated = true;
         const shownText = result.slice(0, maxChars);
-        // 已完整显示的行数（最后一行可能被切一半，不算它已读完）
         const shownLineCount = Math.max(1, shownText.split("\n").length - 1);
-        lastShownLine = Math.min(clampedStart + shownLineCount - 1, clampedEnd);
+        lastShownLine = Math.min(clampedStart + shownLineCount - 1, lastShownLine);
         result = shownText;
       }
 
-      const isTruncated = charTruncated || clampedStart > 1 || clampedEnd < totalLines;
+      const isTruncated =
+        charTruncated ||
+        byteTruncated ||
+        clampedStart > 1 ||
+        lastShownLine < totalLines;
       const footer = readPaginationFooter({
         from: clampedStart,
-        to: lastShownLine,
+        to: Math.max(clampedStart, lastShownLine),
         totalLines,
         charTruncated,
+        byteTruncated,
         maxChars,
-        segmentChars: formatted.length,
+        segmentChars: result.length,
         longLinesCut,
       });
 
       const metaParts = [
         `path=${fullPath}`,
         `total_lines=${totalLines}`,
+        `total_chars=${totalChars}`,
         `shown=${clampedStart}-${lastShownLine}`,
       ];
       if (isTruncated) metaParts.push("truncated=true");
@@ -255,9 +316,13 @@ export class ReadTool extends Tool {
         payload: {
           path: fullPath,
           total_lines: totalLines,
+          total_chars: totalChars,
+          offset: clampedStart,
+          limit: Math.max(0, lastShownLine - clampedStart + 1),
           start_line: clampedStart,
           end_line: lastShownLine,
           truncated: isTruncated,
+          next_offset: lastShownLine < totalLines ? lastShownLine + 1 : null,
           next_start_line: lastShownLine < totalLines ? lastShownLine + 1 : null,
         },
       });
@@ -282,7 +347,7 @@ export class ReadTool extends Tool {
       const contentType = response.headers.get("content-type") ?? "";
       let text = await response.text();
 
-      const URL_LIMIT = 50000;
+      const URL_LIMIT = READ_MAX_BYTES;
       const originalLen = text.length;
       const wasTruncated = originalLen > URL_LIMIT;
       if (wasTruncated) {

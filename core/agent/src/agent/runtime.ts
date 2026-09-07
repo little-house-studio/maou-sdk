@@ -13,7 +13,7 @@
  *    f. 如无工具调用：退出循环
  * 4. yield done 事件
  *
- * 自动压缩：token 达到 70% 阈值时压缩（保留 25% 近期消息）。
+ * 自动压缩：token 达到 80% 阈值时压缩（对齐 DSH thresholdRatio）。
  */
 
 import { execSync } from "node:child_process";
@@ -42,16 +42,19 @@ import {
   CONTEXT_THRESHOLD_PERCENT,
   parseThinkingContextMode,
   shouldStoreThinkingInContext,
+  resolveMicroCompactRounds,
+  DEFAULT_MICRO_COMPACT_ROUNDS,
 } from "@little-house-studio/context";
 import type {
   HarnessSessionStore,
-  TaskSessionStore,
+  ContextSchemeExtension,
   Summarizer,
   LLMMessage,
   ThinkingContextMode,
   ContextBreakdown,
   SessionMessageLike,
 } from "@little-house-studio/context";
+import { applyOnClearSession } from "@little-house-studio/context";
 import { compileDynamicContext } from "../dynamic-context.js";
 import { DynamicSnapshotGate, TimeContextGate, formatMultiplexerPane } from "../time-context.js";
 import { TokenTracker } from "./token-tracker.js";
@@ -66,7 +69,7 @@ import {
 } from "@little-house-studio/llm";
 import type { ContextWindowSource } from "@little-house-studio/llm";
 import { getTemplateRef } from "./template-ref.js";
-import { renderAgentPreview, watchAgentPreview, readAgentWorkspaceInstructions } from "./template.js";
+import { renderAgentPreview, watchAgentPreview, readAgentWorkspaceInstructions, readAgentMicroCompactRounds } from "./template.js";
 import { runAgentCommand } from "./command-runner.js";
 import { CommandRegistry, registerBuiltinCommands, type CommandContext, type CommandResult } from "./command-registry.js";
 import {
@@ -233,11 +236,10 @@ export interface RuntimeOptions {
   agentScope?: "project" | "global";
   /**
    * ContextEngine 上下文压缩闭环（可选）。
-   * 同时注入 harnessStore + taskStore 时启用：每轮 sync→compress→toLLMHistory
-   * 替代旧的 maybeCompress（truncate）路径。缺省则回退旧路径。
+   * 注入 harnessStore 时启用：每轮 sync→compress→toLLMHistory。
    */
   harnessStore?: HarnessSessionStore;
-  taskStore?: TaskSessionStore;
+  contextExtensions?: ContextSchemeExtension[];
   /** 可插拔 LLM 摘要器（compress 时生成真摘要；缺省回退确定性 truncate）。 */
   summarizer?: Summarizer;
   /**
@@ -389,6 +391,8 @@ export interface RunOptions {
    * - always: 每回合都写
    */
   thinkingContextMode?: ThinkingContextMode;
+  /** 覆盖 agent.json micro_compact_rounds */
+  microCompactRounds?: number;
 }
 
 export function classifyCompactError(message: string): string {
@@ -466,8 +470,10 @@ export class AgentRuntime {
   /** agent.json computerUse.mode（auto|ax|pixels） */
   private agentComputerUseMode?: "auto" | "ax" | "pixels";
   /** ContextEngine 闭环依赖（可选） */
+  /** agent.json micro_compact_rounds；该 Agent 所有微压功能共用 */
+  private microCompactRounds = DEFAULT_MICRO_COMPACT_ROUNDS;
   private harnessStore?: HarnessSessionStore;
-  private taskStore?: TaskSessionStore;
+  private contextExtensions?: ContextSchemeExtension[];
   private summarizer?: Summarizer;
   /** 辅助模型调用器（统一辅助调用管道） */
   private auxModelCaller?: AuxModelCaller;
@@ -594,7 +600,7 @@ export class AgentRuntime {
     this.projectRoot = options.projectRoot ?? process.cwd();
     this.agentScope = options.agentScope ?? "project";
     this.harnessStore = options.harnessStore;
-    this.taskStore = options.taskStore;
+    this.contextExtensions = options.contextExtensions;
     this.summarizer = options.summarizer;
     this.auxModelCaller = options.auxModelCaller;
     this.resolveHelperPresetFn = options.resolveHelperPreset;
@@ -931,7 +937,7 @@ export class AgentRuntime {
     if (this.isRunning(sessionId)) {
       return { ok: false, error: "正忙：当前会话还在跑，空闲后再压。", code: "busy" };
     }
-    if (!this.harnessStore || !this.taskStore) {
+    if (!this.harnessStore) {
       return { ok: false, error: "压缩引擎未启用", code: "not_written" };
     }
     try {
@@ -946,8 +952,10 @@ export class AgentRuntime {
       const engine = new ContextEngine({
         sessionId,
         harnessStore: this.harnessStore,
-        taskStore: this.taskStore,
+        extensions: this.contextExtensions,
         summarizer: this.summarizer,
+        microTurn: this.sessions.getMicroTurn(sessionId),
+        microRounds: this.microCompactRounds,
       });
       const session = this.sessions.load(sessionId);
       const branch = this.sessions.getLlmHistoryMessages(sessionId);
@@ -974,7 +982,7 @@ export class AgentRuntime {
           originalTokens: report.originalTokens,
           compressedTokens: report.compressedTokens,
           droppedSummary: report.droppedSummary,
-          taskBlocks: report.taskBlocks,
+          taskBlocks: report.blockIds,
         };
       }
       const existing = this.sessionManager.getRollingSummary(sessionId) ?? "";
@@ -985,7 +993,7 @@ export class AgentRuntime {
         this.sessionManager.setRollingSummary(sessionId, merged);
         this.sessionManager.saveState();
       }
-      this.onCompress?.(sessionId, report.stage, report.droppedSummary, report.taskBlocks ?? []);
+      this.onCompress?.(sessionId, report.stage, report.droppedSummary, report.blockIds ?? []);
       const seqRange = compactSeqRange(report);
       this.writeCompactBracket(sessionId, "summary", {
         stage: report.stage,
@@ -1024,7 +1032,7 @@ export class AgentRuntime {
         originalTokens: report.originalTokens,
         compressedTokens: report.compressedTokens,
         droppedSummary: report.droppedSummary,
-        taskBlocks: report.taskBlocks,
+        taskBlocks: report.blockIds,
       };
     } catch (e) {
       this.writeCompactBracket(sessionId, "end", { error: String(e), source: "manual" });
@@ -1716,7 +1724,7 @@ export class AgentRuntime {
         },
         clearSession: async (sid: string) => {
           this.sessions.clearSession(sid);
-          try { this.taskStore?.saveTaskPlan(sid, []); } catch { /* ignore */ }
+          applyOnClearSession(sid, this.contextExtensions);
           try { TASK_MANAGER.manage(sid, "delete", null); } catch { /* ignore */ }
           this.messageQueue.clear(sid);
           await this.atCacheRebuildPoint({
@@ -1729,7 +1737,7 @@ export class AgentRuntime {
           try { (this.sessions as { setAgentName?: (id: string, n: string) => void }).setAgentName?.(sid, name); } catch { /* ignore */ }
         },
         clearTaskState: (sid: string) => {
-          try { this.taskStore?.saveTaskPlan(sid, []); } catch { /* ignore */ }
+          applyOnClearSession(sid, this.contextExtensions);
           try { TASK_MANAGER.manage(sid, "delete", null); } catch { /* ignore */ }
         },
         clearMessageQueue: (sid: string) => { this.messageQueue.clear(sid); },
@@ -1889,6 +1897,10 @@ export class AgentRuntime {
         (agentEntry as { thinking_context_mode?: unknown }).thinking_context_mode,
     );
     this.log("info", `[RUN] agent=${agentName} thinking_context_mode=${thinkingContextMode}`);
+    this.microCompactRounds = resolveMicroCompactRounds(
+      options.microCompactRounds ?? readAgentMicroCompactRounds(agentEntry as unknown as Record<string, unknown>),
+    );
+    this.log("info", `[RUN] agent=${agentName} micro_compact_rounds=${this.microCompactRounds}`);
     const tc = (agentEntry as { tool_compression?: string }).tool_compression;
     if (tc === "off" || tc === "normal" || tc === "aggressive") compressionLevel = tc;
     const vc = (agentEntry as { verify_command?: string }).verify_command;
@@ -2742,12 +2754,12 @@ export class AgentRuntime {
             )) {
               yield ev;
             }
-            try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+            this.finishAgentRoundContext(sessionId!);
             await this.hooks?.agentStop(roundCount + 1);
             roundCount++;
             continue;
           }
-          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          this.finishAgentRoundContext(sessionId!);
           await this.hooks?.agentStop(roundCount + 1);
           break;
         }
@@ -2837,6 +2849,11 @@ export class AgentRuntime {
       const currentSession = this.sessions.load(sessionId!) ?? session;
       const sessionMessages = this.sessions.getLlmHistoryMessages(sessionId!) ?? currentSession.messages;
       const currentRound = roundCount + 1;
+      this.tickMicroCompactClock(
+        sessionId!,
+        sessionMessages as unknown as Array<Record<string, unknown>>,
+        roundCount === 0,
+      );
 
       // ── 3a-pre2. 每轮刷新动态注入（board / pending / agent 状态） ──
       // 首轮编译一次后持续复用，后续轮次只刷新动态部分，避免重复编译 BEFORE_USER.md
@@ -2905,7 +2922,7 @@ export class AgentRuntime {
       // - harness 缺失/不对齐 → 从全量 session 初始化；仅当本轮真正压缩后用压缩历史
       //   （未压缩时保持 sessionMessages 路径，保留多模态图片旁路）
       let compressedHistory: LLMMessage[] | undefined;
-      const engineEnabled = Boolean(this.harnessStore && this.taskStore);
+      const engineEnabled = Boolean(this.harnessStore);
       const endCompress = prof.start("context_compress", { round: currentRound, path: engineEnabled ? "engine" : "legacy" });
       if (engineEnabled) {
         const retryAt = this.compressRetryAfter.get(sessionId!) ?? 0;
@@ -2916,8 +2933,10 @@ export class AgentRuntime {
           const engine = new ContextEngine({
             sessionId: sessionId!,
             harnessStore: this.harnessStore!,
-            taskStore: this.taskStore!,
+            extensions: this.contextExtensions,
             summarizer: runSummarizer,
+            microTurn: this.sessions.getMicroTurn(sessionId!),
+            microRounds: this.microCompactRounds,
           });
           const seed = engine.seedWorkingSet(sessionMsgsWire);
           // harness 已有工作集：即使本轮不压，也必须用 harness 历史，否则 B1 复发
@@ -2954,7 +2973,6 @@ export class AgentRuntime {
               try {
                 report = await engine.compress(contextLimit, {
                   knownTokens: usedTokens,
-                  force: usedTokens >= compressTriggerAt,
                   sourceSessionMessages: sessionMsgsWire,
                 });
               } catch (e) {
@@ -2975,7 +2993,7 @@ export class AgentRuntime {
                 }
                 if (this.onCompress) {
                   try {
-                    this.onCompress(sessionId!, report.stage, report.droppedSummary, report.taskBlocks ?? []);
+                    this.onCompress(sessionId!, report.stage, report.droppedSummary, report.blockIds ?? []);
                   } catch { /* 落盘失败不影响主流程 */ }
                 }
                 this.recordCompactSurface(sessionId!, "auto", report);
@@ -2990,7 +3008,7 @@ export class AgentRuntime {
                     originalTokens: report.originalTokens,
                     compressedTokens: report.compressedTokens,
                     droppedSummary: report.droppedSummary,
-                    taskBlocks: report.taskBlocks,
+                    taskBlocks: report.blockIds,
                   });
                 } else {
                   this.log(
@@ -3605,7 +3623,7 @@ export class AgentRuntime {
           for (const ev of this.injectHookContinue(sessionId!, currentRound, "stop_failure", inject)) {
             yield ev;
           }
-          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          this.finishAgentRoundContext(sessionId!);
           await this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
@@ -3669,7 +3687,7 @@ export class AgentRuntime {
             round: currentRound,
             author: { type: "system", id: "runtime", displayName: "runtime" },
           });
-          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          this.finishAgentRoundContext(sessionId!);
         await this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
@@ -3694,12 +3712,12 @@ export class AgentRuntime {
           for (const ev of this.injectHookContinue(sessionId!, currentRound, "stop_failure", inject)) {
             yield ev;
           }
-          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          this.finishAgentRoundContext(sessionId!);
           await this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
         }
-        try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        this.finishAgentRoundContext(sessionId!);
         await this.hooks?.agentStop(currentRound);
         break;
       }
@@ -3834,7 +3852,7 @@ export class AgentRuntime {
         }
 
         if (shouldContinue) {
-          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          this.finishAgentRoundContext(sessionId!);
         await this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
@@ -3875,7 +3893,7 @@ export class AgentRuntime {
         yield this.event("status", {
           text: `续写截断输出 (${lengthContinuations}/${MAX_LENGTH_CONTINUATIONS})`,
         });
-        try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        this.finishAgentRoundContext(sessionId!);
         await this.hooks?.agentStop(currentRound);
         roundCount++;
         continue;
@@ -3907,7 +3925,7 @@ export class AgentRuntime {
             author: { type: "system", id: "verify", displayName: "verify" },
           });
           yield this.event("verification", { ok: false, command: verifyCommand, attempt: verifyAttempts });
-          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          this.finishAgentRoundContext(sessionId!);
         await this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
@@ -3937,7 +3955,7 @@ export class AgentRuntime {
             yield this.logEvent("warning", `📨 投递队列消息 #${msg.id} 失败: ${r.reason}`);
           }
         }
-        try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        this.finishAgentRoundContext(sessionId!);
         await this.hooks?.agentStop(currentRound);
         roundCount++;
         continue;
@@ -3981,7 +3999,7 @@ export class AgentRuntime {
             round: currentRound,
             author: { type: "system", id: "goal", displayName: "goal" },
           });
-          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          this.finishAgentRoundContext(sessionId!);
           await this.hooks?.agentStop(currentRound);
           roundCount++;
           continue;
@@ -4002,7 +4020,7 @@ export class AgentRuntime {
             ...(loopDurationMs != null ? { loopDurationMs } : {}),
           });
           yield this.event("assistant", { content: spoken, round: currentRound });
-          try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+          this.finishAgentRoundContext(sessionId!);
           await this.hooks?.agentStop(currentRound);
           break;
         }
@@ -4016,12 +4034,12 @@ export class AgentRuntime {
         for (const ev of this.injectHookContinue(sessionId!, currentRound, "stop", stopGate.inject)) {
           yield ev;
         }
-        try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+        this.finishAgentRoundContext(sessionId!);
         await this.hooks?.agentStop(currentRound);
         roundCount++;
         continue;
       }
-      try { this.fileDiffWatch?.onAgentRoundEnd(sessionId!); } catch { /* ignore */ }
+      this.finishAgentRoundContext(sessionId!);
       await this.hooks?.agentStop(currentRound);
       break;
     }
@@ -4370,6 +4388,54 @@ export class AgentRuntime {
 
   /** 已注册的 MCP proxy 工具名（P2-4），用于下次 run 前清理，避免跨 session 残留。 */
   private _registeredMcpProxyTools: Set<string> = new Set();
+
+  private tickMicroCompactClock(
+    sessionId: string,
+    sessionMessages: Array<Record<string, unknown>>,
+    isFirstLoopOfRun: boolean,
+  ): void {
+    if (!this.harnessStore) return;
+    const engine = new ContextEngine({
+      sessionId,
+      harnessStore: this.harnessStore,
+      extensions: this.contextExtensions,
+      microTurn: this.sessions.getMicroTurn(sessionId),
+      microRounds: this.microCompactRounds,
+    });
+    engine.seedWorkingSet(sessionMessages);
+    if (isFirstLoopOfRun && engine.getMicroTurn() > 0) engine.noteUserMicroTurn();
+    engine.beginAgentMicroTurn();
+    this.sessions.setMicroTurn(sessionId, engine.getMicroTurn());
+    if (engine.isFromHarness()) engine.save();
+  }
+
+  private applyRoundMicroCompactNow(sessionId: string): void {
+    if (!this.harnessStore) return;
+    const engine = new ContextEngine({
+      sessionId,
+      harnessStore: this.harnessStore,
+      extensions: this.contextExtensions,
+      microTurn: this.sessions.getMicroTurn(sessionId),
+      microRounds: this.microCompactRounds,
+    });
+    const msgs = this.sessions.getLlmHistoryMessages(sessionId) as unknown as Array<Record<string, unknown>>;
+    engine.seedWorkingSet(msgs);
+    engine.applyRoundMicroCompact();
+    this.sessions.setMicroTurn(sessionId, engine.getMicroTurn());
+  }
+
+  private finishAgentRoundContext(sessionId: string): void {
+    try {
+      this.fileDiffWatch?.onAgentRoundEnd(sessionId);
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.applyRoundMicroCompactNow(sessionId);
+    } catch {
+      /* ignore */
+    }
+  }
 
   // ── 工具调用处理 ──
 
@@ -5641,13 +5707,15 @@ export class AgentRuntime {
     this.compressRetryAfter.delete(sessionId);
     this.clearLastOccupancy(sessionId);
 
-    if (engineEnabled && this.harnessStore && this.taskStore) {
+    if (engineEnabled && this.harnessStore) {
       try {
         const engine = new ContextEngine({
           sessionId,
           harnessStore: this.harnessStore,
-          taskStore: this.taskStore,
+          extensions: this.contextExtensions,
           summarizer: runSummarizer,
+          microTurn: this.sessions.getMicroTurn(sessionId),
+          microRounds: this.microCompactRounds,
         });
         engine.seedWorkingSet(sessionMessages);
         this.writeCompactBracket(sessionId, "start", { source: "overflow" });
@@ -5659,7 +5727,7 @@ export class AgentRuntime {
         stage = report.stage;
         originalTokens = report.originalTokens;
         droppedSummary = report.droppedSummary;
-        taskBlocks = report.taskBlocks ?? [];
+        taskBlocks = report.blockIds ?? [];
 
         if (report.droppedSummary) {
           const existing = this.sessionManager.getRollingSummary(sessionId) ?? "";

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { AutoCompressSession } from "../auto-compress.js";
 import { ContextEngine } from "../context-engine.js";
 import { HarnessSessionStore } from "../harness-session-store.js";
-import { TaskSessionStore } from "../task-session-store.js";
 import type { MaouMessage } from "../types/message.js";
 import {
   registerContextModule,
@@ -75,12 +74,11 @@ describe("ContextEngine × 模块", () => {
   it("force 空压：短会话不落 harness / 压缩区", async () => {
     const sessionId = "noop";
     const harness = new HarnessSessionStore({ maouRoot: root });
-    const taskStore = new TaskSessionStore(root, "coding");
     const session = [
       { role: "user", content: "hi", createdAt: new Date().toISOString() },
       { role: "assistant", content: "ok", createdAt: new Date().toISOString() },
     ];
-    const engine = new ContextEngine({ sessionId, harnessStore: harness, taskStore });
+    const engine = new ContextEngine({ sessionId, harnessStore: harness });
     engine.seedWorkingSet(session);
     const report = await engine.compress(500_000, {
       force: true,
@@ -94,9 +92,8 @@ describe("ContextEngine × 模块", () => {
   it("默认 staged：强制压缩变矮并保留最新 user", async () => {
     const sessionId = "def";
     const harness = new HarnessSessionStore({ maouRoot: root });
-    const taskStore = new TaskSessionStore(root, "coding");
     const session = sessionMsgs(18);
-    const engine = new ContextEngine({ sessionId, harnessStore: harness, taskStore });
+    const engine = new ContextEngine({ sessionId, harnessStore: harness });
     engine.seedWorkingSet(session);
     const beforeLen = engine.getHistory().length;
     const beforeChars = engine
@@ -123,15 +120,31 @@ describe("ContextEngine × 模块", () => {
     expect(harness.getCurrent(sessionId)?.length).toBeGreaterThan(0);
   });
 
+  it("自动压不过 force：尾巴按条数 16% 留原文", async () => {
+    const sessionId = "auto-tail";
+    const harness = new HarnessSessionStore({ maouRoot: root });
+    const session = sessionMsgs(18);
+    const engine = new ContextEngine({ sessionId, harnessStore: harness });
+    engine.seedWorkingSet(session);
+    const before = engine.getHistory().length;
+    const report = await engine.compress(10_000, {
+      knownTokens: 8_000,
+      sourceSessionMessages: session,
+    });
+    expect(report.stage).not.toBe("activeStage");
+    const after = engine.getHistory();
+    const tail = after.filter((m) => m.compact?.type !== "fold" && m.compact?.type !== "archive");
+    expect(tail.length).toBeGreaterThanOrEqual(Math.floor(before * 0.16));
+    expect(after.map((m) => m.contents.map((c) => c.text).join("")).join("\n")).toContain("LATEST_KEEP");
+  });
+
   it("module=legacy：只留最近轮，最新 user 还在", async () => {
     const sessionId = "leg";
     const harness = new HarnessSessionStore({ maouRoot: root });
-    const taskStore = new TaskSessionStore(root, "coding");
     const session = sessionMsgs(10, "LEGACY_LATEST");
     const engine = new ContextEngine({
       sessionId,
       harnessStore: harness,
-      taskStore,
       module: "legacy",
       moduleConfig: { ...DEFAULT_LEGACY_CONFIG, triggerPercent: 1, keepRecentRounds: 2 },
     });
@@ -161,18 +174,16 @@ describe("ContextEngine × 模块", () => {
           droppedSummary: "custom-mod",
           originalTokens: 99,
           compressedTokens: 2,
-          taskBlocks: [],
+          blockIds: [],
         };
       },
     };
     const sessionId = "mine";
     const harness = new HarnessSessionStore({ maouRoot: root });
-    const taskStore = new TaskSessionStore(root, "coding");
     const session = sessionMsgs(6);
     const engine = new ContextEngine({
       sessionId,
       harnessStore: harness,
-      taskStore,
       module: mine,
     });
     engine.seedWorkingSet(session);
@@ -247,18 +258,16 @@ describe("AutoCompressSession × 模块", () => {
           droppedSummary: "patched",
           originalTokens: 8,
           compressedTokens: 7,
-          taskBlocks: [],
+          blockIds: [],
         };
       },
     });
     const root = mkdtempSync(join(tmpdir(), "maou-patch-"));
     try {
       const harness = new HarnessSessionStore({ maouRoot: root });
-      const taskStore = new TaskSessionStore(root, "coding");
       const engine = new ContextEngine({
         sessionId: "p",
         harnessStore: harness,
-        taskStore,
         module: "staged",
       });
       engine.seedWorkingSet(sessionMsgs(3));

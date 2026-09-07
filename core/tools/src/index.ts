@@ -94,6 +94,15 @@ export {
 export { isHumanTerminal } from './terminal/backend.js'
 export {
   applyOutputLimit,
+  retainTerminalOutput,
+  resolveTerminalLineLimit,
+  capTerminalCapture,
+  TERMINAL_RESULT_LIMIT_LINES,
+  TERMINAL_CAPTURE_MAX_BYTES,
+  TERMINAL_LOG_FETCH_LINES,
+  ENGINE_OUTPUT_CHAR_BUDGET,
+  SPILL_TTL_MS,
+  cleanupSpillDir,
   inferPromptWaitState,
   peekOverflow,
   peekWaitState,

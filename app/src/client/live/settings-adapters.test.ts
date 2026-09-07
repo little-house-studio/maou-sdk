@@ -19,7 +19,6 @@ import {
   resolveModelAfterProviderChange,
   withApprovalMode,
 } from "./settings-adapters";
-import { defaultApiConfig } from "../drafts/api-settings";
 
 const liveMeta: Meta = {
   sessionId: "s1",
@@ -70,10 +69,15 @@ describe("live settings adapters", () => {
     assert.equal(resolveModelAfterProviderChange([], "x"), "");
   });
 
-  it("detects draft showcase keys from defaultApiConfig seed", () => {
-    const seed = defaultApiConfig().presets[0]!;
-    assert.ok(isDraftShowcaseApiKey(seed.key));
-    assert.ok(looksLikeDraftShowcasePreset(seed));
+  it("detects leftover showcase dummy keys", () => {
+    assert.ok(isDraftShowcaseApiKey("sk-draft-openai-example-key-0001"));
+    assert.ok(
+      looksLikeDraftShowcasePreset({
+        key: "sk-draft-openai-example-key-0001",
+        model: "gpt-5",
+        url: "https://api.openai.com/v1",
+      }),
+    );
     assert.equal(isDraftShowcaseApiKey("sk-real-user-key"), false);
   });
 

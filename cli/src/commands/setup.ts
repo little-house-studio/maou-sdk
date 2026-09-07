@@ -10,9 +10,9 @@ import {
   isGlobalApiConfigured,
   saveGlobalApiConfig,
   resolveMaouConfigPath,
-  loadPresetsFromMaouConfig,
+  loadProvidersFromMaouConfig,
 } from "@little-house-studio/agent";
-import type { APIPreset } from "@little-house-studio/llm";
+import { builtinCatalog } from "@little-house-studio/llm";
 
 export interface SetupOptions {
   /** 已配置时仍重新走向导 */
@@ -21,42 +21,29 @@ export interface SetupOptions {
   fromEnv?: boolean;
 }
 
-const PROVIDERS: Array<{
+function catalogChoices(): Array<{
   id: string;
   label: string;
   url: string;
-  protocol: "openai" | "anthropic" | "openai-responses";
+  protocol: string;
   defaultModel: string;
-}> = [
-  {
-    id: "openai",
-    label: "OpenAI",
-    url: "https://api.openai.com/v1/chat/completions",
-    protocol: "openai",
-    defaultModel: "gpt-4o",
-  },
-  {
-    id: "anthropic",
-    label: "Anthropic",
-    url: "https://api.anthropic.com/v1/messages",
-    protocol: "anthropic",
-    defaultModel: "claude-sonnet-4-5",
-  },
-  {
-    id: "openrouter",
-    label: "OpenRouter",
-    url: "https://openrouter.ai/api/v1/chat/completions",
-    protocol: "openai",
-    defaultModel: "openai/gpt-4o",
-  },
-  {
+}> {
+  const rows = builtinCatalog().map((p) => ({
+    id: p.id,
+    label: p.name,
+    url: p.baseUrl,
+    protocol: String(p.protocol ?? "openai"),
+    defaultModel: p.models[0]?.id ?? "",
+  }));
+  rows.push({
     id: "custom",
     label: "自定义 OpenAI 兼容接口",
     url: "",
     protocol: "openai",
-    defaultModel: "gpt-4o",
-  },
-];
+    defaultModel: "",
+  });
+  return rows;
+}
 
 function print(msg: string): void {
   output.write(msg + "\n");
@@ -107,8 +94,8 @@ export async function runSetup(opts: SetupOptions = {}): Promise<boolean> {
   }
 
   if (!opts.force && isGlobalApiConfigured()) {
-    const existing = loadPresetsFromMaouConfig();
-    print(`已检测到 ${existing.length} 个 preset。`);
+    const existing = Object.keys(loadProvidersFromMaouConfig());
+    print(`已检测到 ${existing.length} 个厂商路由。`);
     print("使用 --force 可覆盖/追加。");
     print("");
     return true;
@@ -126,8 +113,9 @@ export async function runSetup(opts: SetupOptions = {}): Promise<boolean> {
 
   const rl = readline.createInterface({ input, output });
   try {
-    print("选择提供商：");
-    PROVIDERS.forEach((p, i) => print(`  ${i + 1}) ${p.label}`));
+    const PROVIDERS = catalogChoices();
+    print("选择提供商（目录 id 即路由）：");
+    PROVIDERS.forEach((p, i) => print(`  ${i + 1}) ${p.label} (${p.id})`));
     const choiceRaw = (await rl.question("编号 [1]：")).trim() || "1";
     const choice = Math.max(1, Math.min(PROVIDERS.length, parseInt(choiceRaw, 10) || 1));
     const prov = PROVIDERS[choice - 1]!;
@@ -144,41 +132,35 @@ export async function runSetup(opts: SetupOptions = {}): Promise<boolean> {
       if (urlIn) url = urlIn;
     }
 
-    const key = (await rl.question("API Key（输入不会回显到日志文件，请勿分享）：")).trim();
-    if (!key) {
-      print("❌ API Key 不能为空（或先 export OPENAI_API_KEY 再 maou setup --from-env）");
-      return false;
-    }
+    const key = (await rl.question("API Key（可留空，稍后补；请勿分享）：")).trim();
 
-    const modelDefault = prov.defaultModel;
+    const modelDefault = prov.defaultModel || "gpt-4o";
     const model =
       (await rl.question(`模型 id [${modelDefault}]：`)).trim() || modelDefault;
 
-    const nameDefault = prov.id === "custom" ? "custom" : prov.id;
-    const name =
-      (await rl.question(`Preset 名称 [${nameDefault}]：`)).trim() || nameDefault;
+    let id = prov.id;
+    if (id === "custom") {
+      const rawId = (await rl.question("路由 id [custom]：")).trim() || "custom";
+      id = rawId.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "custom";
+      if (!/^[a-z]/.test(id)) id = `p-${id}`;
+    }
 
     const maxContextRaw = (await rl.question("maxContext 上下文窗口 [128000]：")).trim();
     const maxContext = Math.max(1024, parseInt(maxContextRaw, 10) || 128000);
 
-    const preset: APIPreset = {
-      name,
-      url,
-      key,
-      model,
-      protocol: prov.protocol,
-      maxTokens: 32768,
-      maxContext,
-      stream: true,
-      supportsVision: true,
-      supportsReasoning: prov.protocol === "anthropic" || true,
-      nativeToolCalling: true,
-      nativeStructuredOutput: prov.protocol !== "anthropic",
-    };
-
     const path = saveGlobalApiConfig({
-      presets: [preset],
-      defaultPreset: 0,
+      providers: {
+        [id]: {
+          displayName: prov.label,
+          protocol: prov.protocol,
+          url,
+          key,
+          keyRef: `file:${id}`,
+          defaultModel: model,
+          models: [{ id: model, maxContext, maxTokens: 32768 }],
+        },
+      },
+      roles: { main: { provider: id, model } },
       replace: !!opts.force && (await confirmReplace(rl)),
     });
 
@@ -186,16 +168,16 @@ export async function runSetup(opts: SetupOptions = {}): Promise<boolean> {
     print(`✓ 已保存全局 API 配置：${path}`);
     print("  此后 coding agent / 其它 Maou 系列产品共用此文件。");
     print("");
-    return isGlobalApiConfigured();
+    return true;
   } finally {
     rl.close();
   }
 }
 
 async function confirmReplace(rl: readline.Interface): Promise<boolean> {
-  const existing = loadPresetsFromMaouConfig();
+  const existing = Object.keys(loadProvidersFromMaouConfig());
   if (existing.length === 0) return true;
-  const a = (await rl.question(`已有 ${existing.length} 个 preset。全部替换？[y/N]：`)).trim().toLowerCase();
+  const a = (await rl.question(`已有 ${existing.length} 个厂商。全部替换？[y/N]：`)).trim().toLowerCase();
   return a === "y" || a === "yes";
 }
 
@@ -221,20 +203,18 @@ function setupFromEnv(): boolean {
   const name = process.env.MAOU_PRESET_NAME?.trim() || (isAnthropic ? "anthropic" : "default");
 
   const path = saveGlobalApiConfig({
-    presets: [
-      {
-        name,
+    providers: {
+      [name]: {
+        displayName: name,
+        protocol: isAnthropic ? "anthropic" : "openai",
         url,
         key,
-        model,
-        protocol: isAnthropic ? "anthropic" : "openai",
-        maxTokens: 32768,
-        maxContext: 128000,
-        stream: true,
-        nativeToolCalling: true,
+        keyRef: `file:${name}`,
+        defaultModel: model,
+        models: [{ id: model, maxContext: 128000, maxTokens: 32768 }],
       },
-    ],
-    defaultPreset: 0,
+    },
+    roles: { main: { provider: name, model } },
     replace: false,
   });
   print(`✓ 已从环境变量写入：${path}`);

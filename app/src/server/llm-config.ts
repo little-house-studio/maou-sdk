@@ -10,13 +10,24 @@
  */
 
 import {
+  loadApiDocument,
   loadPresetsFromMaouConfig,
+  loadProvidersFromMaouConfig,
   resolveMaouConfigPath,
   saveGlobalApiConfig,
 } from "@little-house-studio/agent";
 import type { APIPreset } from "@little-house-studio/llm";
-import { resolveContextWindow } from "@little-house-studio/llm";
-import { migratePresetPlainKey, stripPresetPlainKey } from "@little-house-studio/types";
+import { getProviders, resolveContextWindow, scanModels } from "@little-house-studio/llm";
+import {
+  KNOWN_API_PROTOCOLS,
+  coerceApiDocument,
+  migratePresetPlainKey,
+  slugProviderId,
+  stripPresetPlainKey,
+  type ApiProvider,
+  type ApiProviderModel,
+  type ApiRoleRef,
+} from "@little-house-studio/types";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -26,7 +37,25 @@ export type LlmConfigProtocol =
   | "openai-responses"
   | string;
 
-/** 厂商/标准预设（UI 选用，可改 URL） */
+/** 协议下拉（不是厂商列表） */
+export const PROTOCOL_OPTIONS: ReadonlyArray<{ id: string; label: string }> =
+  KNOWN_API_PROTOCOLS.map((id) => ({
+    id,
+    label:
+      id === "openai"
+        ? "OpenAI 兼容"
+        : id === "openai-responses"
+          ? "OpenAI Responses"
+          : id === "openai-codex"
+            ? "OpenAI Codex"
+            : id === "github-copilot"
+              ? "GitHub Copilot"
+              : id === "google-vertex"
+                ? "Google Vertex"
+                : id,
+  }));
+
+/** @deprecated 协议四项；设置快照改走 catalog */
 export const VENDOR_STANDARDS: ReadonlyArray<{
   id: string;
   label: string;
@@ -86,11 +115,61 @@ export const AGENT_MODEL_ROLES = [
 
 export type AgentModelRoleId = (typeof AGENT_MODEL_ROLES)[number]["id"];
 
+export type LlmRoleBinding = { provider: string; model: string };
+
 export type LlmConfigRoles = {
-  main?: string;
-  fast?: string;
-  vision?: string;
-  helper?: string;
+  main?: LlmRoleBinding;
+  fast?: LlmRoleBinding;
+  vision?: LlmRoleBinding;
+  helper?: LlmRoleBinding;
+};
+
+export type LlmCatalogEntry = {
+  id: string;
+  label: string;
+  protocol: string;
+  defaultUrl: string;
+  configured?: boolean;
+  models: Array<{
+    id: string;
+    name?: string;
+    supportsImage?: boolean;
+    supportsReasoning?: boolean;
+  }>;
+};
+
+export type LlmProviderModelDto = {
+  id: string;
+  name: string;
+  maxContext: number;
+  maxTokens: number;
+  supportsImage: boolean;
+  supportsAudio: boolean;
+  supportsVideo: boolean;
+  supportsReasoning: boolean;
+  nativeToolCalling: boolean;
+  inputPricePerMt: string;
+  outputPricePerMt: string;
+  cacheHitPricePerMt: string;
+  temperature: string;
+  topP: string;
+  presencePenalty: string;
+  frequencyPenalty: string;
+  customRequestJson: string;
+};
+
+export type LlmProviderDto = {
+  id: string;
+  displayName: string;
+  protocol: LlmConfigProtocol;
+  url: string;
+  urlParams: string;
+  maxConcurrent: string;
+  keyMasked: string;
+  hasKey: boolean;
+  keyRef: string;
+  defaultModel: string;
+  models: LlmProviderModelDto[];
 };
 
 /** Client-safe preset (no full secret). */
@@ -136,12 +215,48 @@ export type LlmConfigPresetDto = {
 
 export type LlmConfigSnapshot = {
   configPath: string;
+  providers: LlmProviderDto[];
+  catalog: LlmCatalogEntry[];
+  protocols: typeof PROTOCOL_OPTIONS;
+  /** 运行时扁平，给 ChatPanel / 旧调用 */
   defaultPreset: number;
   presets: LlmConfigPresetDto[];
-  /** Agent 层 / 模板默认：角色 → preset name */
   roles: LlmConfigRoles;
   vendors: typeof VENDOR_STANDARDS;
   roleDefs: typeof AGENT_MODEL_ROLES;
+};
+
+export type LlmProviderModelWrite = {
+  id: string;
+  name?: string;
+  maxContext?: number;
+  maxTokens?: number;
+  supportsImage?: boolean;
+  supportsAudio?: boolean;
+  supportsVideo?: boolean;
+  supportsReasoning?: boolean;
+  nativeToolCalling?: boolean;
+  inputPricePerMt?: string | number | null;
+  outputPricePerMt?: string | number | null;
+  cacheHitPricePerMt?: string | number | null;
+  temperature?: string | number | null;
+  topP?: string | number | null;
+  presencePenalty?: string | number | null;
+  frequencyPenalty?: string | number | null;
+  customRequestJson?: string;
+};
+
+export type LlmProviderWrite = {
+  id: string;
+  displayName?: string;
+  protocol?: string;
+  url: string;
+  urlParams?: string;
+  key?: string;
+  keyRef?: string;
+  defaultModel?: string;
+  maxConcurrent?: string | number | null;
+  models: LlmProviderModelWrite[];
 };
 
 export type LlmConfigPresetWrite = {
@@ -531,44 +646,118 @@ export function toPresetDto(p: APIPreset): LlmConfigPresetDto {
   };
 }
 
-function readApiMeta(configPath: string): {
-  defaultPreset: number;
-  roles: LlmConfigRoles;
-} {
+function asRoleBinding(v: unknown): LlmRoleBinding | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const r = v as Record<string, unknown>;
+  const provider = String(r.provider ?? "").trim();
+  const model = String(r.model ?? "").trim();
+  if (!provider) return undefined;
+  return { provider, model };
+}
+
+function readRolesFromDoc(configPath: string): LlmConfigRoles {
   try {
-    if (!existsSync(configPath)) return { defaultPreset: 0, roles: {} };
-    const raw = JSON.parse(readFileSync(configPath, "utf8")) as {
-      api?: {
-        defaultPreset?: number;
-        roles?: Record<string, string | number>;
-        helperPreset?: number;
-        presets?: { name?: string }[];
-      };
-    };
-    const api = raw.api ?? {};
+    const doc = loadApiDocument(configPath);
     const roles: LlmConfigRoles = {};
-    const r = api.roles ?? {};
-    if (r.main != null) roles.main = String(r.main);
-    if (r.fast != null) roles.fast = String(r.fast);
-    if (r.vision != null) roles.vision = String(r.vision);
-    if (r.helper != null) roles.helper = String(r.helper);
-    // legacy helperPreset 下标 → roles.helper（name）；与 saveGlobalApiConfig 提升逻辑一致
-    // 注意：磁盘 presets 可能是嵌套 models[]，下标按「厂商」项，name 取连接名
-    if (
-      roles.helper == null &&
-      typeof api.helperPreset === "number" &&
-      Array.isArray(api.presets)
-    ) {
-      const hp = api.presets[api.helperPreset] as { name?: string } | undefined;
-      if (hp?.name) roles.helper = String(hp.name);
+    for (const k of ["main", "fast", "vision", "helper"] as const) {
+      const b = doc.roles[k];
+      if (b?.provider) roles[k] = { provider: b.provider, model: b.model };
     }
-    const n = api.defaultPreset;
-    return {
-      defaultPreset: typeof n === "number" && n >= 0 ? Math.floor(n) : 0,
-      roles,
-    };
+    return roles;
   } catch {
-    return { defaultPreset: 0, roles: {} };
+    try {
+      if (!existsSync(configPath)) return {};
+      const raw = JSON.parse(readFileSync(configPath, "utf8")) as {
+        api?: { roles?: Record<string, unknown> };
+      };
+      const roles: LlmConfigRoles = {};
+      const r = raw.api?.roles ?? {};
+      for (const k of ["main", "fast", "vision", "helper"] as const) {
+        const b = asRoleBinding(r[k]);
+        if (b) roles[k] = b;
+      }
+      return roles;
+    } catch {
+      return {};
+    }
+  }
+}
+
+function modelToDto(
+  m: ApiProviderModel,
+  provider: ApiProvider,
+): LlmProviderModelDto {
+  const flat = {
+    ...provider,
+    ...m,
+    model: m.id,
+    name: m.name ?? m.id,
+    supportsVision: m.supportsVision ?? false,
+  } as unknown as APIPreset;
+  const d = toPresetDto(flat);
+  return {
+    id: m.id,
+    name: String(m.name ?? m.id),
+    maxContext: d.maxContext,
+    maxTokens: d.maxTokens,
+    supportsImage: d.supportsImage,
+    supportsAudio: d.supportsAudio,
+    supportsVideo: d.supportsVideo,
+    supportsReasoning: d.supportsReasoning,
+    nativeToolCalling: d.nativeToolCalling,
+    inputPricePerMt: d.inputPricePerMt,
+    outputPricePerMt: d.outputPricePerMt,
+    cacheHitPricePerMt: d.cacheHitPricePerMt,
+    temperature: d.temperature,
+    topP: d.topP,
+    presencePenalty: d.presencePenalty,
+    frequencyPenalty: d.frequencyPenalty,
+    customRequestJson: d.customRequestJson,
+  };
+}
+
+function toProviderDto(id: string, p: ApiProvider): LlmProviderDto {
+  const key = typeof p.key === "string" ? p.key : "";
+  const fullUrl = String(p.url ?? "");
+  let url = fullUrl;
+  let urlParams = String(p.urlParams ?? "");
+  if (!urlParams && fullUrl.includes("?")) {
+    const i = fullUrl.indexOf("?");
+    url = fullUrl.slice(0, i);
+    urlParams = fullUrl.slice(i + 1);
+  }
+  return {
+    id,
+    displayName: String(p.displayName ?? id),
+    protocol: normalizeProtocol(p.protocol),
+    url,
+    urlParams,
+    maxConcurrent: numToUi(p.maxConcurrent),
+    keyMasked: key.trim().length > 0 || Boolean(p.keyRef) ? "已填" : "未填",
+    hasKey: key.trim().length > 0 || Boolean(p.keyRef),
+    keyRef: String(p.keyRef ?? ""),
+    defaultModel: String(p.defaultModel ?? p.models[0]?.id ?? ""),
+    models: p.models.map((m) => modelToDto(m, p)),
+  };
+}
+
+function buildCatalog(configuredIds: Set<string>): LlmCatalogEntry[] {
+  try {
+    return getProviders().map((p) => ({
+      id: p.id,
+      label: p.name,
+      protocol: String(p.protocol ?? "openai"),
+      defaultUrl: String(p.baseUrl ?? ""),
+      models: (p.models ?? []).slice(0, 24).map((m) => ({
+        id: m.id,
+        name: m.name,
+        supportsImage: Array.isArray(m.input) && m.input.includes("image"),
+        supportsReasoning: Boolean(m.reasoning),
+      })),
+      configured: configuredIds.has(p.id),
+    }));
+  } catch {
+    return [];
   }
 }
 
@@ -632,110 +821,296 @@ export function resolvePresetForConnectionTest(
 
 export function loadLlmConfigSnapshot(configPath?: string): LlmConfigSnapshot {
   const path = configPath?.trim() || resolveMaouConfigPath();
-  const presets = loadPresetsFromMaouConfig(path);
-  const meta = readApiMeta(path);
-  const defaultPreset = Math.min(
-    meta.defaultPreset,
-    Math.max(0, presets.length - 1),
+  const providers = loadProvidersFromMaouConfig(path);
+  const flats = loadPresetsFromMaouConfig(path);
+  const roles = readRolesFromDoc(path);
+  const providerDtos = Object.entries(providers).map(([id, p]) =>
+    toProviderDto(id, p),
   );
-  // If roles.main empty, derive from defaultPreset name
-  const roles = { ...meta.roles };
-  if (!roles.main && presets[defaultPreset]) {
-    roles.main = String(
-      presets[defaultPreset]!.name ?? presets[defaultPreset]!.model ?? "",
+  if (!roles.main && providerDtos[0]?.models[0]) {
+    roles.main = {
+      provider: providerDtos[0].id,
+      model: providerDtos[0].defaultModel || providerDtos[0].models[0].id,
+    };
+  }
+  let defaultPreset = 0;
+  if (roles.main) {
+    const i = flats.findIndex(
+      (p) =>
+        (p as { _providerName?: string })._providerName === roles.main!.provider &&
+        p.model === roles.main!.model,
     );
+    if (i >= 0) defaultPreset = i;
   }
   return {
     configPath: path,
+    providers: providerDtos,
+    catalog: buildCatalog(new Set(Object.keys(providers))),
+    protocols: PROTOCOL_OPTIONS,
     defaultPreset,
-    presets: presets.map(toPresetDto),
+    presets: flats.map(toPresetDto),
     roles,
     vendors: VENDOR_STANDARDS,
     roleDefs: AGENT_MODEL_ROLES,
   };
 }
 
-function normalizeRoles(
-  roles: LlmConfigRoles | undefined,
-  presetNames: string[],
-): LlmConfigRoles {
-  const out: LlmConfigRoles = {};
-  const set = new Set(presetNames);
-  const pick = (v: string | undefined): string | undefined => {
-    if (!v?.trim()) return undefined;
-    const t = v.trim();
-    // allow name or index string
-    if (set.has(t)) return t;
-    const idx = Number(t);
-    if (Number.isInteger(idx) && idx >= 0 && idx < presetNames.length) {
-      return presetNames[idx];
+function coerceIncomingRole(
+  v: unknown,
+  providers: Record<string, ApiProvider>,
+): ApiRoleRef | undefined {
+  const obj = asRoleBinding(v);
+  if (obj) return obj;
+  if (typeof v !== "string" && typeof v !== "number") return undefined;
+  const name = String(v).trim();
+  if (!name) return undefined;
+  if (providers[name]) {
+    const p = providers[name]!;
+    return {
+      provider: name,
+      model: String(p.defaultModel ?? p.models[0]?.id ?? ""),
+    };
+  }
+  const slash = name.indexOf("/");
+  if (slash > 0) {
+    return { provider: name.slice(0, slash), model: name.slice(slash + 1) };
+  }
+  for (const [id, p] of Object.entries(providers)) {
+    if (p.models.some((m) => m.id === name || m.name === name)) {
+      return { provider: id, model: name };
     }
-    // keep name even if not found (user renaming)
-    return t;
-  };
-  if (roles?.main) out.main = pick(roles.main);
-  if (roles?.fast) out.fast = pick(roles.fast);
-  if (roles?.vision) out.vision = pick(roles.vision);
-  if (roles?.helper) out.helper = pick(roles.helper);
-  // helper defaults to fast if only fast set
-  if (!out.helper && out.fast) out.helper = out.fast;
+  }
+  return undefined;
+}
+
+function normalizeRoleBindings(
+  roles: Record<string, unknown> | LlmConfigRoles | undefined,
+  providers: Record<string, ApiProvider>,
+): Record<string, ApiRoleRef> {
+  const out: Record<string, ApiRoleRef> = {};
+  if (!roles) return out;
+  for (const [k, v] of Object.entries(roles)) {
+    const b = coerceIncomingRole(v, providers);
+    if (b) out[k] = b;
+  }
+  if (!out.helper && out.fast) out.helper = { ...out.fast };
   return out;
 }
 
+function mergeProviderFromWrite(
+  incoming: LlmProviderWrite,
+  prev: ApiProvider | undefined,
+): ApiProvider {
+  const id = slugProviderId(incoming.id || incoming.displayName || "provider");
+  const models: ApiProviderModel[] = [];
+  for (const m of incoming.models ?? []) {
+    const mid = String(m.id ?? "").trim();
+    if (!mid) continue;
+    const prevFlat =
+      prev?.models.find((x) => x.id === mid) && prev
+        ? ({
+            ...prev,
+            ...prev.models.find((x) => x.id === mid),
+            name: `${id}/${mid}`,
+            model: mid,
+          } as unknown as APIPreset)
+        : undefined;
+    const merged = mergePresetPreservingKey(
+      {
+        name: `${id}/${mid}`,
+        vendor: id,
+        protocol: incoming.protocol,
+        url: incoming.url,
+        urlParams: incoming.urlParams,
+        model: mid,
+        key: incoming.key,
+        keyRef: incoming.keyRef || (id ? `file:${id}` : undefined),
+        maxContext: m.maxContext,
+        maxTokens: m.maxTokens,
+        supportsImage: m.supportsImage,
+        supportsAudio: m.supportsAudio,
+        supportsVideo: m.supportsVideo,
+        supportsReasoning: m.supportsReasoning,
+        nativeToolCalling: m.nativeToolCalling,
+        inputPricePerMt: m.inputPricePerMt,
+        outputPricePerMt: m.outputPricePerMt,
+        cacheHitPricePerMt: m.cacheHitPricePerMt,
+        maxConcurrent: incoming.maxConcurrent,
+        temperature: m.temperature,
+        topP: m.topP,
+        presencePenalty: m.presencePenalty,
+        frequencyPenalty: m.frequencyPenalty,
+        customRequestJson: m.customRequestJson,
+      },
+      prevFlat,
+    ) as ExtendedPreset;
+    models.push({
+      id: mid,
+      name: String(m.name ?? mid),
+      maxTokens: merged.maxTokens,
+      maxContext: merged.maxContext,
+      supportsVision: merged.supportsVision,
+      supportsAudio: merged.supportsAudio,
+      supportsVideo: merged.supportsVideo,
+      supportsReasoning: merged.supportsReasoning,
+      nativeToolCalling: merged.nativeToolCalling,
+      inputPrice: merged.inputPrice,
+      outputPrice: merged.outputPrice,
+      cacheHitPrice: merged.cacheHitPrice,
+      temperature: merged.temperature,
+      topP: merged.topP ?? merged.top_p,
+      presencePenalty: merged.presencePenalty ?? merged.presence_penalty,
+      frequencyPenalty: merged.frequencyPenalty ?? merged.frequency_penalty,
+      extraBody: merged.extraBody,
+      pricing: merged.pricing,
+    });
+  }
+  const first = incoming.models[0];
+  const conn = mergePresetPreservingKey(
+    {
+      name: id,
+      protocol: incoming.protocol,
+      url: incoming.url,
+      urlParams: incoming.urlParams,
+      model: first?.id ?? prev?.defaultModel ?? "model",
+      key: incoming.key,
+      keyRef: incoming.keyRef,
+      maxConcurrent: incoming.maxConcurrent,
+    },
+    prev
+      ? ({
+          ...prev,
+          name: id,
+          model: prev.defaultModel ?? prev.models[0]?.id,
+        } as unknown as APIPreset)
+      : undefined,
+  ) as ExtendedPreset;
+  return {
+    ...(prev ?? {}),
+    displayName: incoming.displayName ?? prev?.displayName ?? id,
+    protocol: normalizeProtocol(incoming.protocol ?? prev?.protocol),
+    url: composeUrl(
+      String(incoming.url ?? prev?.url ?? "").split("?")[0] || "",
+      String(incoming.urlParams ?? prev?.urlParams ?? ""),
+    ),
+    key: conn.key,
+    keyRef: conn.keyRef,
+    urlParams: String(incoming.urlParams ?? prev?.urlParams ?? ""),
+    maxConcurrent: conn.maxConcurrent,
+    extraBody: conn.extraBody,
+    customRequestJson: conn.customRequestJson,
+    defaultModel:
+      String(incoming.defaultModel ?? "").trim() ||
+      models[0]?.id ||
+      prev?.defaultModel,
+    models,
+  };
+}
+
 export function saveLlmConfigFromClient(opts: {
-  presets: LlmConfigPresetWrite[];
+  providers?: LlmProviderWrite[];
+  presets?: LlmConfigPresetWrite[];
   defaultPreset?: number;
-  roles?: LlmConfigRoles;
+  roles?: LlmConfigRoles | Record<string, string | LlmRoleBinding | undefined>;
   replace?: boolean;
   configPath?: string;
 }): LlmConfigSnapshot {
   const path = opts.configPath?.trim() || resolveMaouConfigPath();
-  const existing = loadPresetsFromMaouConfig(path);
-  const byName = new Map<string, APIPreset>();
-  for (const p of existing) {
-    const n = String(p.name ?? p.model ?? "");
-    if (n) byName.set(n, p);
-  }
+  const existing = loadProvidersFromMaouConfig(path);
+  let providers: Record<string, ApiProvider>;
 
-  const merged: APIPreset[] = [];
-  for (const inc of opts.presets) {
-    const name = String(inc.name ?? "").trim();
-    if (!name) continue;
-    const prev = byName.get(name);
-    const next = mergePresetPreservingKey(inc, prev);
-    merged.push(next);
-    byName.set(name, next);
-  }
-
-  const names = merged.map((p) => String(p.name ?? p.model ?? ""));
-  let defaultPreset = opts.defaultPreset;
-  if (defaultPreset == null && opts.roles?.main) {
-    const i = names.indexOf(String(opts.roles.main));
-    if (i >= 0) defaultPreset = i;
-  }
-  if (defaultPreset == null) defaultPreset = 0;
-
-  const roles = normalizeRoles(opts.roles, names);
-  // Sync defaultPreset with roles.main when possible
-  if (roles.main) {
-    const i = names.indexOf(roles.main);
-    if (i >= 0) defaultPreset = i;
+  if (opts.providers && opts.providers.length > 0) {
+    providers = opts.replace ? {} : { ...existing };
+    for (const inc of opts.providers) {
+      const id = slugProviderId(inc.id || inc.displayName || "provider");
+      if (!id) continue;
+      if (!String(inc.url ?? "").trim()) {
+        throw new Error(`厂商 "${id}" 需要 url`);
+      }
+      if (!inc.models?.some((m) => String(m.id ?? "").trim())) {
+        throw new Error(`厂商 "${id}" 至少需要一个 model id`);
+      }
+      providers[id] = mergeProviderFromWrite(inc, existing[id]);
+    }
+  } else {
+    const flats = loadPresetsFromMaouConfig(path);
+    const byName = new Map<string, APIPreset>();
+    for (const p of flats) {
+      const n = String(p.name ?? p.model ?? "");
+      if (n) byName.set(n, p);
+    }
+    const merged: APIPreset[] = [];
+    for (const inc of opts.presets ?? []) {
+      const name = String(inc.name ?? "").trim();
+      if (!name) continue;
+      const prev = byName.get(name);
+      const next = mergePresetPreservingKey(inc, prev);
+      merged.push(next);
+      byName.set(name, next);
+    }
+    const userRoot = dirname(path);
+    const forDisk = merged.map((p) => {
+      const rec = { ...(p as unknown as Record<string, unknown>) };
+      migratePresetPlainKey(rec, userRoot);
+      return stripPresetPlainKey(rec);
+    });
+    const built = coerceApiDocument({ presets: forDisk }).providers;
+    const incomingRoles = normalizeRoleBindings(
+      opts.roles as Record<string, unknown> | undefined,
+      built,
+    );
+    saveGlobalApiConfig({
+      providers: built,
+      replace: Boolean(opts.replace),
+      roles: incomingRoles,
+      configPath: path,
+    });
+    return loadLlmConfigSnapshot(path);
   }
 
   const userRoot = dirname(path);
-  const forDisk = merged.map((p) => {
-    const rec = { ...(p as unknown as Record<string, unknown>) };
+  for (const p of Object.values(providers)) {
+    const rec = p as unknown as Record<string, unknown>;
     migratePresetPlainKey(rec, userRoot);
-    return stripPresetPlainKey(rec);
-  });
+    if (!rec.key && rec.keyRef) {
+      /* key 在匣里 */
+    }
+    const stripped = stripPresetPlainKey({ ...rec });
+    Object.assign(rec, stripped);
+  }
+
+  const roles = normalizeRoleBindings(
+    opts.roles as Record<string, unknown> | undefined,
+    providers,
+  );
 
   saveGlobalApiConfig({
-    presets: forDisk as unknown as APIPreset[],
-    defaultPreset,
-    replace: Boolean(opts.replace),
+    providers,
     roles,
+    replace: Boolean(opts.replace),
     configPath: path,
   });
 
   return loadLlmConfigSnapshot(path);
+}
+
+export async function scanDraftModels(body: {
+  url?: string;
+  key?: string;
+  protocol?: string;
+  urlParams?: string;
+  name?: string;
+}): Promise<{ supported: boolean; models: Array<{ id: string }>; reason?: string }> {
+  const preset = resolvePresetForConnectionTest({
+    name: body.name,
+    url: body.url,
+    key: body.key,
+    protocol: body.protocol,
+    urlParams: body.urlParams,
+    model: "probe",
+  });
+  if (!String(preset.url ?? "").trim()) {
+    return { supported: false, models: [], reason: "url required" };
+  }
+  return scanModels(preset);
 }

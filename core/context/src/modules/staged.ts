@@ -2,6 +2,7 @@
  * 分段压缩模块：微压缩 → 大压缩 → 归档，可按轮只升一级。
  */
 
+import type { TraditionalMajorScheme } from "@little-house-studio/context-components";
 import { compressMaou } from "../compressor.js";
 import type { CompressionStage } from "../types/compression.js";
 import type { MaouMessage } from "../types/message.js";
@@ -25,10 +26,15 @@ export interface StagedCompressConfig {
   summaryModel: SummaryModelConfig;
   /** true：每轮只升一级；false：一次压到当前占用对应的阶段 */
   progressive: boolean;
+  /**
+   * 传统大压缩：`fold` 先折，折叠区满了再 LLM 归档；
+   * `llm` 一到阈值就摘要并把原文查表路径留下来。
+   */
+  majorScheme: TraditionalMajorScheme;
 }
 
 export const DEFAULT_STAGED_CONFIG: StagedCompressConfig = {
-  compactTriggerPercent: 70,
+  compactTriggerPercent: 80,
   summaryTriggerPercent: 80,
   archiveTriggerPercent: 90,
   retainTailRatio: 0.16,
@@ -37,6 +43,7 @@ export const DEFAULT_STAGED_CONFIG: StagedCompressConfig = {
   summarizerPrompt: DEFAULT_SUMMARIZER_PROMPT,
   summaryModel: {},
   progressive: true,
+  majorScheme: "fold",
 };
 
 const STAGE_ORDER: CompressionStage[] = [
@@ -68,7 +75,7 @@ function idle(history: MaouMessage[], tokens: number): ContextModuleResult {
     droppedSummary: "",
     originalTokens: tokens,
     compressedTokens: tokens,
-    taskBlocks: [],
+    blockIds: [],
   };
 }
 
@@ -107,12 +114,18 @@ export const stagedContextModule: ContextModule<StagedCompressConfig> = {
       summarizer: ctx.summarizer,
       sessionId: ctx.sessionId,
       maxStage,
-      activeTaskIds: ctx.activeTaskIds,
+      fold: ctx.fold,
       knownTokens: tokens,
       force: ctx.force,
       retainCount: ctx.force
         ? 1
         : Math.max(1, Math.floor(ctx.history.length * retainRatio)),
+      microTurn: ctx.microTurn,
+      microCatalog: ctx.microCatalog,
+      microRounds: ctx.microRounds,
+      sessionRoot: ctx.sessionRoot,
+      foldStage: ctx.foldStage,
+      majorScheme: ctx.majorScheme ?? ctx.config.majorScheme,
     });
 
     return {
@@ -122,8 +135,8 @@ export const stagedContextModule: ContextModule<StagedCompressConfig> = {
       droppedSummary: result.droppedSummary,
       originalTokens: result.originalTokens,
       compressedTokens: result.compressedTokens,
-      taskBlocks: result.taskBlocks,
-      perTaskOriginals: result.perTaskOriginals,
+      blockIds: result.blockIds,
+      foldedOriginals: result.foldedOriginals,
     };
   },
 };

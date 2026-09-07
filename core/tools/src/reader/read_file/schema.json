@@ -1,13 +1,15 @@
 {
   "name": "read_file",
-  "description": "读取本地 UTF-8 文本文件（带行号）。网页用 web_fetch，图片用 read_image。",
+  "description": "读取本地 UTF-8 文本文件（带行号）。按行分页：offset/limit（或 start_line/end_line），一次最多 2000 行 / 50KiB。网页用 web_fetch，图片用 read_image。",
   "parameters": {
     "type": "object",
     "properties": {
       "path": { "type": "string", "description": "本地文件路径" },
-      "start_line": { "type": "integer", "description": "起始行号（从 1 开始）" },
-      "end_line": { "type": "integer", "description": "结束行号（包含）" },
-      "max_chars": { "type": "integer", "description": "最大返回字符数" },
+      "offset": { "type": "integer", "description": "起始行号（从 1 开始）。与 start_line 相同。默认 1。" },
+      "limit": { "type": "integer", "description": "本次读取行数。默认 2000，最大 2000。" },
+      "start_line": { "type": "integer", "description": "起始行号。与 offset 相同。" },
+      "end_line": { "type": "integer", "description": "结束行号（包含）。也可用 limit。" },
+      "max_chars": { "type": "integer", "description": "更紧的字符上限。不传则按 50KiB / 2000 行封顶。" },
       "mode": { "type": "string", "enum": ["full", "signatures"], "description": "full 或 signatures" },
       "description": { "type": "string", "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。" }
     },

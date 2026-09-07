@@ -1,11 +1,8 @@
 /**
- * 用户 API 名单：读写 ~/.maou/config.json 的 api.presets。
+ * 用户 API 名单：读写 ~/.maou/config.json 的 api.providers。
  *
- * 这是全系列产品的权威名单（可用 $MAOU_LLM_CONFIG 改路径）。
- * 厂商目录（有哪些模型可选用）走 registry / LLMConfig。
- *
- * 磁盘 SoT：api.presets[].models[]
- * 运行时 SoT：expand 后的扁平 APIPreset[]
+ * 磁盘 SoT：api.providers + api.roles.{provider,model}
+ * 运行时：展开为扁平 APIPreset[]（供 LLMClient）
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
@@ -14,228 +11,251 @@ import {
   resolveUserConfigPath,
   resolveUserMaouRoot,
   resolveApiRolePreset,
-  expandAllPresets,
-  collapsePresetsToNested,
-  migratePresetsToNested,
   migratePresetPlainKey,
+  coerceApiDocument,
+  apiDocumentForDisk,
+  providersToRuntimePresets,
+  resolveProviderModel,
+  parseRoleBinding,
+  isApiRoleRef,
+  isKnownApiProtocol,
   type ApiModelRole,
+  type ApiProvider,
+  type ApiRoleRef,
+  type CatalogHint,
 } from "@little-house-studio/types";
 import type { APIPreset } from "./adapters/types.js";
 import { loadPersistedExtensionPresets } from "./extension-providers.js";
 import { normalizeApiPreset } from "./preset-normalize.js";
+import { getProviders } from "./registry/index.js";
 
 /** @deprecated 使用 resolveUserConfigPath；保留别名兼容旧 import */
 export function resolveMaouConfigPath(): string {
   return resolveUserConfigPath();
 }
 
-function readApiPresetsArray(path: string): unknown[] {
-  if (!existsSync(path)) return [];
+function userRootFromConfigPath(configPath: string): string {
+  return dirname(configPath);
+}
+
+function catalogHints(): CatalogHint[] {
   try {
-    const data = JSON.parse(readFileSync(path, "utf-8")) as {
-      api?: { presets?: unknown[] };
-    };
-    const presets = data?.api?.presets;
-    return Array.isArray(presets) ? presets : [];
+    return getProviders().map((p) => ({ id: p.id, baseUrl: p.baseUrl }));
   } catch {
     return [];
   }
 }
 
-function diskPresetsToNested(rawList: unknown[]): Array<Record<string, unknown>> {
-  return migratePresetsToNested(rawList);
+function readRawFile(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
-function userRootFromConfigPath(configPath: string): string {
-  return dirname(configPath);
+function writeRawFile(path: string, raw: Record<string, unknown>): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(raw, null, 2), "utf-8");
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    /* ignore */
+  }
 }
 
-function migratePresetTree(
-  preset: Record<string, unknown>,
-  userRoot: string,
-): boolean {
-  let dirty = migratePresetPlainKey(preset, userRoot);
-  if (Array.isArray(preset.models)) {
-    for (const m of preset.models) {
-      if (!m || typeof m !== "object") continue;
-      const rec = m as Record<string, unknown>;
-      if (!rec.name) {
-        rec.name = `${String(preset.name ?? "preset")}/${String(rec.id ?? rec.name ?? "model")}`;
+function migrateProviderTree(p: ApiProvider, userRoot: string): boolean {
+  const rec = p as unknown as Record<string, unknown>;
+  let dirty = migratePresetPlainKey(rec, userRoot);
+  if (Array.isArray(rec.models)) {
+    for (const m of rec.models) {
+      if (m && typeof m === "object" && migratePresetPlainKey(m as Record<string, unknown>, userRoot)) {
+        dirty = true;
       }
-      if (migratePresetPlainKey(rec, userRoot)) dirty = true;
     }
   }
   return dirty;
 }
 
-function migrateAndMaybeRewriteDisk(
-  path: string,
-  nested: Array<Record<string, unknown>>,
-): Array<Record<string, unknown>> {
+export interface LoadedApiDocument {
+  path: string;
+  providers: Record<string, ApiProvider>;
+  roles: Record<string, ApiRoleRef>;
+}
+
+/** 共用读入口：迁旧盘、迁匣、回写。 */
+export function loadApiDocument(configPath?: string): LoadedApiDocument {
+  const path = configPath ?? resolveUserConfigPath();
+  const raw = readRawFile(path);
+  const prevApi =
+    raw.api && typeof raw.api === "object" ? (raw.api as Record<string, unknown>) : {};
+  const doc = coerceApiDocument(prevApi, { catalog: catalogHints() });
   const userRoot = userRootFromConfigPath(path);
-  let dirty = false;
-  for (const p of nested) {
-    if (migratePresetTree(p, userRoot)) dirty = true;
+  let dirty = doc.dirty;
+  for (const p of Object.values(doc.providers)) {
+    if (migrateProviderTree(p, userRoot)) dirty = true;
   }
-  if (!dirty || !existsSync(path)) return nested;
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    const api =
-      raw.api && typeof raw.api === "object"
-        ? (raw.api as Record<string, unknown>)
-        : {};
-    api.presets = nested;
-    raw.api = api;
-    writeFileSync(path, JSON.stringify(raw, null, 2), "utf-8");
-  } catch {
-    /* 迁匣已完成，回写失败不挡运行时解析 */
+  if (dirty && existsSync(path)) {
+    raw.api = apiDocumentForDisk(prevApi, doc);
+    try {
+      writeRawFile(path, raw);
+    } catch {
+      /* 迁完回写失败不挡解析 */
+    }
   }
-  return nested;
+  return { path, providers: doc.providers, roles: doc.roles };
+}
+
+function flattenNormalized(
+  providers: Record<string, ApiProvider>,
+  userRoot: string,
+): APIPreset[] {
+  return providersToRuntimePresets(providers).map((p) =>
+    normalizeApiPreset(p as unknown as APIPreset, { userRoot }),
+  );
+}
+
+function mergeExtensionProviders(
+  providers: Record<string, ApiProvider>,
+  configPath: string,
+): Record<string, ApiProvider> {
+  const fromExt = loadPersistedExtensionPresets(
+    join(dirname(configPath), "extension-providers.json"),
+  );
+  if (fromExt.length === 0) return providers;
+  const next = { ...providers };
+  for (const p of fromExt) {
+    const id = String(
+      (p as { _providerName?: string })._providerName ?? p.name ?? p.model ?? "",
+    ).trim();
+    if (!id || next[id]) continue;
+    next[id] = {
+      displayName: id,
+      protocol: String(p.protocol ?? "openai"),
+      url: String(p.url ?? ""),
+      key: p.key,
+      models: [{ id: String(p.model ?? id) }],
+      defaultModel: String(p.model ?? id),
+    };
+  }
+  return next;
+}
+
+export function loadProvidersFromMaouConfig(
+  configPath?: string,
+): Record<string, ApiProvider> {
+  const doc = loadApiDocument(configPath);
+  return mergeExtensionProviders(doc.providers, doc.path);
 }
 
 export function loadPresetsFromMaouConfig(configPath?: string): APIPreset[] {
-  const path = configPath ?? resolveUserConfigPath();
-  const raw = readApiPresetsArray(path);
-  let fromFile: APIPreset[] = [];
-  if (raw.length > 0) {
-    try {
-      const nested = migrateAndMaybeRewriteDisk(path, diskPresetsToNested(raw));
-      const userRoot = userRootFromConfigPath(path);
-      fromFile = expandAllPresets(nested).map((p) =>
-        normalizeApiPreset(p as unknown as APIPreset, { userRoot }),
-      );
-    } catch {
-      fromFile = [];
-    }
-  }
-  const fromExt = loadPersistedExtensionPresets(
-    join(dirname(path), "extension-providers.json"),
-  );
-  if (fromExt.length === 0) return fromFile;
-  const seen = new Set(fromFile.map((p) => String(p.name ?? p.model ?? "")));
-  const extra = fromExt.filter((p) => !seen.has(String(p.name ?? p.model ?? "")));
-  return [...fromFile, ...extra];
+  const doc = loadApiDocument(configPath);
+  const providers = mergeExtensionProviders(doc.providers, doc.path);
+  return flattenNormalized(providers, userRootFromConfigPath(doc.path));
 }
 
 export function loadRawPresetsFromMaouConfig(
   configPath?: string,
 ): Array<Record<string, unknown>> {
-  const path = configPath ?? resolveUserConfigPath();
-  return diskPresetsToNested(readApiPresetsArray(path));
+  const providers = loadProvidersFromMaouConfig(configPath);
+  return Object.entries(providers).map(([id, p]) => ({
+    name: p.displayName ?? id,
+    ...p,
+  }));
 }
 
 export function getApiPreset(
   name: string,
   configPath?: string,
 ): APIPreset | undefined {
+  const providers = loadProvidersFromMaouConfig(configPath);
+  const binding = parseRoleBinding(name);
+  if (binding) {
+    const hit = resolveProviderModel(providers, binding.provider, binding.model);
+    if (hit) {
+      return normalizeApiPreset(hit as unknown as APIPreset, {
+        userRoot: userRootFromConfigPath(configPath ?? resolveUserConfigPath()),
+      });
+    }
+  }
+  if (providers[name]) {
+    const hit = resolveProviderModel(providers, name);
+    if (hit) {
+      return normalizeApiPreset(hit as unknown as APIPreset, {
+        userRoot: userRootFromConfigPath(configPath ?? resolveUserConfigPath()),
+      });
+    }
+  }
   const presets = loadPresetsFromMaouConfig(configPath);
   return presets.find((p) => p.name === name || p.model === name);
+}
+
+function roleApiFromDoc(
+  doc: LoadedApiDocument,
+  presets: APIPreset[],
+): Parameters<typeof resolveApiRolePreset>[0] {
+  return {
+    providers: doc.providers,
+    presets: presets as unknown as import("@little-house-studio/types").LLMPreset[],
+    roles: doc.roles,
+  };
 }
 
 export function getDefaultPresetFromMaouConfig(
   configPath?: string,
 ): APIPreset | undefined {
-  const path = configPath ?? resolveUserConfigPath();
-  const presets = loadPresetsFromMaouConfig(path);
+  const doc = loadApiDocument(configPath);
+  const presets = flattenNormalized(doc.providers, userRootFromConfigPath(doc.path));
   if (presets.length === 0) return undefined;
-  try {
-    if (existsSync(path)) {
-      const data = JSON.parse(readFileSync(path, "utf-8")) as {
-        api?: {
-          defaultPreset?: number;
-          helperPreset?: number;
-          roles?: Record<string, string | number>;
-        };
-      };
-      const api = {
-        presets: presets as unknown as import("@little-house-studio/types").LLMPreset[],
-        defaultPreset: data.api?.defaultPreset ?? 0,
-        helperPreset: data.api?.helperPreset,
-        roles: data.api?.roles,
-      };
-      const resolved = resolveApiRolePreset(api, "main");
-      if (resolved) return resolved as unknown as APIPreset;
-      const idx = data.api?.defaultPreset ?? 0;
-      return presets[idx] ?? presets[0];
-    }
-  } catch {
-    /* fallthrough */
-  }
-  return presets[0];
+  const resolved = resolveApiRolePreset(roleApiFromDoc(doc, presets), "main");
+  return (resolved as unknown as APIPreset | undefined) ?? presets[0];
 }
 
 export function getRolePresetFromMaouConfig(
   role: ApiModelRole = "main",
   configPath?: string,
 ): APIPreset | undefined {
-  const path = configPath ?? resolveUserConfigPath();
-  const presets = loadPresetsFromMaouConfig(path);
+  const doc = loadApiDocument(configPath);
+  const presets = flattenNormalized(doc.providers, userRootFromConfigPath(doc.path));
   if (presets.length === 0) return undefined;
-  try {
-    if (!existsSync(path)) return presets[0];
-    const data = JSON.parse(readFileSync(path, "utf-8")) as {
-      api?: {
-        defaultPreset?: number;
-        helperPreset?: number;
-        roles?: Record<string, string | number>;
-      };
-    };
-    const api = {
-      presets: presets as unknown as import("@little-house-studio/types").LLMPreset[],
-      defaultPreset: data.api?.defaultPreset ?? 0,
-      helperPreset: data.api?.helperPreset,
-      roles: data.api?.roles,
-    };
-    return resolveApiRolePreset(api, role) as unknown as APIPreset | undefined;
-  } catch {
-    return presets[0];
-  }
+  return resolveApiRolePreset(roleApiFromDoc(doc, presets), role) as unknown as
+    | APIPreset
+    | undefined;
 }
 
 export function getDefaultPresetFromConfigStore(store: {
   get: () => {
     api?: {
+      providers?: Record<string, ApiProvider>;
       presets?: unknown[];
       defaultPreset?: number;
       helperPreset?: number;
-      roles?:
-        | Record<string, string | number | undefined>
-        | {
-            main?: string | number;
-            fast?: string | number;
-            vision?: string | number;
-            helper?: string | number;
-            [k: string]: string | number | undefined;
-          };
+      roles?: import("@little-house-studio/types").ApiModelRoles;
     };
   };
 }): Record<string, unknown> | undefined {
   try {
-    const config = store.get();
-    const api = config.api;
-    const presets = (api?.presets ?? []) as Record<string, unknown>[];
-    if (presets.length === 0) return undefined;
-    try {
-      const resolved = resolveApiRolePreset(
-        {
-          presets: presets as unknown as import("@little-house-studio/types").LLMPreset[],
-          defaultPreset: api?.defaultPreset ?? 0,
-          helperPreset: api?.helperPreset,
-          roles: api?.roles as import("@little-house-studio/types").ApiModelRoles | undefined,
-        },
-        "main",
-      );
-      if (resolved) {
-        return normalizeApiPreset(resolved as unknown as APIPreset) as unknown as Record<
-          string,
-          unknown
-        >;
-      }
-    } catch {
-      /* fallthrough */
+    const api = store.get().api;
+    if (!api) return undefined;
+    const resolved = resolveApiRolePreset(
+      {
+        providers: api.providers ?? {},
+        presets: (api.presets ?? []) as import("@little-house-studio/types").LLMPreset[],
+        defaultPreset: api.defaultPreset,
+        helperPreset: api.helperPreset,
+        roles: api.roles,
+      },
+      "main",
+    );
+    if (resolved) {
+      return normalizeApiPreset(resolved as unknown as APIPreset) as unknown as Record<
+        string,
+        unknown
+      >;
     }
-    const idx = api?.defaultPreset ?? 0;
-    const raw = (presets[idx] ?? presets[0]) as Record<string, unknown> | undefined;
+    const presets = (api.presets ?? []) as Record<string, unknown>[];
+    const raw = presets[0];
     return raw ? (normalizeApiPreset(raw) as unknown as Record<string, unknown>) : undefined;
   } catch {
     return undefined;
@@ -253,115 +273,120 @@ export function isGlobalApiConfigured(configPath?: string): boolean {
 }
 
 export interface GlobalApiWriteOptions {
-  presets: APIPreset[] | Array<Record<string, unknown>>;
-  defaultPreset?: number;
+  providers?: Record<string, ApiProvider>;
+  /** @deprecated 仍接受扁平项，写入时收成 providers */
+  presets?: APIPreset[] | Array<Record<string, unknown>>;
+  roles?: Record<string, ApiRoleRef | string | number | undefined>;
   replace?: boolean;
-  /** @deprecated 已忽略；落盘始终 nest 为 models[]。 */
-  nest?: boolean;
-  roles?: Record<string, string | number | undefined>;
   configPath?: string;
+  /** @deprecated 忽略 */
+  defaultPreset?: number;
+  /** @deprecated 忽略 */
+  nest?: boolean;
+}
+
+function normalizeIncomingRoles(
+  roles: GlobalApiWriteOptions["roles"],
+  providers: Record<string, ApiProvider>,
+): Record<string, ApiRoleRef> {
+  const out: Record<string, ApiRoleRef> = {};
+  if (!roles) return out;
+  for (const [k, v] of Object.entries(roles)) {
+    if (v === undefined || v === null || v === "") continue;
+    if (isApiRoleRef(v)) {
+      out[k] = { provider: v.provider.trim(), model: String(v.model ?? "").trim() };
+      continue;
+    }
+    const parsed = parseRoleBinding(v);
+    if (parsed && providers[parsed.provider]) {
+      out[k] = {
+        provider: parsed.provider,
+        model:
+          parsed.model ||
+          String(providers[parsed.provider]!.defaultModel ?? providers[parsed.provider]!.models[0]?.id ?? ""),
+      };
+      continue;
+    }
+    const name = String(v).trim();
+    if (providers[name]) {
+      const p = providers[name]!;
+      out[k] = {
+        provider: name,
+        model: String(p.defaultModel ?? p.models[0]?.id ?? ""),
+      };
+      continue;
+    }
+    for (const [id, p] of Object.entries(providers)) {
+      if (p.models.some((m) => m.id === name || m.name === name)) {
+        out[k] = { provider: id, model: name };
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+function assertProvidersProtocols(providers: Record<string, ApiProvider>): void {
+  for (const [id, p] of Object.entries(providers)) {
+    const proto = String(p.protocol ?? "openai").trim() || "openai";
+    if (!isKnownApiProtocol(proto) && proto !== "openai-responses") {
+      throw new Error(`厂商 "${id}" 的协议 "${proto}" 未知`);
+    }
+    if (!String(p.url ?? "").trim()) {
+      throw new Error(`厂商 "${id}" 需要 url`);
+    }
+    if (!p.models?.length || p.models.every((m) => !String(m.id ?? "").trim())) {
+      throw new Error(`厂商 "${id}" 至少需要一个 model id`);
+    }
+  }
+}
+
+function flatToProviders(
+  flats: Array<Record<string, unknown>>,
+): Record<string, ApiProvider> {
+  return coerceApiDocument({ presets: flats }, { catalog: catalogHints() }).providers;
 }
 
 export function saveGlobalApiConfig(opts: GlobalApiWriteOptions): string {
   const path = opts.configPath?.trim() || resolveUserConfigPath();
-  mkdirSync(dirname(path), { recursive: true });
-
-  let raw: Record<string, unknown> = {};
-  if (existsSync(path)) {
-    try {
-      raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    } catch {
-      raw = {};
-    }
-  }
-
+  const raw = readRawFile(path);
   const apiPrev =
     raw.api && typeof raw.api === "object"
       ? (raw.api as Record<string, unknown>)
       : {};
+  const prevDoc = coerceApiDocument(apiPrev, { catalog: catalogHints() });
 
-  let incoming = opts.presets as unknown as Record<string, unknown>[];
-
-  if (!opts.replace) {
-    const prevList = Array.isArray(apiPrev.presets)
-      ? diskPresetsToNested(apiPrev.presets as unknown[])
-      : [];
-    const prevFlat = expandAllPresets(prevList);
-    const nextFlat = expandAllPresets(incoming);
-    const byName = new Map<string, Record<string, unknown>>();
-    for (const p of prevFlat) {
-      const n = String(p.name ?? p.model ?? "");
-      if (n) byName.set(n, p);
-    }
-    for (const p of nextFlat) {
-      const n = String(p.name ?? p.model ?? "");
-      if (n) byName.set(n, p);
-    }
-    incoming = [...byName.values()];
+  let providers: Record<string, ApiProvider>;
+  if (opts.providers && Object.keys(opts.providers).length > 0) {
+    providers = opts.replace
+      ? { ...opts.providers }
+      : { ...prevDoc.providers, ...opts.providers };
+  } else if (opts.presets) {
+    const incoming = flatToProviders(opts.presets as Array<Record<string, unknown>>);
+    providers = opts.replace ? incoming : { ...prevDoc.providers, ...incoming };
   } else {
-    incoming = expandAllPresets(incoming);
+    providers = { ...prevDoc.providers };
   }
 
   const userRoot = userRootFromConfigPath(path);
-  for (const p of incoming) {
-    migratePresetTree(p, userRoot);
+  for (const p of Object.values(providers)) {
+    migrateProviderTree(p, userRoot);
+  }
+  assertProvidersProtocols(providers);
+
+  const prevRoles = { ...prevDoc.roles };
+  const incomingRoles = normalizeIncomingRoles(opts.roles, providers);
+  const roles = opts.roles != null ? { ...prevRoles, ...incomingRoles } : prevRoles;
+  for (const [k, v] of Object.entries(roles)) {
+    if (!providers[v.provider]) delete roles[k];
   }
 
-  const nextPresets = collapsePresetsToNested(incoming);
-
-  const defaultPreset =
-    opts.defaultPreset ??
-    (typeof apiPrev.defaultPreset === "number" ? apiPrev.defaultPreset : 0);
-
-  const prevRoles =
-    apiPrev.roles && typeof apiPrev.roles === "object"
-      ? { ...(apiPrev.roles as Record<string, unknown>) }
-      : {};
-  const nextRoles: Record<string, unknown> =
-    opts.roles != null
-      ? {
-          ...prevRoles,
-          ...Object.fromEntries(
-            Object.entries(opts.roles).filter(
-              ([, v]) => v !== undefined && v !== null && String(v).trim() !== "",
-            ),
-          ),
-        }
-      : prevRoles;
-
-  if (
-    nextRoles.helper == null &&
-    typeof apiPrev.helperPreset === "number" &&
-    Array.isArray(apiPrev.presets)
-  ) {
-    const expanded = expandAllPresets(diskPresetsToNested(apiPrev.presets as unknown[]));
-    const hp = expanded[apiPrev.helperPreset as number];
-    if (hp?.name) nextRoles.helper = String(hp.name);
-  }
-
-  const nextApi: Record<string, unknown> = {
-    ...apiPrev,
-    presets: nextPresets,
-    defaultPreset: Math.min(defaultPreset, Math.max(0, nextPresets.length - 1)),
-  };
-  if (Object.keys(nextRoles).length > 0) {
-    nextApi.roles = nextRoles;
-  }
-  if (nextRoles.helper != null) {
-    delete nextApi.helperPreset;
-  }
-  raw.api = nextApi;
-
-  writeFileSync(path, JSON.stringify(raw, null, 2), "utf-8");
-  try {
-    chmodSync(path, 0o600);
-  } catch {
-    /* ignore */
-  }
+  raw.api = apiDocumentForDisk(apiPrev, { providers, roles, dirty: true });
+  writeRawFile(path, raw);
   return path;
 }
 
-/** 按 name 合并写入一条（不丢其它 preset） */
+/** 按路由 id 或 runtime name 合并一条 */
 export function upsertApiPreset(
   preset: APIPreset | Record<string, unknown>,
   opts?: { configPath?: string; roles?: GlobalApiWriteOptions["roles"] },
@@ -374,39 +399,48 @@ export function upsertApiPreset(
   });
 }
 
-/** 按 name 删除一条。找不到返回 false。 */
+/** 按路由 id 或 runtime name 删除。找不到返回 false。 */
 export function removeApiPreset(name: string, opts?: { configPath?: string }): boolean {
   const path = opts?.configPath ?? resolveUserConfigPath();
-  const existing = loadPresetsFromMaouConfig(path);
-  const next = existing.filter((p) => p.name !== name);
-  if (next.length === existing.length) return false;
+  const doc = loadApiDocument(path);
+  const key = name.trim();
+  let next = { ...doc.providers };
+  if (next[key]) {
+    delete next[key];
+  } else {
+    const binding = parseRoleBinding(key);
+    if (binding && next[binding.provider]) {
+      const p = next[binding.provider]!;
+      const models = p.models.filter((m) => m.id !== binding.model);
+      if (models.length === 0) delete next[binding.provider];
+      else next[binding.provider] = { ...p, models };
+    } else {
+      const flats = providersToRuntimePresets(doc.providers);
+      const hit = flats.find((p) => String(p.name ?? "") === key);
+      const pid = String(hit?._providerName ?? "");
+      if (!pid || !next[pid]) return false;
+      if ((next[pid]!.models?.length ?? 0) <= 1) delete next[pid];
+      else {
+        const mid = String(hit?.model ?? "");
+        next[pid] = {
+          ...next[pid]!,
+          models: next[pid]!.models.filter((m) => m.id !== mid),
+        };
+      }
+    }
+  }
+
+  const roles = { ...doc.roles };
+  for (const [k, v] of Object.entries(roles)) {
+    if (!next[v.provider]) delete roles[k];
+  }
 
   saveGlobalApiConfig({
-    presets: next,
+    providers: next,
+    roles,
     replace: true,
     configPath: path,
   });
-
-  try {
-    if (!existsSync(path)) return true;
-    const data = JSON.parse(readFileSync(path, "utf-8")) as {
-      api?: { roles?: Record<string, string | number> };
-    };
-    const roles = data.api?.roles;
-    if (!roles) return true;
-    let changed = false;
-    for (const [k, v] of Object.entries(roles)) {
-      if (String(v) === name) {
-        delete roles[k];
-        changed = true;
-      }
-    }
-    if (changed) {
-      writeFileSync(path, JSON.stringify(data, null, 2), "utf-8");
-    }
-  } catch {
-    /* 名单已删，角色清扫失败不回滚 */
-  }
   return true;
 }
 

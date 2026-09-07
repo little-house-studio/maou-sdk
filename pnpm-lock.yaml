@@ -20,6 +20,9 @@ importers:
       '@little-house-studio/context':
         specifier: workspace:*
         version: link:../../core/context
+      '@little-house-studio/context-task':
+        specifier: workspace:*
+        version: link:../../core/context-task
       '@little-house-studio/llm':
         specifier: workspace:*
         version: link:../../core/llm
@@ -48,6 +51,9 @@ importers:
       '@little-house-studio/context':
         specifier: workspace:*
         version: link:../../core/context
+      '@little-house-studio/context-task':
+        specifier: workspace:*
+        version: link:../../core/context-task
       '@little-house-studio/llm':
         specifier: workspace:*
         version: link:../../core/llm
@@ -79,6 +85,9 @@ importers:
       '@little-house-studio/context':
         specifier: workspace:*
         version: link:../../core/context
+      '@little-house-studio/context-task':
+        specifier: workspace:*
+        version: link:../../core/context-task
       '@little-house-studio/llm':
         specifier: workspace:*
         version: link:../../core/llm
@@ -386,12 +395,50 @@ importers:
 
   core/context:
     dependencies:
+      '@little-house-studio/context-components':
+        specifier: workspace:*
+        version: link:../context-components
       '@little-house-studio/prompt':
         specifier: workspace:*
         version: link:../prompt
       '@little-house-studio/types':
         specifier: workspace:*
         version: link:../types
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.6(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+
+  core/context-components:
+    dependencies:
+      '@little-house-studio/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.6(@types/debug@4.1.13)(@types/node@22.20.0)(jiti@2.7.0)(tsx@4.22.4)(yaml@2.9.0)
+
+  core/context-task:
+    dependencies:
+      '@little-house-studio/context':
+        specifier: workspace:*
+        version: link:../context
+      '@little-house-studio/context-components':
+        specifier: workspace:*
+        version: link:../context-components
     devDependencies:
       '@types/node':
         specifier: ^22.0.0

@@ -122,7 +122,6 @@ describe("llm-config load/save persist (temp path)", () => {
       presets: [
         {
           name: "primary",
-          vendor: "openai",
           protocol: "openai",
           url: "https://api.example.com/v1",
           urlParams: "region=cn",
@@ -144,7 +143,6 @@ describe("llm-config load/save persist (temp path)", () => {
         },
         {
           name: "cheap",
-          vendor: "custom",
           protocol: "openai",
           url: "https://cheap.example.com/v1",
           model: "small-model",
@@ -157,9 +155,10 @@ describe("llm-config load/save persist (temp path)", () => {
     });
 
     assert.equal(saved.presets.length, 2);
-    assert.equal(saved.roles.main, "primary");
-    assert.equal(saved.roles.fast, "cheap");
-    assert.equal(saved.roles.vision, "primary");
+    assert.equal(saved.providers.length, 2);
+    assert.equal(saved.roles.main?.provider, "primary");
+    assert.equal(saved.roles.fast?.provider, "cheap");
+    assert.equal(saved.roles.vision?.provider, "primary");
     const primary = saved.presets.find((p) => p.name === "primary")!;
     assert.equal(primary.supportsImage, true);
     assert.equal(primary.supportsAudio, true);
@@ -176,26 +175,30 @@ describe("llm-config load/save persist (temp path)", () => {
 
     const disk = JSON.parse(readFileSync(configPath, "utf8")) as {
       api: {
-        roles?: { main?: string; fast?: string; vision?: string };
-        presets: Array<Record<string, unknown>>;
+        roles?: {
+          main?: { provider?: string };
+          fast?: { provider?: string };
+          vision?: { provider?: string };
+        };
+        providers: Record<string, Record<string, unknown>>;
       };
     };
-    assert.equal(disk.api.roles?.main, "primary");
-    assert.equal(disk.api.roles?.fast, "cheap");
-    assert.equal(disk.api.presets[0]!.key, undefined);
-    assert.equal(disk.api.presets[0]!.keyRef, "file:primary");
+    assert.equal(disk.api.roles?.main?.provider, "primary");
+    assert.equal(disk.api.roles?.fast?.provider, "cheap");
+    const primaryDisk = disk.api.providers.primary!;
+    assert.equal(primaryDisk.key, undefined);
+    assert.equal(primaryDisk.keyRef, "file:primary");
     const vault = JSON.parse(readFileSync(join(dir, "secrets.json"), "utf8")) as {
       keys?: Record<string, string>;
     };
     assert.equal(vault.keys?.primary, "sk-test-secret-value-9999");
-    // 磁盘为 models[] 嵌套；模型级字段在 models[0]
-    const diskModels = disk.api.presets[0]!.models as Array<Record<string, unknown>>;
+    const diskModels = primaryDisk.models as Array<Record<string, unknown>>;
     assert.ok(Array.isArray(diskModels) && diskModels.length >= 1);
     assert.equal(diskModels[0]!.id, "big-model");
     assert.equal(diskModels[0]!.temperature, 0.2);
     assert.equal(diskModels[0]!.inputPrice, 2);
-    assert.equal(disk.api.presets[0]!.maxConcurrent ?? diskModels[0]!.maxConcurrent, 3);
-    const diskPricing = (diskModels[0]!.pricing ?? disk.api.presets[0]!.pricing) as {
+    assert.equal(primaryDisk.maxConcurrent ?? diskModels[0]!.maxConcurrent, 3);
+    const diskPricing = (diskModels[0]!.pricing ?? primaryDisk.pricing) as {
       inputPrice?: number;
       outputPrice?: number;
       cacheHitPrice?: number;
@@ -203,7 +206,7 @@ describe("llm-config load/save persist (temp path)", () => {
     assert.equal(diskPricing?.inputPrice, 2);
     assert.equal(diskPricing?.outputPrice, 8);
     assert.equal(diskPricing?.cacheHitPrice, 0.5);
-    const diskBody = (diskModels[0]!.extraBody ?? disk.api.presets[0]!.extraBody) as Record<
+    const diskBody = (diskModels[0]!.extraBody ?? primaryDisk.extraBody) as Record<
       string,
       unknown
     >;
@@ -232,18 +235,41 @@ describe("llm-config load/save persist (temp path)", () => {
         },
       ],
     });
-    assert.equal(again.roles.vision, "cheap");
+    assert.equal(again.roles.vision?.provider, "cheap");
     assert.equal(again.presets[0]!.model, "big-model-v2");
     assert.equal(again.presets[0]!.hasKey, true);
     const disk2 = JSON.parse(readFileSync(configPath, "utf8")) as {
-      api: { presets: { key?: string }[] };
+      api: { providers: Record<string, { key?: string; keyRef?: string }> };
     };
-    assert.equal(disk2.api.presets[0]!.key, undefined);
-    assert.equal(disk2.api.presets[0]!.keyRef, "file:primary");
+    assert.equal(disk2.api.providers.primary!.key, undefined);
+    assert.equal(disk2.api.providers.primary!.keyRef, "file:primary");
 
     const snap = loadLlmConfigSnapshot(configPath);
-    assert.equal(snap.roles.main, "primary");
+    assert.equal(snap.roles.main?.provider, "primary");
     assert.equal(snap.configPath, configPath);
+    assert.ok(Array.isArray(snap.catalog));
+    assert.ok(snap.catalog.some((c) => c.id === "qwen" || c.id === "openai"));
+    assert.ok(snap.protocols.some((p) => p.id === "openai"));
+  });
+
+  it("allows saving a route without a key", () => {
+    writeFileSync(configPath, JSON.stringify({ api: {} }, null, 2));
+    const saved = saveLlmConfigFromClient({
+      configPath,
+      replace: true,
+      providers: [
+        {
+          id: "local",
+          protocol: "openai",
+          url: "http://127.0.0.1:11434/v1",
+          models: [{ id: "llama3" }],
+        },
+      ],
+      roles: { main: { provider: "local", model: "llama3" } },
+    });
+    assert.equal(saved.providers[0]!.id, "local");
+    assert.equal(saved.providers[0]!.hasKey, false);
+    assert.equal(saved.roles.main?.provider, "local");
   });
 });
 

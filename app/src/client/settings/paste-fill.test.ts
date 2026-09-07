@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  applyDraftPasteToPresets,
   applyLivePasteToRows,
-  draftPatchFromPaste,
   guessPresetName,
   livePatchFromPaste,
   looksAutoPresetName,
-  mapDraftProtocol,
   mapLiveProtocol,
   modelsFromParse,
   serializeParseFields,
@@ -26,11 +23,10 @@ const parsed: ClipboardParseResult = {
 };
 
 describe("paste-fill mapping", () => {
-  it("maps protocols for live and draft", () => {
+  it("maps live protocols", () => {
     assert.equal(mapLiveProtocol("responses"), "responses");
     assert.equal(mapLiveProtocol("openai-responses"), "responses");
-    assert.equal(mapDraftProtocol("responses"), "openai-responses");
-    assert.equal(mapDraftProtocol("anthropic"), "anthropic");
+    assert.equal(mapLiveProtocol("anthropic"), "anthropic");
   });
 
   it("fills live patch and names auto presets", () => {
@@ -43,12 +39,6 @@ describe("paste-fill mapping", () => {
     assert.equal(patch.name, "codex666ai.com/gpt-5.5");
     assert.equal(looksAutoPresetName("provider-2"), true);
     assert.equal(looksAutoPresetName("work/main"), false);
-  });
-
-  it("fills draft patch with openai-responses", () => {
-    const patch = draftPatchFromPaste({ name: "openai" }, parsed);
-    assert.equal(patch.protocol, "openai-responses");
-    assert.equal(patch.name, undefined);
   });
 
   it("summarizes filled fields", () => {
@@ -107,29 +97,6 @@ describe("paste-fill mapping", () => {
     assert.equal(new Set(applied.rows.map((r) => r.url)).size, 1);
     assert.equal(applied.rows[0]!.url, "https://codex666ai.com/v1");
     assert.equal(applied.rows[0]!.keyEdit, "sk-test-key-abcdefghij");
-
-    const draft = applyDraftPasteToPresets(
-      [
-        {
-          name: "openai",
-          url: "https://api.openai.com/v1",
-          key: "old",
-          model: "gpt-5",
-          protocol: "openai",
-        },
-      ],
-      0,
-      multi,
-      (n) => ({
-        name: `preset-${n}`,
-        url: "https://api.openai.com/v1",
-        key: "",
-        model: "gpt-5",
-        protocol: "openai",
-      }),
-    );
-    assert.equal(draft.presets.length, 3);
-    assert.deepEqual(draft.presets.map((p) => p.model), ["gpt-5.2", "gpt-5.6", "gpt-5.6-sol"]);
   });
 
   it("serializes parse fields and names from host", () => {

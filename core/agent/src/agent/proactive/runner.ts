@@ -23,7 +23,7 @@ import {
   listProvidersForCli,
   resolvePresetForCli,
 } from "../../bootstrap/index.js";
-import { resolveUserMaouRoot } from "@little-house-studio/types";
+import { resolveUserMaouRoot, runtimePresetRoute } from "@little-house-studio/types";
 import {
   DEFAULT_PROACTIVE_AGENT_NAME,
   DEFAULT_PROACTIVE_PARENT_AGENT,
@@ -134,11 +134,12 @@ export function createProactiveAffiliateRunner(
   const bootstrapPreset = () => {
     try {
       const main = getRolePresetFromMaouConfig("main") as
-        | { name?: string; model?: string }
+        | { name?: string; model?: string; _providerName?: string }
         | undefined;
-      if (main?.name && main?.model) {
-        provider = main.name;
-        model = main.model;
+      const route = main ? runtimePresetRoute(main) : undefined;
+      if (route?.provider && route.model) {
+        provider = route.provider;
+        model = route.model;
         return;
       }
     } catch {

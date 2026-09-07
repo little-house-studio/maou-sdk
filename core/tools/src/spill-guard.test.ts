@@ -68,7 +68,7 @@ describe("applySpillGuard", () => {
       expect(applySpillGuard(res, call(name), ctx(dir))).toBe(res);
     }
     expect(isSpillExempt("grep")).toBe(false);
-    expect(isSpillExempt("use_terminal")).toBe(false);
+    expect(isSpillExempt("use_terminal")).toBe(true);
   });
 
   it("falls back to plain truncation without flipping ok when the disk is unavailable", () => {

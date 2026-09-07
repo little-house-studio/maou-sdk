@@ -34,6 +34,7 @@ import type {
   runCommand,
   runLlmSvgProbe,
   saveLlmConfig,
+  scanLlmModels,
   setActiveAgent,
   setApprovalMode,
   setPermissionPreset,
@@ -128,6 +129,7 @@ export type SettingsPorts = {
   setWorkspaceInstructions: typeof setWorkspaceInstructions;
   fetchLlmConfig: typeof fetchLlmConfig;
   saveLlmConfig: typeof saveLlmConfig;
+  scanLlmModels: typeof scanLlmModels;
   parseLlmClipboard: typeof parseLlmClipboard;
   testLlmConnection: typeof testLlmConnection;
   fetchSvgProbeGallery: typeof fetchSvgProbeGallery;
@@ -166,7 +168,7 @@ export type ModelsPorts = {
 };
 
 export type AppPorts = {
-  kind: "draft" | "live";
+  kind: "live";
   chat: ChatPorts;
   shell: ShellPorts;
   settings: SettingsPorts;

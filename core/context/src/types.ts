@@ -10,6 +10,10 @@ import type { LLMMessage as _LLMMessage } from "./types/message.js";
 
 export type {
   MaouContent,
+  MaouTextSegment,
+  MaouTextSegmentAttributes,
+  MaouTextSegmentAnnotations,
+  MicroCompactableSegment,
   MaouMessage,
   MaouTaskBlock,
   LLMMessage,
@@ -86,7 +90,9 @@ export interface CompressResult {
   originalTokens: number;
   /** 压缩后估算 token */
   compressedTokens: number;
-  /** 大压缩/归档时产出的任务块 ID 列表 */
+  /** 大压缩/归档时产出的折叠块 ID（任务插件写入；传统路径可空） */
+  blockIds?: string[];
+  /** 同 blockIds，maybeCompress / 旧调用方仍读这个字段 */
   taskBlocks?: string[];
 }
 
@@ -118,22 +124,7 @@ export interface PriorityConfig {
 }
 
 
-// ─── 多会话管理 ──────────────────────────────────────────
-
-/** 活跃会话状态 */
-export interface ActiveSession {
-  sessionId: string;
-  agentName: string;
-  status: "active" | "paused" | "completed";
-  pausedAt?: string;
-  rollingSummary?: string;
-}
-
-/** 会话切换结果 */
-export interface SwitchResult {
-  previousSession: ActiveSession;
-  newSession: ActiveSession;
-}
+export type { ActiveSession, SwitchResult } from "./session-manager.js";
 
 // ─── 结构化记忆 ──────────────────────────────────────────
 

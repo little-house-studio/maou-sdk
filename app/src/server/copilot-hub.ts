@@ -14,6 +14,7 @@ import {
   listModelsForCli,
 } from "@little-house-studio/agent";
 import type { StreamEvent } from "@little-house-studio/types";
+import { runtimePresetRoute } from "@little-house-studio/types";
 import { createCodingAgent } from "@little-house-studio/coding-agent";
 
 export interface CopilotHubOpts {
@@ -86,10 +87,12 @@ export class CopilotHub {
       const main = getRolePresetFromMaouConfig("main") as {
         name?: string;
         model?: string;
+        _providerName?: string;
       } | undefined;
-      if (main?.name && main?.model) {
-        this.provider = main.name;
-        this.model = main.model;
+      const route = main ? runtimePresetRoute(main) : undefined;
+      if (route?.provider && route.model) {
+        this.provider = route.provider;
+        this.model = route.model;
         return;
       }
     } catch {

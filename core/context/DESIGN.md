@@ -1,5 +1,40 @@
 # context需求
 
+## 三层包
+
+| 包 | 目录 | 职责 |
+|---|---|---|
+| `@little-house-studio/context-components` | `core/context-components` | 消息/元数据、会话记录、工作集与文件缓存、压法原语 |
+| `@little-house-studio/context` | `core/context` | 传统方案：组装、线性多级压缩、Harness 工作集闭环 |
+| `@little-house-studio/context-task` | `core/context-task` | 任务插件：打标、按 task 折叠、任务块落盘 |
+
+依赖方向：`context-components` ← `context` ← `context-task`。`context` 不依赖 `context-task`。`@little-house-studio/agent` 只吃传统方案 + `ContextSchemeExtension`。coding / ops / install 可依赖任务包，默认不挂；`enableTaskContext: true` 才 `createTaskContextExtension`。
+
+默认路径（`enableCompression !== false`，不传 `enableTaskContext`）：只建 `HarnessSessionStore` + `ContextEngine`。大压缩/归档走线性一条摘要 + 留尾。磁盘不写 `task_session/`。
+
+任务路径：产品层 `new TaskSessionStore` + `createTaskContextExtension`，挂到 `Runtime.contextExtensions`。插件在 `afterSync` 打 `t${seqId}`，`fold` 按 task 摘要/屏蔽非活跃块，`afterCompress` 写任务块并补 `relatedBlockIds`。
+
+`legacy` / `staged` 只换压缩门槛。`MaouMessage.taskIds` 留在组件层当可扩展元数据；传统压核不读它。
+
+轮次微压缩（`applyRoundMicroCompact`）：不靠 LLM，按出生后再过几轮瘦身。轮次是 Agent 级全局（`agent.json` `micro_compact_rounds`，缺省 3），该 Agent 所有微压功能共用。消息块由一个或多个文字段（`MaouTextSegment`）组成；闸门只看段标注 `annotations.microCompact`，有策略才压这一段。策略标注是 Agent 内部元数据，不写入段正文，不进模型上下文。传统方案阅读（`reader` / `read` / `read_file`）出生时给正文段打 `traditional_read`：文件不足 500 字不压；超过则留头尾，只标省略字数。解锁提示挂在下一轮动态尾，不写进已冻结的压缩件。同一路径的后续阅读豁免。`read_image` 不挂这套。终端（`use_terminal` / `bash` / `terminal_manage`）打 `terminal_spill`：过动态轮后正文整段换成 spill 路径注释。编辑回包不挂。预设还有 `head_tail` / `few_chars` / `empty` / `head_only` / `tail_only` / `first_line` / `notice`。Agent 每轮 AI 结束时套一次。出动态轮的消息打 `microFrozen`，API 可见内容当缓存前缀，窗压 / 大压缩 / afterSync 不再改。token 80% 仍走窗压和大压缩（对齐 DSH thresholdRatio 0.8），只动动态尾，不充当这套微压缩的触发器。
+
+## 组件工厂
+
+`@little-house-studio/context-components` 是零件箱。可以不引传统包，自己搭会话、拼装、压法。
+
+| 入口 | 用途 |
+|---|---|
+| `createContextParts({ sessionDir, features, slots, folds })` | 一次拿出 session / workingSet / assembly / fold |
+| `createSessionRecord(dir, { features, layout })` | 可关检索、封存、列表缓存、折叠缓存、冷恢复、选枝 |
+| `createAssembly({ slots, after })` | 按 `name` + `order` 插槽；`insert` / `replace` / `remove` |
+| `createFoldPipeline(steps)` | 压法步骤串；内置 `pruneToolResults` / `windowPressure` / `pairToolsRetain` |
+| `createMessageTree(messages)` | 消息当节点，按叶子取枝 |
+| `maouSessionLayout(dir)` | 默认目录布局；可换 `SessionLayout` |
+
+传统 `buildMessages` 就是一套配好的槽：`createTraditionalAssembly()`，槽名在 `TRADITIONAL_SLOT`。要加一段提示或卸掉 memory，对这套 assembly `insert` / `remove`。
+
+`new SessionStore(dir)` 仍是全功能默认，等于 `createSessionRecord(dir)`。
+
 ## 相关专题
 
 - **[会话事件模型 Session Event](./docs/SESSION_EVENT.md)** — `kind`（语义）与 wire `role`（API）分离；`appendSessionEvent`
@@ -43,16 +78,15 @@ registerContextModule({
   shouldCompress(ctx) { /* … */ },
   async compress(ctx) { /* … */ },
 });
-new ContextEngine({ sessionId, harnessStore, taskStore, module: "mine", moduleConfig: { /* … */ } });
+new ContextEngine({ sessionId, harnessStore, extensions, module: "mine", moduleConfig: { /* … */ } });
 ```
 
 ## 上下文压缩算法
     - [嵌入结构区] ->不变区域，除非大变
         - 文件缓存区：用户偏好、项目说明、钉死的文件全文等，断点前尽量不改
         - 上下文动态区：活跃阶段（activeStage）的 diff / before_user / 本轮状态
-    - [归档阶段（archiveStage）]->第二次大压缩直接剩下任务块摘要+ID了，需要原始记录就去读取
-        - 剩下任务块极简摘要+ID路径+任务并行结构图了
-    - [概要阶段（summaryStage）] -> 第一次大压缩，压缩后剩下过去去的任务摘要
+    - [归档阶段（archiveStage）]-> 传统方案把旧侧收成一条归档摘要，仍留 active 原文；任务插件再按 task 块写极简摘要+ID
+    - [概要阶段（summaryStage）] -> 传统方案把可压窗口收成一条线性摘要 + 留尾；任务插件按 task 切块摘要
         - 原数据：[事件id-b开始位置]{👨，消息群},{🤖,消息集群}{👨，消息群},{🤖,消息集群}[事件id-b结束位置]
         - 压缩后：[id-b开始～结束时间的：内容过程摘要]
     - 最近原文区：自动压从尾部按路由窗口 token 的 16% 整条留下；`/compact` / 超窗只留最新一条不可拆单元。切边咬合 tool_call/result；压不动不改 stage、不落 harness。

@@ -9,12 +9,14 @@ import {
   getDefaultPresetFromConfigStore,
 } from "@little-house-studio/agent";
 import type { AgentHandle } from "@little-house-studio/agent";
-import {
-  HarnessSessionStore,
-  TaskSessionStore,
-} from "@little-house-studio/context";
+import { HarnessSessionStore } from "@little-house-studio/context";
 import type { Summarizer, SessionStore } from "@little-house-studio/context";
-import { machineOpenPathGuard } from "@little-house-studio/tools";
+import {
+  TaskSessionStore,
+  createTaskContextExtension,
+  createTaskPlanPersist,
+} from "@little-house-studio/context-task";
+import { machineOpenPathGuard, TASK_MANAGER } from "@little-house-studio/tools";
 import type { ToolRegistry } from "@little-house-studio/tools";
 import type { LLMClient } from "@little-house-studio/llm";
 import type { ConfigStore } from "@little-house-studio/types";
@@ -70,6 +72,8 @@ export interface OpsAgentOptions {
   toolWhitelist?: readonly string[];
   forceMaterialize?: boolean;
   enableCompression?: boolean;
+  /** 挂任务级上下文插件。默认关。 */
+  enableTaskContext?: boolean;
   summarizer?: Summarizer;
   log?: (level: string, message: string) => void;
   enablePostLogger?: boolean;
@@ -106,6 +110,21 @@ export function createOpsAgent(opts: OpsAgentOptions): OpsAgent {
   installTemplateResources(templateDir, targetDir);
 
   const runtimeContainer: { ref: Runtime | null } = { ref: null };
+
+  let contextExtensions;
+  let onSessionStarted;
+  if (opts.enableTaskContext) {
+    const taskStore = new TaskSessionStore(opsRoot, name);
+    TASK_MANAGER.setPersistCallback(createTaskPlanPersist(taskStore));
+    contextExtensions = [createTaskContextExtension(taskStore)];
+    onSessionStarted = (sessionId: string) => {
+      const pending = taskStore.loadPendingTaskPlan(sessionId);
+      if (pending.length > 0) {
+        TASK_MANAGER.restore(sessionId, pending);
+      }
+    };
+  }
+
   const runtime = new Runtime({
     configStore: opts.configStore,
     sessionStore: opts.sessionStore,
@@ -115,11 +134,11 @@ export function createOpsAgent(opts: OpsAgentOptions): OpsAgent {
     projectRoot: opsRoot,
     agentName: name,
     agentScope: "global",
-    // Ops 的 ContextEngine/任务状态也固定在 <MAOU_HOME>/ops，避免混入全局 coding 会话。
     harnessStore: new HarnessSessionStore({
       sessionsDir: opts.sessionStore.sessionDir,
     }),
-    taskStore: new TaskSessionStore(opsRoot, name),
+    contextExtensions,
+    onSessionStarted,
     enableCompression: opts.enableCompression,
     summarizer: opts.summarizer,
     fileDiffWatch: false,

@@ -135,8 +135,8 @@ export class TaskManager {
   /**
    * 注入持久化回调
    *
-   * 解耦：TaskManager 不直接依赖 TaskSessionStore（context 包），
-   * 由 runtime 注入回调，内部调 taskStore.saveTaskPlan()。
+   * 解耦：TaskManager 不直接依赖 TaskSessionStore（context-task 包），
+   * 由产品层注入回调，内部调 taskStore.saveTaskPlan()。
    */
   setPersistCallback(cb: (sessionId: string, tasks: Task[]) => void): void {
     this.persistCallback = cb;

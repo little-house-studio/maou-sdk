@@ -111,13 +111,12 @@ app/
     platforms/          darwin.ts / win32.ts / linux.ts
   src/server/           AgentHub + Express（桌面走 socket）
   src/client/           Vite + React + xterm
-    wire/               共享组件库（thread/sidebar/dock/chrome/project…），live 与草稿站共用
-    drafts/             草稿站：fixtures 场景 + DraftShell，单向依赖 wire，生产不引用
+    wire/               共享组件库（thread/sidebar/dock/chrome/project…）
     slots/              SlotCore / register / inject（声明=授权）
-    ports/              AppPorts：live=/api，draft=fixtures
+    ports/              AppPorts：live=/api
     shell/              薄壳只开洞，只渲染 root
-    host/               draft / live 座位投稿
+    host/               live 座位投稿
   dist/                 server + client + sdk + desktop
 ```
 
-公开 SDK：`@little-house-studio/app`（server）、`/slots`、`/shell`（座位表）、`/ports`（类型）。fixtures 不是稳定 SDK。
+公开 SDK：`@little-house-studio/app`（server）、`/slots`、`/shell`（座位表）、`/ports`（类型）。

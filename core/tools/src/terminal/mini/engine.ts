@@ -8,10 +8,10 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { isHumanTerminal, MiniUnsupportedError, type FilterConfig, type RunResult, type SandboxConfig, type TerminalBackend, type TerminalInfo } from "../backend.js";
-import { inferPromptWaitState, peekOverflow } from "../overflow.js";
+import { inferPromptWaitState, peekOverflow, TERMINAL_CAPTURE_MAX_BYTES } from "../overflow.js";
 import { agentShellInvocation } from "../windows-shell.js";
 
-const RING_MAX_CHARS = 200_000;
+const RING_MAX_CHARS = TERMINAL_CAPTURE_MAX_BYTES;
 const MAX_TERMINALS = 200;
 
 type MiniState = "running" | "exited" | "killed" | "interrupted";
@@ -172,9 +172,8 @@ export class MiniBackend implements TerminalBackend {
     const timeout = timeoutMs && timeoutMs > 0 ? timeoutMs : 120_000;
     const entry = this.spawnEntry(id, agentName, command, cwd, description);
     const exitCode = await this.waitEntry(entry, timeout);
-    const limit = resultLimit && resultLimit > 0 ? resultLimit : 5000;
-    let output = entry.output;
-    if (output.length > limit) output = `...${output.slice(output.length - limit)}`;
+    void resultLimit;
+    const output = entry.output;
     const timedOut = exitCode === null && entry.state === "running";
     this.persist();
     return {
@@ -208,7 +207,7 @@ export class MiniBackend implements TerminalBackend {
     return {
       ok: true,
       exitCode: still ? null : code,
-      output: still ? entry.output.slice(-2000) : entry.output.slice(-5000),
+      output: entry.output,
       durationMs: Date.now() - start,
       terminalId,
       error: null,

@@ -1,5 +1,5 @@
 /**
- * CLI tool-card pure helpers + resolveToolCard from draft messages.
+ * CLI tool-card pure helpers + resolveToolCard from sample messages.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -12,6 +12,7 @@ import {
   isDiffResult,
   isWriteTool,
   todoSummary,
+  extractToolCallIntent,
   readToolIntent,
   resolveToolCard,
   slicePreview,
@@ -25,7 +26,7 @@ import { createElement } from "react";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ToolCard } from "./ToolCard";
-import { FULL_CONTEXT_MESSAGES } from "../../drafts/fixtures";
+import { THREAD_MESSAGES } from "../test-thread";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const toolCardSrc = readFileSync(join(here, "ToolCard.tsx"), "utf8");
@@ -100,6 +101,37 @@ describe("tool-card CLI helpers", () => {
     assert.equal(toolFoldMark(c, true), "▼");
   });
 
+  it("resolveToolCard titles from path when description is missing", () => {
+    const m: DraftMessage = {
+      id: "t-path",
+      role: "tool",
+      body: "✓ read_file\n# keys",
+      tool: {
+        name: "read_file",
+        args: JSON.stringify({ path: "~/.ssh/config" }),
+        result: "✓ read_file\n# keys",
+        done: true,
+      },
+    };
+    const c = resolveToolCard(m);
+    assert.equal(c.description, "~/.ssh/config");
+    assert.match(toolTitleMeta(c), /~\/\.ssh\/config/);
+    const html = renderToStaticMarkup(createElement(ToolCard, { message: m }));
+    assert.match(html, /wire-tool-intent/);
+    assert.match(html, /~\/\.ssh\/config/);
+  });
+
+  it("extractToolCallIntent reads a finished title line", () => {
+    assert.equal(
+      extractToolCallIntent("✓ read_file · ~/.ssh/config"),
+      "~/.ssh/config",
+    );
+    assert.equal(
+      extractToolCallIntent("▶ glob · **/*.env"),
+      "**/*.env",
+    );
+  });
+
   it("resolveToolCard keeps call intent, not result first line", () => {
     const m: DraftMessage = {
       id: "t-res",
@@ -138,7 +170,7 @@ describe("tool-card CLI helpers", () => {
   });
 
   it("ToolCard renders CLI title chip from showcase messages", () => {
-    const tool = FULL_CONTEXT_MESSAGES.find((m) => m.id === "fc-tool-term");
+    const tool = THREAD_MESSAGES.find((m) => m.id === "fc-tool-term");
     assert.ok(tool);
     const html = renderToStaticMarkup(
       createElement(ToolCard, { message: tool! }),
@@ -162,7 +194,7 @@ describe("tool-card CLI helpers", () => {
   });
 
   it("error tool cards stay collapsed", () => {
-    const tool = FULL_CONTEXT_MESSAGES.find((m) => m.id === "fc-tool-run");
+    const tool = THREAD_MESSAGES.find((m) => m.id === "fc-tool-run");
     assert.ok(tool?.tool?.isError);
     const html = renderToStaticMarkup(
       createElement(ToolCard, { message: tool! }),

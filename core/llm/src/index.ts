@@ -64,11 +64,13 @@ export type {
   LLMConfigOptions,
 } from './llm-config.js'
 
-// ─── 用户 API 名单（config.json api.presets）────────────────────────────────
+// ─── 用户 API 名单（config.json api.providers）──────────────────────────────
 export {
   resolveMaouConfigPath,
   loadPresetsFromMaouConfig,
   loadRawPresetsFromMaouConfig,
+  loadProvidersFromMaouConfig,
+  loadApiDocument,
   getApiPreset,
   getDefaultPresetFromMaouConfig,
   getRolePresetFromMaouConfig,

@@ -1,4 +1,4 @@
-/** Shared left rail; files rail differs per host (do not unify). */
+/** Shared left rail width. */
 export const SHELL_LEFT = {
   default: 260,
   min: 200,
@@ -20,10 +20,4 @@ export const LIVE_FILES_RAIL = {
   default: 320,
   min: 220,
   max: 520,
-} as const;
-
-export const DRAFT_FILES_RAIL = {
-  default: 280,
-  min: 200,
-  max: 440,
 } as const;

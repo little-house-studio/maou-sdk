@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContextEngine } from "./context-engine.js";
 import { HarnessSessionStore, sessionMessageFingerprint } from "./harness-session-store.js";
-import { TaskSessionStore } from "./task-session-store.js";
 
 function makeSessionMsgs(n: number): Array<Record<string, unknown>> {
   const out: Array<Record<string, unknown>> = [];
@@ -27,13 +26,11 @@ function makeSessionMsgs(n: number): Array<Record<string, unknown>> {
 describe("ContextEngine.seedWorkingSet (B1)", () => {
   let root: string;
   let harness: HarnessSessionStore;
-  let taskStore: TaskSessionStore;
   const sessionId = "sess-b1-test";
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "maou-b1-"));
     harness = new HarnessSessionStore({ maouRoot: root });
-    taskStore = new TaskSessionStore(root, "coding");
   });
 
   afterEach(() => {
@@ -48,7 +45,6 @@ describe("ContextEngine.seedWorkingSet (B1)", () => {
     return new ContextEngine({
       sessionId,
       harnessStore: harness,
-      taskStore,
     });
   }
 

@@ -23,12 +23,11 @@ import {
   timecode,
 } from "./message-meta";
 import type { DraftMessage } from "../types";
-import { showcaseMessages } from "../../drafts/fixtures";
 import { createElement } from "react";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ContextPanel } from "../chat/ContextPanel";
-import { SHOWCASE_FLAGS } from "../../drafts/fixtures";
+import { SAMPLE_APPROVAL, threadMessages } from "../test-thread";
 
 describe("message-meta CLI helpers", () => {
   it("durationStr matches CLI edge cases", () => {
@@ -208,8 +207,8 @@ describe("message-meta CLI helpers", () => {
     assert.match(live, /1\.2s|1200ms/);
   });
 
-  it("showcase hydrate renders msg-head with duration or LIVE", () => {
-    const msgs = showcaseMessages("t");
+  it("thread sample renders msg-head with duration or LIVE", () => {
+    const msgs = threadMessages("t");
     const asst = msgs.find((m) => m.id.endsWith("fc-a1"));
     assert.ok(asst?.meta?.durationMs != null);
     const live = msgs.find((m) => m.id.endsWith("fc-a5"));
@@ -219,7 +218,7 @@ describe("message-meta CLI helpers", () => {
       createElement(ContextPanel, {
         messages: msgs,
         agentBusy: true,
-        pendingApproval: SHOWCASE_FLAGS.pendingApproval,
+        pendingApproval: SAMPLE_APPROVAL,
         hasActiveSession: true,
         draftInput: "",
         meta: {

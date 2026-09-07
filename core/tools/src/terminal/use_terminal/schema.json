@@ -35,7 +35,7 @@
       },
       "result_limit": {
         "type": "integer",
-        "description": "返回结果限制字数，默认 5000。0 表示只返回状态提示不返回输出内容。"
+        "description": "返回结果限制行数，默认 200。0 表示只返回状态提示。采集最多 256KiB，全文落在会话旁文件，页脚给出路径。"
       },
       "return_when": {
         "type": "string",
@@ -77,7 +77,7 @@
       },
       "limit": {
         "type": "integer",
-        "description": "logs 查看字数（manage logs 时可选，默认 5000）。"
+        "description": "logs 查看行数（manage logs 时可选，默认 200）。全文落在会话旁文件，页脚给出路径。"
       },
       "data": {
         "type": "string",

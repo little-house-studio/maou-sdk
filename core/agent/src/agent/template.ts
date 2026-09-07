@@ -18,6 +18,7 @@
 
 import { existsSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { resolveMicroCompactRounds } from "@little-house-studio/context";
 import { getTemplateRef } from "./template-ref.js";
 import { renderAgentPreview } from "./preview.js";
 import { ensureAgentOverview } from "./overview.js";
@@ -33,6 +34,7 @@ export const AGENT_CUSTOM_KEYS = [
   "terminal_mode",
   "thinking_level",
   "thinking_context_mode",
+  "micro_compact_rounds",
   "role",
   "display_name",
   "reviewer_role",
@@ -63,6 +65,10 @@ export function readAgentWorkspaceInstructions(config: Record<string, unknown>):
   const snake = config.workspace_instructions;
   if (typeof snake === "boolean") return snake;
   return null;
+}
+
+export function readAgentMicroCompactRounds(config: Record<string, unknown>): number {
+  return resolveMicroCompactRounds(config.micro_compact_rounds ?? config.microCompactRounds);
 }
 
 /** 把允许的字段写入实例 agent.custom.json，再返回合并后的配置。 */

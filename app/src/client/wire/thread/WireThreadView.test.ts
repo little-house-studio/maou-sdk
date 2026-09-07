@@ -386,6 +386,25 @@ describe("WireThreadView round chip", () => {
     assert.match(html, /wire-round-chip/);
   });
 
+  it("tool card title uses path from toolArgs when description is empty", () => {
+    const messages = chatLinesToDraftMessages([
+      { id: "u", role: "user", text: "read" },
+      { id: "a", role: "assistant", text: "看一下。" },
+      {
+        id: "t",
+        role: "tool",
+        text: "✓ read_file\nsecret",
+        toolName: "read_file",
+        toolArgs: JSON.stringify({ path: "/tmp/secrets.json" }),
+      },
+    ]);
+    const html = renderToStaticMarkup(
+      createElement(WireThreadView, { messages }),
+    );
+    assert.match(html, /wire-tool-intent/);
+    assert.match(html, /\/tmp\/secrets\.json/);
+  });
+
   it("does not render empty assistant body above tool cards", () => {
     const messages = chatLinesToDraftMessages(
       [

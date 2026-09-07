@@ -5,7 +5,7 @@
  * 1. Ensure DOCK_CARDS has the id + tone
  * 2. Set DEFAULT_DOCK_BOARD_LAYOUT[id] (size, resizable, surface)
  * 3. Set DEFAULT_DOCK_CONTENT_KIND[id] = "react" (or canvas)
- * 4. Pass faces={{ [id]: <YourHost /> }} into BottomInfoBar / DraftShell
+ * 4. Pass faces={{ [id]: <YourHost /> }} into BottomInfoBar
  * 5. Optionally wrap with DockBoardShell surface tokens / layout helper classes
  */
 export type {

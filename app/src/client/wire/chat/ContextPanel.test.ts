@@ -8,11 +8,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ContextPanel } from "./ContextPanel";
 import {
-  FULL_CONTEXT_MESSAGES,
-  SHOWCASE_FLAGS,
-  hydrateFromScenario,
-  messagesForSession,
-} from "../../drafts/fixtures";
+  SAMPLE_APPROVAL,
+  SAMPLE_SESSIONS,
+  THREAD_MESSAGES,
+} from "../test-thread";
 import type { DraftMeta } from "../types";
 
 const META: DraftMeta = {
@@ -29,9 +28,9 @@ function renderPanel(
 ): string {
   return renderToStaticMarkup(
     createElement(ContextPanel, {
-      messages: FULL_CONTEXT_MESSAGES,
+      messages: THREAD_MESSAGES,
       agentBusy: true,
-      pendingApproval: SHOWCASE_FLAGS.pendingApproval,
+      pendingApproval: SAMPLE_APPROVAL,
       hasActiveSession: true,
       draftInput: "",
       meta: META,
@@ -108,7 +107,7 @@ describe("ContextPanel semantic structure", () => {
   it("keeps composer textarea enabled while approval is pending", () => {
     const html = renderPanel({
       agentBusy: true,
-      pendingApproval: SHOWCASE_FLAGS.pendingApproval,
+      pendingApproval: SAMPLE_APPROVAL,
     });
     assert.match(html, /wire-composer-input/);
     // Must not hard-disable input when approval float is open
@@ -174,21 +173,10 @@ describe("ContextPanel semantic structure", () => {
     assert.doesNotMatch(html, /stream-banner/);
   });
 
-  it("hydrated normal scenario drives full panel chrome", () => {
-    const state = hydrateFromScenario("normal");
-    const msgs = messagesForSession(
-      state.messagesBySession,
-      state.activeSessionId,
-    );
+  it("session crumbs render with a parent/child tree", () => {
     const html = renderPanel({
-      messages: msgs,
-      agentBusy: state.agentBusy,
-      pendingApproval: state.pendingApproval,
-      meta: state.meta,
-      statusHint: state.statusHint,
-      usageLabel: state.usageLabel,
-      sessions: state.sessions,
-      activeSessionId: state.activeSessionId,
+      sessions: SAMPLE_SESSIONS,
+      activeSessionId: SAMPLE_SESSIONS[1]!.id,
       onSelectSession: () => {},
     });
     assert.match(html, /has-busy/);

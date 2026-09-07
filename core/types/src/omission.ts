@@ -86,7 +86,7 @@ export function buildRetentionNotice(opts: {
  * 说清用哪个工具、给什么参数，模型才有下一步可走。
  */
 export function spillRetrieveHint(opts?: { unit?: OmissionUnit }): string {
-  const unit = opts?.unit === "lines" ? "start_line / end_line" : "start_line";
+  const unit = opts?.unit === "lines" ? "offset / limit" : "offset";
   return `Read that file with the read tool (${unit}) to get the omitted part.`;
 }
 

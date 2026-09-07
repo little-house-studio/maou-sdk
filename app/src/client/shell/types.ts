@@ -3,19 +3,12 @@ import type { SessionListProps } from "../wire/sidebar/SessionList";
 import type { FilesRailProps } from "../wire/sidebar/FilesRail";
 import type { BottomInfoBarProps } from "../wire/dock/BottomInfoBar";
 import type { WireTopbarProps } from "../wire/chrome/WireTopbar";
-import type { ContextPanelProps } from "../wire/chat/ContextPanel";
-import type { DraftApiConfig, UiMode } from "../wire/types";
+import type { UiMode } from "../wire/types";
 import type { ChatPanelProps } from "../ChatPanel";
 import type { LiveSettingsPanelProps } from "../live/LiveSettingsPanel";
-export type WireShellVariant = "draft" | "live";
+export type WireShellVariant = "live";
 
 export type LiveChatBag = ChatPanelProps & { remountKey: string };
-
-export type DraftSettingsBag = {
-  api: DraftApiConfig;
-  onApiChange: (next: DraftApiConfig) => void;
-  onClose: () => void;
-};
 
 export type ProjectBag = {
   projectLabel: string;
@@ -52,7 +45,5 @@ export type WireHostBag = {
   dock: BottomInfoBarProps;
   chat?: LiveChatBag;
   liveSettings?: LiveSettingsPanelProps;
-  draftSettings?: DraftSettingsBag;
-  draftContext?: ContextPanelProps;
   project: ProjectBag;
 };

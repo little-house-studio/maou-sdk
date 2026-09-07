@@ -93,6 +93,9 @@ export interface AgentEntry {
   mcp_catalog_full_threshold?: number;
   /** agent 轮次上限（可选），0=无限 */
   round_limit?: number;
+  /** 微压缩动态轮；该 Agent 所有微压功能共用。缺省 3 */
+  micro_compact_rounds?: number;
+  microCompactRounds?: number;
   /** 是否注入仓库根 AGENTS.md / CLAUDE.md。默认 true */
   workspace_instructions?: boolean;
   workspaceInstructions?: boolean;
