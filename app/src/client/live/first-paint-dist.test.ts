@@ -32,10 +32,9 @@ function readAsset(name: string): string {
 function entryAndPreloads(html: string): string[] {
   const out: string[] = [];
   for (const m of html.matchAll(
-    /(?:src|href)=["'](\/assets\/[^"']+\.js)["']/g,
+    /(?:src|href)=["'](?:\.\/|\/)assets\/([^"']+\.js)["']/g,
   )) {
-    const p = m[1]!;
-    out.push(p.replace(/^\/assets\//, ""));
+    out.push(m[1]!);
   }
   return [...new Set(out)];
 }
@@ -71,6 +70,12 @@ function firstPaintClosure(entryFiles: string[]): Set<string> {
 }
 
 describe("first-paint dist graph (no CodeMirror/xterm)", () => {
+  it("production index uses relative asset URLs for file://", () => {
+    const html = readFileSync(join(distClient, "index.html"), "utf8");
+    assert.match(html, /(?:src|href)="\.\/assets\//);
+    assert.doesNotMatch(html, /(?:src|href)="\/assets\//);
+  });
+
   it("dist/client build exists with index.html", () => {
     assert.ok(
       existsSync(join(distClient, "index.html")),

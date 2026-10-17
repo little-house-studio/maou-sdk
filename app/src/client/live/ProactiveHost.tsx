@@ -53,6 +53,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
   } = useAppPorts().proactive;
   const [snap, setSnap] = useState<ProactiveSnapshot | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [busyAction, setBusyAction] = useState(false);
@@ -62,11 +63,11 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
     try {
       const s = await fetchProactive();
       setSnap(s);
-      setErr(null);
+      setLoadError(null);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setLoadError(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [fetchProactive]);
 
   useEffect(() => {
     return visiblePoll(load, 2000);
@@ -176,13 +177,15 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
     const msg = input.trim();
     if (!msg || sending) return;
     setSending(true);
+    setErr("");
     setInput("");
     try {
-      for await (const _ev of streamProactiveChat(msg)) {
-        /* stream events; final state via poll */
+      for await (const ev of streamProactiveChat(msg)) {
+        if (ev.type === "error") throw new Error(String(ev.message ?? ev.content ?? "发送失败"));
       }
       await load();
     } catch (e) {
+      setInput((current) => current || msg);
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setSending(false);
@@ -256,9 +259,9 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
         </div>
       </header>
 
-      {err ? (
+      {err || loadError ? (
         <div className="proactive-error" role="alert">
-          {err}
+          {err || loadError}
         </div>
       ) : null}
 
@@ -389,6 +392,7 @@ export function ProactiveHost({ presentation = "card" }: ProactiveHostProps) {
               disabled={sending}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   void onSend();

@@ -166,7 +166,7 @@ export const SUBAGENT_KIND_DEFAULTS: Record<SubagentKind, SubagentKindDefaults> 
     permission: "project_scoped_audit",
     tools: null,
     toolPreset: "coding_scoped",
-    roundLimit: 50,
+    roundLimit: 0,
     overRoundPolicy: "wrap_up",
     listInManager: true,
     requiresExecutor: true,

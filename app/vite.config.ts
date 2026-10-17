@@ -2,7 +2,10 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadSessionToolMeta } from "./src/server/session-intents";
+
+const appDir = fileURLToPath(new URL(".", import.meta.url));
 
 function writeJson(res: ServerResponse, body: unknown) {
   res.statusCode = 200;
@@ -38,34 +41,13 @@ function handleSessionIntents(req: IncomingMessage, res: ServerResponse) {
   }
 }
 
-/** Dev renderer is Electron-only. Browsers get 403. */
-function electronOnly(): Plugin {
-  return {
-    name: "maou-electron-only",
-    configureServer(server) {
-      server.middlewares.use((req, res, next) => {
-        const path = (req.url || "").split("?")[0] || "";
-        if (path === "/__maou/session-intents") {
-          next();
-          return;
-        }
-        const ua = String(req.headers["user-agent"] ?? "");
-        if (/Electron/i.test(ua)) {
-          next();
-          return;
-        }
-        res.statusCode = 403;
-        res.setHeader("Content-Type", "text/plain; charset=utf-8");
-        res.end("Maou 只提供桌面客户端，请运行 pnpm --filter @little-house-studio/app dev\n");
-      });
-    },
-  };
-}
-
-export default defineConfig({
-  plugins: [sessionIntentsDev(), electronOnly(), react()],
-  root: resolve(__dirname, "src/client"),
-  base: "/",
+export default defineConfig(({ command }) => ({
+  plugins: [sessionIntentsDev(), react()],
+  root: resolve(appDir, "src/client"),
+  // Tauri 从 tauri://localhost（Windows: http://tauri.localhost）出 dist/client，产物用相对路径
+  base: command === "build" ? "./" : "/",
+  // tauri dev 与 vite 共用一个终端，别清屏盖掉 Rust 侧输出
+  clearScreen: false,
   server: {
     host: "127.0.0.1",
     port: 5173,
@@ -73,7 +55,7 @@ export default defineConfig({
     open: false,
   },
   build: {
-    outDir: resolve(__dirname, "dist/client"),
+    outDir: resolve(appDir, "dist/client"),
     emptyOutDir: true,
     modulePreload: {
       // Only preload deps of the entry module graph — never force heavy
@@ -90,7 +72,7 @@ export default defineConfig({
     },
     rollupOptions: {
       input: {
-        main: resolve(__dirname, "src/client/index.html"),
+        main: resolve(appDir, "src/client/index.html"),
       },
       output: {
         /**
@@ -120,4 +102,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

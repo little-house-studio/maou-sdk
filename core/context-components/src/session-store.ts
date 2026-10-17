@@ -67,6 +67,7 @@ import {
   messageFingerprint,
   readFoldCache,
   writeFoldCache,
+  type FoldCacheSnap,
 } from "./fold-cache.js";
 import { classifyOpenTurn, classifyUnclosedTools } from "./tool-recovery.js";
 import { draftTitleFromText, type TitleSource } from "./session-title.js";
@@ -264,6 +265,9 @@ export class SessionStore {
   readonly searchIndex: SessionSearchIndex;
   private agentNameCache = new Map<string, string>();
   private liveIds = new Set<string>();
+  private foldMem = new Map<string, FoldCacheSnap>();
+  /** 全量 collectLocatedMessages 折枝次数。内存命中时不增。 */
+  foldFullRebuilds = 0;
 
   constructor(sessionDir: string, options?: SessionRecordOptions) {
     this.sessionDir = sessionDir;
@@ -508,12 +512,19 @@ export class SessionStore {
     const meta = this.readMeta(sessionId);
     const next = (typeof meta?.replace_generation === "number" ? meta.replace_generation : 0) + 1;
     this.patchMeta(sessionId, { replace_generation: next });
+    this.forgetFold(sessionId);
     return next;
   }
 
   setAgentName(sessionId: string, name: string): void {
     this.patchMeta(sessionId, { agent_name: name });
     this.agentNameCache.set(sessionId, name);
+  }
+
+  setParentSessionId(sessionId: string, parentSessionId: string): boolean {
+    const parent = parentSessionId.trim();
+    if (!parent) return false;
+    return this.patchMeta(sessionId, { parent_session_id: parent }) != null;
   }
 
   setTitle(sessionId: string, title: string, source: TitleSource = "user"): boolean {
@@ -722,6 +733,7 @@ export class SessionStore {
     }
     this.searchIndex.deleteSession(sessionId);
     this.agentNameCache.delete(sessionId);
+    this.forgetFold(sessionId);
     if (this.features.listCache) removeListCacheItem(this.sessionDir, sessionId);
     return { deleted: true, materialized };
   }
@@ -1008,9 +1020,46 @@ export class SessionStore {
   }
 
   getLlmHistoryMessages(sessionId: string): SessionMessage[] {
-    const all = this.readAllMessages(sessionId);
-    if (all.length === 0) return [];
-    return filterLlmVisible(this.branchOf(all, this.getLeafId(sessionId)));
+    const folded = this.foldBranch(sessionId, { writeCache: false });
+    if (!folded) return [];
+    return filterLlmVisible(folded.messages);
+  }
+
+  /** run 收尾把内存 fold 刷盘；热路径增量不写 fold.json。 */
+  persistFoldCache(sessionId: string): void {
+    if (!this.features.foldCache) return;
+    const snap = this.foldMem.get(sessionId);
+    if (!snap) return;
+    try {
+      writeFoldCache(this.sessionRoot(sessionId), snap);
+    } catch {
+      /* 缓存失败不影响折叠 */
+    }
+  }
+
+  private forgetFold(sessionId: string): void {
+    this.foldMem.delete(sessionId);
+  }
+
+  private resolveFoldSnap(
+    sessionId: string,
+    lastSeq: number,
+    tailFp: string,
+    gen: number,
+  ): FoldCacheSnap | null {
+    const mem = this.foldMem.get(sessionId);
+    if (mem && foldCacheUsable(mem, lastSeq, tailFp, gen)) return mem;
+    if (!this.features.foldCache) return null;
+    const disk = readFoldCache(this.sessionRoot(sessionId));
+    if (disk && foldCacheUsable(disk, lastSeq, tailFp, gen)) {
+      this.foldMem.set(sessionId, disk);
+      return disk;
+    }
+    return null;
+  }
+
+  private rememberFoldSnap(sessionId: string, snap: FoldCacheSnap): void {
+    this.foldMem.set(sessionId, snap);
   }
 
   foldBranch(sessionId: string, opts?: { writeCache?: boolean }): SessionData | null {
@@ -1021,13 +1070,13 @@ export class SessionStore {
     const lastSeq = pendingLastSeq(this.sessionDir, sessionId) ?? lastOffsetRec(this.sessionRoot(sessionId))?.seq ?? 0;
     const tailFp = this.lastMessageFingerprint(sessionId);
     const gen = typeof meta.replace_generation === "number" ? meta.replace_generation : 0;
-    const cached = this.features.foldCache ? readFoldCache(this.sessionRoot(sessionId)) : null;
-    if (cached && foldCacheUsable(cached, lastSeq, tailFp, gen) && cached.lastSeq === lastSeq) {
+    const cached = this.resolveFoldSnap(sessionId, lastSeq, tailFp, gen);
+    if (cached && cached.lastSeq === lastSeq) {
       const cachedMsgs = cached.messages as SessionMessage[];
       const branch = this.branchOf(cachedMsgs, meta.leaf_id);
       return this.sessionFromMeta(meta, branch, cached.traces as SessionTrace[]);
     }
-    if (cached && foldCacheUsable(cached, lastSeq, tailFp, gen) && cached.lastSeq < lastSeq) {
+    if (cached && cached.lastSeq < lastSeq) {
       const extras = this.readEventsAfter(sessionId, cached.lastSeq);
       const all = cached.messages.map((m) => ({ ...m })) as SessionMessage[];
       const traces = [...(cached.traces as SessionTrace[])];
@@ -1052,22 +1101,17 @@ export class SessionStore {
         const message = eventToMessage(ev);
         if (message) all.push(message);
       }
-      if (writeCache) {
-        try {
-          writeFoldCache(this.sessionRoot(sessionId), {
-            ver: 1,
-            lastSeq,
-            tailFingerprint: tailFp,
-            replaceGeneration: gen,
-            messages: all,
-            traces,
-          });
-      } catch {
-          /* 缓存失败不影响折叠 */
-        }
-      }
+      this.rememberFoldSnap(sessionId, {
+        ver: 1,
+        lastSeq,
+        tailFingerprint: tailFp,
+        replaceGeneration: gen,
+        messages: all,
+        traces,
+      });
       return this.sessionFromMeta(meta, this.branchOf(all, meta.leaf_id), traces);
     }
+    this.foldFullRebuilds += 1;
     const located = this.collectLocatedMessages(sessionId);
     const all = located.map((row) => row.message);
     const branch = this.branchOf(all, meta.leaf_id);
@@ -1077,6 +1121,14 @@ export class SessionStore {
         traces.push((ev.data?.data ?? ev.data ?? {}) as SessionTrace);
       }
     }
+    this.rememberFoldSnap(sessionId, {
+      ver: 1,
+      lastSeq,
+      tailFingerprint: tailFp,
+      replaceGeneration: gen,
+      messages: all,
+      traces,
+    });
     if (writeCache) {
       try {
         writeFoldCache(this.sessionRoot(sessionId), {

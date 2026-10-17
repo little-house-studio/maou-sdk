@@ -152,7 +152,7 @@ export interface ProjectAgentTemplate {
   displayName?: string;
   /** agent.json 中的 description。默认空字符串。 */
   description?: string;
-  /** 轮次上限（写入 agent.json.round_limit）。默认 50。 */
+  /** 轮次上限（写入 agent.json.round_limit）。0 = 不限轮。 */
   roundLimit?: number;
   /** 工具输出压缩级别（写入 agent.json.tool_compression）。默认 "normal"。 */
   toolCompression?: "off" | "normal" | "aggressive";
@@ -230,7 +230,7 @@ const DEFAULT_PROJECT_AGENT_TEMPLATE: ProjectAgentTemplate = {
   role: "coding",
   displayName: "Coding Agent",
   description: "项目级编码助手（自动物化）",
-  roundLimit: 50,
+  roundLimit: 0,
   toolCompression: "normal",
   toolWhitelist: [
     "reader",
@@ -245,6 +245,7 @@ const DEFAULT_PROJECT_AGENT_TEMPLATE: ProjectAgentTemplate = {
     "find_skill",
     "todo_manage",
     "todo_finish",
+    "use_computer",
   ],
   systemPrompt: `# 编程 Agent
 
@@ -492,6 +493,14 @@ export class AgentRegistry {
   list(): AgentEntry[] {
     return Object.values(this.loadAll());
   }
+
+  /** run 内动态区复用：同一实例只扫一遍 agent 目录。 */
+  listMemoized(): AgentEntry[] {
+    if (!this.listMemo) this.listMemo = this.list();
+    return this.listMemo;
+  }
+
+  private listMemo: AgentEntry[] | null = null;
 
   /**
    * 获取单个 agent 配置（优先项目级）
@@ -1024,7 +1033,7 @@ export class AgentRegistry {
     const displayName = template.displayName ?? (name.charAt(0).toUpperCase() + name.slice(1));
     const role = template.role ?? "default";
     const description = template.description ?? "";
-    const roundLimit = template.roundLimit ?? 50;
+    const roundLimit = template.roundLimit ?? 0;
     const toolCompression = template.toolCompression ?? "normal";
 
     const agentEntry = {

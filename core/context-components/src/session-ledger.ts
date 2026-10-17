@@ -7,9 +7,10 @@
  * 新功能：registerLedgerEvent + appendLedgerEvent。
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { crc32of, durableAppend } from "./durable-write.js";
+import { readLedgerFileCached, type LedgerRow } from "./ledger-cache.js";
 import {
   appendOffsetRecs,
   isMessageOffsetType,
@@ -292,27 +293,27 @@ function nextLedgerSeq(sessionDir: string, sessionId: string, filePath: string, 
   return 1;
 }
 
-function parseLedgerEventLine(line: string): SessionLedgerEvent | null {
-  try {
-    const rec = JSON.parse(line) as SessionLedgerEvent;
-    if (typeof rec.seq !== "number" || typeof rec.type !== "string") return null;
-    return rec;
-  } catch {
-    return null;
-  }
+/**
+ * 按路径读一份盘上 jsonl 的全部对象行（走解析缓存，不含待写队列；缺 seq 的旧格式行也在）。
+ * 数组是缓存本体（只追加时原地变长，可按引用做增量折叠）—— 数组与行对象都只读。
+ */
+export function readLedgerFileRows(filePath: string): readonly LedgerRow[] {
+  return readLedgerFileCached(filePath);
 }
 
+function isLedgerEvent(row: LedgerRow): boolean {
+  return typeof row.seq === "number" && typeof row.type === "string";
+}
+
+/**
+ * 盘上账本 + 待写队列。盘上部分走解析缓存（只追加就只解析新尾巴），
+ * 事件对象在调用间共享 —— 只读；数组本身是新的，可以随便改。
+ */
 export function readLedgerRecords(sessionDir: string, sessionId: string): SessionLedgerEvent[] {
   installCoreLedgerCatalog();
-  const filePath = ledgerPath(sessionDir, sessionId);
-  const out: SessionLedgerEvent[] = [];
-  if (existsSync(filePath)) {
-    for (const line of readFileSync(filePath, "utf-8").split("\n")) {
-      if (!line.trim()) continue;
-      const rec = parseLedgerEventLine(line);
-      if (rec) out.push(rec);
-    }
-  }
+  const out = readLedgerFileCached(ledgerPath(sessionDir, sessionId)).filter(
+    isLedgerEvent,
+  ) as unknown as SessionLedgerEvent[];
   for (const item of peekPendingWrites(sessionDir, sessionId)) {
     out.push(item.rec);
   }

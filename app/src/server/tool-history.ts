@@ -100,9 +100,42 @@ export function readLoopDurationMs(m: Record<string, unknown>): number | undefin
   return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
+function isHumanHistoryUser(line: {
+  role: string;
+  source?: string;
+  kind?: string;
+  authorType?: string;
+  content?: string;
+}): boolean {
+  if (line.role !== "user") return false;
+  const authorType = (line.authorType || "").trim();
+  if (authorType === "human") return true;
+  if (authorType === "tool" || authorType === "system" || authorType === "agent") {
+    return false;
+  }
+  const kind = (line.kind || "").trim();
+  if (kind === "human_user" || kind === "queued_user") return true;
+  if (kind) return false;
+  const source = (line.source || "").trim();
+  if (source === "human" || source === "user" || source === "cli" || source === "feishu") {
+    return true;
+  }
+  if (source) return false;
+  const body = line.content || "";
+  return !body.includes("<terminal-message>") && !body.includes("<tool-followup");
+}
+
 /** 把本 loop 最后一条 loopDurationMs 写到对应用户行。 */
 export function backfillUserLoopDuration<
-  T extends { role: string; durationMs?: number; loopDurationMs?: number },
+  T extends {
+    role: string;
+    durationMs?: number;
+    loopDurationMs?: number;
+    source?: string;
+    kind?: string;
+    authorType?: string;
+    content?: string;
+  },
 >(lines: T[]): T[] {
   let user: T | undefined;
   let lastLoop: number | undefined;
@@ -111,7 +144,7 @@ export function backfillUserLoopDuration<
     user.durationMs = lastLoop;
   };
   for (const line of lines) {
-    if (line.role === "user") {
+    if (isHumanHistoryUser(line)) {
       apply();
       user = line;
       lastLoop = line.loopDurationMs;

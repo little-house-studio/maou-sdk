@@ -157,6 +157,7 @@ describe("subagent kinds", () => {
     expect(p!.auditPaths).toContain("/tmp/shared");
     expect(p!.tools).toContain("write_file");
     expect(p!.permission).toBe("project_scoped_audit");
+    expect(p!.softRequestBudget).toBeUndefined();
   });
 
   it("helper 非持久化不进 list", () => {

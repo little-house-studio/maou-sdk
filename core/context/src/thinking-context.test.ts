@@ -159,6 +159,24 @@ describe("thinking inject into LLM history", () => {
     expect(llm.content).toContain("out");
   });
 
+  it("supportsVision=false 时 user 图只留占位", () => {
+    const messages = buildMessages({
+      systemPrompt: "sys",
+      sessionMessages: [
+        {
+          role: "user",
+          content: "看图",
+          createdAt: "2020-01-01T00:00:00.000Z",
+          images: [{ mimeType: "image/png", data: "abc" }],
+        },
+      ] as SessionMessage[],
+      roundCount: 1,
+      supportsVision: false,
+    });
+    const user = messages.find((m) => m.role === "user");
+    expect(user?.content).toBe("看图\n[图片]");
+  });
+
   it("buildMessages 把 user Message.images 收成多模态块", () => {
     const messages = buildMessages({
       systemPrompt: "sys",

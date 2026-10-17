@@ -49,6 +49,7 @@ import {
   readProjectSession,
   sanitizeRecentPaths,
   writeProjectSession,
+  type ProjectSessionSnapshot,
 } from "./project-session";
 import { ChromeMark } from "../icons/Marks";
 import { LazySourceEditor } from "../../markdown/editor/LazySourceEditor";
@@ -58,6 +59,7 @@ export type ProjectWorkbenchProps = {
   projectLabel: string;
   projectPath: string;
   docs?: ProjectDoc[];
+  loadedPaths?: ReadonlySet<string>;
   /**
    * Optional live host: when user accepts baseline ("同步"), persist markdown
    * to real storage. Draft shell omits this (session-local only).
@@ -97,6 +99,7 @@ export function ProjectWorkbench({
   projectLabel,
   projectPath,
   docs = PROJECT_DOCS,
+  loadedPaths,
   onPersistMarkdown,
   onActivePathChange,
 }: ProjectWorkbenchProps) {
@@ -165,6 +168,9 @@ export function ProjectWorkbench({
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickQuery, setQuickQuery] = useState("");
   const [quickIndex, setQuickIndex] = useState(0);
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const editedPathsRef = useRef(new Set(Object.keys(restored?.drafts ?? {})));
   const [statusToast, setStatusToast] = useState<string | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
   const quickInputRef = useRef<HTMLInputElement>(null);
@@ -191,6 +197,7 @@ export function ProjectWorkbench({
     [tree, docFilter],
   );
   const activeDoc = getProjectDoc(activePath, docs);
+  const canEditActive = !loadedPaths || loadedPaths.has(activePath);
   const content = drafts[activePath] ?? activeDoc?.content ?? "";
   const fixtureBaseline = activeDoc?.content ?? "";
   const baseline = contentBaselines[activePath] ?? fixtureBaseline;
@@ -230,7 +237,7 @@ export function ProjectWorkbench({
       for (const d of docs) {
         if (!d.content) continue;
         const cur = prev[d.path];
-        if (cur === undefined || cur === "") {
+        if (cur === undefined || (cur === "" && !editedPathsRef.current.has(d.path))) {
           next[d.path] = d.content;
           changed = true;
         }
@@ -302,6 +309,7 @@ export function ProjectWorkbench({
 
   // Seed graph for active path once
   useEffect(() => {
+    if (!canEditActive || (!editedPathsRef.current.has(activePath) && content !== activeDoc?.content)) return;
     setGraphs((prev) => {
       if (prev[activePath]) return prev;
       const items = parseProjectOutline(content).map((h) => ({
@@ -315,9 +323,8 @@ export function ProjectWorkbench({
       }));
       return { ...prev, [activePath]: seeded };
     });
-    // only re-seed when path changes without existing graph
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePath]);
+    // Only seed after real content is available; preserve an existing edited graph.
+  }, [activePath, canEditActive, content, activeDoc?.content]);
 
   const graph =
     graphs[activePath] ??
@@ -335,34 +342,38 @@ export function ProjectWorkbench({
     );
   }, [outline, graphs, activePath, graph, dismissDrift]);
 
+  // Unread stubs are not drafts. Persist intentional edits, including empty text.
+  const snapshot: ProjectSessionSnapshot = {
+    v: 1,
+    activePath,
+    recentPaths,
+    drafts: Object.fromEntries(Object.entries(drafts).filter(([path]) => editedPathsRef.current.has(path))),
+    contentBaselines,
+    graphs,
+    graphBaselines,
+    hideTree,
+    hideOutline,
+  };
+  const snapshotRef = useRef({ projectPath, snapshot });
+  snapshotRef.current = { projectPath, snapshot };
+  // Flush on navigation/unmount too, before a fast mode switch can cancel the debounce.
+  useEffect(() => {
+    const flush = () => writeProjectSession(snapshotRef.current.projectPath, snapshotRef.current.snapshot);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, []);
+
   // Persist session so refresh keeps edits (debounced to avoid thrash)
   useEffect(() => {
     if (typeof window === "undefined") {
-      writeProjectSession(projectPath, {
-        v: 1,
-        activePath,
-        recentPaths,
-        drafts,
-        contentBaselines,
-        graphs,
-        graphBaselines,
-        hideTree,
-        hideOutline,
-      });
+      writeProjectSession(projectPath, snapshotRef.current.snapshot);
       return;
     }
     const t = window.setTimeout(() => {
-      writeProjectSession(projectPath, {
-        v: 1,
-        activePath,
-        recentPaths,
-        drafts,
-        contentBaselines,
-        graphs,
-        graphBaselines,
-        hideTree,
-        hideOutline,
-      });
+      writeProjectSession(projectPath, snapshotRef.current.snapshot);
     }, 280);
     return () => window.clearTimeout(t);
   }, [
@@ -382,6 +393,8 @@ export function ProjectWorkbench({
   }, [activePath, content]);
 
   const onChange = (next: string) => {
+    if (!canEditActive) return;
+    editedPathsRef.current.add(activePath);
     setDrafts((prev) => ({ ...prev, [activePath]: next }));
   };
 
@@ -389,11 +402,12 @@ export function ProjectWorkbench({
     if (dirty) {
       const ok =
         typeof window !== "undefined"
-          ? window.confirm("丢弃当前文档与画布的未保存改动，恢复 fixtures？")
+          ? window.confirm("丢弃当前文档与画布的未保存改动，恢复上次保存的内容？")
           : true;
       if (!ok) return;
     }
     if (activeDoc) {
+      editedPathsRef.current.delete(activePath);
       setDrafts((prev) => ({ ...prev, [activePath]: activeDoc.content }));
     }
     setContentBaselines((prev) => {
@@ -415,69 +429,53 @@ export function ProjectWorkbench({
     flashStatus("已重置当前文档");
   };
 
-  /** Draft "save": accept current MD + graph as clean baseline; optional live persist. */
-  const onAcceptBaseline = () => {
-    setContentBaselines((prev) => ({ ...prev, [activePath]: content }));
-    setGraphBaselines((b) => ({
-      ...b,
-      [activePath]: graphFingerprint(graph),
+  // Capture the submitted version; edits made while writing must stay dirty.
+  const savePaths = async (paths: string[]) => {
+    if (savingRef.current || paths.length === 0) return;
+    if (loadedPaths && paths.some((path) => !loadedPaths.has(path))) {
+      flashStatus("文档尚未读取成功，请重试加载后保存");
+      return;
+    }
+    const payloads = paths.map((path) => ({
+      path,
+      content: drafts[path] ?? getProjectDoc(path, docs)?.content ?? "",
+      graph: path === activePath ? graph : graphs[path],
     }));
-    if (onPersistMarkdown) {
-      void Promise.resolve(onPersistMarkdown(activePath, content))
-        .then(() => flashStatus("已同步当前文档 · 已写入"))
-        .catch((e) =>
-          flashStatus(
-            e instanceof Error ? e.message : `写入失败: ${String(e)}`,
-          ),
-        );
-    } else {
-      flashStatus("已同步当前文档");
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const results = await Promise.allSettled(payloads.map(async (item) => {
+        await onPersistMarkdown?.(item.path, item.content);
+        return item;
+      }));
+      const saved = results.flatMap((r) => r.status === "fulfilled" ? [r.value] : []);
+      setContentBaselines((prev) => {
+        const next = { ...prev };
+        for (const item of saved) next[item.path] = item.content;
+        return next;
+      });
+      setGraphBaselines((prev) => {
+        const next = { ...prev };
+        for (const item of saved) {
+          if (item.graph) next[item.path] = graphFingerprint(item.graph);
+        }
+        return next;
+      });
+      const failed = results.filter((r) => r.status === "rejected");
+      if (failed.length) {
+        const reason = failed[0]!.reason;
+        flashStatus(`保存失败 ${failed.length} 个文档 · ${reason instanceof Error ? reason.message : String(reason)}`);
+      } else {
+        flashStatus(`已同步 ${saved.length} 个文档${onPersistMarkdown ? " · 已写入" : ""}`);
+      }
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
     }
   };
 
-  /** Accept baselines for every dirty path (session "save all"). */
-  const onAcceptAllBaselines = () => {
-    if (dirtyPathList.length === 0) return;
-    const n = dirtyPathList.length;
-    const payloads: { path: string; content: string }[] = [];
-    setContentBaselines((prev) => {
-      const next = { ...prev };
-      for (const path of dirtyPathList) {
-        const doc = getProjectDoc(path, docs);
-        const body = drafts[path] ?? doc?.content ?? "";
-        next[path] = body;
-        payloads.push({ path, content: body });
-      }
-      return next;
-    });
-    setGraphBaselines((prev) => {
-      const next = { ...prev };
-      for (const path of dirtyPathList) {
-        const g = graphs[path];
-        if (g) next[path] = graphFingerprint(g);
-      }
-      // ensure active graph covered even if just seeded in-memory
-      if (dirtyPathList.includes(activePath)) {
-        next[activePath] = graphFingerprint(graph);
-      }
-      return next;
-    });
-    if (onPersistMarkdown) {
-      void Promise.all(
-        payloads.map((p) =>
-          Promise.resolve(onPersistMarkdown(p.path, p.content)),
-        ),
-      )
-        .then(() => flashStatus(`已同步 ${n} 个文档 · 已写入`))
-        .catch((e) =>
-          flashStatus(
-            e instanceof Error ? e.message : `写入失败: ${String(e)}`,
-          ),
-        );
-    } else {
-      flashStatus(`已同步 ${n} 个文档`);
-    }
-  };
+  const onAcceptBaseline = () => { void savePaths([activePath]); };
+  const onAcceptAllBaselines = () => { void savePaths(dirtyPathList); };
 
   const onGraphChange = (next: ProjectGraphState) => {
     setGraphs((prev) => ({ ...prev, [activePath]: next }));
@@ -823,6 +821,7 @@ export function ProjectWorkbench({
         : true;
     if (!ok) return;
     clearProjectSession(projectPath);
+    editedPathsRef.current.clear();
     setDrafts(mergeDraftsWithFixtures(docs, undefined));
     setContentBaselines({});
     setGraphs({});
@@ -975,17 +974,18 @@ export function ProjectWorkbench({
           <button
             type="button"
             className="wire-project-action"
-            disabled={!dirty}
+            disabled={!dirty || saving || !canEditActive}
             onClick={onAcceptBaseline}
-            title="将当前 MD 与画布接受为会话基线 ⌘S（草稿站不写盘）"
+            title="保存当前文档与画布 · ⌘/Ctrl+S"
           >
-            同步
+            {saving ? "保存中…" : "同步"}
           </button>
           {dirtyPathList.length > 1 ? (
             <button
               type="button"
               className="wire-project-action"
               onClick={onAcceptAllBaselines}
+              disabled={saving}
               title="将全部有改动文档接受为会话基线 ⌘⇧S"
             >
               全同步
@@ -994,9 +994,9 @@ export function ProjectWorkbench({
           <button
             type="button"
             className="wire-project-action"
-            disabled={!dirty && content === fixtureBaseline}
+            disabled={saving || (!dirty && content === fixtureBaseline)}
             onClick={onReset}
-            title="恢复 fixtures 内容并重建画布"
+            title="恢复上次保存的内容并重建画布"
           >
             重置
           </button>
@@ -1212,6 +1212,7 @@ export function ProjectWorkbench({
                   <div className="wire-project-source-wrap">
                     <LazySourceEditor
                       value={content}
+                      editable={canEditActive}
                       onChange={onChange}
                       pendingJumpLine={pendingJumpLine}
                       onJumpHandled={() => setPendingJumpLine(null)}

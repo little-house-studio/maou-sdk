@@ -22,7 +22,19 @@ export type SubagentChannel = "event" | "progress" | "lifecycle";
 /** lifecycle 事件类型 */
 export type LifecycleEvent =
   | { kind: "fork_start"; taskId: string; subSessionId: string; taskDepth: number; desc: string }
-  | { kind: "fork_end"; taskId: string; subSessionId: string; ok: boolean; elapsedMs: number; requests?: number; tokens?: number }
+  | {
+      kind: "fork_end";
+      taskId: string;
+      subSessionId: string;
+      ok: boolean;
+      elapsedMs: number;
+      requests?: number;
+      tokens?: number;
+      detached?: boolean;
+      parentSessionId?: string;
+      output?: string;
+      agentName?: string;
+    }
   | { kind: "abort"; taskId: string; subSessionId: string; reason: string; elapsedMs: number }
   | { kind: "depth_limit"; taskId: string; currentDepth: number; maxDepth: number }
   | { kind: "budget_exceeded"; taskId: string; requests: number; budget: number }

@@ -92,7 +92,10 @@ export async function testConnection(
       toolSchemas: null,
       nativeToolCalling: false,
       abortSignal: timeoutCtrl.signal,
-      _logContext: { source: "connection_test" },
+      _logContext: {
+        source: "connection_test",
+        session_id: `maou-probe-${Date.now()}`,
+      },
     });
 
     const wallMs = Date.now() - wall0;

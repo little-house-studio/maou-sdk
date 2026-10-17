@@ -1,16 +1,24 @@
 {
   "name": "use_computer",
-  "description": "控制本机桌面 App（macOS 控件树优先）。网页用 use_browser，不要用本工具操作浏览器 DOM。",
+  "description": "本机桌面控制（MCP 式门面）。网页用 use_browser。list 拿目录；call 执行。截图：call name=screenshot。",
   "parameters": {
     "type": "object",
     "properties": {
       "action": {
         "type": "string",
-        "description": "操作类型：snapshot|click|type|press|scroll|hotkey|set-value|activate|screenshot|record|apps|windows|permissions|help"
+        "description": "list | call | screenshot | snapshot | click | …"
       },
       "reason": {
         "type": "string",
         "description": "为什么必须调用此工具？"
+      },
+      "name": {
+        "type": "string",
+        "description": "call 的操作名，如 screenshot / click"
+      },
+      "arguments": {
+        "type": "object",
+        "description": "call 的参数"
       },
       "target": {
         "type": "string",
@@ -47,11 +55,11 @@
       },
       "x": {
         "type": "number",
-        "description": "屏幕坐标 X（像素降级）"
+        "description": "屏幕坐标 X"
       },
       "y": {
         "type": "number",
-        "description": "屏幕坐标 Y（像素降级）"
+        "description": "屏幕坐标 Y"
       },
       "include_image": {
         "type": "boolean",
@@ -68,11 +76,11 @@
       "mode": {
         "type": "string",
         "enum": ["auto", "ax", "pixels"],
-        "description": "覆盖本次路线。默认走 MAOU_COMPUTER_USE / agent.json / config.json。"
+        "description": "覆盖本次路线。"
       },
       "description": {
         "type": "string",
-        "description": "一句话说明这次调用在做什么（任务简介；CLI 折叠标题只显示此项）。"
+        "description": "一句话说明这次调用在做什么。"
       }
     },
     "required": ["description", "action", "reason"],

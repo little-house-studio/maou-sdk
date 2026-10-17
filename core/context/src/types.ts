@@ -77,6 +77,11 @@ export interface BuildMessagesParams {
    * 不传则走原始 sessionMessages 路径（保留多模态图片旁路）。
    */
   compressedHistory?: _LLMMessage[];
+  /**
+   * 当前模型是否吃图片。false 时历史/工具图只留 [图片] 占位，不组 image_url。
+   * 缺省按支持处理。
+   */
+  supportsVision?: boolean;
 }
 
 /** 压缩结果 */

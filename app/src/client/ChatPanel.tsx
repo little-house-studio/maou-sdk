@@ -17,6 +17,7 @@ import {
 import { createPortal } from "react-dom";
 import { useStableHandlers } from "./stable-handlers";
 import { useAppPorts } from "./ports";
+import { carryBootHydration, readBootChat, saveBootChat } from "./boot-cache";
 import type {
   ApprovalMode,
   ChatHistoryLine,
@@ -31,6 +32,9 @@ import type {
 } from "./api";
 import { searchSessions, type SessionSearchHit } from "./api";
 import { formatModelErrorForUi } from "./model-error-ui";
+import { useChatQueue } from "./use-chat-queue";
+import type { OutboxItem } from "./chat-queue";
+import { QueueDock } from "./composer/QueueDock";
 import { coalesceStreamEvents, createFrameBatcher } from "./stream-batch";
 import { visiblePoll } from "./live/poll";
 import { stripTaskCompletionMarkup } from "./strip-task-completion";
@@ -45,9 +49,14 @@ import {
 } from "./wire/thread/WireThreadView";
 import type { PayloadRequest } from "./wire/thread/WireThreadView";
 import {
+  displayRoleForUserLine,
+  isHiddenToolLoopLine,
+  isHumanUserBubble,
   isModelCallProgressText,
   isPlaceholderAssistantBody,
+  unwrapInjectedNoticeBody,
 } from "./wire/thread/thread-blocks";
+import { readUsageBuckets } from "./session-payloads";
 import {
   asToolParams,
   encodeToolArgs,
@@ -157,6 +166,12 @@ export type ChatLine = {
   cacheWrite?: number;
   /** usage 是否报过 cache 字段；false → 命中率显示 “—” */
   cacheReported?: boolean;
+  /** session_inject / 落盘 source：tool_loop 等不进气泡 */
+  source?: string;
+  /** 落盘 kind：human_user / tool_async_notify … */
+  kind?: string;
+  /** 发言人类型：human / agent / system / tool */
+  authorType?: string;
   /** 落盘 entry id —— 调试面板据此拉本轮 POST */
   payloadId?: string;
   /** id 缺失时的定位口径：同类消息里的 0 基下标 */
@@ -261,24 +276,48 @@ export function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
     }
   }
   let round = 0;
-  const lines = msgs.map((m) => {
-    const role =
-      m.role === "user" || m.role === "assistant" || m.role === "system"
-        ? m.role
-        : m.role === "tool"
-          ? "tool"
-          : "assistant";
+  const lines: ChatLine[] = [];
+  for (const m of msgs) {
+    if (
+      isHiddenToolLoopLine({
+        role: m.role,
+        source: m.source,
+        content: m.content,
+      })
+    ) {
+      continue;
+    }
+    const userMeta = {
+      role: m.role,
+      source: m.source,
+      kind: m.kind,
+      authorType: m.authorType,
+      content: m.content,
+    };
+    const mappedRole =
+      m.role === "user"
+        ? displayRoleForUserLine(userMeta)
+        : m.role === "assistant" || m.role === "system"
+          ? m.role
+          : m.role === "tool"
+            ? "tool"
+            : "assistant";
+    const role = mappedRole;
+    const rawText = m.content || "";
     const text =
       role === "assistant"
-        ? stripTaskCompletionMarkup(m.content || "")
-        : m.content || "";
+        ? stripTaskCompletionMarkup(rawText)
+        : role !== "user" && m.role === "user"
+          ? unwrapInjectedNoticeBody(rawText)
+          : rawText;
     const fromMeta = (m.toolName || "").trim();
     const fromBody = role === "tool" ? extractToolNameFromText(text) : undefined;
     const toolName =
       role === "tool"
         ? fromMeta && fromMeta !== "tool"
           ? fromMeta
-          : fromBody
+          : fromBody ||
+            (m.source === "terminal-notification" ? "use_terminal" : undefined)
         : undefined;
     const startedAt = historyTsMs(m.ts);
     const asstRound = role === "assistant" ? ++round : undefined;
@@ -302,7 +341,7 @@ export function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
       m.loopDurationMs >= 0
         ? m.loopDurationMs
         : undefined;
-    return {
+    lines.push({
       id: m.id || uid(),
       role: role as ChatLine["role"],
       text,
@@ -317,14 +356,24 @@ export function historyToLines(msgs: ChatHistoryLine[]): ChatLine[] {
       ...(asstRound ? { round: asstRound } : {}),
       ...(m.usageInput && m.usageInput > 0 ? { usageInput: m.usageInput } : {}),
       ...(m.usageOutput && m.usageOutput > 0 ? { usageOutput: m.usageOutput } : {}),
+      ...(m.cacheReported != null
+        ? {
+            cacheReported: m.cacheReported,
+            cacheRead: m.cacheRead ?? 0,
+            cacheWrite: m.cacheWrite ?? 0,
+          }
+        : {}),
+      ...(m.source ? { source: m.source } : {}),
+      ...(m.kind ? { kind: m.kind } : {}),
+      ...(m.authorType ? { authorType: m.authorType } : {}),
       ...(typeof m.seq === "number" && Number.isFinite(m.seq) ? { seq: m.seq } : {}),
       err:
         role === "tool" &&
         (/^✗|❌|缺少必填|失败/i.test(text.trim()) ||
           m.toolOk === false ||
           Boolean((m as { ok?: boolean }).ok === false)),
-    };
-  });
+    });
+  }
   inferToolDurationsFromStartGaps(lines);
   backfillUserLoopDuration(lines);
   return lines;
@@ -375,7 +424,7 @@ export function backfillUserLoopDuration(lines: ChatLine[]): void {
     user.durationMs = lastLoop;
   };
   for (const line of lines) {
-    if (line.role === "user") {
+    if (isHumanUserBubble(line)) {
       apply();
       user = line;
       lastLoop = line.loopDurationMs;
@@ -393,7 +442,7 @@ export function stampLoopWallClock(
 ): ChatLine[] {
   let userIdx = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]!.role === "user") {
+    if (isHumanUserBubble(lines[i]!)) {
       userIdx = i;
       break;
     }
@@ -674,9 +723,6 @@ const HELP_TEXT = [
 /** 面包屑只在 sessions / 焦点 / 运行灯变化时重画，不跟每个 token 走 */
 const SessionTreeCrumbsMemo = memo(SessionTreeCrumbs);
 
-/** Cap pending user messages while a turn is running */
-const MAX_QUEUE = 20;
-
 const SEND_MODE_KEY = "maou.app.sendMode";
 
 function loadSendMode(): ChatSendMode {
@@ -688,17 +734,6 @@ function loadSendMode(): ChatSendMode {
   }
   return "queue";
 }
-
-/** Outbox above composer: backend-queued + failed unsent */
-type OutboxItem = {
-  localId: string;
-  text: string;
-  status: "queued" | "failed";
-  mode: ChatSendMode;
-  /** backend MessageQueue id when status=queued */
-  queueId?: number;
-  error?: string;
-};
 
 /** 交给 Runtime.commandRegistry 的 slash（走 chat 流，不本地吞掉） */
 const CONTEXT_PAGE = 40;
@@ -736,6 +771,10 @@ export type ChatPanelProps = {
   onDockLogLines?: (lines: string[]) => void;
   /** 名册就绪后再拉会话 / 上下文。默认 true（draft / 单测） */
   bootReady?: boolean;
+  /** 后台 Agent 回写父会话后刷新当前线程（不改会话绑定） */
+  reloadToken?: number;
+  /** 开机快照的键（按 Agent）：有就首帧先画上次的会话列表 / 线程 / 上下文 */
+  bootCacheKey?: string;
 };
 
 export function ChatPanel({
@@ -750,7 +789,10 @@ export function ChatPanel({
   chrome = "default",
   onDockLogLines,
   bootReady = true,
+  reloadToken = 0,
+  bootCacheKey = "",
 }: ChatPanelProps) {
+  const chatPorts = useAppPorts().chat;
   const {
     abortChat,
     answerApproval,
@@ -781,16 +823,22 @@ export function ChatPanel({
     setModel,
     streamChat,
     switchSession,
-  } = useAppPorts().chat;
+  } = chatPorts;
   const { fetchProjectTree, fetchMdTree } = useAppPorts().files;
   const isWire =
     chrome === "wire" ||
     (typeof className === "string" && className.includes("wire-context"));
-  const [lines, setLines] = useState<ChatLine[]>([]);
-  const [hasMoreHistory, setHasMoreHistory] = useState(false);
-  const [contextHydrated, setContextHydrated] = useState(false);
-  const oldestSeqRef = useRef<number | null>(null);
-  const hasMoreRef = useRef(false);
+  // 上次这个 Agent 的线程 / 会话列表 / 上下文：首帧先画，bootstrap 拿到真数据后整份替换
+  const [boot] = useState(() => readBootChat<ChatLine>(bootCacheKey));
+  /** 首个真页面若是同一会话，从快照补上异步回填的字段（工具标题 / 编号不闪） */
+  const bootLinesRef = useRef<{ sessionId: string | null; lines: ChatLine[] } | null>(
+    boot ? { sessionId: boot.sessionId, lines: boot.lines } : null,
+  );
+  const [lines, setLines] = useState<ChatLine[]>(() => boot?.lines ?? []);
+  const [hasMoreHistory, setHasMoreHistory] = useState(() => boot?.hasMore ?? false);
+  const [contextHydrated, setContextHydrated] = useState(() => Boolean(boot));
+  const oldestSeqRef = useRef<number | null>(boot?.oldestSeq ?? null);
+  const hasMoreRef = useRef(boot?.hasMore ?? false);
   const loadingOlderRef = useRef(false);
   const [input, setInput] = useState("");
   const [inputEpoch, setInputEpoch] = useState(0);
@@ -799,13 +847,15 @@ export function ChatPanel({
     setInputEpoch((n) => n + 1);
   }, []);
   const [busy, setBusyState] = useState(false);
-  const [meta, setMeta] = useState<Meta | null>(null);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [meta, setMeta] = useState<Meta | null>(() => boot?.meta ?? null);
+  const [sessions, setSessions] = useState<SessionSummary[]>(() => boot?.sessions ?? []);
   const [providers, setProviders] = useState<{ id: string; name?: string }[]>(
-    [],
+    () => boot?.providers ?? [],
   );
-  const [models, setModels] = useState<{ id: string; name?: string }[]>([]);
-  const [approval, setApproval] = useState<ApprovalMode>("yolo");
+  const [models, setModels] = useState<{ id: string; name?: string }[]>(() => boot?.models ?? []);
+  const [approval, setApproval] = useState<ApprovalMode>(
+    () => (boot?.approval as ApprovalMode | undefined) || "yolo",
+  );
   const [pending, setPending] = useState<PendingApproval[]>([]);
   /** submit_plan 阻塞在这里等人选：批准 / 拒绝 / 补充意见 */
   const [pendingAsk, setPendingAsk] = useState<PendingAsk | null>(null);
@@ -828,10 +878,12 @@ export function ChatPanel({
   const [contextUsage, setContextUsage] = useState<{
     used: number;
     max: number;
-  } | null>(null);
+  } | null>(() => boot?.contextUsage ?? null);
   const [contextBreakdown, setContextBreakdown] =
-    useState<ContextBreakdown | null>(null);
-  const maxContextRef = useRef(128_000);
+    useState<ContextBreakdown | null>(
+      () => (boot?.contextBreakdown as ContextBreakdown | null | undefined) ?? null,
+    );
+  const maxContextRef = useRef(boot?.maxContext || 128_000);
   /** 上下文 chip → 弹窗（不写入聊天线程） */
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const [usageModalLoading, setUsageModalLoading] = useState(false);
@@ -843,6 +895,7 @@ export function ChatPanel({
     useState<SessionUsageStats | null>(null);
   const [usageModalRaw, setUsageModalRaw] = useState<string | null>(null);
   // 轮次调试面板：本轮 POST 请求 / 本轮返回内容
+  const payloadRequestRef = useRef(0);
   const [payloadOpen, setPayloadOpen] = useState(false);
   const [payloadView, setPayloadView] = useState<"request" | "response">(
     "request",
@@ -866,8 +919,10 @@ export function ChatPanel({
   const [extraCommands, setExtraCommands] = useState<AppCommand[]>([]);
   /** 发送模式：队列（等本轮）/ 插入（打断当前流）—— 对接到 MessageQueue */
   const [sendMode, setSendModeState] = useState<ChatSendMode>(() => loadSendMode());
-  /** 发送框上方：未成功发送 / 已排队待投递 */
-  const [outbox, setOutbox] = useState<OutboxItem[]>([]);
+  const queue = useChatQueue(meta?.sessionId, `${meta?.projectRoot ?? ""}:${meta?.agentName ?? ""}:${meta?.sessionId ?? ""}`, chatPorts, setStatus);
+  const { items: outbox, setItems: setOutbox, ref: outboxRef, actions: queueActionsRef } = queue;
+  const sessionActionRef = useRef(false);
+  const [sessionChanging, setSessionChanging] = useState(false);
   const [railEl, setRailEl] = useState<HTMLElement | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -880,6 +935,7 @@ export function ChatPanel({
   const busyRef = useRef(false);
   /** Guards double-Enter before busyRef flips inside runUserMessage */
   const inFlightSendRef = useRef(false);
+  const stoppingRef = useRef(false);
   const lastUserRef = useRef("");
   const lastImagesRef = useRef<ChatImage[]>([]);
   /**
@@ -1042,7 +1098,11 @@ export function ChatPanel({
             x.title === next[i]?.title &&
             x.messageCount === next[i]?.messageCount &&
             x.userTurns === next[i]?.userTurns &&
-            x.updatedAt === next[i]?.updatedAt,
+            x.updatedAt === next[i]?.updatedAt &&
+            x.parentSessionId === next[i]?.parentSessionId &&
+            x.lamp === next[i]?.lamp &&
+            x.helperCount === next[i]?.helperCount &&
+            x.switchId === next[i]?.switchId,
         )
       ) {
         return prev;
@@ -1061,11 +1121,17 @@ export function ChatPanel({
 
   const applyHistoryPage = useCallback(
     (
-      page: SessionMessagePage,
+      page: Pick<SessionMessagePage, "messages" | "oldestSeq" | "hasMore">,
       sessionId?: string | null,
       projectRoot?: string,
     ) => {
-      const next = historyToLines(page.messages);
+      const fresh = historyToLines(page.messages);
+      const carry = bootLinesRef.current;
+      bootLinesRef.current = null;
+      const next =
+        carry?.sessionId && carry.sessionId === sessionId
+          ? carryBootHydration(carry.lines, fresh)
+          : fresh;
       setLines(next);
       oldestSeqRef.current = resolveOldestSeq(page.oldestSeq, next);
       hasMoreRef.current = page.hasMore;
@@ -1073,8 +1139,11 @@ export function ChatPanel({
       stickBottomRef.current = true;
       setContextHydrated(true);
       if (sessionId && page.messages.length) {
-        hydrateToolLines(setLines, sessionId, projectRoot);
-        hydratePayloadLines(setLines, sessionId, projectRoot);
+        const update: typeof setLines = (value) => {
+          if (activeSessionRef.current === sessionId) setLines(value);
+        };
+        hydrateToolLines(update, sessionId, projectRoot);
+        hydratePayloadLines(update, sessionId, projectRoot);
       }
     },
     [],
@@ -1084,8 +1153,10 @@ export function ChatPanel({
     const before = oldestSeqRef.current;
     if (!hasMoreRef.current || before == null || loadingOlderRef.current) return;
     loadingOlderRef.current = true;
+    const sessionId = activeSessionRef.current;
     try {
       const page = await loadOlderMessages(before, CONTEXT_PAGE);
+      if (sessionId !== activeSessionRef.current || sessionActionRef.current) return;
       const el = logRef.current;
       const prevH = el?.scrollHeight ?? 0;
       const prevTop = el?.scrollTop ?? 0;
@@ -1100,8 +1171,7 @@ export function ChatPanel({
         });
       }
     } catch {
-      hasMoreRef.current = false;
-      setHasMoreHistory(false);
+      if (sessionId === activeSessionRef.current) setStatus("加载历史失败，请重试");
     } finally {
       loadingOlderRef.current = false;
     }
@@ -1126,6 +1196,38 @@ export function ChatPanel({
     }
   }, [meta?.sessionId, runningSessionIds, setBusy]);
 
+  // 空闲时存一份开机快照；流式中不写（免得逐 token 序列化），还在显示旧快照时也不写
+  useEffect(() => {
+    if (!bootCacheKey || !contextHydrated || busy || bootLinesRef.current) return;
+    saveBootChat(bootCacheKey, {
+      sessionId: meta?.sessionId ?? null,
+      meta,
+      sessions,
+      lines,
+      hasMore: hasMoreHistory,
+      oldestSeq: oldestSeqRef.current,
+      contextUsage,
+      contextBreakdown,
+      maxContext: maxContextRef.current,
+      providers,
+      models,
+      approval,
+    });
+  }, [
+    bootCacheKey,
+    contextHydrated,
+    busy,
+    meta,
+    sessions,
+    lines,
+    hasMoreHistory,
+    contextUsage,
+    contextBreakdown,
+    providers,
+    models,
+    approval,
+  ]);
+
   const patchContextUsage = useCallback(
     (partial: { used?: number; max?: number }) => {
       setContextUsage((prev) => {
@@ -1146,8 +1248,10 @@ export function ChatPanel({
   );
 
   const refreshContextUsage = useCallback(async () => {
+    const sid = activeSessionRef.current;
     try {
       const r = await fetchSessionStats();
+      if (sid !== activeSessionRef.current) return;
       if (r.today) {
         onTodayUsageChangeRef.current?.(r.today);
       }
@@ -1191,7 +1295,9 @@ export function ChatPanel({
   }, [meta?.model, meta?.provider, meta?.sessionId, patchContextUsage, refreshContextUsage]);
 
   const refreshApproval = useCallback(async () => {
+    const sid = activeSessionRef.current;
     const a = await fetchApproval();
+    if (sid !== activeSessionRef.current) return a;
     setApproval((prev) => (prev === a.mode ? prev : a.mode));
     setPending((prev) => {
       const next = a.pending;
@@ -1212,8 +1318,10 @@ export function ChatPanel({
   }, []);
 
   const refreshPlan = useCallback(async () => {
+    const sid = activeSessionRef.current;
     try {
       const view = await fetchSessionPlan();
+      if (sid !== activeSessionRef.current) return null;
       setSessionPlanView(view);
       setMeta((m) => (m ? { ...m, plan: view.plan } : m));
       return view;
@@ -1226,6 +1334,7 @@ export function ChatPanel({
     const sid = activeSessionRef.current;
     try {
       const list = await fetchPendingAsk();
+      if (sid !== activeSessionRef.current) return;
       const mine = pickPlanAsk(list, sid);
       setPendingAsk((prev) => {
         if (prev?.sessionId === mine?.sessionId && prev?.kind === mine?.kind &&
@@ -1258,6 +1367,9 @@ export function ChatPanel({
           void refreshPlan();
         })
         .catch((err) => {
+          if (ask.sessionId !== activeSessionRef.current) return;
+          setPlanSettled(null);
+          setPendingAsk(ask);
           setStatus(err instanceof Error ? err.message : String(err));
           void refreshAsk();
         });
@@ -1272,9 +1384,12 @@ export function ChatPanel({
     let cancelled = false;
     void (async () => {
       try {
-        await refreshSessions();
-        if (cancelled) return;
-        const m = await fetchMeta();
+        // 三个都只读 hub 当前焦点，互不依赖：一起发，省掉两次 IPC 往返
+        const [, m, page] = await Promise.all([
+          refreshSessions(),
+          fetchMeta(),
+          fetchSessionMessages({ limit: CONTEXT_PAGE }),
+        ]);
         if (cancelled) return;
         pushMeta(m);
         setApproval(
@@ -1282,8 +1397,6 @@ export function ChatPanel({
             (m.sandboxMode as ApprovalMode) ||
             "yolo",
         );
-        const page = await fetchSessionMessages({ limit: CONTEXT_PAGE });
-        if (cancelled) return;
         applyHistoryPage(page, m.sessionId, m.projectRoot);
         requestAnimationFrame(() => {
           if (cancelled) return;
@@ -1296,15 +1409,15 @@ export function ChatPanel({
             void loadOlderRef.current("bottom");
           }
         });
-        const md = await fetchModels(m.provider || undefined);
+        const [md] = await Promise.all([
+          fetchModels(m.provider || undefined),
+          refreshApproval(),
+          refreshPlan(),
+          refreshAsk(),
+        ]);
         if (cancelled) return;
         setProviders(md.providers.length ? md.providers : m.providers ?? []);
         setModels(md.models);
-        await refreshApproval();
-        if (cancelled) return;
-        await refreshPlan();
-        if (cancelled) return;
-        await refreshAsk();
       } catch (e) {
         if (!cancelled) {
           setContextHydrated(true);
@@ -1318,6 +1431,25 @@ export function ChatPanel({
     // bootReady 从 false→true 才开跑；其余回调走 ref
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootReady]);
+
+  useEffect(() => {
+    if (!bootReady || !reloadToken || busy) return;
+    let cancelled = false;
+    const sessionId = activeSessionRef.current;
+    void fetchSessionMessages({ limit: CONTEXT_PAGE })
+      .then((page) => {
+        if (cancelled || sessionId !== activeSessionRef.current || sessionActionRef.current) return;
+        applyHistoryPage(
+          page,
+          page.sessionId ?? activeSessionRef.current,
+          meta?.projectRoot,
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadToken, bootReady, busy, applyHistoryPage, fetchSessionMessages, meta?.projectRoot]);
 
   // 轮询 pending 审批 / 待审计划（工具阻塞在宿主上时才有东西）
   // 窗口不可见时停表；bootstrap 已拉过一遍，所以不立即 tick
@@ -1420,95 +1552,16 @@ export function ChatPanel({
     setLines((prev) => [...prev, line]);
   }, []);
 
-  /** 运行中入队到后端 MessageQueue，并显示在发送框上方 outbox */
-  const enqueueToBackend = useCallback(
-    async (text: string, mode: ChatSendMode, note?: string) => {
-      if (outbox.filter((o) => o.status === "queued").length >= MAX_QUEUE) {
-        setStatus(`队列已满（${MAX_QUEUE}）`);
-        setOutbox((prev) => [
-          ...prev,
-          {
-            localId: uid(),
-            text,
-            status: "failed",
-            mode,
-            error: `队列已满（最多 ${MAX_QUEUE} 条）`,
-          },
-        ]);
-        return false;
-      }
-      const localId = uid();
-      // 乐观展示在 composer 上方
-      setOutbox((prev) => [
-        ...prev,
-        { localId, text, status: "queued", mode },
-      ]);
-      try {
-        const r = await enqueueChat(text, mode);
-        setOutbox((prev) =>
-          prev.map((o) =>
-            o.localId === localId ? { ...o, queueId: r.id } : o,
-          ),
-        );
-        setStatus(
-          note ||
-            (mode === "insert"
-              ? `已插入打断 #${r.id}`
-              : `已排队 #${r.id}（本轮结束后投递）`),
-        );
-        return true;
-      } catch (e) {
-        const err = e instanceof Error ? e.message : String(e);
-        setOutbox((prev) =>
-          prev.map((o) =>
-            o.localId === localId
-              ? { ...o, status: "failed", error: err }
-              : o,
-          ),
-        );
-        setStatus(err);
-        return false;
-      }
-    },
-    [outbox],
-  );
-
-  const removeOutboxItem = useCallback(async (item: OutboxItem) => {
-    if (item.queueId != null) {
-      try {
-        await removeChatQueueItem(item.queueId);
-      } catch {
-        /* ignore */
-      }
+  const enqueueToBackend = queue.enqueue;
+  const removeOutboxItem = queue.remove;
+  const clearOutboxQueued = queue.clear;
+  const steerOutboxItem = (item: OutboxItem) => queue.update(item, { mode: "insert" });
+  const steerAllQueued = async () => {
+    // Each promotion is atomic; consumed items are never recreated.
+    for (const item of outboxRef.current.filter(o => o.status === "queued" && o.mode !== "insert")) {
+      await queue.update(item, { mode: "insert" });
     }
-    setOutbox((prev) => prev.filter((o) => o.localId !== item.localId));
-  }, []);
-
-  const clearOutboxQueued = useCallback(async () => {
-    try {
-      await clearChatQueue();
-    } catch {
-      /* ignore */
-    }
-    setOutbox((prev) => prev.filter((o) => o.status !== "queued"));
-    setStatus("已清空排队");
-  }, []);
-
-  const steerAllQueued = useCallback(async () => {
-    const items = outbox.filter((o) => o.status === "queued");
-    for (const item of items) {
-      await removeOutboxItem(item);
-      await enqueueToBackend(item.text, "insert", "已插入打断");
-    }
-  }, [outbox, removeOutboxItem, enqueueToBackend]);
-
-  const steerOutboxItem = useCallback(
-    async (item: OutboxItem) => {
-      await removeOutboxItem(item);
-      await enqueueToBackend(item.text, "insert", "已插入打断");
-    },
-    [removeOutboxItem, enqueueToBackend],
-  );
+  };
 
   const onCommandLaunch = useCallback(() => {
     setPaletteOpen((v) => !v);
@@ -1729,11 +1782,12 @@ export function ChatPanel({
         case "model.usage":
         case "assistant.usage": {
           const u = (ev.usage ?? ev) as Record<string, unknown>;
+          const buckets = readUsageBuckets(u);
           const inn = Number(
-            u.prompt_tokens ?? u.input_tokens ?? u.input ?? 0,
+            u.prompt_tokens ?? u.input_tokens ?? u.input ?? buckets.input ?? 0,
           );
           const out = Number(
-            u.completion_tokens ?? u.output_tokens ?? u.output ?? 0,
+            u.completion_tokens ?? u.output_tokens ?? u.output ?? buckets.output ?? 0,
           );
           const maxCtx = Number(u.max_context ?? u.maxContext ?? 0);
           const details = (u.completion_tokens_details ??
@@ -1761,7 +1815,11 @@ export function ChatPanel({
               outputTokens: Number(today.outputTokens ?? 0) || 0,
             });
           }
-          if ((Number.isFinite(inn) && inn > 0) || (Number.isFinite(out) && out > 0)) {
+          if (
+            (Number.isFinite(inn) && inn > 0) ||
+            (Number.isFinite(out) && out > 0) ||
+            buckets.reported
+          ) {
             const now = Date.now();
             setLines((prev) => {
               const next = [...prev];
@@ -1772,6 +1830,13 @@ export function ChatPanel({
                   ...cur,
                   usageInput: Number.isFinite(inn) && inn > 0 ? inn : cur.usageInput,
                   usageOutput: Number.isFinite(out) && out > 0 ? out : cur.usageOutput,
+                  ...(buckets.reported
+                    ? {
+                        cacheRead: buckets.cacheRead,
+                        cacheWrite: buckets.cacheWrite,
+                        cacheReported: true,
+                      }
+                    : {}),
                   durationMs:
                     cur.startedAt != null
                       ? Math.max(cur.durationMs ?? 0, now - cur.startedAt)
@@ -1824,8 +1889,9 @@ export function ChatPanel({
         }
         case "done": {
           const u = ev.usage as Record<string, unknown> | undefined;
-          const inn = Number(u?.prompt_tokens ?? u?.input ?? 0);
-          const out = Number(u?.completion_tokens ?? u?.output ?? 0);
+          const buckets = readUsageBuckets(u);
+          const inn = Number(u?.prompt_tokens ?? u?.input ?? buckets.input ?? 0);
+          const out = Number(u?.completion_tokens ?? u?.output ?? buckets.output ?? 0);
           const maxCtx = Number(u?.max_context ?? u?.maxContext ?? 0);
           if (u && (inn || out)) setTurnUsage({ in: inn, out });
           const occ =
@@ -1864,6 +1930,13 @@ export function ChatPanel({
                     Number.isFinite(inn) && inn > 0 ? inn : cur.usageInput,
                   usageOutput:
                     Number.isFinite(out) && out > 0 ? out : cur.usageOutput,
+                  ...(buckets.reported
+                    ? {
+                        cacheRead: buckets.cacheRead,
+                        cacheWrite: buckets.cacheWrite,
+                        cacheReported: true,
+                      }
+                    : {}),
                 };
                 break;
               }
@@ -1893,30 +1966,12 @@ export function ChatPanel({
             // 新一轮 assistant 气泡，承接插入/排队后的回复
             append({ id: uid(), role: "assistant", text: "", startedAt: Date.now() });
           }
-          setOutbox((prev) =>
-            prev.filter((o) => {
-              if (Number.isFinite(qid) && o.queueId === qid) return false;
-              if (content && o.text === content && o.status === "queued")
-                return false;
-              return true;
-            }),
-          );
+          queue.consume(qid, typeof ev.requestId === "string" ? ev.requestId : undefined);
           break;
         }
         case "queue_delivered": {
-          // loop_end 批量投递：同步清 outbox
-          const msgs = (ev.messages as Array<{ id?: number; content?: string }> | undefined) ?? [];
-          if (msgs.length > 0) {
-            setOutbox((prev) =>
-              prev.filter((o) => {
-                if (o.status !== "queued") return true;
-                if (o.queueId != null && msgs.some((m) => m.id === o.queueId))
-                  return false;
-                if (msgs.some((m) => m.content === o.text)) return false;
-                return true;
-              }),
-            );
-          }
+          const msgs = (ev.messages as Array<{ id?: number; requestId?: string }> | undefined) ?? [];
+          for (const message of msgs) queue.consume(Number(message.id), message.requestId);
           break;
         }
         case "error": {
@@ -1981,7 +2036,17 @@ export function ChatPanel({
         case "system_notice":
         case "session_inject": {
           const msg = String(ev.content ?? ev.message ?? "");
-          if (msg) append({ id: uid(), role: "system", text: msg });
+          const source = String((ev as { source?: string }).source ?? "");
+          if (
+            isHiddenToolLoopLine({
+              role: "system",
+              source,
+              text: msg,
+            })
+          ) {
+            break;
+          }
+          if (msg) append({ id: uid(), role: "system", text: msg, source });
           break;
         }
         case "status": {
@@ -2004,6 +2069,8 @@ export function ChatPanel({
           if (!msg) break;
           const level = String(ev.level ?? "info");
           if (level === "error" || level === "warning" || level === "warn") {
+            if (isModelCallProgressText(msg)) break;
+            if (isHiddenToolLoopLine({ role: "system", text: msg })) break;
             append({
               id: uid(),
               role: "system",
@@ -2272,7 +2339,7 @@ export function ChatPanel({
   }, []);
 
   const runUserMessage = useCallback(
-    async (text: string, images?: ChatImage[]) => {
+    async (text: string, images?: ChatImage[], resumeQueue = false) => {
       // 绑定到发送时的会话；切走后该流仍继续，只在焦点会话时刷 UI
       let sessionId: string =
         activeSessionRef.current || meta?.sessionId || "__pending__";
@@ -2292,8 +2359,10 @@ export function ChatPanel({
       abortRef.current = ac;
       markSessionRunning(sessionId, true);
 
-      lastUserRef.current = text;
-      lastImagesRef.current = images ?? [];
+      if (!resumeQueue) {
+        lastUserRef.current = text;
+        lastImagesRef.current = images ?? [];
+      }
       stickBottomRef.current = true;
 
       // 仅当前焦点会话立刻画气泡
@@ -2315,7 +2384,7 @@ export function ChatPanel({
           text: "",
           startedAt: sentAt,
         };
-        setLines((prev) => [...prev, userLine, asstLine]);
+        if (!resumeQueue) setLines((prev) => [...prev, userLine, asstLine]);
         busyRef.current = true;
         setBusy(true);
         setTurnUsage(null);
@@ -2330,7 +2399,7 @@ export function ChatPanel({
       });
 
       try {
-        for await (const ev of streamChat(text, ac.signal, images)) {
+        for await (const ev of streamChat(text, ac.signal, images, { sessionId: sessionId === "__pending__" ? undefined : sessionId, resumeQueue })) {
           const cur = sessionRunsRef.current.get(sessionId);
           if (!cur || cur.gen !== gen) break;
 
@@ -2393,12 +2462,9 @@ export function ChatPanel({
               role: "system",
               text: err,
               err: true,
-              retryText: text,
+              retryText: resumeQueue ? undefined : text,
             });
-            setOutbox((prev) => {
-              if (prev.some((o) => o.status === "failed" && o.text === text)) {
-                return prev;
-              }
+            if (!resumeQueue) setOutbox((prev) => {
               return [
                 ...prev,
                 {
@@ -2424,6 +2490,7 @@ export function ChatPanel({
             setBusy(false);
             setLines((prev) => dropIdleAssistantPlaceholders(prev));
           }
+          if (activeSessionRef.current === sessionId) void queue.refresh();
         }
       }
     },
@@ -2438,8 +2505,16 @@ export function ChatPanel({
       markSessionRunning,
       setBusy,
       streamChat,
+      removeChatQueueItem,
     ],
   );
+
+  const resumeQueued = async () => {
+    if (busyRef.current || inFlightSendRef.current || queueActionsRef.current.size > 0 || sessionActionRef.current) return;
+    inFlightSendRef.current = true;
+    try { await runUserMessage("", undefined, true); }
+    finally { inFlightSendRef.current = false; void queue.refresh(); }
+  };
 
   const sendPlanApprove = useCallback(async () => {
     if (busyRef.current || inFlightSendRef.current || planLaunching) return;
@@ -2460,7 +2535,18 @@ export function ChatPanel({
 
   /** 只停止「当前焦点」会话；其它会话继续跑 */
   const stopRun = useCallback(async (announce = true) => {
+    if (stoppingRef.current) return;
     const sid = activeSessionRef.current || meta?.sessionId || null;
+    stoppingRef.current = true;
+    try {
+      await abortChat(sid, true);
+    } catch (e) {
+      setStatus(`停止失败：${e instanceof Error ? e.message : String(e)}`);
+      return;
+    } finally {
+      stoppingRef.current = false;
+    }
+    if (sid !== activeSessionRef.current) return;
     inFlightSendRef.current = false;
     if (sid) {
       const run = sessionRunsRef.current.get(sid);
@@ -2477,12 +2563,7 @@ export function ChatPanel({
     }
     abortRef.current?.abort();
     abortRef.current = null;
-    try {
-      await abortChat(sid);
-    } catch {
-      /* ignore */
-    }
-    setOutbox((prev) => prev.filter((o) => o.status === "failed"));
+    void queue.refresh();
     busyRef.current = false;
     setBusy(false);
     setPending([]);
@@ -2491,16 +2572,29 @@ export function ChatPanel({
     );
     void refreshApproval().catch(() => {});
     if (announce) {
-      setStatus("已停止");
+      setStatus("已停止，待处理消息保留在队列中");
     }
   }, [refreshApproval, meta?.sessionId, markSessionRunning, setBusy]);
 
   /** modeOverride: Ctrl+Enter 强制 insert */
   const send = async (modeOverride?: ChatSendMode) => {
+    if (sessionActionRef.current) return;
+    if (queueActionsRef.current.has("clear")) {
+      setStatus("正在清空队列，请稍后发送");
+      return;
+    }
     const live = inputRef.current?.value ?? input;
     const text = composeCommandInput(commandBlock, live).trim();
     const images = attachImages.slice();
     if (!text && !images.length) return;
+    if ((busyRef.current || inFlightSendRef.current || outboxRef.current.some(o => o.status !== "failed")) && images.length) {
+      setStatus("请等待当前回复结束后发送图片");
+      return;
+    }
+    if ((busyRef.current || inFlightSendRef.current) && !meta?.sessionId) {
+      setStatus("会话正在创建，请稍后发送这条消息");
+      return;
+    }
     replaceInput("");
     setCommandBlock(null);
     setCommandBlockSelected(false);
@@ -2531,7 +2625,7 @@ export function ChatPanel({
     const mode = modeOverride ?? sendMode;
 
     // 附图走 runChat；队列只收文本
-    if ((busyRef.current || inFlightSendRef.current) && !images.length) {
+    if ((busyRef.current || inFlightSendRef.current || outboxRef.current.some(o => o.status !== "failed")) && !images.length) {
       await enqueueToBackend(text, mode);
       return;
     }
@@ -2557,13 +2651,31 @@ export function ChatPanel({
     }
   };
 
-  const onSessionChange = async (id: string) => {
-    if (!id) return;
+  const runSessionAction = async (action: () => Promise<void>) => {
+    if (sessionActionRef.current) return;
+    if (queueActionsRef.current.size > 0 || outboxRef.current.some((item) => item.locked)) {
+      setStatus("消息队列正在更新，请稍后切换会话");
+      return;
+    }
+    sessionActionRef.current = true;
+    setSessionChanging(true);
+    try {
+      await action();
+    } catch (e) {
+      setStatus(`会话操作失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      sessionActionRef.current = false;
+      setSessionChanging(false);
+    }
+  };
+
+  const onSessionChange = (id: string) => runSessionAction(async () => {
+    if (!id || id === activeSessionRef.current) return;
     // 不 abort：同 Agent 其它会话继续跑；只切换焦点 + 加载历史
-    setOutbox([]);
-    setPending([]);
     try {
       const r = await switchSession(id);
+
+      setPending([]);
       pushMeta(r.meta);
       activeSessionRef.current = r.sessionId;
       applyHistoryPage(r, r.sessionId, r.meta.projectRoot);
@@ -2587,13 +2699,14 @@ export function ChatPanel({
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
     }
-  };
+  });
 
-  const onNewSession = async () => {
+  const onNewSession = () => runSessionAction(async () => {
     // 不停止其它会话
-    setOutbox([]);
-    setPending([]);
     const r = await createSession();
+
+    setPending([]);
+    setPendingAsk(null);
     pushMeta(r.meta);
     activeSessionRef.current = r.sessionId;
     applyHistoryPage(r, r.sessionId, r.meta.projectRoot);
@@ -2609,12 +2722,15 @@ export function ChatPanel({
     setPlanSettled(null);
     setPlanLaunching(false);
     setSessionPlanView(null);
-  };
+  });
 
   const adoptSession = async (
     r: Awaited<ReturnType<typeof createSession>>,
     statusText: string,
   ) => {
+
+    setPending([]);
+    setPendingAsk(null);
     pushMeta(r.meta);
     activeSessionRef.current = r.sessionId;
     applyHistoryPage(r, r.sessionId, r.meta.projectRoot);
@@ -2632,27 +2748,23 @@ export function ChatPanel({
     void refreshPlan();
   };
 
-  const onForkSession = async (parentId: string) => {
-    setOutbox([]);
-    setPending([]);
+  const onForkSession = (parentId: string) => runSessionAction(async () => {
     const r = await createSession(undefined, {
       parentSessionId: parentId,
       fork: true,
     });
     await adoptSession(r, "已派生会话");
-  };
+  });
 
-  const onNewChildSession = async (parentId: string) => {
-    setOutbox([]);
-    setPending([]);
+  const onNewChildSession = (parentId: string) => runSessionAction(async () => {
     const r = await createSession(undefined, {
       parentSessionId: parentId,
       fork: false,
     });
     await adoptSession(r, "新子会话");
-  };
+  });
 
-  const onDeleteSession = async (id: string) => {
+  const onDeleteSession = (id: string) => runSessionAction(async () => {
     if (!id) return;
     const label = sessions.find((s) => s.id === id)?.title?.trim() || "这条对话";
     if (!window.confirm(`删除「${label}」？`)) return;
@@ -2690,13 +2802,28 @@ export function ChatPanel({
         pushMeta(r.meta);
       }
       if (wasActive) {
+
+        setPending([]);
+        setPendingAsk(null);
         applyHistoryPage(r, nextId, r.meta.projectRoot);
         setTurnUsage(null);
         stickBottomRef.current = true;
+        const stillRunning = !!nextId && runningSessionIdsRef.current.includes(nextId);
+        busyRef.current = stillRunning;
+        setBusy(stillRunning);
+        abortRef.current = nextId ? sessionRunsRef.current.get(nextId)?.ac ?? null : null;
+        setPlanDismissedRevision(null);
+        setPlanSettled(null);
+        setPlanLaunching(false);
+        setSessionPlanView(null);
+        void refreshPlan();
+        void refreshAsk();
+        void refreshContextUsage();
       }
       setStatus("已删除会话");
       focusComposer();
     } catch (e) {
+      if (wasActive) activeSessionRef.current = id;
       setStatus(e instanceof Error ? e.message : String(e));
       try {
         await refreshSessions();
@@ -2704,7 +2831,7 @@ export function ChatPanel({
         /* ignore */
       }
     }
-  };
+  });
 
   const onRenameSession = async (id: string, current: string) => {
     const next = window.prompt("会话标题", current || "");
@@ -2721,12 +2848,16 @@ export function ChatPanel({
   };
 
   const retryLastUser = (text?: string) => {
-    const lastLine = [...lines].reverse().find((l) => l.role === "user");
+    const lastLine = [...lines].reverse().find((l) => isHumanUserBubble(l));
     const msg = text || lastLine?.text || lastUserRef.current;
     const images = lastLine?.images ?? lastImagesRef.current;
     if (!msg && !images?.length) return;
+    if ((busyRef.current || inFlightSendRef.current) && images?.length) {
+      setStatus("请等待当前回复结束后重试图片消息");
+      return;
+    }
     if ((busyRef.current || inFlightSendRef.current) && !images?.length) {
-      void enqueueToBackend(msg, sendMode, "重试已排队");
+      void enqueueToBackend(msg, sendMode);
       return;
     }
     inFlightSendRef.current = true;
@@ -2749,41 +2880,25 @@ export function ChatPanel({
       });
   };
 
-  const retryOutboxItem = (item: OutboxItem) => {
-    void removeOutboxItem(item).then(() => {
-      if (busyRef.current || inFlightSendRef.current) {
-        void enqueueToBackend(item.text, item.mode || sendMode, "重试已排队");
-        return;
-      }
-      inFlightSendRef.current = true;
-      void runUserMessage(item.text)
-        .catch((e) => {
-          const err = e instanceof Error ? e.message : String(e);
-          setOutbox((prev) => [
-            ...prev,
-            {
-              localId: uid(),
-              text: item.text,
-              status: "failed",
-              mode: item.mode || sendMode,
-              error: err,
-            },
-          ]);
-        })
-        .finally(() => {
-          inFlightSendRef.current = false;
-        });
-    });
+  const retryOutboxItem = async (item: OutboxItem) => {
+    if (await queue.enqueue(item.text, item.mode, item)) {
+      if (!busyRef.current && !inFlightSendRef.current) await resumeQueued();
+    }
   };
 
   // Global shortcuts（与 CLI 热键同类，不是完整 CLI 外壳）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+      if (inputRef.current?.closest("[hidden], [inert]")) return;
+      if (document.querySelector('[role="dialog"], [data-cascade-panel]:not([aria-hidden="true"]), [data-composer-overlay]')) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('.term-panel, .cm-editor, [role="alertdialog"]')) return;
       const mod = e.metaKey || e.ctrlKey;
       const inField =
         e.target instanceof HTMLTextAreaElement ||
         e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLSelectElement;
+        e.target instanceof HTMLSelectElement || Boolean(target?.isContentEditable);
 
       if (mod && e.key.toLowerCase() === "n" && !e.shiftKey) {
         e.preventDefault();
@@ -2811,22 +2926,6 @@ export function ChatPanel({
           void stopRun();
         }
       }
-      // Shift+Tab: cycle approval normal → auto → yolo (CLI nav parity)
-      if (e.key === "Tab" && e.shiftKey && !mod) {
-        e.preventDefault();
-        const order: ApprovalMode[] = ["normal", "auto", "yolo"];
-        const cur = approval;
-        const next = order[(order.indexOf(cur) + 1) % order.length]!;
-        void setApprovalMode(next)
-          .then((m) => {
-            pushMeta(m);
-            setApproval(next);
-            setStatus(`审批 ${next}`);
-          })
-          .catch((err) =>
-            setStatus(err instanceof Error ? err.message : String(err)),
-          );
-      }
       if (mod && e.shiftKey && e.key.toLowerCase() === "c") {
         e.preventDefault();
         void exportTranscript()
@@ -2837,7 +2936,7 @@ export function ChatPanel({
           );
       }
       // R when not typing in input — retry last user (CLI-like)
-      if (!mod && e.key.toLowerCase() === "r" && !inField) {
+      if (!mod && !e.altKey && e.key.toLowerCase() === "r" && !inField && !target?.closest("button, a")) {
         e.preventDefault();
         retryLastUser();
       }
@@ -2935,11 +3034,10 @@ export function ChatPanel({
 
   const decideApproval = useCallback(
     (id: string, choice: "once" | "always" | "deny" | "blacklist") => {
-      void answerApproval(id, choice)
-        .then(setPending)
-        .catch((err) =>
-          setStatus(err instanceof Error ? err.message : String(err)),
-        );
+      const sessionId = activeSessionRef.current;
+      return answerApproval(id, choice).then((next) => {
+        if (sessionId === activeSessionRef.current) setPending(next);
+      });
     },
     [],
   );
@@ -2990,7 +3088,7 @@ export function ChatPanel({
                   key={choice}
                   type="button"
                   className={cls || undefined}
-                  onClick={() => decideApproval(p.id, choice)}
+                  onClick={() => void decideApproval(p.id, choice).catch((e) => setStatus(String(e)))}
                 >
                   {label}
                 </button>
@@ -3083,6 +3181,7 @@ export function ChatPanel({
   /** 编号点击 → 拉那一轮的落盘账本，开调试面板 */
   const onInspectPayload = useCallback(
     (req: PayloadRequest) => {
+      const request = ++payloadRequestRef.current;
       setPayloadView(req.view);
       setPayloadTitle(req.title);
       setPayloadDetail(null);
@@ -3094,11 +3193,15 @@ export function ChatPanel({
         ...(req.payloadId ? { id: req.payloadId } : {}),
         ...(req.payloadIndex != null ? { index: req.payloadIndex } : {}),
       })
-        .then((detail) => setPayloadDetail(detail))
-        .catch((err) =>
-          setPayloadError(err instanceof Error ? err.message : String(err)),
-        )
-        .finally(() => setPayloadLoading(false));
+        .then((detail) => {
+          if (request === payloadRequestRef.current) setPayloadDetail(detail);
+        })
+        .catch((err) => {
+          if (request === payloadRequestRef.current) setPayloadError(err instanceof Error ? err.message : String(err));
+        })
+        .finally(() => {
+          if (request === payloadRequestRef.current) setPayloadLoading(false);
+        });
     },
     [meta?.sessionId],
   );
@@ -3353,7 +3456,7 @@ export function ChatPanel({
   const modelOptions = (
     models.length ? models : meta?.model ? [{ id: meta.model }] : []
   ).filter((m) => m.id);
-  const canRetry = lines.some((l) => l.role === "user");
+  const canRetry = lines.some((l) => isHumanUserBubble(l));
   const canSend =
     Boolean(composeCommandInput(commandBlock, input).trim()) ||
     attachImages.length > 0;
@@ -3369,9 +3472,10 @@ export function ChatPanel({
       : null;
   // 右侧 status 不再回显模型名（cascade 已显示）；仅保留运行/错误等状态
   const statusFull = (() => {
+    const s = (status || "").trim();
+    if (/error|失败|不可用|拒绝|离线/i.test(s)) return s;
     if (pending.length > 0) return "等待审批";
     if (busy) return "运行中";
-    const s = (status || "").trim();
     if (!s) return "";
     if (/^模型\s/i.test(s)) return "";
     if (/已恢复|已删除/.test(s)) return "";
@@ -3475,7 +3579,7 @@ export function ChatPanel({
     // Ctrl/Cmd+Enter：强制插入模式
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       e.preventDefault();
-      if (!input.trim() && busy && queueLen > 0) {
+      if (!e.currentTarget.value.trim() && !commandBlock && !attachImages.length && busy && queueLen > 0) {
         void steerAllQueued();
         return;
       }
@@ -3569,79 +3673,6 @@ export function ChatPanel({
       ? "插入模式：运行中 Enter 打断当前流并优先处理（MessageQueue interrupt_immediately）· 点击切换为队列 · Alt+Enter 切换 · Ctrl+Enter 强制插入"
       : "队列模式：运行中 Enter 等本轮结束后投递（MessageQueue after_round_complete）· 点击切换为插入 · Alt+Enter 切换 · Ctrl+Enter 强制插入";
 
-  const outboxPanel =
-    outbox.length > 0 ? (
-      <div className="composer-outbox" role="list" aria-label="待发送与排队">
-        <div className="composer-outbox-head">
-          <span className="composer-outbox-title">
-            {queueLen > 0 ? `${queueLen} 条排队` : ""}
-            {queueLen > 0 && outbox.some((o) => o.status === "failed")
-              ? " · "
-              : ""}
-            {outbox.some((o) => o.status === "failed")
-              ? `${outbox.filter((o) => o.status === "failed").length} 条未发送`
-              : ""}
-          </span>
-          {queueLen > 0 ? (
-            <button
-              type="button"
-              className="ghost composer-outbox-clear"
-              onClick={() => void clearOutboxQueued()}
-              title="清空排队（不停止当前生成）"
-            >
-              清空排队
-            </button>
-          ) : null}
-        </div>
-        <ul className="composer-outbox-list">
-          {outbox.map((item) => (
-            <li
-              key={item.localId}
-              className={`composer-outbox-item is-${item.status}`}
-              role="listitem"
-            >
-              <span
-                className="composer-outbox-mode"
-                title={
-                  item.mode === "insert"
-                    ? "插入 · interrupt_immediately"
-                    : "队列 · after_round_complete"
-                }
-              >
-                {item.status === "failed"
-                  ? "失败"
-                  : item.mode === "insert"
-                    ? "插入"
-                    : "队列"}
-              </span>
-              <span className="composer-outbox-text" title={item.error || item.text}>
-                {item.text}
-              </span>
-              <span className="composer-outbox-actions">
-                {item.status === "failed" ? (
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => retryOutboxItem(item)}
-                    title="重试发送"
-                  >
-                    重试
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="ghost"
-                  onClick={() => void removeOutboxItem(item)}
-                  title="移除"
-                >
-                  ×
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    ) : null;
 
   const sendModeControl = (
     <div className={`send-mode-control mode-${sendMode}`}>
@@ -3725,6 +3756,14 @@ export function ChatPanel({
     filePaths,
     images: attachImages,
     outbox,
+    queueBusy: busy || queue.serverBusy,
+    queuePending: queue.pending,
+    queueCapacity: queue.capacity,
+    queueSyncError: queue.syncError,
+    onRefreshQueue: () => void queue.refresh(),
+    onResumeQueue: () => void resumeQueued(),
+    onEditOutbox: (item: OutboxItem, text: string) => queue.update(item, { message: text }),
+    onMoveOutbox: (item: OutboxItem, move: "up" | "down") => void queue.update(item, { move }),
     provider: meta?.provider ?? "",
     model: meta?.model ?? "",
     providers: providerOptions,
@@ -3746,6 +3785,8 @@ export function ChatPanel({
     canRetry,
     canSteerQueue: Boolean(busy && queueLen > 0 && !input.trim()),
     inputRef,
+    inputDisabled: sessionChanging,
+    inputLockReason: sessionChanging ? "正在切换会话…" : undefined,
     modelMenuRef,
     agentName: meta?.agentName,
     onInputChange: onComposerInput,
@@ -3773,7 +3814,7 @@ export function ChatPanel({
       void clipboardToComposerImages(dt, attachImages.length).then((extra) => {
         if (!extra.length) return;
         setAttachImages((prev) => mergeComposerImages(prev, extra));
-      });
+      }).catch((e) => setStatus(`添加图片失败：${e instanceof Error ? e.message : String(e)}`));
     },
     onImagesChange: setAttachImages,
     onInputBlur: () => {
@@ -3825,7 +3866,7 @@ export function ChatPanel({
     wireComposer
   ) : (
     <div className={`composer${isCodex ? " codex-composer" : ""}`}>
-      {outboxPanel}
+      <div data-composer=""><QueueDock {...composerProps} /></div>
       {isCodex && (
         <div className="composer-chips">
           <ModelCascadeMenu

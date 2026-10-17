@@ -285,7 +285,8 @@ describe("session durable / cover / product", () => {
       join(s.sessionRoot(session.id), FOLD_CACHE_FILE),
       JSON.stringify({ ...cache, tailFingerprint: "wrong", lastSeq: cache.lastSeq }, null, 2),
     );
-    const rebuilt = s.load(session.id);
+    const cold = new SessionStore(s.sessionDir);
+    const rebuilt = cold.load(session.id);
     expect(rebuilt?.messages.length).toBe(hit?.messages.length);
     expect(readFoldCache(s.sessionRoot(session.id))?.tailFingerprint).not.toBe("wrong");
   });

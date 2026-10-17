@@ -87,8 +87,8 @@ export const CODING_DEFAULT_SUBAGENTS = [
 /** coding agent 默认名称（即 agents/<name>/）。 */
 export const DEFAULT_CODING_AGENT_NAME = "coding";
 
-/** coding agent 默认轮次上限。 */
-export const DEFAULT_CODING_ROUND_LIMIT = 50;
+/** coding agent 默认轮次上限。0 = 不限轮 */
+export const DEFAULT_CODING_ROUND_LIMIT = 0;
 
 export interface CodingAgentOptions {
   name?: string;

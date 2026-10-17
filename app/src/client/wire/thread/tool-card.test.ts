@@ -292,5 +292,35 @@ describe("tool-card CLI helpers", () => {
     assert.match(opened, /▸ 输出/);
     assert.match(opened, /aria-expanded="true"/);
     assert.match(opened, /收起工具卡/);
+    assert.match(opened, /wire-tool-body/);
+    assert.match(opened, /wire-tool-pre is-output/);
+    assert.match(opened, /wire-tool-section-label/);
+
+    const send: DraftMessage = {
+      id: "t-send",
+      role: "tool",
+      body: "ok",
+      tool: {
+        name: "project_send",
+        description: "投递到会话",
+        args: JSON.stringify({
+          to: "coding",
+          text: "继续改对比度",
+        }),
+        result: '{"ok":true,"delivered":1}',
+        done: true,
+        isError: false,
+        durationMs: 32,
+      },
+    };
+    const sendHtml = renderToStaticMarkup(
+      createElement(ToolCard, { message: send, defaultExpanded: true }),
+    );
+    assert.match(sendHtml, /data-tool-name="project_send"/);
+    assert.match(sendHtml, /is-expanded/);
+    assert.match(sendHtml, /▸ 输入/);
+    assert.match(sendHtml, /wire-tool-pre is-input/);
+    assert.match(sendHtml, /wire-tool-pre is-output/);
+    assert.match(sendHtml, /继续改对比度/);
   });
 });

@@ -1,4 +1,5 @@
 export const FILES_ACTIVITY_ID = "files";
+export const AGENT_ACTIVITY_ID = "agent";
 export const SIDEBAR_ACTIVITY_ID = "sidebar";
 
 /** 聊天（会话）与项目（agent 名册）共用左栏；设置 / 插件不占。 */

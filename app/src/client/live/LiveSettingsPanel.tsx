@@ -51,6 +51,7 @@ export type LiveSettingsPanelProps = {
   onClose?: () => void;
   onMetaChange?: (meta: Meta) => void;
   presentation?: "page" | "overlay";
+  active?: boolean;
 };
 
 type DraftRow = {
@@ -218,6 +219,7 @@ export function LiveSettingsPanel({
   onClose,
   onMetaChange,
   presentation = "page",
+  active = true,
 }: LiveSettingsPanelProps) {
   const {
     fetchLlmConfig,
@@ -235,6 +237,10 @@ export function LiveSettingsPanel({
     testLlmConnection,
   } = useAppPorts().settings;
   const { fetchTerminals } = useAppPorts().terminals;
+  const wasActiveRef = useRef(active);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const configActionRef = useRef(false);
+  const galleryRequestRef = useRef(0);
   const [snap, setSnap] = useState<LiveSettingsSnapshot>(() =>
     emptyLiveSettingsSnapshot(true),
   );
@@ -329,6 +335,8 @@ export function LiveSettingsPanel({
   }, []);
 
   const reload = useCallback(async () => {
+    if (configActionRef.current) return;
+    configActionRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -350,6 +358,7 @@ export function LiveSettingsPanel({
       setError(e instanceof Error ? e.message : String(e));
       setSnap(emptyLiveSettingsSnapshot(true));
     } finally {
+      configActionRef.current = false;
       setBusy(false);
     }
   }, [applyLlmSnap, applySnapshot, fetchTerminals]);
@@ -359,8 +368,27 @@ export function LiveSettingsPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional mount-only
   }, []);
 
+  // Reopening settings refreshes runtime choices without replacing unsaved config rows.
+  useEffect(() => {
+    const reopened = active && !wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (!reopened) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const meta = await fetchMeta();
+        const md = await fetchModels(meta.provider || undefined);
+        if (!cancelled) applySnapshot(meta, { providers: md.providers, models: md.models });
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [active, fetchMeta, fetchModels, applySnapshot]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || panelRef.current?.closest("[hidden], [inert]")) return;
       if (e.key === "Escape") {
         e.preventDefault();
         onCloseRef.current?.();
@@ -584,6 +612,8 @@ export function LiveSettingsPanel({
   };
 
   const onSave = async () => {
+    if (configActionRef.current) return;
+    configActionRef.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -601,11 +631,13 @@ export function LiveSettingsPanel({
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
+      configActionRef.current = false;
       setBusy(false);
     }
   };
 
   const loadSvgGallery = useCallback(async () => {
+    const request = ++galleryRequestRef.current;
     const model = row?.model?.trim();
     if (!model) {
       setSvgGallery([]);
@@ -618,6 +650,7 @@ export function LiveSettingsPanel({
         presetName: row?.name?.trim() || undefined,
         limit: 12,
       });
+      if (request !== galleryRequestRef.current) return;
       setSvgGallery(g.items);
       setSvgReference(g.reference);
     } catch {
@@ -1011,6 +1044,7 @@ export function LiveSettingsPanel({
 
   return (
     <div
+      ref={panelRef}
       className={rootClass}
       role={isPage ? "region" : "dialog"}
       aria-modal={isPage ? undefined : true}
@@ -1124,8 +1158,8 @@ export function LiveSettingsPanel({
                     onClick={() => {
                       void pickAndOpenProject().then((root) => {
                         if (root) window.location.reload();
-                        else setBrowseFolder(true);
-                      });
+                        else if (!window.maouApp?.pickFolder) setBrowseFolder(true);
+                      }).catch((e) => setError(e instanceof Error ? e.message : String(e)));
                     }}
                   >
                     {t("folder.pick")}

@@ -6,7 +6,7 @@
  * - 桌面端 listen.kind=socket：unix socket / named pipe，不占 TCP 端口
  */
 
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
@@ -32,14 +32,14 @@ import { ProactiveService } from "@little-house-studio/agent";
 import { mountProactiveRoutes } from "./proactive/routes.js";
 import { mountLlmConfigRoutes } from "./llm-config-routes.js";
 import { mountWebhookRoutes } from "./webhook.js";
-import { shutdownTerminalEngine } from "@little-house-studio/tools";
+import { bindProjectDispatchHost, shutdownTerminalEngine } from "@little-house-studio/tools";
 import { loadSessionToolMeta } from "./session-intents.js";
 import {
   loadSessionPayloadDetail,
   loadSessionPayloadIndex,
 } from "./session-payloads.js";
 import { listDiskPlugins, loadDiskPlugins, pluginThemeVars, pluginUiFile } from "./plugin-host.js";
-import { ConfigStore } from "@little-house-studio/types";
+import { ConfigStore, startPerfLog, stopPerfLog, writePerfLog } from "@little-house-studio/types";
 
 export type AppListen =
   | { kind: "tcp"; host?: string; port?: number }
@@ -94,6 +94,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
   const port = listen.kind === "tcp" ? (listen.port ?? 0) : 0;
   const agentName = opts.agentName ?? "coding";
   const hub = new AgentHub(opts);
+  bindProjectDispatchHost((req) => hub.dispatchProjectTask(req));
   const copilot = new CopilotHub(opts);
   const proactive = new ProactiveService({
     getProjectRoot: () => hub.projectRoot,
@@ -114,6 +115,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
   const termHub = new TerminalHub();
 
   const app = express();
+  if (process.env.MAOU_HUB_TIMING === "1") app.use(logRequestTiming);
   app.use(express.json({ limit: "4mb" }));
 
   // Lightweight liveness only — do not ensureAgent / load sessions here.
@@ -201,7 +203,20 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         activeSwitchId: hub.activeSwitchId,
         activeProjectPath: hub.activeProjectPath,
         agents: hub.listAgents(),
+        activityAgents: hub.listActivityAgents(),
       });
+    } catch (e) {
+      res.status(500).json({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
+
+  app.get("/api/agent/inspect", (req, res) => {
+    const switchId = String(req.query.switchId ?? req.query.switch_id ?? "").trim();
+    try {
+      res.json({ ok: true, ...hub.inspectAgent(switchId || undefined) });
     } catch (e) {
       res.status(500).json({
         ok: false,
@@ -234,6 +249,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         activeProjectPath: hub.activeProjectPath,
         ...meta,
         agents: hub.listAgents(),
+        activityAgents: hub.listActivityAgents(),
       });
     } catch (e) {
       res.status(500).json({
@@ -352,6 +368,29 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     }
   });
 
+  app.post("/api/perf/client", (req, res) => {
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const cpuPct = num(body.cpuPct);
+    const rssMb = num(body.rssMb);
+    const heapMb = num(body.heapMb);
+    const loopLagMs = num(body.loopLagMs);
+    const fps = num(body.fps);
+    const longtaskMs = num(body.longtaskMs);
+    void writePerfLog({
+      kind: "occupancy",
+      process: "app-renderer",
+      snap: {
+        ...(cpuPct != null ? { cpuPct } : {}),
+        ...(rssMb != null ? { rssMb } : {}),
+        ...(heapMb != null ? { heapMb } : {}),
+        ...(loopLagMs != null ? { loopLagMs } : {}),
+        ...(fps != null ? { fps } : {}),
+        ...(longtaskMs != null ? { longtaskMs } : {}),
+      },
+    });
+    res.json({ ok: true });
+  });
+
   app.get("/api/sessions", (_req, res) => {
     try {
       res.json({
@@ -359,7 +398,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         sessions: hub.listSessions(),
         activeSessionId: hub.getMeta().sessionId,
         /** 当前焦点 Agent 下正在跑的会话 */
-        runningSessionIds: hub.listRunningSessions(),
+        runningSessionIds: hub.listSessionRailRunningIds(),
         /** 全部 Agent 的并行 run（跨 Agent 灯） */
         allRunning: hub.listAllRunningSessions(),
         /** 有持久终端在跑的 agentName */
@@ -944,8 +983,8 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         : req.body?.id != null
           ? String(req.body.id).trim()
           : "";
-    if (sid) hub.abortRun(sid);
-    else hub.abortRun(); // 当前焦点会话
+    if (sid) hub.abortRun(sid, req.body?.keepQueue === true);
+    else hub.abortRun(undefined, req.body?.keepQueue === true); // 当前焦点会话
     res.json({
       ok: true,
       runningSessionIds: hub.listRunningSessions(),
@@ -966,8 +1005,10 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
         return;
       }
       const rawMode = String(req.body?.mode ?? "queue").toLowerCase();
-      const mode = rawMode === "insert" ? "insert" : "queue";
-      const r = hub.enqueueUserMessage(message, mode);
+      if (rawMode !== "queue" && rawMode !== "insert") throw new Error("invalid mode");
+      const requestId = req.body?.requestId;
+      if (requestId !== undefined && (typeof requestId !== "string" || !requestId.trim() || requestId.length > 160)) throw new Error("invalid requestId");
+      const r = hub.enqueueUserMessage(message, rawMode, { sessionId: req.body?.sessionId, requestId });
       res.json(r);
     } catch (e) {
       res.status(400).json({
@@ -977,37 +1018,49 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     }
   });
 
-  app.get("/api/chat/queue", (_req, res) => {
-    res.json({
-      ok: true,
-      busy: hub.isBusy(),
-      queue: hub.listMessageQueue(),
-    });
+  const queueScope = (req: express.Request) => typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+  const queueError = (res: express.Response, e: unknown) => res.status(409).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  app.get("/api/chat/queue", (req, res) => {
+    try { res.json({ ok: true, ...hub.messageQueueSnapshot(queueScope(req)) }); }
+    catch (e) { queueError(res, e); }
   });
-
-  app.delete("/api/chat/queue", (_req, res) => {
-    const n = hub.clearMessageQueue();
-    res.json({ ok: true, cleared: n, queue: [] });
+  app.delete("/api/chat/queue", (req, res) => {
+    const ids = req.body?.ids;
+    if (ids !== undefined && (!Array.isArray(ids) || ids.some(id => !Number.isSafeInteger(id) || id < 1))) {
+      res.status(400).json({ ok: false, error: "invalid queue ids" }); return;
+    }
+    try { res.json({ ok: true, cleared: hub.clearMessageQueue(queueScope(req), ids), ...hub.messageQueueSnapshot() }); }
+    catch (e) { queueError(res, e); }
   });
-
   app.delete("/api/chat/queue/:id", (req, res) => {
     const id = Number(req.params.id);
-    if (!Number.isFinite(id)) {
-      res.status(400).json({ ok: false, error: "invalid id" });
-      return;
+    if (!Number.isSafeInteger(id) || id < 1) { res.status(400).json({ ok: false, error: "invalid id" }); return; }
+    try { res.json({ ok: true, removed: hub.removeQueuedMessage(id, queueScope(req)), ...hub.messageQueueSnapshot() }); }
+    catch (e) { queueError(res, e); }
+  });
+  app.patch("/api/chat/queue/:id", (req, res) => {
+    const id = Number(req.params.id);
+    const { message, mode, move } = req.body ?? {};
+    if (!Number.isSafeInteger(id) || id < 1 ||
+        (message !== undefined && (typeof message !== "string" || !message.trim())) ||
+        (mode !== undefined && mode !== "queue" && mode !== "insert") ||
+        (move !== undefined && move !== "up" && move !== "down") ||
+        (message === undefined && mode === undefined && move === undefined)) {
+      res.status(400).json({ ok: false, error: "invalid queue update" }); return;
     }
-    const removed = hub.removeQueuedMessage(id);
-    res.json({
-      ok: removed,
-      removed,
-      queue: hub.listMessageQueue(),
-    });
+    try { res.json({ ok: true, updated: hub.updateQueuedMessage(id, { message, mode, move }, queueScope(req)), ...hub.messageQueueSnapshot() }); }
+    catch (e) { queueError(res, e); }
   });
 
   app.post("/api/chat", async (req, res) => {
     const message = String(req.body?.message ?? "").trim();
     const images = Array.isArray(req.body?.images) ? req.body.images : [];
-    if (!message && !images.length) {
+    const resumeQueue = req.body?.resumeQueue === true;
+    try {
+      hub.assertQueueSession(req.body?.sessionId);
+      if (hub.isBusy()) throw new Error("当前会话仍在运行，请排队发送或等待停止完成");
+    } catch (e) { queueError(res, e); return; }
+    if (!message && !images.length && !resumeQueue) {
       res.status(400).json({ ok: false, error: "message required" });
       return;
     }
@@ -1021,7 +1074,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
      */
     let boundSessionId: string | null = hub.getMeta().sessionId;
     const abortThis = () => {
-      if (boundSessionId) hub.abortRun(boundSessionId);
+      if (boundSessionId) hub.abortRun(boundSessionId, true);
     };
     const onClientAbort = () => {
       abortThis();
@@ -1040,7 +1093,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
       }
     };
     try {
-      for await (const ev of hub.runChat(message, { images })) {
+      for await (const ev of hub.runChat(message, { images, resumeQueue, sessionId: req.body?.sessionId })) {
         if (
           ev &&
           typeof ev === "object" &&
@@ -1239,6 +1292,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
       return new Promise<AppListenInfo>((resolve, reject) => {
         http.once("error", reject);
         const onListening = () => {
+          startPerfLog({ process: "app-hub", maouRoot: hub.maouRoot });
           proactive.start();
           if (listen.kind === "socket") {
             resolve({
@@ -1274,6 +1328,7 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
     },
     close() {
       return new Promise((resolve) => {
+        stopPerfLog();
         proactive.stop();
         hub.abortAllRuns();
         hub.cancelAllApprovals("server close");
@@ -1301,4 +1356,26 @@ export function createAppServer(opts: AppServerOpts = {}): AppServer {
       attachTerminalSocket(termHub, ws, hub.projectRoot, hub.agentName || agentName);
     },
   };
+}
+
+function num(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() && Number.isFinite(Number(v))) return Number(v);
+  return undefined;
+}
+
+/**
+ * `MAOU_HUB_TIMING=1`：每个请求打一行耗时，排查慢接口用。
+ * cpu 是整个进程的增量：hub 单线程，并发时排在慢请求后面的也会被算进去，看墙钟先看谁在前面。
+ */
+function logRequestTiming(req: Request, res: Response, next: NextFunction): void {
+  const t0 = performance.now();
+  const c0 = process.cpuUsage();
+  res.on("finish", () => {
+    const cpu = process.cpuUsage(c0);
+    process.stderr.write(
+      `[hub-timing] ${req.method} ${req.originalUrl} ${res.statusCode} wall=${Math.round(performance.now() - t0)}ms cpu=${Math.round((cpu.user + cpu.system) / 1000)}ms\n`,
+    );
+  });
+  next();
 }

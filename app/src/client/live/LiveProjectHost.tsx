@@ -1,27 +1,12 @@
-/**
- * 项目模式：整页 ProjectWorkbench。
- * 文档来源优先 live FS（/api/fs/md-tree + 按需/预取正文）；失败时回退 PROJECT_DOCS。
- */
+/** Live Markdown documents; loading failures must never become writable empty files. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ProjectWorkbench } from "../wire/project/ProjectWorkbench";
-import {
-  PROJECT_DOCS,
-  type ProjectDoc,
-} from "../wire/project/project-docs";
+import type { ProjectDoc } from "../wire/project/project-docs";
 import { useAppPorts } from "../ports";
 import type { FsTreeNode } from "../markdown/api";
-import {
-  kindFromPath,
-  needsContentLoad,
-  pickInitialPath,
-  titleFromPath,
-  withDocContent,
-} from "./project-host-docs";
+import { kindFromPath, pickInitialPath, titleFromPath, withDocContent } from "./project-host-docs";
 
-export type LiveProjectHostProps = {
-  projectLabel: string;
-  projectPath: string;
-};
+export type LiveProjectHostProps = { projectLabel: string; projectPath: string };
 
 function flattenFsFiles(nodes: FsTreeNode[], acc: string[] = []): string[] {
   for (const n of nodes) {
@@ -31,135 +16,101 @@ function flattenFsFiles(nodes: FsTreeNode[], acc: string[] = []): string[] {
   return acc;
 }
 
-/** 预取前 N 个文件正文，避免工作台打开时一片空/黑 */
-async function prefetchContents(
-  paths: string[],
-  readFsFile: (path: string) => Promise<{ path: string; content: string }>,
-  limit = 12,
-): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
-  const slice = paths.slice(0, limit);
-  await Promise.all(
-    slice.map(async (path) => {
-      try {
-        const f = await readFsFile(path);
-        map.set(path, f.content);
-      } catch {
-        map.set(path, "");
-      }
-    }),
-  );
-  return map;
-}
-
-export function LiveProjectHost({
-  projectLabel,
-  projectPath,
-}: LiveProjectHostProps) {
+export function LiveProjectHost({ projectLabel, projectPath }: LiveProjectHostProps) {
   const { fetchMdTree, readFsFile, writeFsFile } = useAppPorts().files;
-  // 先用 PROJECT_DOCS 占位，保证立刻有完整 UI
-  const [docs, setDocs] = useState<ProjectDoc[]>(() => PROJECT_DOCS);
-  const [source, setSource] = useState<"draft" | "live">("draft");
+  const [docs, setDocs] = useState<ProjectDoc[]>([]);
+  const [source, setSource] = useState<"loading" | "live" | "error">("loading");
   const [hint, setHint] = useState("加载项目文档…");
-  const loadedRef = useRef<Set<string>>(new Set());
-  const inflightRef = useRef<Set<string>>(new Set());
+  const [readError, setReadError] = useState("");
+  const [loadedPaths, setLoadedPaths] = useState<ReadonlySet<string>>(new Set());
+  const loadedRef = useRef(new Set<string>());
+  const inflightRef = useRef(new Set<string>());
+  const generationRef = useRef(0);
+  const activePathRef = useRef("");
 
   const ensureContent = useCallback(async (path: string) => {
-    if (!path || loadedRef.current.has(path) || inflightRef.current.has(path)) {
-      return;
-    }
+    if (!path || loadedRef.current.has(path) || inflightRef.current.has(path)) return;
+    const generation = generationRef.current;
     inflightRef.current.add(path);
+    setReadError("");
     try {
       const f = await readFsFile(path);
+      if (generation !== generationRef.current) return;
       loadedRef.current.add(path);
+      setLoadedPaths(new Set(loadedRef.current));
       setDocs((prev) => withDocContent(prev, path, f.content));
-    } catch {
-      loadedRef.current.add(path);
+    } catch (e) {
+      if (generation === generationRef.current && activePathRef.current === path) {
+        setReadError(`读取 ${path} 失败：${e instanceof Error ? e.message : String(e)}`);
+      }
     } finally {
-      inflightRef.current.delete(path);
+      if (generation === generationRef.current) inflightRef.current.delete(path);
     }
   }, [readFsFile]);
 
   const loadLive = useCallback(async () => {
+    const generation = ++generationRef.current;
+    setSource("loading");
     setHint("加载项目文档…");
+    setReadError("");
     loadedRef.current = new Set();
     inflightRef.current = new Set();
+    setLoadedPaths(new Set());
     try {
       const { tree } = await fetchMdTree();
+      if (generation !== generationRef.current) return;
       const paths = flattenFsFiles(tree).slice(0, 64);
-      if (paths.length === 0) {
-        setDocs(PROJECT_DOCS);
-        setSource("draft");
-        setHint("无 live markdown · 使用内置文档");
-        return;
-      }
-      const bodies = await prefetchContents(paths, readFsFile, 16);
-      const docsLive: ProjectDoc[] = paths.map((path) => ({
-        path,
-        title: titleFromPath(path),
-        kind: kindFromPath(path),
-        content: bodies.get(path) ?? "",
+      // Only successful reads count as loaded, including genuinely empty files.
+      const bodies = new Map<string, string>();
+      await Promise.all(paths.slice(0, 16).map(async (path) => {
+        try { bodies.set(path, (await readFsFile(path)).content); } catch { /* retry on open */ }
       }));
-      for (const [p, c] of bodies) {
-        if (c) loadedRef.current.add(p);
-      }
-      setDocs(docsLive);
+      if (generation !== generationRef.current) return;
+      loadedRef.current = new Set(bodies.keys());
+      setLoadedPaths(new Set(loadedRef.current));
+      setDocs(paths.map((path) => ({ path, title: titleFromPath(path), kind: kindFromPath(path), content: bodies.get(path) ?? "" })));
       setSource("live");
-      setHint(`${docsLive.length} 个文档 · live FS`);
-      // 未预取的路径保持空 content，切换时 onActivePathChange 再拉
+      setHint(paths.length ? `${paths.length} 个 Markdown 文档` : "当前项目没有 Markdown 文档");
       const initial = pickInitialPath(paths);
-      if (initial && !loadedRef.current.has(initial)) {
-        void ensureContent(initial);
-      }
+      if (initial) void ensureContent(initial);
     } catch (e) {
-      setDocs(PROJECT_DOCS);
-      setSource("draft");
-      setHint(
-        `live 加载失败 · 内置文档：${
-          e instanceof Error ? e.message : String(e)
-        }`,
-      );
+      if (generation !== generationRef.current) return;
+      setSource("error");
+      setHint(`项目文档加载失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }, [ensureContent, fetchMdTree, readFsFile]);
 
   useEffect(() => {
     void loadLive();
+    return () => { generationRef.current += 1; };
   }, [loadLive, projectPath]);
 
-  const onPersistMarkdown = useCallback(
-    async (path: string, content: string) => {
-      if (source === "live") {
-        await writeFsFile(path, content);
-      }
-      loadedRef.current.add(path);
-      setDocs((prev) => withDocContent(prev, path, content));
-    },
-    [source, writeFsFile],
-  );
+  const onPersistMarkdown = useCallback(async (path: string, content: string) => {
+    if (!loadedRef.current.has(path)) throw new Error("文档尚未读取成功，请重试加载后保存");
+    const generation = generationRef.current;
+    await writeFsFile(path, content);
+    if (generation === generationRef.current) setDocs((prev) => withDocContent(prev, path, content));
+  }, [writeFsFile]);
 
-  const onActivePathChange = useCallback(
-    (path: string) => {
-      if (source !== "live") return;
-      if (needsContentLoad(docs, path, loadedRef.current)) {
-        void ensureContent(path);
-      }
-    },
-    [docs, ensureContent, source],
-  );
+  const onActivePathChange = useCallback((path: string) => {
+    activePathRef.current = path;
+    setReadError("");
+    void ensureContent(path);
+  }, [ensureContent]);
 
   return (
-    <div
-      className="live-project-host is-workbench"
-      data-live-project={source}
-      data-live-project-hint={hint}
-    >
-      <ProjectWorkbench
-        projectLabel={projectLabel}
-        projectPath={projectPath}
-        docs={docs}
-        onPersistMarkdown={onPersistMarkdown}
-        onActivePathChange={onActivePathChange}
-      />
+    <div className="live-project-host is-workbench" data-live-project={source} data-live-project-hint={hint}>
+      {source !== "live" || docs.length === 0 ? (
+        <div className="live-project-hint" role={source === "error" ? "alert" : "status"}>
+          {hint}
+          {source !== "loading" ? <button type="button" onClick={() => void loadLive()}>重新加载</button> : null}
+        </div>
+      ) : (
+        <>
+          {readError ? <div className="live-project-hint" role="alert">{readError} <button type="button" onClick={() => void ensureContent(activePathRef.current)}>重试读取</button></div> : null}
+          <ProjectWorkbench key={projectPath} projectLabel={projectLabel} projectPath={projectPath} docs={docs} loadedPaths={loadedPaths} onPersistMarkdown={onPersistMarkdown} onActivePathChange={onActivePathChange} />
+        </>
+      )}
     </div>
   );
 }

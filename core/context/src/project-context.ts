@@ -6,8 +6,9 @@
  * 兼容旧路径：`.maou/context/`（仅当 project 目录不存在时回退）。
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { readTextCached } from "./file-text-cache.js";
 
 // ─── 类型 ──────────────────────────────────────────────────────────────────
 
@@ -47,13 +48,10 @@ function loadFromDir(dir: string): ProjectContext {
 
   for (const { name, key } of CONTEXT_FILES) {
     const filePath = join(dir, name);
-    if (!existsSync(filePath)) continue;
-    try {
-      const content = readFileSync(filePath, "utf-8").trim();
-      if (content) result[key] = content;
-    } catch {
-      // 读取失败，跳过
-    }
+    const raw = readTextCached(filePath);
+    if (raw == null) continue;
+    const content = raw.trim();
+    if (content) result[key] = content;
   }
   return result;
 }

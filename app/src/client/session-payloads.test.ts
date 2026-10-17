@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import {
   alignmentTrustworthy,
   applySessionPayloadIndex,
+  readUsageBuckets,
   type PayloadIndex,
   type PayloadTurn,
 } from "./session-payloads";
@@ -38,6 +39,36 @@ function index(users: PayloadTurn[], turns: PayloadTurn[]): PayloadIndex {
   return { ok: true, file: "/tmp/events.jsonl", users, turns };
 }
 
+describe("readUsageBuckets", () => {
+  it("lifts prompt_tokens_details.cached_tokens and treats 0 as reported", () => {
+    const hit = readUsageBuckets({
+      prompt_tokens: 1000,
+      completion_tokens: 40,
+      prompt_tokens_details: { cached_tokens: 600 },
+      cached_tokens: 600,
+    });
+    assert.equal(hit.input, 1000);
+    assert.equal(hit.cacheRead, 600);
+    assert.equal(hit.reported, true);
+
+    const zero = readUsageBuckets({
+      prompt_tokens: 800,
+      completion_tokens: 10,
+      cached_tokens: 0,
+      prompt_tokens_details: { cached_tokens: 0 },
+    });
+    assert.equal(zero.cacheRead, 0);
+    assert.equal(zero.reported, true);
+
+    const missing = readUsageBuckets({
+      prompt_tokens: 800,
+      completion_tokens: 10,
+    });
+    assert.equal(missing.reported, false);
+    assert.equal(missing.cacheRead, 0);
+  });
+});
+
 describe("applySessionPayloadIndex", () => {
   it("pairs disk turns onto live lines from the end and fills payload ids", () => {
     const lines = [
@@ -62,6 +93,26 @@ describe("applySessionPayloadIndex", () => {
     assert.equal(next[3]!.payloadId, "a2");
     // 工具行不参与配对
     assert.equal(next[2]!.payloadId, undefined);
+  });
+
+  it("does not pair terminal-notification rows as user turns", () => {
+    const lines = [
+      { role: "user", id: "human-1", source: "human" },
+      {
+        role: "user",
+        id: "term-1",
+        source: "terminal-notification",
+        authorType: "tool",
+        kind: "tool_async_notify",
+      },
+    ];
+    const next = applySessionPayloadIndex(
+      lines as never[],
+      index([turn("user", 0, "u1")], []),
+    ) as Array<Record<string, unknown>>;
+    assert.equal(next[0]!.payloadId, "u1");
+    assert.equal(next[0]!.ordinal, 1);
+    assert.equal(next[1]!.payloadId, undefined);
   });
 
   it("keeps session-true ordinals when the client only loaded the tail", () => {

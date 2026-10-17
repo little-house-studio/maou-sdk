@@ -20,11 +20,27 @@ describe("session-event kind + author", () => {
   it("source maps to kind", () => {
     expect(resolveSessionEventKind({ role: "user", source: "message_bus" })).toBe("agent_message");
     expect(resolveSessionEventKind({ role: "user", source: "report_to_parent" })).toBe("agent_message");
+    expect(resolveSessionEventKind({ role: "user", source: "project_dispatch" })).toBe("agent_message");
     expect(resolveSessionEventKind({ role: "user", source: "empty_retry" })).toBe("runtime_control");
     expect(resolveSessionEventKind({ role: "user", source: "todo_notice" })).toBe("system_notice");
     expect(resolveSessionEventKind({ role: "tool", source: "terminal-notification" })).toBe(
       "tool_async_notify",
     );
+    expect(
+      resolveSessionEventKind({
+        role: "user",
+        source: "terminal-notification",
+        content: "终端已完成，正文没有协议标签",
+      }),
+    ).toBe("tool_async_notify");
+    expect(
+      resolveSessionEventKind({
+        role: "user",
+        source: "human",
+        content: "<terminal-message>\n用户粘贴\n</terminal-message>",
+      }),
+    ).toBe("human_user");
+    expect(isUserBubbleKind("tool_async_notify")).toBe(false);
     expect(
       resolveSessionEventKind({
         role: "user",

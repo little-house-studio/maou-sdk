@@ -407,6 +407,95 @@ html[data-theme="dark"] .wire-shell.draft-shell,
 
 .wire-topbar-left {
   justify-content: flex-start;
+  gap: 10px;
+}
+
+.wire-agent-crumb {
+  position: relative;
+  min-width: 0;
+  max-width: 220px;
+}
+
+.wire-agent-crumb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--n-line-solid);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.wire-agent-crumb-btn:hover {
+  background: var(--n-paper, rgba(0, 0, 0, 0.04));
+}
+
+.wire-agent-crumb-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: var(--n-label, #888);
+}
+
+.wire-agent-crumb-dot.is-live {
+  background: var(--n-tool-ok, #2f9e44);
+}
+
+.wire-agent-crumb-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wire-agent-crumb-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 220px;
+  max-width: 320px;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: #ededed;
+  color: #000;
+  border: 1px solid #9b9b9b;
+}
+
+.wire-agent-crumb-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wire-agent-crumb-menu button:hover,
+.wire-agent-crumb-menu button.is-current {
+  background: #dcdcdc;
+}
+
+html[data-theme="dark"] .wire-agent-crumb-menu {
+  background: #1e1e1c;
+  color: #f2f2f0;
+  border-color: #555;
+}
+
+html[data-theme="dark"] .wire-agent-crumb-menu button:hover,
+html[data-theme="dark"] .wire-agent-crumb-menu button.is-current {
+  background: #2c2c28;
 }
 
 .wire-topbar-center {
@@ -438,8 +527,6 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   align-items: stretch;
   gap: 0;
   background: var(--n-rail-edge, var(--n-rail, var(--n-bg)));
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
 }
 
 .wire-activity-tab {
@@ -1157,7 +1244,8 @@ html[data-theme="dark"] .wire-shell.draft-shell,
 }
 
 /* keyed 页签都挂着；只有当前页参与高度，避免 height:100% 按整栏算、拖分割线时裁掉会话 */
-.wire-left > [data-aside-pane] {
+.wire-left > [data-aside-pane],
+.wire-right > [data-aside-pane] {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -1165,7 +1253,8 @@ html[data-theme="dark"] .wire-shell.draft-shell,
   overflow: hidden;
 }
 
-.wire-left > [data-aside-pane][hidden] {
+.wire-left > [data-aside-pane][hidden],
+.wire-right > [data-aside-pane][hidden] {
   display: none !important;
 }
 
@@ -3799,6 +3888,7 @@ html[data-theme="dark"] .wire-ask-tick::after {
 .wire-reply-pack-block {
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
   min-width: 0;
 }
 
@@ -4023,6 +4113,10 @@ html[data-theme="dark"] .wire-ask-tick::after {
   grid-row: 1;
 }
 
+.wire-reply-turn.has-fold:not(.is-folded) > .wire-msg {
+  grid-row: 2;
+}
+
 .wire-reply-turn > .wire-reply-plan,
 .wire-reply-turn.has-fold > .wire-reply-plan,
 .wire-reply-turn.has-body > .wire-reply-plan,
@@ -4038,8 +4132,16 @@ html[data-theme="dark"] .wire-ask-tick::after {
   grid-row: 2;
 }
 
+.wire-reply-turn.has-fold:not(.is-folded).has-body > .wire-reply-plan {
+  grid-row: 3;
+}
+
 .wire-reply-turn.has-plan:not(.has-body) > .wire-reply-plan {
   grid-row: 1;
+}
+
+.wire-reply-turn.has-fold:not(.has-body) > .wire-reply-plan {
+  grid-row: 2;
 }
 
 .wire-reply-plan > .plan-review-card,
@@ -4207,7 +4309,7 @@ html[data-theme="dark"] .wire-ask-tick::after {
   margin: 0;
   padding: 10px 12px;
   border-radius: 0;
-  background: var(--n-term-bg);
+  background: var(--n-fence-bg);
   font-family: var(--n-mono);
   font-size: 12px;
   line-height: 1.55;
@@ -4335,28 +4437,36 @@ html[data-theme="dark"] .wire-ask-tick::after {
   flex-direction: column;
   gap: 8px;
   margin-top: 6px;
-  padding-left: 2px;
+  padding: 8px 10px;
+  background: var(--n-paper);
+  color: var(--n-label);
 }
 
 .wire-tool-section-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--n-quaternary);
+  color: var(--n-on-quiet);
   letter-spacing: 0.02em;
   margin-bottom: 4px;
 }
 
 .wire-tool-pre.is-input {
-  color: var(--n-warn);
+  color: var(--n-label);
+  background: color-mix(in srgb, var(--n-warn) 10%, var(--n-fence-bg));
+  box-shadow: inset 3px 0 0 0 var(--n-warn);
   max-height: 10em;
 }
 
 .wire-tool-pre.is-output {
-  color: var(--n-tool-ok, #02C85A);
+  color: var(--n-label);
+  background: color-mix(in srgb, var(--n-tool-ok) 10%, var(--n-fence-bg));
+  box-shadow: inset 3px 0 0 0 var(--n-tool-ok);
 }
 
 .wire-tool-pre.is-output.is-error {
-  color: var(--n-err);
+  color: var(--n-label);
+  background: color-mix(in srgb, var(--n-err) 12%, var(--n-fence-bg));
+  box-shadow: inset 3px 0 0 0 var(--n-err);
 }
 
 .wire-tool-pre.is-diff .diff-add {
@@ -4366,7 +4476,7 @@ html[data-theme="dark"] .wire-ask-tick::after {
   color: var(--n-err);
 }
 .wire-tool-pre.is-diff .diff-ctx {
-  color: var(--n-secondary);
+  color: var(--n-on-quiet);
 }
 
 .wire-tool-fold {
@@ -4375,7 +4485,7 @@ html[data-theme="dark"] .wire-ask-tick::after {
   padding: 2px 0;
   border: none;
   background: transparent;
-  color: var(--n-tertiary);
+  color: var(--n-on-quiet);
   font-size: 11px;
   font-family: inherit;
   cursor: pointer;
@@ -4407,7 +4517,6 @@ html[data-theme="dark"] .wire-ask-tick::after {
 }
 .wire-internal-part.clickable:hover .wire-tool-pre,
 .wire-msg.tool.clickable:hover .wire-tool-pre {
-  background: var(--n-elevated);
   color: var(--n-label);
 }
 
@@ -7602,8 +7711,32 @@ html[data-theme="dark"] .wire-ask-tick::after {
 }
 
 .wire-shell.draft-shell .wire-tool-pre {
-  background: var(--n-term-bg) !important;
+  background: var(--n-fence-bg) !important;
+  color: var(--n-label) !important;
   max-height: min(40vh, 320px);
+}
+.wire-shell.draft-shell .wire-tool-pre.is-input {
+  background: color-mix(in srgb, var(--n-warn) 10%, var(--n-fence-bg)) !important;
+  color: var(--n-label) !important;
+}
+.wire-shell.draft-shell .wire-tool-pre.is-output {
+  background: color-mix(in srgb, var(--n-tool-ok) 10%, var(--n-fence-bg)) !important;
+  color: var(--n-label) !important;
+}
+.wire-shell.draft-shell .wire-tool-pre.is-output.is-error {
+  background: color-mix(in srgb, var(--n-err) 12%, var(--n-fence-bg)) !important;
+  color: var(--n-label) !important;
+}
+.wire-shell.draft-shell .wire-tool-body {
+  background: var(--n-paper) !important;
+  color: var(--n-label) !important;
+}
+.wire-shell.draft-shell .wire-tool-section-label,
+.wire-shell.draft-shell .wire-tool-fold {
+  color: var(--n-on-quiet) !important;
+}
+.wire-shell.draft-shell .wire-tool-fold:hover {
+  color: var(--n-label) !important;
 }
 
 .wire-shell.draft-shell .wire-context.has-busy .stream-banner,
@@ -7838,7 +7971,8 @@ html[data-theme="dark"] .wire-ask-tick::after {
   background: var(--n-surface) !important;
 }
 .wire-shell.draft-shell .wire-tool-pre {
-  background: var(--n-term-bg) !important;
+  background: var(--n-fence-bg) !important;
+  color: var(--n-label) !important;
 }
 .wire-shell.draft-shell .draft-md .dm-pre {
   background: var(--n-fence-bg) !important;
@@ -11635,23 +11769,12 @@ html[data-theme="dark"] .wire-shell.draft-shell .wire-session-tree {
   margin: 0;
 }
 
-/* macOS hiddenInset: traffic lights sit on the 40px topbar; the bar is the drag strip. */
+/* macOS overlay title bar: traffic lights sit on the 40px topbar.
+   The bar is the drag strip via data-tauri-drag-region (WireTopbar), not CSS. */
 html[data-app-chrome="darwin"] .wire-topbar,
 html[data-app-chrome="darwin"] .wire-shell.draft-shell .wire-topbar,
 .wire-shell.draft-shell .wire-topbar.is-darwin-chrome {
-  -webkit-app-region: drag;
-  app-region: drag;
   padding-left: 80px;
-}
-html[data-app-chrome="darwin"] .wire-topbar button,
-html[data-app-chrome="darwin"] .wire-topbar [role="tablist"],
-html[data-app-chrome="darwin"] .wire-topbar a,
-html[data-app-chrome="darwin"] .wire-topbar select,
-html[data-app-chrome="darwin"] .wire-topbar input,
-.wire-shell.draft-shell .wire-topbar.is-darwin-chrome button,
-.wire-shell.draft-shell .wire-topbar.is-darwin-chrome [role="tablist"] {
-  -webkit-app-region: no-drag;
-  app-region: no-drag;
 }
 
 /* Selected fill is quiet until the region last operated. */
@@ -12298,3 +12421,22 @@ html[data-resize-cursor="row"] * {
   font-size: 12px;
   line-height: 1.6;
 }
+
+/* Failures remain visible without replacing the current workspace. */
+.wire-shell-notice {
+  position: fixed;
+  z-index: 11000;
+  top: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  max-width: min(640px, calc(100vw - 32px));
+  padding: 12px 16px;
+  border: 1px solid var(--n-err, #b52a1d);
+  background: var(--n-bg, #fff);
+  color: var(--n-ink, #222);
+  overflow-wrap: anywhere;
+}
+.wire-shell-notice button { flex-shrink: 0; }

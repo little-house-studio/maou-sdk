@@ -50,6 +50,10 @@ export function cleanupSpillDir(dir: string, ttlMs = SPILL_TTL_MS): number {
 
 const overflowByTerminal = new Map<string, string>();
 const waitByTerminal = new Map<string, TerminalWaitState>();
+const progressByTerminal = new Map<string, { sig: string; at: number }>();
+
+/** 输出指纹不变且进程仍 running 超过此时长，视为无进展。 */
+export const TERMINAL_STALL_MS = 75_000;
 
 const PROMPT_TAIL =
   /(?:\$|#|%|>|PS>)\s*$|(?:PS\s+[A-Za-z]:[^>\n]*>)\s*$|(?:\(.*\)\s*[\$#>])\s*$/;
@@ -93,6 +97,68 @@ export function rememberWaitState(terminalId: string, state: TerminalWaitState):
 
 export function peekWaitState(terminalId: string): TerminalWaitState | undefined {
   return waitByTerminal.get(terminalId);
+}
+
+export function hasTerminalProgress(terminalId: string): boolean {
+  return Boolean(terminalId) && progressByTerminal.has(terminalId);
+}
+
+/** 解析终端 createdAt（`YYYY-MM-DD HH:mm:ss` / ISO / epoch）为毫秒。 */
+export function parseTerminalCreatedAt(
+  createdAt?: string | number | null,
+): number | undefined {
+  if (createdAt == null || createdAt === "") return undefined;
+  if (typeof createdAt === "number" && Number.isFinite(createdAt)) {
+    return createdAt < 1e12 ? createdAt * 1000 : createdAt;
+  }
+  const s = String(createdAt).trim();
+  if (!s) return undefined;
+  const asIso = s.includes("T") ? s : s.replace(" ", "T");
+  const parsed = Date.parse(asIso);
+  if (Number.isFinite(parsed)) return parsed;
+  const n = Number(s);
+  if (Number.isFinite(n) && n > 0) return n < 1e12 ? n * 1000 : n;
+  return undefined;
+}
+
+/**
+ * 记录输出指纹时钟。尚无记录时优先用 `startedAt`（任务创建时刻），
+ * 之后仅在指纹变化时把 `at` 拨到 `now`。
+ */
+export function noteTerminalOutputProgress(
+  terminalId: string,
+  output: string,
+  now = Date.now(),
+  startedAt?: number,
+): void {
+  if (!terminalId) return;
+  const sig = `${output.length}:${output.slice(-240)}`;
+  const prev = progressByTerminal.get(terminalId);
+  if (!prev) {
+    progressByTerminal.set(terminalId, { sig, at: startedAt ?? now });
+    return;
+  }
+  if (prev.sig !== sig) {
+    progressByTerminal.set(terminalId, { sig, at: now });
+  }
+}
+
+export function peekTerminalStall(
+  terminalId: string,
+  processState?: string,
+  now = Date.now(),
+): string | undefined {
+  const st = (processState ?? "").toLowerCase();
+  if (st && st !== "running" && st !== "active") return undefined;
+  const prev = progressByTerminal.get(terminalId);
+  if (!prev) return undefined;
+  if (now - prev.at < TERMINAL_STALL_MS) return undefined;
+  const sec = Math.round((now - prev.at) / 1000);
+  return `⚠ 该命令疑似卡死（${sec}s 无新输出），可 manage stop 或换方案。`;
+}
+
+export function forgetTerminalProgress(terminalId: string): void {
+  progressByTerminal.delete(terminalId);
 }
 
 export function spillDir(projectRoot: string, sessionId: string): string {

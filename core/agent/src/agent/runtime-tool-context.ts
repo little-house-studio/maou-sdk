@@ -25,6 +25,8 @@ export interface BuildToolContextInput {
   compressionLevel?: "off" | "normal" | "aggressive";
   terminalBackend?: "full" | "mini";
   computerUseMode?: "auto" | "ax" | "pixels";
+  /** 当前模型是否吃图片；false 时读图/截图不得静默注入像素 */
+  supportsVision?: boolean;
   pathGuard?: ToolContext["pathGuard"];
   skillOptions?: AgentSkillOptions;
   subagentExecutor?: ToolRuntimePorts["subagentExecutor"];
@@ -108,6 +110,7 @@ export function buildToolContext(input: BuildToolContextInput): ToolContext {
     compressionLevel: input.compressionLevel,
     terminalBackend: input.terminalBackend,
     computerUseMode: input.computerUseMode,
+    supportsVision: input.supportsVision,
     maouRoot: input.maouRoot,
     skillOptions: input.skillOptions,
     // 收口端口 + 顶层双写（旧工具仍可读 ctx.subagentExecutor 等）

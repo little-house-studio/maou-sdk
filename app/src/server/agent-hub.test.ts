@@ -88,6 +88,30 @@ describe("AgentHub agent switch rebinds workspace", () => {
     assert.equal(hub.activeProjectPath, null);
     assert.equal(hub.projectRoot, join(maou, "ops"));
   });
+
+  it("initialSwitchId boots straight into that agent without building one first", () => {
+    const hub = new AgentHub({
+      projectRoot: project,
+      maouRoot: maou,
+      sandboxMode: "yolo",
+      initialSwitchId: "system:ops",
+    });
+    assert.equal(hub.activeSwitchId, "system:ops");
+    assert.equal(hub.agentName, "ops");
+    assert.equal(hub.activeProjectPath, null);
+    assert.equal(hub.projectRoot, join(maou, "ops"));
+    // 已在目标上：再切一次是空操作
+    hub.setActiveAgent("system:ops");
+    assert.equal(hub.projectRoot, join(maou, "ops"));
+
+    const proj = new AgentHub({
+      projectRoot: project,
+      maouRoot: maou,
+      initialSwitchId: `project:${projectB}:coding`,
+    });
+    assert.equal(proj.activeSwitchId, `project:${projectB}:coding`);
+    assert.equal(proj.projectRoot, projectB);
+  });
 });
 
 describe("AgentHub sessions model approval", () => {
@@ -403,6 +427,36 @@ describe("AgentHub sessions model approval", () => {
     const pre = hub.preflightExport(s.sessionId);
     assert.equal(pre.ok, true);
   });
+
+  it("lists dispatched project coding sessions under the ops parent", async () => {
+    AgentHub.skipWebhookRun = true;
+    const hub = new AgentHub({
+      projectRoot: project,
+      maouRoot: maou,
+      sandboxMode: "yolo",
+    });
+    try {
+      hub.setActiveAgent("system:ops");
+      const ops = hub.newSession("ops-home");
+      const rec = await hub.dispatchProjectTask({
+        projectPath: projectB,
+        projectName: "project-b",
+        task: "do work",
+        parentSessionId: ops.sessionId,
+      });
+      const child = hub.listSessions().find((s) => s.id === rec.sessionId);
+      assert.ok(child, "ops 子会话应扫到后台 coding");
+      assert.equal(child.parentSessionId, ops.sessionId);
+      assert.equal(child.lamp, "running");
+      const sw = hub.switchSession(rec.sessionId);
+      assert.equal(sw.sessionId, rec.sessionId);
+      assert.equal(hub.agentName, "coding");
+      assert.equal(hub.projectRoot, projectB);
+    } finally {
+      hub.abortAllRuns();
+      AgentHub.skipWebhookRun = false;
+    }
+  });
 });
 
 describe("AgentHub.deliverWebhook", () => {
@@ -485,5 +539,62 @@ describe("AgentHub.deliverWebhook", () => {
     assert.equal(view.plan?.active, true);
     assert.match(view.markdown, /实施计划/);
     assert.ok(view.planFile);
+  });
+});
+
+describe("UI message queue", () => {
+  const makeHub = () => {
+    const hub = new AgentHub({ projectRoot: project, maouRoot: maou, sandboxMode: "yolo" });
+    hub.newSession("queue-test");
+    return hub;
+  };
+  it("supports idle pending queues, scoped edits and consumed removal", () => {
+    const hub = makeHub();
+    const sid = hub.getMeta().sessionId!;
+    const a = hub.enqueueUserMessage("same", "queue", { sessionId: sid, requestId: "a" });
+    const b = hub.enqueueUserMessage("same", "queue", { sessionId: sid, requestId: "b" });
+    assert.notEqual(a.id, b.id);
+    assert.equal(hub.enqueueUserMessage("same", "queue", { sessionId: sid, requestId: "a" }).id, a.id);
+    assert.throws(() => hub.clearMessageQueue("another-session"), /会话已切换/);
+    assert.equal(hub.updateQueuedMessage(b.id, { message: "edited", move: "up" }, sid), true);
+    assert.deepEqual(hub.listMessageQueue().map(m => [m.id, m.message]), [[b.id, "edited"], [a.id, "same"]]);
+    assert.equal(hub.removeQueuedMessage(a.id, sid), true);
+    assert.equal(hub.removeQueuedMessage(a.id, sid), false);
+    const later = hub.enqueueUserMessage("arrived after confirmation", "queue", { sessionId: sid });
+    hub.clearMessageQueue(sid, [b.id]);
+    assert.deepEqual(hub.listMessageQueue().map(m => m.id), [later.id]);
+    hub.clearMessageQueue(sid);
+  });
+  it("resume has one consumer and stop retains unclaimed messages until continued", async () => {
+    const hub = makeHub();
+    const sid = hub.getMeta().sessionId!;
+    const a = hub.enqueueUserMessage("first", "queue", { sessionId: sid });
+    const b = hub.enqueueUserMessage("second", "queue", { sessionId: sid });
+    const sent: string[] = [];
+    (hub as any).ensureAgent = () => ({ runtime: { run: async function* (options: any) {
+      sent.push(options.userMessage);
+      assert.equal(options.deferQueueOnExit, true);
+      yield { type: "done" };
+    } } });
+    const stream = hub.runChat("", { resumeQueue: true, sessionId: sid });
+    assert.equal((await stream.next()).value?.id, a.id);
+    await assert.rejects(hub.runChat("", { resumeQueue: true, sessionId: sid }).next(), /仍在运行/);
+    hub.abortRun(sid, true);
+    assert.deepEqual(hub.listMessageQueue().map(m => m.id), [b.id]);
+    for await (const _ of stream) { /* allow the first consumer to exit */ }
+    assert.equal(hub.isBusy(), false);
+    const events = [];
+    for await (const event of hub.runChat("", { resumeQueue: true, sessionId: sid })) events.push(event);
+    assert.deepEqual(events.filter(e => e.type === "queued_user").map(e => e.id), [b.id]);
+    assert.deepEqual(sent, ["first", "second"]);
+    assert.equal(hub.listMessageQueue().length, 0);
+  });
+  it("a run error leaves following queued messages available for explicit retry", async () => {
+    const hub = makeHub();
+    hub.enqueueUserMessage("later");
+    (hub as any).ensureAgent = () => ({ runtime: { run: async function* () { yield { type: "error", message: "unavailable" }; } } });
+    for await (const _ of hub.runChat("first")) { /* drain */ }
+    assert.equal(hub.listMessageQueue()[0]?.message, "later");
+    hub.clearMessageQueue();
   });
 });

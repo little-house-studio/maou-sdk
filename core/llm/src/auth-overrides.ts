@@ -7,6 +7,12 @@
 
 import type { APIPreset, APIProtocol } from "./adapters/types.js";
 
+function newSessionId(): string {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === "function") return `maou-${c.randomUUID()}`;
+  return `maou-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 const SENSITIVE_HEADERS = new Set([
   "authorization",
   "x-api-key",
@@ -42,6 +48,34 @@ function isXaiSubscription(preset: APIPreset): boolean {
   return hostOf(preset.url).includes("grok.com");
 }
 
+export type AuthOverrideContext = {
+  sessionId?: string;
+};
+
+function headerValue(
+  headers: Record<string, string>,
+  name: string,
+): string | undefined {
+  const target = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === target && v.trim()) return v.trim();
+  }
+  return undefined;
+}
+
+/** OpenCode Zen / Go：官方要求每会话带稳定的 x-opencode-session。 */
+export function isOpenCodeZenUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    return /(^|\.)opencode\.ai$/i.test(u.hostname) && /\/zen(\/|$)/i.test(u.pathname);
+  } catch {
+    return /opencode\.ai\/zen/i.test(url);
+  }
+}
+
+const MAOU_AGENT_UA = "maou-agent/0.1.0";
+
 /**
  * 应用 OAuth / 自定义请求头覆盖。
  *
@@ -49,11 +83,13 @@ function isXaiSubscription(preset: APIPreset): boolean {
  * - google：去掉 x-goog-api-key，改 Bearer
  * - xai 订阅口：补 CLI 身份头（代理会校验）
  * - extraHeaders 最后合并
+ * - OpenCode Zen/Go：补 x-opencode-session + 编码智能体 UA
  */
 export function applyAuthOverrides(
   headers: Record<string, string>,
   preset: APIPreset,
   protocol: APIProtocol,
+  ctx?: AuthOverrideContext,
 ): Record<string, string> {
   const out: Record<string, string> = { ...headers };
 
@@ -84,6 +120,17 @@ export function applyAuthOverrides(
   if (extra && typeof extra === "object") {
     for (const [k, v] of Object.entries(extra)) {
       if (typeof v === "string") out[k] = v;
+    }
+  }
+
+  if (isOpenCodeZenUrl(preset.url)) {
+    if (!headerValue(out, "x-opencode-session")) {
+      const sid = ctx?.sessionId?.trim();
+      out["x-opencode-session"] = sid || newSessionId();
+    }
+    const ua = headerValue(out, "User-Agent");
+    if (!ua || /^Mozilla\/5\.0$/i.test(ua)) {
+      out["User-Agent"] = MAOU_AGENT_UA;
     }
   }
 

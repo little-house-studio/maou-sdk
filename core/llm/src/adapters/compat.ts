@@ -133,6 +133,7 @@ const VENDOR_DEFAULTS: Array<{ match: RegExp; compat: OpenAICompat }> = [
     supportsToolChoice: false,
     requiresReasoningContentForToolCalls: true,
     requiresAssistantContentForToolCalls: true,
+    sendSessionAffinityHeaders: true,
   } },
   { match: /qwen|dashscope/i, compat: { thinkingFormat: "qwen", structuredOutput: "qwen-response-format" } },
   { match: /zai|z\.ai/i, compat: { thinkingFormat: "zai", zaiToolStream: true } },

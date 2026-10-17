@@ -5,10 +5,15 @@ import { join } from "node:path";
 import { getProjectsList } from "@little-house-studio/types";
 import { ProjectAgentTool } from "./tool.js";
 import type { ToolContext } from "../../base.js";
+import {
+  bindProjectDispatchHost,
+  resetProjectDispatchHostForTest,
+} from "../dispatch-host.js";
 
 const roots: string[] = [];
 
 afterEach(() => {
+  resetProjectDispatchHostForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -33,6 +38,10 @@ describe("project_agent", () => {
     expect(existsSync(join(project, ".maou", "project.json"))).toBe(true);
     // 无全局 coding 模板时写内置骨架
     expect(existsSync(join(project, ".maou", "agents", "coding", "agent.json"))).toBe(true);
+    const skeleton = JSON.parse(
+      readFileSync(join(project, ".maou", "agents", "coding", "agent.json"), "utf-8"),
+    ) as { tools?: string[] };
+    expect(skeleton.tools).toContain("use_computer");
     expect(getProjectsList(maouRoot)).toMatchObject([
       { name: "app", path: realpathSync.native(project), isActive: true },
     ]);
@@ -79,7 +88,7 @@ describe("project_agent", () => {
     expect(JSON.parse(readFileSync(marker, "utf-8"))).toMatchObject({ keep: true });
   });
 
-  it("sends work through the target project's coding agent", async () => {
+  it("sends work through the target project's coding agent in the background", async () => {
     const { maouRoot, project } = fixture();
     const fork = vi.fn().mockResolvedValue({
       ok: true,
@@ -91,6 +100,7 @@ describe("project_agent", () => {
       maouRoot,
       projectRoot: maouRoot,
       agentName: "ops",
+      sessionId: "ops-session",
       runtimePorts: { subagentExecutor: { fork } },
     } as unknown as ToolContext;
     await tool.execute({ action: "create", path: project }, ctx);
@@ -102,6 +112,13 @@ describe("project_agent", () => {
     }, ctx);
 
     expect(response.ok).toBe(true);
+    expect(response.message).toMatch(/已在后台启动 Coding Agent/);
+    expect(response.payload).toMatchObject({
+      background: true,
+      agent: "coding",
+      status: "running",
+      sessionId: "sub-session",
+    });
     expect(fork).toHaveBeenCalledWith(
       expect.stringMatching(/^project-app-/),
       "inspect and fix",
@@ -110,8 +127,47 @@ describe("project_agent", () => {
         agentName: "coding",
         path: realpathSync.native(project),
         toolPreset: "coding_scoped",
+        detached: true,
       }),
     );
+  });
+
+  it("uses the bound project dispatch host instead of waiting on fork", async () => {
+    const { maouRoot, project } = fixture();
+    const fork = vi.fn();
+    bindProjectDispatchHost(async (req) => ({
+      sessionId: "coding-sess",
+      agent: "coding",
+      switchId: `project:${req.projectPath}:coding`,
+      project: req.projectPath,
+      status: "running",
+      taskId: "dispatch-1",
+    }));
+    const tool = new ProjectAgentTool();
+    const ctx = {
+      maouRoot,
+      projectRoot: maouRoot,
+      agentName: "ops",
+      sessionId: "ops-session",
+      runtimePorts: { subagentExecutor: { fork } },
+    } as unknown as ToolContext;
+    await tool.execute({ action: "create", path: project }, ctx);
+
+    const response = await tool.execute({
+      action: "send",
+      project,
+      task: "inspect and fix",
+    }, ctx);
+
+    expect(response.ok).toBe(true);
+    expect(fork).not.toHaveBeenCalled();
+    expect(response.payload).toMatchObject({
+      background: true,
+      agent: "coding",
+      sessionId: "coding-sess",
+      status: "running",
+      taskId: "dispatch-1",
+    });
   });
 
   it("tells send to rebind with create when the project marker is gone", async () => {

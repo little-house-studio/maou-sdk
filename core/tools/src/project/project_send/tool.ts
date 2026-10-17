@@ -12,8 +12,8 @@ export class ProjectSendTool extends Tool {
     name: "project_send",
     aliases: ["send_project_message"],
     description:
-      "向已注册项目的 Coding Agent 派发完整任务。不绑定路径。" +
-      "失效时按返回提示用 project_agent create 重新挂上。",
+      "向已注册项目的 Coding Agent 后台派发完整任务，立即返回。" +
+      "不绑定路径。失效时按返回提示用 project_agent create 重新挂上。",
     parameters: {
       type: "object",
       properties: {

@@ -75,6 +75,7 @@ export type SessionSummary = {
   oneshot?: boolean;
   lamp?: SessionLamp;
   helperCount?: number;
+  switchId?: string;
 };
 
 export type PendingAsk = {
@@ -118,6 +119,15 @@ export type ChatHistoryLine = {
   artifacts?: Array<{ path: string; delta: string }>;
   usageInput?: number;
   usageOutput?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** usage 是否报过 cache 字段；false → 命中率显示 “—” */
+  cacheReported?: boolean;
+  source?: string;
+  /** 落盘 kind：human_user / tool_async_notify … */
+  kind?: string;
+  /** 发言人类型：human / agent / system / tool */
+  authorType?: string;
   seq?: number;
 };
 
@@ -342,13 +352,13 @@ function readSessionPage(j: {
   messages?: ChatHistoryLine[];
   oldestSeq?: number | null;
   hasMore?: boolean;
-  sessionId?: string;
+  sessionId?: string | null;
 }): SessionMessagePage {
   return {
     messages: j.messages ?? [],
     oldestSeq: j.oldestSeq ?? null,
     hasMore: j.hasMore ?? false,
-    sessionId: j.sessionId,
+    sessionId: j.sessionId ?? undefined,
   };
 }
 
@@ -382,8 +392,8 @@ export async function createSession(
   >(r);
   const page = readSessionPage(j);
   return {
-    sessionId: j.sessionId,
     ...page,
+    sessionId: j.sessionId,
     meta: j,
   };
 }
@@ -411,8 +421,8 @@ export async function switchSession(id: string): Promise<{
   >(r);
   const page = readSessionPage(j);
   return {
-    sessionId: j.sessionId,
     ...page,
+    sessionId: j.sessionId,
     meta: j,
   };
 }
@@ -440,8 +450,8 @@ export async function clearSession(id?: string): Promise<{
   >(r);
   const page = readSessionPage(j);
   return {
-    sessionId: j.sessionId,
     ...page,
+    sessionId: j.sessionId,
     meta: j,
   };
 }
@@ -471,8 +481,8 @@ export async function deleteSession(id: string): Promise<{
   >(r);
   const page = readSessionPage(j);
   return {
-    sessionId: j.sessionId ?? null,
     ...page,
+    sessionId: j.sessionId ?? null,
     meta: j,
     sessions: j.sessions ?? [],
   };
@@ -946,6 +956,10 @@ export type LlmConnectionTestResult = {
   error?: string;
 };
 
+/**
+ * 真实 chat 探测。HTTP 200 + body.ok=false 是「请求通了但模型没应答」的业务结果，
+ * 不能用 jsonOrThrow（会误报成无意义的 "http 200"）。
+ */
 export async function testLlmConnection(body: {
   name?: string;
   url?: string;
@@ -964,25 +978,17 @@ export async function testLlmConnection(body: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const j = await jsonOrThrow<{
+  const j = await readJsonBody<{
     ok?: boolean;
     error?: string;
     result?: LlmConnectionTestResult;
   }>(r);
   if (j.result) return j.result;
-  if (j.ok === false || !r.ok) {
-    return {
-      ok: false,
-      model: body.model || "",
-      latencyMs: 0,
-      error: j.error || `test ${r.status}`,
-    };
-  }
   return {
     ok: false,
     model: body.model || "",
     latencyMs: 0,
-    error: "empty test result",
+    error: j.error || `测试请求失败（HTTP ${r.status}）`,
   };
 }
 
@@ -1216,12 +1222,13 @@ export async function fetchSessionStats(): Promise<{
 }
 
 /** 中断指定会话 run；不传则中断当前焦点会话 */
-export async function abortChat(sessionId?: string | null): Promise<void> {
-  await fetch("/api/chat/abort", {
+export async function abortChat(sessionId?: string | null, keepQueue = false): Promise<void> {
+  const r = await fetch("/api/chat/abort", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(sessionId ? { sessionId } : {}),
+    body: JSON.stringify({ ...(sessionId ? { sessionId } : {}), keepQueue }),
   });
+  await jsonOrThrow(r);
 }
 
 /** UI 发送模式：队列（等本轮结束）/ 插入（打断当前流） */
@@ -1233,75 +1240,48 @@ export type QueuedChatItem = {
   mode: string;
   enqueuedAt: number;
   source: string;
+  requestId?: string;
 };
-
-/** 运行中入队到 Agent MessageQueue（不新建 HTTP 流） */
-export async function enqueueChat(
-  message: string,
-  mode: ChatSendMode = "queue",
-): Promise<{
-  ok: true;
-  id: number;
-  mode: ChatSendMode;
-  queueMode: string;
-  shouldAbort: boolean;
-  shouldStopRun: boolean;
-  queue: QueuedChatItem[];
-}> {
-  const r = await fetch("/api/chat/enqueue", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, mode }),
-  });
-  const j = await jsonOrThrow<{
-    ok?: boolean;
-    error?: string;
-    id?: number;
-    mode?: ChatSendMode;
-    queueMode?: string;
-    shouldAbort?: boolean;
-    shouldStopRun?: boolean;
-    queue?: QueuedChatItem[];
-  }>(r);
-  if (!r.ok || j.ok === false) {
-    throw new Error(j.error || `enqueue ${r.status}`);
-  }
-  return {
-    ok: true,
-    id: Number(j.id),
-    mode: j.mode === "insert" ? "insert" : "queue",
-    queueMode: String(j.queueMode ?? ""),
-    shouldAbort: Boolean(j.shouldAbort),
-    shouldStopRun: Boolean(j.shouldStopRun),
-    queue: j.queue ?? [],
-  };
-}
-
-export async function fetchChatQueue(): Promise<{
+export type ChatQueueSnapshot = {
+  sessionId: string | null;
   busy: boolean;
+  capacity: number;
   queue: QueuedChatItem[];
-}> {
-  const r = await fetch("/api/chat/queue");
-  const j = await jsonOrThrow<{
-    ok?: boolean;
-    busy?: boolean;
-    queue?: QueuedChatItem[];
-  }>(r);
-  return { busy: Boolean(j.busy), queue: j.queue ?? [] };
+};
+export type ChatQueuePatch = { message?: string; mode?: ChatSendMode; move?: "up" | "down" };
+const queueScope = (sessionId?: string) => sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+
+async function queueRequest<T>(url: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try { return await jsonOrThrow<T>(await fetch(url, { ...init, signal: controller.signal })); }
+  catch (error) {
+    if (controller.signal.aborted) throw new Error("队列请求超时，请同步状态后重试");
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 
-export async function clearChatQueue(): Promise<number> {
-  const r = await fetch("/api/chat/queue", { method: "DELETE" });
-  const j = await jsonOrThrow<{ cleared?: number }>(r);
+export async function enqueueChat(message: string, mode: ChatSendMode = "queue", options: { sessionId?: string; requestId?: string } = {}) {
+  return queueRequest<ChatQueueSnapshot & { ok: true; id: number; mode: ChatSendMode; queueMode: string; shouldAbort: boolean; shouldStopRun: boolean }>("/api/chat/enqueue", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, mode, ...options }),
+  });
+}
+export async function fetchChatQueue(sessionId?: string): Promise<ChatQueueSnapshot> {
+  return queueRequest<ChatQueueSnapshot>(`/api/chat/queue${queueScope(sessionId)}`);
+}
+export async function clearChatQueue(sessionId?: string, ids?: number[]): Promise<number> {
+  const j = await queueRequest<{ cleared?: number }>(`/api/chat/queue${queueScope(sessionId)}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
   return Number(j.cleared ?? 0);
 }
-
-export async function removeChatQueueItem(id: number): Promise<boolean> {
-  const r = await fetch(`/api/chat/queue/${encodeURIComponent(String(id))}`, {
-    method: "DELETE",
-  });
-  const j = await jsonOrThrow<{ removed?: boolean }>(r);
+export async function removeChatQueueItem(id: number, sessionId?: string): Promise<boolean> {
+  const j = await queueRequest<{ removed?: boolean }>(`/api/chat/queue/${id}${queueScope(sessionId)}`, { method: "DELETE" });
   return Boolean(j.removed);
+}
+export async function updateChatQueueItem(id: number, patch: ChatQueuePatch, sessionId?: string) {
+  return queueRequest<ChatQueueSnapshot & { updated: boolean }>(`/api/chat/queue/${id}${queueScope(sessionId)}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+  });
 }
 
 /** Live agent row from GET /api/agents (CLI ops list + presence). */
@@ -1327,11 +1307,26 @@ export type LiveAgentInfo = {
   switchId?: string;
 };
 
+export type ActivityAgentInfo = {
+  id: string;
+  switchId: string;
+  agent: string;
+  displayName: string;
+  sessionId: string;
+  projectPath: string;
+  projectName: string;
+  parentSessionId: string;
+  status: "running" | "done" | "failed";
+  startedAt: number;
+  endedAt?: number;
+};
+
 export async function fetchAgents(): Promise<{
   agents: LiveAgentInfo[];
   activeAgentName: string | null;
   activeSwitchId: string | null;
   activeProjectPath: string | null;
+  activityAgents: ActivityAgentInfo[];
 }> {
   const r = await fetch("/api/agents");
   const j = await jsonOrThrow<{
@@ -1340,13 +1335,58 @@ export async function fetchAgents(): Promise<{
     activeAgentName?: string | null;
     activeSwitchId?: string | null;
     activeProjectPath?: string | null;
+    activityAgents?: ActivityAgentInfo[];
   }>(r);
   return {
     agents: j.agents ?? [],
     activeAgentName: j.activeAgentName ?? null,
     activeSwitchId: j.activeSwitchId ?? null,
     activeProjectPath: j.activeProjectPath ?? null,
+    activityAgents: j.activityAgents ?? [],
   };
+}
+
+export type AgentInspectParams = {
+  name?: string;
+  displayName?: string;
+  role?: string;
+  scope?: string;
+  roundLimit?: number;
+  maxRetries?: number;
+  terminalMode?: string;
+  toolCompression?: string;
+  thinkingContextMode?: string;
+  thinkingLevel?: string;
+  workspaceInstructions?: boolean;
+  mcpToolStrategy?: string;
+  workingDir?: string;
+  tools?: string[];
+};
+
+export type AgentInspectSnapshot = {
+  switchId: string;
+  agentName: string;
+  projectRoot: string;
+  promptRoot: string;
+  entrypoint: string;
+  params: AgentInspectParams;
+  prompt: {
+    ok: boolean;
+    text: string;
+    charCount: number;
+    lineCount: number;
+    error?: string;
+  };
+};
+
+/** GET /api/agent/inspect —— 服务端 previewAgentSystemPrompt + resolveAgentConfig。 */
+export async function fetchAgentInspect(switchId?: string): Promise<AgentInspectSnapshot> {
+  const q = switchId?.trim()
+    ? `?switchId=${encodeURIComponent(switchId.trim())}`
+    : "";
+  const r = await fetch(`/api/agent/inspect${q}`);
+  const j = await jsonOrThrow<AgentInspectSnapshot & { ok?: boolean; error?: string }>(r);
+  return j;
 }
 
 /** Activate by CLI switch_id (project:<path>:<name>) or bare name. */
@@ -1412,11 +1452,12 @@ export async function fetchTerminalCapabilities(): Promise<TerminalCapabilities>
 }
 
 export async function stopTerminal(id: string, agent: string): Promise<void> {
-  await fetch(`/api/terminals/${encodeURIComponent(id)}/stop`, {
+  const r = await fetch(`/api/terminals/${encodeURIComponent(id)}/stop`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ agent }),
   });
+  await jsonOrThrow(r);
 }
 
 export async function fetchCommandCatalog(): Promise<CommandCatalogItem[]> {
@@ -1432,12 +1473,14 @@ export async function* streamChat(
   message: string,
   signal?: AbortSignal,
   images?: ChatImage[],
+  options?: { sessionId?: string; resumeQueue?: boolean },
 ): AsyncGenerator<StreamEvent> {
   const r = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       message,
+      ...options,
       ...(images?.length ? { images } : {}),
     }),
     signal,

@@ -29,6 +29,8 @@ export interface DcgEvalResult {
   ruleId?: string;
   packId?: string;
   severity?: string;
+  /** 官方 JSON `mode`（deny/warn/log/ask），调试用 */
+  mode?: string;
   /** 原始 JSON（调试） */
   raw?: Record<string, unknown>;
   /** 使用的 dcg 路径 */
@@ -41,12 +43,34 @@ export interface DcgEvalResult {
   skippedSafeAllow?: boolean;
 }
 
+/** 官方 pack id，评测时额外启用 */
+export const DEFAULT_DCG_EXTRA_PACKS = [
+  "system.permissions",
+  "system.services",
+  "windows.filesystem",
+  "windows.system",
+  "windows.powershell",
+  "windows.misc",
+  "containers.docker",
+  "containers.compose",
+  "kubernetes.kubectl",
+  "infrastructure.terraform",
+  "infrastructure.pulumi",
+  "database.mysql",
+  "database.postgresql",
+  "database.redis",
+  "database.sqlite",
+  "storage.s3",
+  "platform.github",
+  "package_managers",
+] as const;
+
 export interface DcgGuardOptions {
   /** 覆盖二进制路径 */
   binaryPath?: string;
   /** 超时 ms，默认 250 */
   timeoutMs?: number;
-  /** 额外启用的 packs（逗号分隔），叠加 DCG_PACKS */
+  /** 额外启用的 packs；设置后覆盖默认值与 MAOU_DCG_PACKS / DCG_PACKS */
   extraPacks?: string[];
   /**
    * 未找到 dcg 时：
@@ -84,6 +108,19 @@ export function setDcgBinaryCacheForTest(value: string | null): void {
 /** `MAOU_DCG_OPTIONAL=1`：没有二进制时跳过 DCG，不 fail-closed。 */
 export function isDcgOptional(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.MAOU_DCG_OPTIONAL === "1";
+}
+
+/** 评测时写入 `DCG_PACKS` 的额外 pack 列表（官方 env 叠加默认 pack）。 */
+export function resolveDcgExtraPacks(
+  opts: DcgGuardOptions = {},
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  if (opts.extraPacks && opts.extraPacks.length > 0) {
+    return opts.extraPacks.join(",");
+  }
+  const override = env.MAOU_DCG_PACKS || env.DCG_PACKS;
+  if (override) return override;
+  return DEFAULT_DCG_EXTRA_PACKS.join(",");
 }
 
 function binName(): string {
@@ -261,12 +298,7 @@ export async function evaluateWithDcg(
     DCG_NO_RICH: "1",
     DCG_NO_COLOR: "1",
   };
-  // coding agent 常用：默认额外打开 docker 等（可用 MAOU_DCG_PACKS 覆盖）
-  const packs =
-    opts.extraPacks?.join(",") ||
-    process.env.MAOU_DCG_PACKS ||
-    process.env.DCG_PACKS ||
-    "";
+  const packs = resolveDcgExtraPacks(opts);
   if (packs) env.DCG_PACKS = packs;
   // 清理可能从父进程继承的 quiet
   delete env.DCG_QUIET;
@@ -328,12 +360,18 @@ export async function evaluateWithDcg(
       };
     }
 
-    if (raw.decision === "deny" || result.code === 1) {
+    const rawDecision = String(raw.decision ?? "").toLowerCase();
+    const mode = raw.mode != null && raw.mode !== "" ? String(raw.mode) : undefined;
+    const severity = raw.severity != null && raw.severity !== "" ? String(raw.severity) : undefined;
+    // 0.7+ 对可审核客户端可能给 ask；robot/test 仍按拦截处理
+    if (rawDecision === "deny" || rawDecision === "ask" || result.code === 1) {
       // code 1 通常为 deny；以 JSON decision 为准
-      if (raw.decision === "allow") {
+      if (rawDecision === "allow") {
         return {
           decision: "allow",
           command: String(raw.command ?? command),
+          severity,
+          mode,
           raw,
           binary,
         };
@@ -347,7 +385,8 @@ export async function evaluateWithDcg(
           explanation: raw.explanation ? String(raw.explanation) : undefined,
           ruleId: raw.rule_id ? String(raw.rule_id) : undefined,
           packId: raw.pack_id ? String(raw.pack_id) : undefined,
-          severity: raw.severity ? String(raw.severity) : undefined,
+          severity,
+          mode,
           raw,
           binary,
         },
@@ -359,6 +398,8 @@ export async function evaluateWithDcg(
       decision: "allow",
       command: String(raw.command ?? command),
       reason: raw.reason ? String(raw.reason) : undefined,
+      severity,
+      mode,
       raw,
       binary,
     };

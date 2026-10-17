@@ -6,7 +6,7 @@
   "subagent_kind": "project",
   "description": "路径驻扎的小型 coding agent：严格 path + 域外审核列表。",
   "status": "active",
-  "round_limit": 50,
+  "round_limit": 0,
   "enable_loop": true,
   "persist_context": true,
   "inherit_full_context": false,

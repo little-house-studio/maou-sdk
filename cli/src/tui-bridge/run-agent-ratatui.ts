@@ -38,7 +38,7 @@ import {
   handleEscapeCancel,
   registerAbortStream,
 } from "../hooks/escape-cancel.js";
-import { ensurePerfHudSampler } from "../headless/perf-hud-lines.js";
+import { ensurePerfHudSampler, ensurePerfLogSink } from "../headless/perf-hud-lines.js";
 import { notePaintFrame } from "../hooks/process-stats.js";
 import { resolveKeyBinding } from "../config/keybindings.js";
 import { commandOpensOverlay } from "../config/cli-commands.js";
@@ -339,11 +339,16 @@ export async function runAgentWithRatatui(opts: RunRatatuiOpts): Promise<void> {
   } catch {
     /* ignore */
   }
-  unsubPerf = ensurePerfHudSampler(() => {
+  const stopHud = ensurePerfHudSampler(() => {
     if (!session || session.isDead?.()) return;
     lastSig = "";
     pushState(undefined, true);
   });
+  const stopLog = ensurePerfLogSink(userMaouRoot());
+  unsubPerf = () => {
+    stopHud();
+    stopLog();
+  };
 
   // 永远读最新 store，禁止闭包冻旧 state（否则 Submit 后 24ms 旧快照会抹掉刚 push 的 user 消息）
   const schedulePush = () => {

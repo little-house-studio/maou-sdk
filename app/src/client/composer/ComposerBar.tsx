@@ -28,6 +28,7 @@ export function ComposerBar(props: ComposerProps) {
   const [swapIdx, setSwapIdx] = useState(0);
   const draftRef = useRef(props.input);
   const sentRef = useRef(props.input);
+  const epochRef = useRef(props.inputEpoch);
   const flushRaf = useRef(0);
   const chipRef = useRef<HTMLDivElement>(null);
   const tokenLive =
@@ -37,7 +38,8 @@ export function ComposerBar(props: ComposerProps) {
     Boolean(props.commandBlock) ||
     Boolean(draft.trim()) ||
     Boolean(props.images?.length);
-  const showStop = props.busy && !props.pendingApproval && !canSend;
+  const showStop = props.busy && !props.pendingApproval;
+  const sendDisabled = props.inputDisabled || !canSend || (props.busy && Boolean(props.images?.length));
   const sendMode = props.sendMode;
   const sendModeLabel = sendMode === "insert" ? "插入" : "队列";
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -97,6 +99,11 @@ export function ComposerBar(props: ComposerProps) {
 
   const syncKey = props.inputEpoch ?? props.input;
   useEffect(() => {
+    const replaced = epochRef.current !== props.inputEpoch;
+    epochRef.current = props.inputEpoch;
+    // A delayed echo of our own input must not erase newer local keystrokes.
+    if (!replaced && props.input === sentRef.current) return;
+    cancelFlush();
     if (props.input === draftRef.current) return;
     draftRef.current = props.input;
     sentRef.current = props.input;
@@ -104,6 +111,20 @@ export function ComposerBar(props: ComposerProps) {
     setCursor(props.input.length);
     setMenuDismissed(false);
   }, [syncKey, props.input]);
+
+  const toolProps: ComposerProps = {
+    ...props,
+    input: draft,
+    onInputChange: (value) => {
+      cancelFlush();
+      draftRef.current = value;
+      sentRef.current = value;
+      setDraft(value);
+      setCursor(value.length);
+      setMenuDismissed(false);
+      props.onInputChange(value);
+    },
+  };
 
   useEffect(() => {
     const el = props.inputRef.current;
@@ -233,6 +254,9 @@ export function ComposerBar(props: ComposerProps) {
               className="wire-composer-input composer-input"
               value={draft}
               rows={2}
+              aria-label="消息"
+              disabled={props.inputDisabled}
+              title={props.inputLockReason}
               placeholder={
                 props.commandBlock ? "参数或消息…" : props.placeholder
               }
@@ -271,6 +295,7 @@ export function ComposerBar(props: ComposerProps) {
               onPaste={props.onInputPaste}
               onBlur={props.onInputBlur}
               onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 const start = e.currentTarget.selectionStart ?? 0;
                 const end = e.currentTarget.selectionEnd ?? 0;
                 setCursor(start);
@@ -363,8 +388,8 @@ export function ComposerBar(props: ComposerProps) {
               </div>
               <OptionalOutlet
                 name="composer.left"
-                props={props}
-                fallback={<LeftToolsFallback {...props} />}
+                props={toolProps}
+                fallback={<LeftToolsFallback {...toolProps} />}
               />
             </div>
             <div className="composer-toolbar-right wire-composer-actions">
@@ -374,6 +399,8 @@ export function ComposerBar(props: ComposerProps) {
                     props.pendingApproval ? " is-approval" : ""
                   }${props.busy && !props.statusError ? " is-busy" : ""}`}
                   title={props.statusTitle || props.statusDisplay}
+                  role="status"
+                  aria-live="polite"
                 >
                   {props.busy && !props.statusError ? (
                     <span className="composer-status-dot" aria-hidden />
@@ -421,7 +448,7 @@ export function ComposerBar(props: ComposerProps) {
                     className="ghost wire-icon-btn wire-composer-stop"
                     onClick={() => props.onStop?.()}
                     disabled={!props.onStop}
-                    title="停止并清空排队 · 输入文字可改为发送"
+                    title="停止回复（保留排队消息）"
                     aria-label="停止"
                   >
                     <ChromeMark kind="stop" size={14} decorative />
@@ -430,7 +457,8 @@ export function ComposerBar(props: ComposerProps) {
                 <button
                   type="button"
                   className={`send-btn wire-icon-btn wire-composer-send mode-${sendMode}`}
-                  disabled={!canSend}
+                  disabled={sendDisabled}
+                  title={props.inputLockReason || (props.busy && props.images?.length ? "请等待当前回复结束后发送图片" : undefined)}
                   onClick={() => {
                     cancelFlush();
                     props.onSend();

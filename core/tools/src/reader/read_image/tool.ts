@@ -14,7 +14,8 @@ export class ReadImageTool extends Tool {
   readonly definition: ToolDefinition = {
     name: "read_image",
     aliases: [],
-    description: "读取本地图片（png/jpg/gif/webp 等），以多模态返回。文本用 read_file。",
+    description:
+      "读取本地图片（png/jpg/gif/webp 等），以多模态返回。当前模型不支持视觉时会明确失败，不会静默占位。文本用 read_file。",
     parameters: {
       type: "object",
       properties: {

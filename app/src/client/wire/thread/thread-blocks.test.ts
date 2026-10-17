@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   clipTurnSummary,
+  displayRoleForUserLine,
   groupLoopTurns,
   groupThreadBlocks,
+  isHiddenToolLoopLine,
+  isHumanUserBubble,
   isModelCallProgressText,
+  isToolLoopHintText,
   isPlaceholderAssistantBody,
   pickPlanReviewAnchorId,
   formatReplyPackFold,
@@ -135,8 +139,128 @@ describe("groupThreadBlocks", () => {
     assert.equal(isModelCallProgressText("⏳ 编译 Prompt..."), true);
     assert.equal(isModelCallProgressText("开始编译 Prompt"), true);
     assert.equal(isModelCallProgressText("规划目标合同..."), true);
+    assert.equal(isModelCallProgressText("模型不支持多模态内容，已移除 1 处非文本块后重试"), true);
+    assert.equal(isModelCallProgressText("⏳ Unsupported media · stripped · retry"), true);
     assert.equal(isModelCallProgressText("模型切换: a → b"), false);
     assert.equal(isModelCallProgressText("上下文压缩完成"), false);
+  });
+
+  it("user cards follow author/source, not <terminal-message> body", () => {
+    assert.equal(
+      isHumanUserBubble({ role: "user", source: "human", content: "你好" }),
+      true,
+    );
+    assert.equal(
+      isHumanUserBubble({
+        role: "user",
+        source: "human",
+        content:
+          "<terminal-message>\n终端「后台编译」已完成\n</terminal-message>",
+      }),
+      true,
+    );
+    assert.equal(
+      isHumanUserBubble({
+        role: "user",
+        source: "terminal-notification",
+        content: "随便一段不像通知的正文",
+      }),
+      false,
+    );
+    assert.equal(
+      isHumanUserBubble({
+        role: "user",
+        authorType: "tool",
+        content: "终端已完成",
+      }),
+      false,
+    );
+    assert.equal(
+      isHumanUserBubble({
+        role: "user",
+        kind: "tool_async_notify",
+        content: "done",
+      }),
+      false,
+    );
+    assert.equal(
+      isHumanUserBubble({
+        role: "user",
+        content:
+          "<terminal-message>\n终端「后台编译 Rust terminal-engine」已完成\n</terminal-message>",
+      }),
+      false,
+    );
+    assert.equal(
+      displayRoleForUserLine({
+        role: "user",
+        source: "terminal-notification",
+        content: "终端已完成",
+      }),
+      "tool",
+    );
+    assert.equal(
+      displayRoleForUserLine({ role: "user", source: "human", content: "hi" }),
+      "user",
+    );
+  });
+
+  it("terminal notify does not start a user loop", () => {
+    const msgs: DraftMessage[] = [
+      { id: "u", role: "user", body: "后台编译", source: "human" },
+      { id: "a", role: "assistant", body: "开始了" },
+      {
+        id: "n",
+        role: "user",
+        body: "终端已完成",
+        source: "terminal-notification",
+        authorType: "tool",
+      },
+    ];
+    const segs = groupLoopTurns(groupThreadBlocks(msgs));
+    assert.equal(segs.length, 2);
+    assert.equal(segs[0]!.kind, "loop");
+    if (segs[0]!.kind === "loop") {
+      assert.equal(segs[0]!.user?.id, "u");
+    }
+    assert.equal(segs[1]!.kind, "solo");
+    if (segs[1]!.kind === "solo") {
+      assert.equal(segs[1]!.message.id, "n");
+    }
+  });
+
+  it("tool-loop soft hints stay off the thread", () => {
+    assert.equal(isToolLoopHintText("工具循环警告：请换策略"), true);
+    assert.equal(
+      isToolLoopHintText(
+        "检测到工具调用死循环倾向（1/3）dominant≈project_manage|action=disband",
+      ),
+      true,
+    );
+    assert.equal(
+      isToolLoopHintText(
+        "<continue>系统检测到工具调用可能陷入死循环（重复模式近似：project_manage|action=disband）。请换策略：换工具、改参数。</continue>",
+      ),
+      true,
+    );
+    assert.equal(isToolLoopHintText("同一工具连续 4 次"), true);
+    assert.equal(isToolLoopHintText("同一调用第 3 次"), true);
+    assert.equal(isToolLoopHintText("请换策略后再试一次具体改动"), false);
+    assert.equal(
+      isHiddenToolLoopLine({
+        role: "user",
+        source: "tool_loop",
+        content: "<continue>请换策略</continue>",
+      }),
+      true,
+    );
+    assert.equal(
+      isHiddenToolLoopLine({
+        role: "assistant",
+        text: "工具循环警告：请换策略",
+      }),
+      false,
+    );
   });
 
   it("replyTurnVisible hides blank finished assistants and keeps live/tool turns", () => {

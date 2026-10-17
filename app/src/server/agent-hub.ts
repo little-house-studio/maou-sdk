@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { addProject, runtimePresetRoute } from "@little-house-studio/types";
+import { addProject, formatSenderEnvelope, getProjectsList, notePerfMark, runtimePresetRoute } from "@little-house-studio/types";
 import {
   createStandardAgentDeps,
   getRolePresetFromMaouConfig,
@@ -64,7 +64,9 @@ import {
   DEFAULT_PERMISSION_PRESET,
   type AskUserRequest,
   type AskUserResult,
+  formatProjectDispatchResult,
 } from "@little-house-studio/tools";
+import { normalizeCacheUsage } from "@little-house-studio/llm";
 import { ConfigStore } from "@little-house-studio/types";
 import { sessionPlan, sessionPlanFile, sessionGoals } from "@little-house-studio/context";
 import {
@@ -90,7 +92,24 @@ import {
   resolveDefaultSwitchId,
   type LiveAgentDto,
 } from "./agent-list.js";
+import {
+  inspectAgentFromDisk,
+  resolveInspectTarget,
+  type AgentInspectSnapshot,
+} from "./agent-inspect.js";
 import { listAgentTerminals, rebindAgentTerminalPersist } from "./agent-terminals.js";
+import {
+  ActivityAgentStore,
+  type ActivityAgentDto,
+} from "./activity-agents.js";
+import {
+  mergeChildSessions,
+  projectSessionsDir,
+  runningHelperCount,
+  scanSessionsDir,
+  sessionExistsOnDisk,
+  type ScannedSession,
+} from "./project-child-sessions.js";
 import {
   backfillUserLoopDuration,
   collectToolCallArgs,
@@ -101,6 +120,23 @@ import {
   slimAssistantToolCalls,
 } from "./tool-history.js";
 export { resolveWorkspaceForSwitch } from "@little-house-studio/agent";
+
+export type ProjectDispatchRequest = {
+  projectPath: string;
+  projectName: string;
+  task: string;
+  parentSessionId: string;
+  parentAgent?: string;
+};
+
+export type ProjectDispatchReceipt = {
+  sessionId: string;
+  agent: string;
+  switchId: string;
+  project: string;
+  status: "running";
+  taskId: string;
+};
 
 function lastSessionPath(projectRoot: string): string {
   return join(projectRoot, ".maou", "last-session.json");
@@ -159,6 +195,11 @@ export interface AgentHubOpts {
   sandboxMode?: string;
   /** Initial active agent name (default coding) */
   agentName?: string;
+  /**
+   * 开机就停在这个 Agent（如 `system:ops`），按 switchId 解析、不预建 runtime。
+   * 桌面客户端聊天模式开机总会切到 ops —— 直接从那儿开始，免得先建一个用不上的 coding。
+   */
+  initialSwitchId?: string;
 }
 
 export type SessionLamp =
@@ -181,6 +222,7 @@ export type SessionSummary = {
   parentSessionId?: string;
   lamp?: SessionLamp;
   helperCount?: number;
+  switchId?: string;
 };
 
 export type ChatHistoryLine = {
@@ -202,9 +244,28 @@ export type ChatHistoryLine = {
   images?: Message["images"];
   artifacts?: Array<{ path: string; delta: string }>;
   source?: string;
+  kind?: string;
+  authorType?: string;
   usageInput?: number;
   usageOutput?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cacheReported?: boolean;
 };
+
+function isToolLoopHistoryMessage(m: Record<string, unknown>): boolean {
+  const source = String(m.source ?? "").trim();
+  if (source === "tool_loop" || source === "tool_streak") return true;
+  const role = String(m.role ?? "");
+  if (role === "assistant" || role === "tool") return false;
+  const text = typeof m.content === "string" ? m.content : "";
+  return (
+    /工具循环警告|检测到工具调用(?:可能陷入)?死循环|dominant\s*≈|同一工具连续\s*\d+|同一调用第\s*\d+/.test(
+      text,
+    ) ||
+    (/请换策略/.test(text) && /<continue>|死循环|重复模式|换工具/.test(text))
+  );
+}
 
 export type WebhookDeliverOk = {
   ok: true;
@@ -321,6 +382,7 @@ export class AgentHub implements WebhookHost {
   }>();
   private approverInstalled = false;
   private restoredSession = false;
+  private readonly activity = new ActivityAgentStore();
 
   constructor(opts: AgentHubOpts = {}) {
     this.bootProjectRoot = opts.projectRoot ?? process.cwd();
@@ -343,8 +405,50 @@ export class AgentHub implements WebhookHost {
       agentName: this._agentName,
       projectPath: def.projectPath,
     });
+    const initial = opts.initialSwitchId?.trim();
+    if (initial) {
+      const target = this.resolveSwitchTarget(initial);
+      this._agentName = target.agentName;
+      this._activeSwitchId = target.switchId;
+      this._activeProjectPath = target.projectPath;
+      this._projectRoot = target.projectRoot;
+    }
     // 初始槽位
     this.syncActiveIntoSlots();
+  }
+
+  /** 名字或 switchId → 目标 Agent 的身份与工作区（不动当前状态）。 */
+  private resolveSwitchTarget(raw: string): {
+    agentName: string;
+    switchId: string;
+    projectPath: string | null;
+    projectRoot: string;
+  } {
+    let agentName = raw;
+    let projectPath: string | null = null;
+    let switchId = `system:${raw}`;
+    let kind: "system" | "project" = "system";
+
+    const parsed = parseAgentSwitchId(raw);
+    if (parsed) {
+      agentName = parsed.agentName;
+      if (parsed.kind === "project" && parsed.projectPath) {
+        kind = "project";
+        projectPath = parsed.projectPath;
+        switchId = `project:${parsed.projectPath}:${parsed.agentName}`;
+      } else {
+        switchId = `system:${parsed.agentName}`;
+      }
+    }
+
+    const projectRoot = resolveWorkspaceForSwitch({
+      maouRoot: this.maouRoot,
+      bootProjectRoot: this.bootProjectRoot,
+      kind,
+      agentName,
+      projectPath,
+    });
+    return { agentName, switchId, projectPath, projectRoot };
   }
 
   /** 把当前焦点状态写回 slots（保证跨 Agent 切换不丢 run） */
@@ -446,32 +550,11 @@ export class AgentHub implements WebhookHost {
     const raw = String(nameOrSwitchId || "").trim();
     if (!raw) return;
 
-    let nextName = raw;
-    let nextProjectPath: string | null = null;
-    let nextSwitchId = `system:${raw}`;
-    let kind: "system" | "project" = "system";
-
-    const parsed = parseAgentSwitchId(raw);
-    if (parsed) {
-      nextName = parsed.agentName;
-      if (parsed.kind === "project" && parsed.projectPath) {
-        kind = "project";
-        nextProjectPath = parsed.projectPath;
-        nextSwitchId = `project:${parsed.projectPath}:${parsed.agentName}`;
-      } else {
-        kind = "system";
-        nextProjectPath = null;
-        nextSwitchId = `system:${parsed.agentName}`;
-      }
-    }
-
-    const nextRoot = resolveWorkspaceForSwitch({
-      maouRoot: this.maouRoot,
-      bootProjectRoot: this.bootProjectRoot,
-      kind,
-      agentName: nextName,
-      projectPath: nextProjectPath,
-    });
+    const target = this.resolveSwitchTarget(raw);
+    const nextName = target.agentName;
+    const nextProjectPath = target.projectPath;
+    const nextSwitchId = target.switchId;
+    const nextRoot = target.projectRoot;
 
     const same =
       nextSwitchId === this._activeSwitchId &&
@@ -679,6 +762,28 @@ export class AgentHub implements WebhookHost {
       goal: this.sessionId ? sessionGoals.get(this.sessionStore!.sessionDir, this.sessionId) : undefined,
       workspaceInstructions: this.readWorkspaceInstructionsEnabled(),
     };
+  }
+
+  /** 只读：previewAgentSystemPrompt + resolveAgentConfig。不切槽。 */
+  inspectAgent(switchId?: string): AgentInspectSnapshot {
+    const target = resolveInspectTarget(
+      {
+        agentName: this.agentName,
+        projectRoot: this.projectRoot,
+        switchId: this.activeSwitchId,
+      },
+      {
+        maouRoot: this.maouRoot,
+        bootProjectRoot: this.bootProjectRoot,
+        switchId,
+      },
+    );
+    return inspectAgentFromDisk({
+      maouRoot: this.maouRoot,
+      agentName: target.agentName,
+      projectRoot: target.projectRoot,
+      switchId: target.switchId,
+    });
   }
 
   private currentAgentDir(): string {
@@ -931,19 +1036,40 @@ export class AgentHub implements WebhookHost {
   }
 
   listSessions(agent?: string): SessionSummary[] {
-    const store = agent
-      ? this.slotFor(agent).sessionStore
-      : (this.ensureAgent(), this.sessionStore);
-    if (!store) return [];
+    const t0 = performance.now();
     try {
-      const running = new Set(this.listRunningSessions());
+      return this.listSessionsInner(agent);
+    } finally {
+      notePerfMark("hub.listSessions", performance.now() - t0);
+    }
+  }
+
+  private listSessionsInner(agent?: string): SessionSummary[] {
+    this.ensureAgent();
+    this.syncActiveIntoSlots();
+    const slot = agent ? this.slotFor(agent) : this.slots.get(this._activeSwitchId);
+    const store = slot?.sessionStore ?? this.sessionStore;
+    if (!store) return [];
+    const homeSwitchId = slot?.switchId ?? this._activeSwitchId;
+    try {
+      const running = this.collectRunningIds();
       const approvalSessions = new Set(
         this.listPendingApprovals().map((p) => p.sessionId).filter(Boolean) as string[],
       );
       const askBySession = new Map(this.listPendingAsks().map((a) => [a.sessionId, a.kind] as const));
-      return store.list().map((s) => {
-        const kids = store.listDescendents(s.id);
-        const helperCount = kids.filter((k) => running.has(k.id)).length;
+      const home: ScannedSession[] = store.list().map((s) => ({
+        id: s.id,
+        title: s.title || "新对话",
+        updatedAt: s.updatedAt,
+        messageCount: s.messageCount ?? 0,
+        userTurns: s.userTurns ?? 0,
+        lastMsgAt: s.lastMsgAt,
+        ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
+        switchId: homeSwitchId,
+      }));
+      const merged = mergeChildSessions(home, this.collectForeignSessions(store.sessionDir));
+      return merged.map((s) => {
+        const helperCount = runningHelperCount(merged, s.id, running);
         let lamp: SessionLamp = "idle";
         if (approvalSessions.has(s.id) || (approvalSessions.size > 0 && running.has(s.id))) {
           lamp = "await_approval";
@@ -968,6 +1094,7 @@ export class AgentHub implements WebhookHost {
           lamp,
           ...(helperCount ? { helperCount } : {}),
           ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
+          ...(s.switchId ? { switchId: s.switchId } : {}),
         };
       });
     } catch {
@@ -1049,18 +1176,23 @@ export class AgentHub implements WebhookHost {
     sessionId?: string | null,
     opts?: { limit?: number; beforeSeq?: number },
   ): { messages: ChatHistoryLine[]; oldestSeq: number | null; hasMore: boolean } {
-    this.ensureAgent();
-    const id = sessionId || this.sessionId;
-    if (!id) return { messages: [], oldestSeq: null, hasMore: false };
-    const page = this.sessionStore!.loadRecent(id, {
-      limit: opts?.limit ?? 80,
-      beforeSeq: opts?.beforeSeq,
-    });
-    return {
-      messages: this.linesFromMessages(id, (page?.messages ?? []) as Array<Record<string, unknown>>),
-      oldestSeq: page?.oldestSeq ?? null,
-      hasMore: page?.hasMore ?? false,
-    };
+    const t0 = performance.now();
+    try {
+      this.ensureAgent();
+      const id = sessionId || this.sessionId;
+      if (!id) return { messages: [], oldestSeq: null, hasMore: false };
+      const page = this.sessionStore!.loadRecent(id, {
+        limit: opts?.limit ?? 80,
+        beforeSeq: opts?.beforeSeq,
+      });
+      return {
+        messages: this.linesFromMessages(id, (page?.messages ?? []) as Array<Record<string, unknown>>),
+        oldestSeq: page?.oldestSeq ?? null,
+        hasMore: page?.hasMore ?? false,
+      };
+    } finally {
+      notePerfMark("hub.loadSessionPage", performance.now() - t0);
+    }
   }
 
   /** 加载会话消息供 WebUI 渲染历史 */
@@ -1077,7 +1209,7 @@ export class AgentHub implements WebhookHost {
   ): ChatHistoryLine[] {
     const callIntents = collectToolCallIntents(msgs);
     const callArgs = collectToolCallArgs(msgs);
-    const mapped = msgs.map((m, i) => {
+    const mapped = msgs.filter((m) => !isToolLoopHistoryMessage(m)).map((m, i) => {
       const raw = m.content;
       let content = "";
       if (typeof raw === "string") content = raw;
@@ -1108,14 +1240,27 @@ export class AgentHub implements WebhookHost {
         ? (m.images as Message["images"])
         : undefined;
       const source = typeof m.source === "string" ? m.source : undefined;
+      const kind = typeof m.kind === "string" ? m.kind : undefined;
+      const authorRaw = m.author;
+      const authorType =
+        authorRaw &&
+        typeof authorRaw === "object" &&
+        typeof (authorRaw as { type?: unknown }).type === "string"
+          ? String((authorRaw as { type: string }).type)
+          : undefined;
       const role = String(m.role ?? "assistant");
       const usage = m.usage as Record<string, unknown> | undefined;
-      const usageInput = Number(
-        usage?.prompt_tokens ?? usage?.input_tokens ?? usage?.input ?? 0,
-      );
-      const usageOutput = Number(
-        usage?.completion_tokens ?? usage?.output_tokens ?? usage?.output ?? 0,
-      );
+      const cache = normalizeCacheUsage(usage);
+      const usageInput =
+        cache.promptTotal > 0
+          ? cache.promptTotal
+          : Number(usage?.prompt_tokens ?? usage?.input_tokens ?? usage?.input ?? 0);
+      const usageOutput =
+        cache.output > 0
+          ? cache.output
+          : Number(
+              usage?.completion_tokens ?? usage?.output_tokens ?? usage?.output ?? 0,
+            );
       const toolMeta =
         role === "tool" ? readHistoryToolMeta(m, callIntents, callArgs) : {};
       const toolCalls =
@@ -1141,8 +1286,17 @@ export class AgentHub implements WebhookHost {
         ...(images?.length ? { images } : {}),
         ...(Array.isArray(m.artifacts) ? { artifacts: m.artifacts as ChatHistoryLine["artifacts"] } : {}),
         ...(source ? { source } : {}),
+        ...(kind ? { kind } : {}),
+        ...(authorType ? { authorType } : {}),
         ...(Number.isFinite(usageInput) && usageInput > 0 ? { usageInput } : {}),
         ...(Number.isFinite(usageOutput) && usageOutput > 0 ? { usageOutput } : {}),
+        ...(cache.reported
+          ? {
+              cacheReported: true,
+              cacheRead: cache.cacheRead,
+              cacheWrite: cache.cacheWrite,
+            }
+          : {}),
         ...(typeof m.seq === "number" ? { seq: m.seq } : {}),
       };
     });
@@ -1188,7 +1342,7 @@ export class AgentHub implements WebhookHost {
   }
 
   /** 中断指定会话 run；缺省为当前焦点会话（只动当前 Agent 槽） */
-  abortRun(sessionId?: string | null) {
+  abortRun(sessionId?: string | null, keepQueue = false) {
     const id = (sessionId ?? this.sessionId)?.trim() || null;
     if (!id) return;
     const ac = this.runs.get(id);
@@ -1198,10 +1352,11 @@ export class AgentHub implements WebhookHost {
       } catch {
         /* ignore */
       }
-      this.runs.delete(id);
+      // Keep the run lock for queue-preserving stops until the generator exits.
+      if (!keepQueue) this.runs.delete(id);
     }
     try {
-      MESSAGE_QUEUE.clear(id);
+      if (!keepQueue) MESSAGE_QUEUE.clear(id);
     } catch {
       /* ignore */
     }
@@ -1235,6 +1390,88 @@ export class AgentHub implements WebhookHost {
     return Array.from(this.runs.keys());
   }
 
+  /** 当前店列表里应亮灯的会话（含后台项目孩子） */
+  listSessionRailRunningIds(): string[] {
+    const visible = new Set(this.listSessions().map((s) => s.id));
+    const out = new Set<string>(this.listRunningSessions());
+    for (const id of this.collectRunningIds()) {
+      if (visible.has(id)) out.add(id);
+    }
+    return [...out];
+  }
+
+  private collectRunningIds(): Set<string> {
+    this.syncActiveIntoSlots();
+    const ids = new Set<string>();
+    for (const slot of this.slots.values()) {
+      for (const id of slot.runs.keys()) ids.add(id);
+    }
+    for (const rec of this.activity.list()) {
+      if (rec.status === "running") ids.add(rec.sessionId);
+    }
+    return ids;
+  }
+
+  private collectForeignSessions(homeDir: string): ScannedSession[] {
+    this.syncActiveIntoSlots();
+    const extras: ScannedSession[] = [];
+    for (const slot of this.slots.values()) {
+      if (!slot.sessionStore || slot.sessionStore.sessionDir === homeDir) continue;
+      for (const s of slot.sessionStore.list()) {
+        extras.push({
+          id: s.id,
+          title: s.title || "新对话",
+          updatedAt: s.updatedAt,
+          messageCount: s.messageCount ?? 0,
+          userTurns: s.userTurns ?? 0,
+          lastMsgAt: s.lastMsgAt,
+          ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
+          switchId: slot.switchId,
+        });
+      }
+    }
+    for (const project of getProjectsList(this.maouRoot)) {
+      const dir = projectSessionsDir(project.path);
+      if (dir === homeDir) continue;
+      extras.push(...scanSessionsDir(dir, `project:${project.path}:coding`));
+    }
+    for (const rec of this.activity.list()) {
+      extras.push({
+        id: rec.sessionId,
+        title: rec.projectName ? `${rec.displayName} · ${rec.projectName}` : rec.displayName,
+        messageCount: 0,
+        userTurns: 0,
+        lastMsgAt: new Date(rec.startedAt).toISOString(),
+        updatedAt: new Date(rec.startedAt).toISOString(),
+        parentSessionId: rec.parentSessionId,
+        switchId: rec.switchId,
+      });
+    }
+    return extras;
+  }
+
+  private findSessionHome(sessionId: string): { switchId: string; sessionId: string } | null {
+    const id = sessionId.trim();
+    if (!id) return null;
+    this.syncActiveIntoSlots();
+    if (this.sessionStore?.exists(id)) {
+      return { switchId: this._activeSwitchId, sessionId: id };
+    }
+    for (const slot of this.slots.values()) {
+      if (slot.sessionStore?.exists(id)) {
+        return { switchId: slot.switchId, sessionId: id };
+      }
+    }
+    const rec = this.activity.findBySession(id);
+    if (rec) return { switchId: rec.switchId, sessionId: id };
+    for (const project of getProjectsList(this.maouRoot)) {
+      if (sessionExistsOnDisk(projectSessionsDir(project.path), id)) {
+        return { switchId: `project:${project.path}:coding`, sessionId: id };
+      }
+    }
+    return null;
+  }
+
   /**
    * 全部 Agent 正在跑的会话（含 switchId / agentName）。
    * 前端可用来给非焦点 Agent 亮灯。
@@ -1260,6 +1497,166 @@ export class AgentHub implements WebhookHost {
       }
     }
     return out;
+  }
+
+  listActivityAgents(): ActivityAgentDto[] {
+    return this.activity.list();
+  }
+
+  async dispatchProjectTask(
+    req: ProjectDispatchRequest,
+  ): Promise<ProjectDispatchReceipt> {
+    const switchId = `project:${req.projectPath}:coding`;
+    const slot = this.slotFor(switchId);
+    if (slot.sessionId && slot.runs.has(slot.sessionId)) {
+      this.startSlotSession(slot, `ops → ${req.projectName}`);
+    } else if (!slot.sessionId) {
+      this.startSlotSession(slot, `ops → ${req.projectName}`);
+    }
+    const sessionId = slot.sessionId;
+    if (!sessionId || !slot.handle) throw new Error("failed to open coding session");
+    slot.sessionStore?.setParentSessionId(sessionId, req.parentSessionId);
+
+    const rec = this.activity.upsert({
+      id: `${switchId}::${sessionId}`,
+      switchId,
+      agent: "coding",
+      displayName: "Coding",
+      sessionId,
+      projectPath: req.projectPath,
+      projectName: req.projectName,
+      parentSessionId: req.parentSessionId,
+      status: "running",
+      startedAt: Date.now(),
+    });
+
+    if (!slot.runs.has(sessionId)) {
+      slot.runs.set(sessionId, new AbortController());
+    }
+    if (slot.switchId === this._activeSwitchId) this.syncActiveIntoSlots();
+
+    if (!AgentHub.skipWebhookRun) {
+      void this.runProjectDispatch(slot, rec.id, req.task);
+    }
+
+    return {
+      sessionId,
+      agent: "coding",
+      switchId,
+      project: req.projectPath,
+      status: "running",
+      taskId: rec.id,
+    };
+  }
+
+  finishProjectDispatch(
+    idOrSessionId: string,
+    result: { ok: boolean; output?: string; error?: string },
+  ): ActivityAgentDto | null {
+    const rec = this.activity.complete(
+      idOrSessionId,
+      result.ok ? "done" : "failed",
+      result.output || result.error,
+    );
+    if (!rec) return null;
+    this.writeBackProjectDispatch(rec, result);
+    return this.activity.get(rec.id)
+      ? {
+          id: rec.id,
+          switchId: rec.switchId,
+          agent: rec.agent,
+          displayName: rec.displayName,
+          sessionId: rec.sessionId,
+          projectPath: rec.projectPath,
+          projectName: rec.projectName,
+          parentSessionId: rec.parentSessionId,
+          status: rec.status,
+          startedAt: rec.startedAt,
+          endedAt: rec.endedAt,
+        }
+      : null;
+  }
+
+  private async runProjectDispatch(
+    slot: AgentRuntimeSlot,
+    activityId: string,
+    task: string,
+  ): Promise<void> {
+    let output = "";
+    let ok = true;
+    try {
+      for await (const ev of this.runChatOnSlot(slot, { content: task }, "project_send")) {
+        if (ev.type === "assistant" || ev.type === "text" || ev.type === "content") {
+          const bit = ev.delta ?? ev.content ?? ev.message;
+          if (typeof bit === "string" && bit.trim()) output = bit;
+        }
+        if (ev.type === "round_limit") {
+          ok = false;
+          const bit = ev.message ?? ev.content;
+          if (typeof bit === "string" && bit.trim()) output = bit;
+        }
+        if (ev.type === "error") ok = false;
+      }
+    } catch (error) {
+      ok = false;
+      output = error instanceof Error ? error.message : String(error);
+    }
+    this.finishProjectDispatch(activityId, { ok, output });
+  }
+
+  private writeBackProjectDispatch(
+    rec: { parentSessionId: string; sessionId: string; projectName: string; projectPath: string; switchId: string },
+    result: { ok: boolean; output?: string; error?: string },
+  ): void {
+    const parent = this.findSlotBySession(rec.parentSessionId);
+    if (!parent?.sessionStore) return;
+    parent.sessionId = rec.parentSessionId;
+    const body = formatProjectDispatchResult({
+      ok: result.ok,
+      projectName: rec.projectName,
+      projectPath: rec.projectPath,
+      sessionId: rec.sessionId,
+      output: result.output,
+      error: result.error,
+    });
+    const content = formatSenderEnvelope({
+      body,
+      from: "coding",
+      type: "report",
+    });
+    const turn = { content };
+    if (parent.runs.has(rec.parentSessionId)) {
+      MESSAGE_QUEUE.enqueue(rec.parentSessionId, content, {
+        mode: "after_round_complete",
+        source: "project_dispatch",
+        sessionDir: parent.sessionStore.sessionDir,
+        metadata: {
+          fromSessionId: rec.sessionId,
+          fromAgent: "coding",
+          from: "coding",
+        },
+      });
+      return;
+    }
+    parent.runs.set(rec.parentSessionId, new AbortController());
+    if (parent.switchId === this._activeSwitchId) this.syncActiveIntoSlots();
+    if (!AgentHub.skipWebhookRun) {
+      this.drainGenerator(this.runChatOnSlot(parent, turn, "project_dispatch"));
+    }
+  }
+
+  private findSlotBySession(sessionId: string): AgentRuntimeSlot | null {
+    this.syncActiveIntoSlots();
+    for (const slot of this.slots.values()) {
+      if (slot.sessionStore?.exists(sessionId)) return slot;
+    }
+    try {
+      const ops = this.ensureSlot(this.resolveAgent("ops"));
+      if (ops.sessionStore?.exists(sessionId)) return ops;
+    } catch {
+      /* ops 槽建不出来就放弃回写 */
+    }
+    return null;
   }
 
   isSessionBusy(sessionId?: string | null): boolean {
@@ -1346,14 +1743,47 @@ export class AgentHub implements WebhookHost {
     return buildCommandCatalog(runtime, skills);
   }
 
+  /**
+   * 第一条 run 的 done 之后，把队列剩余项接着跑；事件仍走当前生成器。
+   * 用户在最后一轮收尾后入队时，round_end / loop_end 已经查过空队列。
+   */
+  private async *flushQueuedTurns(
+    sessionId: string,
+    acBox: { current: AbortController },
+    startRun: (userMessage: string, signal: AbortSignal) => AsyncGenerator<StreamEvent>,
+  ): AsyncGenerator<StreamEvent> {
+    for (;;) {
+      if (acBox.current.signal.aborted) return;
+      const next = MESSAGE_QUEUE.takeNext(sessionId);
+      if (!next) return;
+      if (acBox.current.signal.aborted) return;
+      yield {
+        type: "queued_user",
+        id: next.id,
+        requestId: next.metadata.requestId,
+        content: next.message,
+        mode: next.mode,
+        source: next.source,
+        phase: "run_end",
+      } as StreamEvent;
+      for await (const ev of startRun(next.message, acBox.current.signal)) {
+        yield this.stampTodayOnUsage(ev);
+        if (ev.type === "error") return;
+        if (ev.type === "done") break;
+      }
+    }
+  }
+
   async *runChat(
     message: string,
-    opts?: { images?: Message["images"] },
+    opts?: { images?: Message["images"]; sessionId?: string; resumeQueue?: boolean },
   ): AsyncGenerator<StreamEvent> {
+    this.assertQueueSession(opts?.sessionId);
+    if (this.isBusy()) throw new Error("当前会话仍在运行，请排队发送或等待停止完成");
     const agent = this.ensureAgent();
     const images = sanitizeChatImages(opts?.images);
     const text = message.trim() || (images.length ? "(附图)" : "");
-    if (!text) return;
+    if (!text && !opts?.resumeQueue) return;
 
     if (!this.sessionId) {
       this.rememberSession(agent.startSession());
@@ -1365,10 +1795,9 @@ export class AgentHub implements WebhookHost {
     // 捕获当前槽的 runs 引用：切 Agent 后 this.runs 会换 Map，finally 必须写回原 Map
     const runsMap = this.runs;
     const switchIdAtStart = this._activeSwitchId;
-    // 仅中断「本会话」旧 run，保留其它会话 / 其它 Agent 并行
-    runsMap.get(sessionId)?.abort();
-    const ac = new AbortController();
-    runsMap.set(sessionId, ac);
+    // Single consumer per session; queue claims happen under this run lock.
+    const acBox = { current: new AbortController() };
+    runsMap.set(sessionId, acBox.current);
     this.syncActiveIntoSlots();
 
     const preset = resolvePresetForCli(this.provider, this.model) as Record<
@@ -1377,21 +1806,42 @@ export class AgentHub implements WebhookHost {
     >;
 
     try {
+      let first = text;
+      if (opts?.resumeQueue) {
+        const next = MESSAGE_QUEUE.takeNext(sessionId);
+        if (!next) return;
+        first = next.message;
+        yield { type: "queued_user", id: next.id, requestId: next.metadata.requestId, content: next.message, mode: next.mode, source: next.source, phase: "run_end" } as StreamEvent;
+      }
       for await (const ev of agent.runtime.run({
         sessionId,
-        userMessage: text,
+        userMessage: first,
         preset,
         stream: true,
-        abortSignal: ac.signal,
+        abortSignal: acBox.current.signal,
         source: "app",
+        deferQueueOnExit: true,
         sandboxMode: this.sandboxMode,
         ...(images.length ? { images } : {}),
       })) {
         yield this.stampTodayOnUsage(ev);
-        if (ev.type === "done" || ev.type === "error") break;
+        if (ev.type === "error") return;
+        if (ev.type === "done") break;
       }
+      yield* this.flushQueuedTurns(sessionId, acBox, (userMessage, signal) =>
+        agent.runtime.run({
+          sessionId,
+          userMessage,
+          preset,
+          stream: true,
+          abortSignal: signal,
+          source: "app",
+          deferQueueOnExit: true,
+          sandboxMode: this.sandboxMode,
+        }),
+      );
     } finally {
-      if (runsMap.get(sessionId) === ac) {
+      if (runsMap.get(sessionId) === acBox.current) {
         runsMap.delete(sessionId);
       }
       // 若仍是该 Agent 焦点，同步槽；否则只更新 slots 里对应 switchId
@@ -1422,85 +1872,60 @@ export class AgentHub implements WebhookHost {
     return mode === "insert" ? "interrupt_immediately" : "after_round_complete";
   }
 
-  /**
-   * 运行中把用户消息入队到 Agent MessageQueue（与 runtime 同单例）。
-   * 空闲时应直接 runChat，不要走这里。
-   */
-  enqueueUserMessage(
-    message: string,
-    mode: "queue" | "insert" = "queue",
-  ): {
-    ok: true;
-    id: number;
-    mode: "queue" | "insert";
-    queueMode: MessageQueueMode;
-    shouldAbort: boolean;
-    shouldStopRun: boolean;
-    queue: Array<{
-      id: number;
-      message: string;
-      mode: MessageQueueMode;
-      enqueuedAt: number;
-      source: string;
-    }>;
-  } {
-    this.ensureAgent();
-    const text = message.trim();
-    if (!text) {
-      throw new Error("message required");
+  /** All UI mutations are scoped to the session visible when the request was made. */
+  assertQueueSession(sessionId?: string): void {
+    if (sessionId !== undefined && sessionId !== this.sessionId) {
+      throw new Error("会话已切换，请刷新消息队列后重试");
     }
-    if (!this.sessionId) {
-      throw new Error("no active session — send a first message first");
-    }
-    // 空闲时应走 runChat；入队仅在 agent 运行中有意义（interrupt / after_round）
-    if (!this.isBusy()) {
-      throw new Error("agent idle — use POST /api/chat to send directly");
-    }
-    const queueMode = AgentHub.mapSendMode(mode);
-    const { id, decision } = MESSAGE_QUEUE.enqueue(this.sessionId, text, {
-      mode: queueMode,
-      source: "app",
-      metadata: { uiMode: mode },
-      sessionDir: this.sessionStore?.sessionDir,
-    });
-    return {
-      ok: true,
-      id,
-      mode,
-      queueMode,
-      shouldAbort: decision.shouldAbort,
-      shouldStopRun: decision.shouldStopRun,
-      queue: this.listMessageQueue(),
-    };
   }
 
-  listMessageQueue(): Array<{
-    id: number;
-    message: string;
-    mode: MessageQueueMode;
-    enqueuedAt: number;
-    source: string;
-  }> {
+  enqueueUserMessage(message: string, mode: "queue" | "insert" = "queue", opts: { sessionId?: string; requestId?: string } = {}) {
+    this.assertQueueSession(opts.sessionId);
+    this.ensureAgent();
+    const text = message.trim();
+    if (!text) throw new Error("message required");
+    if (!this.sessionId) throw new Error("请先创建会话");
+    const queueMode = AgentHub.mapSendMode(mode);
+    const { id, decision } = MESSAGE_QUEUE.enqueue(this.sessionId, text, {
+      mode: queueMode, source: "app", requestId: opts.requestId,
+      metadata: { uiMode: mode }, sessionDir: this.sessionStore?.sessionDir,
+    });
+    return { ok: true as const, id, mode, queueMode, shouldAbort: decision.shouldAbort,
+      shouldStopRun: decision.shouldStopRun, ...this.messageQueueSnapshot() };
+  }
+
+  listMessageQueue() {
     if (!this.sessionId) return [];
     return MESSAGE_QUEUE.list(this.sessionId).map((m: QueuedMessage) => ({
-      id: m.id,
-      message: m.message,
-      mode: m.mode,
-      enqueuedAt: m.enqueuedAt,
-      source: m.source,
+      id: m.id, message: m.message, mode: m.mode, enqueuedAt: m.enqueuedAt, source: m.source,
+      requestId: typeof m.metadata.requestId === "string" ? m.metadata.requestId : undefined,
     }));
   }
 
-  clearMessageQueue(): number {
+  messageQueueSnapshot(sessionId?: string) {
+    this.assertQueueSession(sessionId);
+    return { sessionId: this.sessionId, busy: this.isBusy(), capacity: MESSAGE_QUEUE.capacity, queue: this.listMessageQueue() };
+  }
+
+  clearMessageQueue(sessionId?: string, ids?: number[]): number {
+    this.assertQueueSession(sessionId);
     if (!this.sessionId) return 0;
+    if (ids) return ids.reduce((n, id) => n + Number(MESSAGE_QUEUE.remove(this.sessionId!, id)), 0);
     const n = MESSAGE_QUEUE.size(this.sessionId);
     MESSAGE_QUEUE.clear(this.sessionId);
     return n;
   }
 
-  removeQueuedMessage(id: number): boolean {
-    if (!this.sessionId) return false;
-    return MESSAGE_QUEUE.remove(this.sessionId, id);
+  removeQueuedMessage(id: number, sessionId?: string): boolean {
+    this.assertQueueSession(sessionId);
+    return this.sessionId ? MESSAGE_QUEUE.remove(this.sessionId, id) : false;
+  }
+
+  updateQueuedMessage(id: number, patch: { message?: string; mode?: "queue" | "insert"; move?: "up" | "down" }, sessionId?: string): boolean {
+    this.assertQueueSession(sessionId);
+    return this.sessionId ? MESSAGE_QUEUE.update(this.sessionId, id, {
+      ...patch, mode: patch.mode ? AgentHub.mapSendMode(patch.mode) : undefined,
+    }) : false;
   }
 
   resolveAgent(raw?: string | null): WebhookTarget {
@@ -1772,8 +2197,13 @@ export class AgentHub implements WebhookHost {
       this.ensureAgent();
       const id = String(sessionIdOrOpts || "").trim();
       if (!id) throw new Error("sessionId required");
-      if (!this.sessionStore!.exists(id)) throw new Error(`session not found: ${id}`);
-      this.sessionStore!.recoverCold(id);
+      const home = this.findSessionHome(id);
+      if (!home) throw new Error(`session not found: ${id}`);
+      if (home.switchId !== this._activeSwitchId) {
+        this.setActiveAgent(home.switchId);
+      }
+      if (!this.sessionStore?.exists(id)) throw new Error(`session not found: ${id}`);
+      this.sessionStore.recoverCold(id);
       this.rememberSession(id);
       return { sessionId: id };
     }
@@ -2103,11 +2533,13 @@ export class AgentHub implements WebhookHost {
     const ac = runsMap.get(sessionId);
     // 由 deliverToTarget 先占坑；已被 abort / 清槽则不再开跑
     if (!ac || ac.signal.aborted) return;
+    const acBox = { current: ac };
 
     const preset = resolvePresetForCli(this.provider, this.model) as Record<
       string,
       unknown
     >;
+    const t0 = performance.now();
 
     try {
       for await (const ev of handle.runtime.run({
@@ -2116,20 +2548,37 @@ export class AgentHub implements WebhookHost {
         images: n.images,
         userVideo: n.video,
         userAudio: n.audio,
-        userName: n.name,
+        userName: source === "project_dispatch" ? "coding" : n.name,
         userCommand: n.command,
         preset,
         stream: true,
-        abortSignal: ac.signal,
+        abortSignal: acBox.current.signal,
         source: source || "webhook",
+        deferQueueOnExit: true,
         initAgentName: slot.agentName,
         sandboxMode: this.sandboxMode,
       })) {
         yield this.stampTodayOnUsage(ev);
-        if (ev.type === "done" || ev.type === "error") break;
+        if (ev.type === "error") return;
+        if (ev.type === "done") break;
       }
+      yield* this.flushQueuedTurns(sessionId, acBox, (userMessage, signal) =>
+        handle.runtime.run({
+          sessionId,
+          userMessage,
+          preset,
+          stream: true,
+          abortSignal: signal,
+          source: source || "webhook",
+        deferQueueOnExit: true,
+          initAgentName: slot.agentName,
+          sandboxMode: this.sandboxMode,
+          userName: source === "project_dispatch" ? "coding" : n.name,
+        }),
+      );
     } finally {
-      if (runsMap.get(sessionId) === ac) {
+      notePerfMark("hub.runChatOnSlot", performance.now() - t0);
+      if (runsMap.get(sessionId) === acBox.current) {
         runsMap.delete(sessionId);
       }
     }

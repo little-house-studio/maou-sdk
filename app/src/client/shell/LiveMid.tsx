@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { SlotOutlet } from "../slots";
 import { useShellRegion } from "./focus";
 import { LeftAside } from "./LeftAside";
@@ -7,12 +8,15 @@ import type { WireHostBag } from "./types";
 /** Live body: chat stays mounted; settings/project/plugins are sibling mids. */
 export function LiveMid(bag: WireHostBag) {
   const chatVisible = bag.mode === "chat";
+  const settingsVisible = bag.mode === "settings";
+  const [settingsVisited, setSettingsVisited] = useState(settingsVisible);
+  useEffect(() => { if (settingsVisible) setSettingsVisited(true); }, [settingsVisible]);
   return (
     <div className="wire-body">
       <LeftAside {...bag} />
       <div className="wire-body-main" {...useShellRegion("center")}>
-        {bag.mode === "settings" ? (
-          <div className="wire-mid is-settings" data-live-region="settings">
+        {settingsVisible || settingsVisited ? (
+          <div className={`wire-mid is-settings${settingsVisible ? "" : " is-hidden-mode"}`} data-live-region="settings" hidden={!settingsVisible} inert={!settingsVisible ? true : undefined}>
             <SlotOutlet name="shell.center" props={bag} slotKey="settings" />
           </div>
         ) : null}

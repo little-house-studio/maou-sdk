@@ -64,6 +64,8 @@ export const ModelCascadeMenu = forwardRef<
   const [hoverProvider, setHoverProvider] = useState(provider || "");
   const [panelModels, setPanelModels] = useState<ModelOption[]>(() => [...models]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const requestRef = useRef(0);
   const cacheRef = useRef<Map<string, ModelOption[]>>(new Map());
 
   useImperativeHandle(ref, () => ({
@@ -84,22 +86,29 @@ export const ModelCascadeMenu = forwardRef<
   const loadProviderModels = useCallback(
     async (pid: string) => {
       if (!pid) return;
+      const request = ++requestRef.current;
+      setError("");
       const hit = cacheRef.current.get(pid);
       if (hit) {
         setPanelModels(hit);
+        setLoading(false);
         return;
       }
+      setPanelModels([]);
       setLoading(true);
       try {
         const md = await fetchModels(pid);
         const list = md.models ?? [];
         cacheRef.current.set(pid, list);
+        if (request !== requestRef.current) return;
         setPanelModels(list);
         onModelsLoaded?.(pid, list);
       } catch {
+        if (request !== requestRef.current) return;
         setPanelModels([]);
+        setError("加载失败，点击方案重试");
       } finally {
-        setLoading(false);
+        if (request === requestRef.current) setLoading(false);
       }
     },
     [onModelsLoaded, fetchModels],
@@ -146,7 +155,7 @@ export const ModelCascadeMenu = forwardRef<
       key: "models",
       heading: "模型",
       loading,
-      empty: loading ? "加载中…" : "无模型",
+      empty: loading ? "加载中…" : error || "无模型",
       items: panelModels.map((m) => {
         const selected = provider === preview && model === m.id;
         return {

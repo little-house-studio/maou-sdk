@@ -106,6 +106,11 @@ export interface ToolDefinition {
    * 缺省 / true = 附带；false = 关闭。模型也可传 `report_elapsed=false` 单次关闭。
    */
   reportElapsed?: boolean
+  /**
+   * true = 不把 TOOL.md 打进 system prompt。
+   * 说明走工具自身的 list / help，像 MCP gateway。
+   */
+  deferPrompt?: boolean
 }
 /**
  * Agent 运行时注入给工具的编排端口（收口服务定位器）。
@@ -207,6 +212,11 @@ export interface ToolContext {
    * 由 AgentRuntime 从 agent.json `computerUse.mode` 注入。
    */
   computerUseMode?: "auto" | "ax" | "pixels"
+  /**
+   * 当前模型是否吃图片。由 AgentRuntime 按 preset + 本会话已学会的 text-only 注入。
+   * 缺省视为支持；false 时读图/截图不得静默注入像素。
+   */
+  supportsVision?: boolean
   /**
    * maou 根目录（通常 ~/.maou）。由 AgentRuntime 注入。
    * use_skill / find_skill 等据此扫描全局 skills，勿用 sandboxRoot 顶替。
@@ -567,6 +577,10 @@ export interface ForkOptions {
    * ok=true，真实结果异步到达。
    */
   detached?: boolean
+  /**
+   * 指定子 sessionId。detached 后台二次 fork 时复用占位返回的 id。
+   */
+  subSessionId?: string
   /**
    * 输出 JSON Schema（P2-1）。用于校验子 Agent yield 提交的 result。
    *
@@ -1080,6 +1094,35 @@ export {
 export { detectExpression } from './expression.js'
 export { Profiler } from './profiler.js'
 export type { SpanRecord, SpanSummary, ProfileReport } from './profiler.js'
+export {
+  PERF_THRESHOLDS,
+  classifyOccupancy,
+  classifyMarks,
+  classifyProfile,
+  perfLogMode,
+  shouldWritePerfLog,
+} from './perf-occupancy.js'
+export type {
+  PerfLogKind,
+  PerfMark,
+  PerfOccupancySnap,
+  PerfProcess,
+  PerfProfileLite,
+  PerfReason,
+} from './perf-occupancy.js'
+export {
+  configurePerfLog,
+  getPerfProcess,
+  notePerfMark,
+  resetPerfLogForTest,
+  resolvePerfLogDir,
+  resolvePerfLogPath,
+  startPerfLog,
+  stopPerfLog,
+  writePerfLog,
+  writePerfProfile,
+} from './perf-log.js'
+export type { PerfLogEntry, StartPerfLogOpts } from './perf-log.js'
 // 共享 token 文本启发式（llm / context 共用，避免双公式）
 export { estimateTokensFromText } from './token-estimate.js'
 // 省略/截断的统一文案（context 与 tools 共用，出路参数在这一层）

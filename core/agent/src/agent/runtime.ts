@@ -36,7 +36,6 @@ import {
   instructionRelPaths,
   emergencyTrimMessages,
   stripNonTextContent,
-  MAX_ROUNDS,
   DEFAULT_AGENT_ROUND_LIMIT,
   DEFAULT_LOOP_THRESHOLD,
   CONTEXT_THRESHOLD_PERCENT,
@@ -44,6 +43,7 @@ import {
   shouldStoreThinkingInContext,
   resolveMicroCompactRounds,
   DEFAULT_MICRO_COMPACT_ROUNDS,
+  filterLlmVisible,
 } from "@little-house-studio/context";
 import type {
   HarnessSessionStore,
@@ -151,6 +151,7 @@ import {
   resetWakeStreak,
 } from "./job-registry.js";
 import { buildToolContext } from "./runtime-tool-context.js";
+import { resolveRunRoundLimit, shouldContinueRound } from "./round-limit.js";
 import {
   isTodoPlanSettled as isTodoPlanSettledHelper,
   flushTodoNotices as flushTodoNoticesHelper,
@@ -179,6 +180,7 @@ import {
   authorAgent,
   authorSystem,
   formatSenderEnvelope,
+  resolveSessionEventKind,
 } from "@little-house-studio/context";
 import type { GoalClosePending, GoalMessageSource } from "@little-house-studio/types";
 import { decideGoalSettle, goalRoundPromptKind, parseTaskCompletion } from "@little-house-studio/types";
@@ -188,7 +190,7 @@ import { createAgentSkillManager, applyAgentSkillOptions } from "../bootstrap/sk
 import type { SubagentExecutorLike } from "@little-house-studio/types";
 import type { StreamEvent } from "@little-house-studio/types";
 import type { MessageImage } from "@little-house-studio/types";
-import { Profiler, resolveUserMaouRoot, detectExpression } from "@little-house-studio/types";
+import { Profiler, resolveUserMaouRoot, detectExpression, writePerfProfile } from "@little-house-studio/types";
 import { Hooks, type HookUi, appendHookSystemPrompt, takeHookMessage, isHookContinue } from "./hooks.js";
 import { loadHookScripts } from "./hook-loader.js";
 import { FileDiffWatch } from "../agent_factory/file-diff-watch.js";
@@ -358,6 +360,8 @@ export interface RunOptions {
   goalRound?: GoalMessageSource;
   /** 中断信号——收到中断时停止 agent 循环 */
   abortSignal?: AbortSignal;
+  /** 宿主接管 run 结束后的队列续跑，避免只写入历史却没有回复。 */
+  deferQueueOnExit?: boolean;
   /** 平台上下文注入 —— 由插件（如飞书）提供，追加在 system prompt 之后 */
   platformContext?: string;
   /** 绑定级项目根路径 —— 由插件（如飞书）提供，覆盖 AgentRuntime.projectRoot */
@@ -556,6 +560,11 @@ export class AgentRuntime {
     /** 记账时会话里有多少条消息 —— 之后新增的部分只能靠估算补 */
     anchorMessageCount?: number;
   }>();
+  /**
+   * 该 session+model 已被 API 判定不吃图片：之后拼上下文只留占位，不再带 image_url。
+   */
+  private textOnlyMediaKeys = new Set<string>();
+
   /** 压缩后占用清零，禁止再读磁盘上一条 usage。 */
   private sessionOccupancyCleared = new Set<string>();
   /** 上一次真正发出去的 system / tools，供分区条估算。 */
@@ -586,6 +595,16 @@ export class AgentRuntime {
   private cacheRebuild: CacheRebuildHost;
   private _hooksLoadedFor = new Set<string>();
   private lastExpression = new Map<string, string>();
+  /** 本 run 工作集：单 engine、增量 LLM 历史、git 块。while 结束 flush。 */
+  private runContext: {
+    sessionId: string;
+    engine?: ContextEngine;
+    llmHistory?: LLMMessage[];
+    historyMaouLen: number;
+    gitBlock: string;
+    gitDirty: boolean;
+    registry?: AgentRegistry;
+  } | null = null;
 
   constructor(options: RuntimeOptions) {
     this.compiler = options.compiler;
@@ -648,13 +667,6 @@ export class AgentRuntime {
         touchTools: fd.touchTools,
       });
     }
-
-    // 注入 interrupt 回调：interrupt 模式 enqueue 时自动 abort 当前 run
-    // （未注入时只返回 shouldAbort=true，需调用方自行 abort）
-    this.messageQueue.setOnInterrupt((sid, mode) => {
-      this.abortCurrentRun(sid, mode);
-      this.log("info", `[MSG_QUEUE] session=${sid} 触发 ${mode}，已 abort 当前 run`);
-    });
 
     // 初始化上下文管理层（通过工厂）
     this.sessionManager = this.createSessionManagerFn(this.sessions, this.maouRoot);
@@ -958,8 +970,7 @@ export class AgentRuntime {
         microRounds: this.microCompactRounds,
       });
       const session = this.sessions.load(sessionId);
-      const branch = this.sessions.getLlmHistoryMessages(sessionId);
-      const msgs = (branch.length ? branch : session?.messages ?? []) as unknown as Array<Record<string, unknown>>;
+      const msgs = filterLlmVisible(session?.messages ?? []) as unknown as Array<Record<string, unknown>>;
       // B1：优先 harness 工作集 + session 增量，避免从全量 session 重压
       engine.seedWorkingSet(msgs);
       const limit = this.resolveContextLimit();
@@ -1635,6 +1646,17 @@ export class AgentRuntime {
     userMessage: string,
     options: RunOptions,
   ): AsyncGenerator<StreamEvent> {
+    const session = this.sessions.ensure(sessionId ?? undefined, options.initAgentName);
+    const unbind = this.messageQueue.bindInterrupt(session.id, mode => this.abortCurrentRun(session.id, mode));
+    try { yield* this.runWithQueue(session.id, userMessage, options); }
+    finally { unbind(); }
+  }
+
+  private async *runWithQueue(
+    sessionId: string | null | undefined,
+    userMessage: string,
+    options: RunOptions,
+  ): AsyncGenerator<StreamEvent> {
     if (!options.skipGoalDriver) {
       const boot = this.sessions.ensure(sessionId ?? undefined, options.initAgentName);
       yield* this.run(boot.id, userMessage, { ...options, skipGoalDriver: true });
@@ -1824,6 +1846,9 @@ export class AgentRuntime {
     linkExternalAbort(internalController);
     // effectiveAbortSignal：内部 controller 的 signal（已合并外部 abort）
     let effectiveAbortSignal: AbortSignal = internalController.signal;
+    if (this.messageQueue.list(sessionId).some(m => m.mode === "interrupt_immediately")) {
+      this.abortCurrentRun(sessionId, "interrupt_immediately");
+    }
 
     // 路由权威：显式传了 initAgentName 且与会话当前 agent 不一致 → 重绑定。
     // 修复：旧会话以 main 创建后（如飞书群会话），即便绑定指向 coding 也一直走 main。
@@ -1874,10 +1899,8 @@ export class AgentRuntime {
       yield this.event("done", { sessionId, rounds: 0, error: errMsg });
       return;
     }
-    if (typeof agentEntry.round_limit === "number" && agentEntry.round_limit > 0) {
-      effectiveRoundLimit = agentEntry.round_limit;
-      this.log("info", `[RUN] agent=${agentName} round_limit=${effectiveRoundLimit}`);
-    }
+    effectiveRoundLimit = resolveRunRoundLimit(this.agentRoundLimit, agentEntry.round_limit);
+    this.log("info", `[RUN] agent=${agentName} round_limit=${effectiveRoundLimit}`);
     // 思考回灌：RunOptions 覆盖 agent.json，缺省 first_round
     const agentWorkspaceFlag = readAgentWorkspaceInstructions(agentEntry);
     let workspaceInstructionsOn = resolveWorkspaceInstructionsEnabled({
@@ -2083,7 +2106,9 @@ export class AgentRuntime {
     } catch { /* 渲染失败不影响主流程 */ }
 
     // ── 2b. 编译动态注入内容（board / pending / agents 状态 / task 规划） ──
-    const dynamicInjections = prof.sync("dynamic_context", () => compileDynamicContext(maouRoot, agentName, sessionId!));
+    const dynamicInjections = prof.sync("dynamic_context", () =>
+      compileDynamicContext(maouRoot, agentName, sessionId!, { registry }),
+    );
 
     // ── 2b2. Skill 注入（修复：原本 SkillContextManager 从未被 runtime 调用 → 技能列表从不进提示词）──
     // compile() 首轮产出 bakedContent（skill 索引 → 文件缓存区 / 稳定前缀，缓存断点之前），
@@ -2323,12 +2348,6 @@ export class AgentRuntime {
     // agent.json tools 白名单（与 PERMISSION 取交集）。
     // project 子 Agent 可通过 bindingProjectRoot 切换到目标项目，即使母 Agent 是 global。
     try {
-      const registry = new AgentRegistry(
-        maouRoot,
-        this.agentScope === "project" || options.bindingProjectRoot
-          ? effectiveProjectRoot
-          : undefined,
-      );
       const agentEntry = registry.get(agentName);
       if (agentEntry?.tools && Array.isArray(agentEntry.tools)) {
         if (agentEntry.tools.includes("*")) {
@@ -2559,13 +2578,21 @@ export class AgentRuntime {
         systemPrompt = appendHookSystemPrompt(systemPrompt, preMsg.systemPrompt);
       }
     }
-    appendSessionEvent(this.sessions, sessionId!, {
-      kind: "human_user",
+    const userSource = options.userMessageSource ?? "human";
+    const userKind = resolveSessionEventKind({
+      role: "user",
+      source: userSource,
       content: effectiveUserMessage,
-      source: options.userMessageSource ?? "human",
+    });
+    appendSessionEvent(this.sessions, sessionId!, {
+      kind: userKind,
+      content: effectiveUserMessage,
+      source: userSource,
       author: options.goalRound
         ? authorSystem("goal", "goal")
-        : authorHuman("user", options.userName ?? "user"),
+        : userKind === "agent_message"
+          ? authorAgent(options.userName ?? "coding", options.userName ?? "coding")
+          : authorHuman("user", options.userName ?? "user"),
       meta: {
         ...(options.goalRound ? { goalSource: options.goalRound } : {}),
         ...(todoPre.requirePlan ? { had_todo_slash: true } : {}),
@@ -2591,7 +2618,7 @@ export class AgentRuntime {
 
     // ── 3. Agent 循环 ──
     let roundCount = 0;
-    const maxRounds = effectiveRoundLimit > 0 ? effectiveRoundLimit : MAX_ROUNDS;
+    const maxRounds = effectiveRoundLimit;
     const notifiedBgCompletions = new Set<string>();
     /** 本 run 内 structured_memory 只召回一次，避免子轮 accessCount 抖动打 cache */
     let runMemoryCache: { formattedContext: string } | null = null;
@@ -2626,7 +2653,9 @@ export class AgentRuntime {
     // 累计本次 run 所有轮的工具调用次数（loop_report 用：即使最后一轮空转，也能反映之前干了啥）
     const runToolCounts: Record<string, number> = {};
 
-    while (roundCount < maxRounds) {
+    this.beginRunContext(sessionId!, registry);
+    try {
+    while (shouldContinueRound(roundCount, maxRounds)) {
       // ── P1-3 消息总线：每轮 poll 自己的 mailbox，把队友消息作为 user 消息注入 ──
       // 队友通过 agent_manage message action 走 MessageBus.send 投递（带 from 说话人）。
       // 正文包成 <message from="…">，模型侧认发送者。
@@ -2683,7 +2712,7 @@ export class AgentRuntime {
         const reason = String(internalController.signal.reason ?? "unknown");
         // interrupt_immediately：不退出 run，重置 controller 后继续下一轮
         // （让 buildMessages 看到队列消息后正常处理）
-        if (reason === "interrupt_immediately") {
+        if (reason === "interrupt_immediately" && !externalSignal?.aborted) {
           this.log("info", `[RUN] session=${sessionId} interrupt_immediately：重置 controller，继续下一轮处理队列消息`);
           internalController = new AbortController();
           this.abortControllers.set(sessionId, internalController);
@@ -2693,6 +2722,7 @@ export class AgentRuntime {
           const interruptMessages = this.messageQueue.dequeueIfReady(sessionId!, "loop_end", {
             runExited: false,
             aborted: true,
+            interruptOnly: true,
             allTasksComplete: this.checkAllTasksComplete(sessionId!),
           });
           for (const msg of interruptMessages) {
@@ -2701,6 +2731,7 @@ export class AgentRuntime {
               yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}) 到 session（interrupt_immediately）`);
               yield this.event("queued_user", {
                 id: msg.id,
+                requestId: msg.metadata.requestId,
                 content: msg.message,
                 mode: msg.mode,
                 source: msg.source,
@@ -2847,13 +2878,8 @@ export class AgentRuntime {
 
       // 重新加载 session
       const currentSession = this.sessions.load(sessionId!) ?? session;
-      const sessionMessages = this.sessions.getLlmHistoryMessages(sessionId!) ?? currentSession.messages;
+      const sessionMessages = filterLlmVisible(currentSession.messages ?? []);
       const currentRound = roundCount + 1;
-      this.tickMicroCompactClock(
-        sessionId!,
-        sessionMessages as unknown as Array<Record<string, unknown>>,
-        roundCount === 0,
-      );
 
       // ── 3a-pre2. 每轮刷新动态注入（board / pending / agent 状态） ──
       // 首轮编译一次后持续复用，后续轮次只刷新动态部分，避免重复编译 BEFORE_USER.md
@@ -2887,7 +2913,9 @@ export class AgentRuntime {
           ? ((this.lastMultiplexerPane = paneBlock), paneBlock)
           : "";
       const dynamicSnapshot = this.dynamicSnapshotGate(sessionId!).consume(
-        roundCount === 0 ? dynamicInjections : compileDynamicContext(maouRoot, agentName, sessionId!),
+        roundCount === 0
+          ? dynamicInjections
+          : compileDynamicContext(maouRoot, agentName, sessionId!, { registry }),
       );
       const currentDynamicInjections =
         dynamicSnapshot
@@ -2930,18 +2958,12 @@ export class AgentRuntime {
         const allowTry = now >= retryAt;
         const sessionMsgsWire = sessionMessages as unknown as Array<Record<string, unknown>>;
         try {
-          const engine = new ContextEngine({
-            sessionId: sessionId!,
-            harnessStore: this.harnessStore!,
-            extensions: this.contextExtensions,
-            summarizer: runSummarizer,
-            microTurn: this.sessions.getMicroTurn(sessionId!),
-            microRounds: this.microCompactRounds,
-          });
+          const engine = this.ensureRunEngine(sessionId!, runSummarizer);
           const seed = engine.seedWorkingSet(sessionMsgsWire);
+          this.tickMicroCompactClock(sessionId!, roundCount === 0, engine);
           // harness 已有工作集：即使本轮不压，也必须用 harness 历史，否则 B1 复发
           if (seed.useAsLlmHistory) {
-            compressedHistory = engine.toLLMHistory();
+            compressedHistory = this.takeRunLlmHistory(engine, seed, false);
           }
 
           if (allowTry) {
@@ -2980,7 +3002,7 @@ export class AgentRuntime {
                 throw e;
               }
               if (report.stage !== "activeStage") {
-                compressedHistory = engine.toLLMHistory();
+                compressedHistory = this.takeRunLlmHistory(engine, seed, true);
                 this.compressRetryAfter.delete(sessionId!);
                 this.clearLastOccupancy(sessionId!);
                 const existing = this.sessionManager.getRollingSummary(sessionId!) ?? "";
@@ -3026,7 +3048,7 @@ export class AgentRuntime {
               } else {
                 this.writeCompactBracket(sessionId!, "end", { error: "no_range", stage: report.stage, source: "auto" });
                 if (seed.useAsLlmHistory) {
-                  compressedHistory = engine.toLLMHistory();
+                  compressedHistory = this.takeRunLlmHistory(engine, seed, false);
                 }
               }
               }
@@ -3036,7 +3058,7 @@ export class AgentRuntime {
             this.log("info", `[ContextEngine] 压缩退避中，${waitSec}s 后再试`);
             // 退避期间若 harness 可用，仍用工作集，避免回退全量 session 再次爆窗
             if (seed.useAsLlmHistory) {
-              compressedHistory = engine.toLLMHistory();
+              compressedHistory = this.takeRunLlmHistory(engine, seed, false);
             }
           }
         } catch (err) {
@@ -3071,6 +3093,7 @@ export class AgentRuntime {
         workspaceInstructions: workspaceInstructionsOn,
         replaceWorkspaceBaseline: sessionId ? this.instructionRebaseline.has(sessionId) : false,
         compressedHistory,
+        supportsVision: this.allowsVision(sessionId, preset),
       }), { round: currentRound });
       if (sessionId && this.instructionRebaseline.has(sessionId)) {
         this.instructionRebaseline.delete(sessionId);
@@ -3174,7 +3197,7 @@ export class AgentRuntime {
       // ── 3b. 调用 LLM（流式）──
       // - 瞬时故障：ModelCaller 内部可原样重试
       // - 上下文溢出：禁止原样重试；强制压缩 → 降 extras → 紧急截断 → 再请求
-      // - 不支持 image_url：剥多模态后重试（勿误判为超窗）
+      // - 不支持 image_url：图改占位后重试（勿误判为超窗）
       // - 目标：绝不因一次超窗把会话钉死，只剩「新话题」
       let result: ModelCallResult;
       const MODEL_RETRIES = 2;
@@ -3288,7 +3311,7 @@ export class AgentRuntime {
           "";
         const errText = `${errBlob}\n${String(result.content ?? "")}`;
 
-        // ── 多模态不支持 → 剥 image 后重试（勿当超窗）──
+        // ── 多模态不支持 → 图改占位后重试（勿当超窗，也不刷系统旁白）──
         if (
           detectUnsupportedMediaContent(errText) &&
           mediaRecoveries < MAX_MEDIA_RECOVER &&
@@ -3299,14 +3322,12 @@ export class AgentRuntime {
             finalMessages as Array<Record<string, unknown>>,
           );
           if (stripped.stripped > 0) {
+            this.rememberTextOnlyMedia(sessionId, String(preset.model ?? ""));
             finalMessages = stripped.messages;
-            yield this.logEvent(
-              "warning",
-              `模型不支持多模态内容，已移除 ${stripped.stripped} 处非文本块后重试`,
+            this.log(
+              "info",
+              `[RUN] 模型不支持多模态，已将 ${stripped.stripped} 处图片改为占位符`,
             );
-            yield this.event("status", {
-              text: `Unsupported media · stripped · retry`,
-            });
             await this.hooks?.agentThinking();
             continue;
           }
@@ -3830,7 +3851,7 @@ export class AgentRuntime {
 
         // task_complete phase：本轮若有工具完成（尤其 todo_finish），且全部 todo 已完成，
         // 立即投递 after_task_complete 模式的消息（不必等 loop_end 兜底）。
-        if (this.checkAllTasksComplete(sessionId!)) {
+        if (!externalSignal?.aborted && this.checkAllTasksComplete(sessionId!)) {
           const taskCompleteMessages = this.messageQueue.dequeueIfReady(sessionId!, "task_complete", {
             allTasksComplete: true,
           });
@@ -3840,6 +3861,7 @@ export class AgentRuntime {
               yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}) 到 session（task_complete）`);
               yield this.event("queued_user", {
                 id: msg.id,
+                requestId: msg.metadata.requestId,
                 content: msg.message,
                 mode: msg.mode,
                 source: msg.source,
@@ -3936,7 +3958,7 @@ export class AgentRuntime {
 
       // 无工具调用（且验证通过/无验证）→ 检查消息队列再决定退出
       // round_end：投递 after_round_complete 模式的消息，有投递则继续下一轮让 LLM 处理
-      const roundEndMessages = this.messageQueue.dequeueIfReady(sessionId!, "round_end", {
+      const roundEndMessages = externalSignal?.aborted ? [] : this.messageQueue.dequeueIfReady(sessionId!, "round_end", {
         allTasksComplete: this.checkAllTasksComplete(sessionId!),
       });
       if (roundEndMessages.length > 0) {
@@ -3946,6 +3968,7 @@ export class AgentRuntime {
             yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}): 已追加到 session`);
             yield this.event("queued_user", {
               id: msg.id,
+                requestId: msg.metadata.requestId,
               content: msg.message,
               mode: msg.mode,
               source: msg.source,
@@ -4077,6 +4100,9 @@ export class AgentRuntime {
         this.log("warning", `[SUPERVISOR] 推送 loop 摘要失败: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+    } finally {
+      this.flushRunContext();
+    }
 
     // ── 4. 完成 ──
     if (effectiveRoundLimit > 0 && roundCount >= effectiveRoundLimit) {
@@ -4087,7 +4113,7 @@ export class AgentRuntime {
 
     // ── 4a. loop_end：投递剩余队列消息（after_loop_complete / after_task_complete / interrupt 模式） ──
     // 此时 run 已退出，interrupt 模式消息也可投递。投递的消息留在 session 里，由下次 run 处理。
-    {
+    if (!externalSignal?.aborted && !options.deferQueueOnExit) {
       const loopEndMessages = this.messageQueue.dequeueIfReady(sessionId!, "loop_end", {
         runExited: true,
         allTasksComplete: this.checkAllTasksComplete(sessionId!),
@@ -4098,6 +4124,7 @@ export class AgentRuntime {
           yield this.logEvent("info", `📨 投递队列消息 #${msg.id} (${msg.mode}) 到 session（loop_end）`);
           yield this.event("queued_user", {
             id: msg.id,
+                requestId: msg.metadata.requestId,
             content: msg.message,
             mode: msg.mode,
             source: msg.source,
@@ -4149,6 +4176,7 @@ export class AgentRuntime {
     // ── 性能报告：emit profile 事件 + 日志汇总（定位慢/异常环节）──
     const report = prof.report();
     this.log("info", `[PROFILE]\n${prof.renderText()}`);
+    void writePerfProfile(report);
     yield this.event("profile", { report });
 
     await this.hooks?.loopEnd(sessionId!, {
@@ -4389,39 +4417,97 @@ export class AgentRuntime {
   /** 已注册的 MCP proxy 工具名（P2-4），用于下次 run 前清理，避免跨 session 残留。 */
   private _registeredMcpProxyTools: Set<string> = new Set();
 
-  private tickMicroCompactClock(
-    sessionId: string,
-    sessionMessages: Array<Record<string, unknown>>,
-    isFirstLoopOfRun: boolean,
-  ): void {
-    if (!this.harnessStore) return;
-    const engine = new ContextEngine({
+  private beginRunContext(sessionId: string, registry?: AgentRegistry): void {
+    this.runContext = {
       sessionId,
-      harnessStore: this.harnessStore,
+      historyMaouLen: 0,
+      gitBlock: "",
+      gitDirty: true,
+      registry,
+    };
+  }
+
+  private flushRunContext(): void {
+    const ctx = this.runContext;
+    if (!ctx) return;
+    try {
+      ctx.engine?.save();
+    } catch {
+      /* 收尾落盘失败不挡退出 */
+    }
+    try {
+      this.sessions.persistFoldCache(ctx.sessionId);
+    } catch {
+      /* fold 刷盘失败下次全量折 */
+    }
+    this.runContext = null;
+  }
+
+  private ensureRunEngine(sessionId: string, summarizer?: Summarizer): ContextEngine {
+    const ctx = this.runContext ?? (this.beginRunContext(sessionId), this.runContext!);
+    if (ctx.engine) return ctx.engine;
+    ctx.engine = new ContextEngine({
+      sessionId,
+      harnessStore: this.harnessStore!,
       extensions: this.contextExtensions,
+      summarizer,
       microTurn: this.sessions.getMicroTurn(sessionId),
       microRounds: this.microCompactRounds,
     });
-    engine.seedWorkingSet(sessionMessages);
+    return ctx.engine;
+  }
+
+  private takeRunLlmHistory(
+    engine: ContextEngine,
+    seed: { appended: number; useAsLlmHistory: boolean },
+    rebuild: boolean,
+  ): LLMMessage[] {
+    const ctx = this.runContext;
+    const unlock = engine.unlockPrefixIfDue();
+    const withUnlock = (base: LLMMessage[]): LLMMessage[] =>
+      unlock ? [...base, { role: "user", content: unlock }] : base;
+    if (!ctx || rebuild || !ctx.llmHistory || !seed.useAsLlmHistory) {
+      const base = engine.getHistory().map(maouToLLMMessage);
+      if (ctx) {
+        ctx.llmHistory = base;
+        ctx.historyMaouLen = engine.getHistory().length;
+      }
+      return withUnlock(base);
+    }
+    if (seed.appended > 0) {
+      const added = engine.getHistory().slice(ctx.historyMaouLen).map(maouToLLMMessage);
+      ctx.llmHistory = ctx.llmHistory.concat(added);
+      ctx.historyMaouLen = engine.getHistory().length;
+    }
+    return withUnlock(ctx.llmHistory);
+  }
+
+  private tickMicroCompactClock(
+    sessionId: string,
+    isFirstLoopOfRun: boolean,
+    engine: ContextEngine,
+  ): void {
     if (isFirstLoopOfRun && engine.getMicroTurn() > 0) engine.noteUserMicroTurn();
     engine.beginAgentMicroTurn();
     this.sessions.setMicroTurn(sessionId, engine.getMicroTurn());
-    if (engine.isFromHarness()) engine.save();
   }
 
   private applyRoundMicroCompactNow(sessionId: string): void {
     if (!this.harnessStore) return;
-    const engine = new ContextEngine({
-      sessionId,
-      harnessStore: this.harnessStore,
-      extensions: this.contextExtensions,
-      microTurn: this.sessions.getMicroTurn(sessionId),
-      microRounds: this.microCompactRounds,
-    });
-    const msgs = this.sessions.getLlmHistoryMessages(sessionId) as unknown as Array<Record<string, unknown>>;
-    engine.seedWorkingSet(msgs);
+    const hadEngine = Boolean(this.runContext?.engine);
+    const engine = this.ensureRunEngine(sessionId, this.summarizer);
+    if (!hadEngine) {
+      const session = this.sessions.load(sessionId);
+      engine.seedWorkingSet(
+        filterLlmVisible(session?.messages ?? []) as unknown as Array<Record<string, unknown>>,
+      );
+    }
     engine.applyRoundMicroCompact();
     this.sessions.setMicroTurn(sessionId, engine.getMicroTurn());
+    if (this.runContext) {
+      this.runContext.llmHistory = undefined;
+      this.runContext.historyMaouLen = 0;
+    }
   }
 
   private finishAgentRoundContext(sessionId: string): void {
@@ -4480,6 +4566,7 @@ export class AgentRuntime {
       compressionLevel,
       terminalBackend: this.agentTerminalBackend,
       computerUseMode: this.agentComputerUseMode,
+      supportsVision: this.allowsVision(sessionId, currentPreset ?? this.currentPreset ?? {}),
       skillOptions: this.skillOptions,
       subagentExecutor: this.subagentExecutor as never,
       callMainAgentFn: this.callMainAgentFn,
@@ -4890,6 +4977,8 @@ export class AgentRuntime {
    * 让 agent 实时看到「相对 git HEAD 改了哪些文件」。非 git 仓库/无改动 → 空串。
    */
   private async workspaceChanges(): Promise<string> {
+    const ctx = this.runContext;
+    if (ctx && !ctx.gitDirty) return ctx.gitBlock;
     const workingDir = this.effectiveWorkingDir || this.projectRoot;
     try {
       const { exec } = await import("node:child_process");
@@ -4912,9 +5001,21 @@ export class AgentRuntime {
       if (added.length) lines.push(`  新增(${added.length}): ${cap(added)}`);
       if (modified.length) lines.push(`  修改(${modified.length}): ${cap(modified)}`);
       if (deleted.length) lines.push(`  删除(${deleted.length}): ${cap(deleted)}`);
-      if (!lines.length) return "";
-      return `<workspace_changes>\n工作区相对 git HEAD 的改动：\n${lines.join("\n")}\n</workspace_changes>`;
+      if (!lines.length) {
+        if (ctx) {
+          ctx.gitBlock = "";
+          ctx.gitDirty = false;
+        }
+        return "";
+      }
+      const block = `<workspace_changes>\n工作区相对 git HEAD 的改动：\n${lines.join("\n")}\n</workspace_changes>`;
+      if (ctx) {
+        ctx.gitBlock = block;
+        ctx.gitDirty = false;
+      }
+      return block;
     } catch {
+      if (ctx) ctx.gitDirty = false;
       return "";
     }
   }
@@ -5386,6 +5487,9 @@ export class AgentRuntime {
           `${background ? " [后台]" : ""} ${toolElapsedMs}ms`,
       ));
       // 文件 diff 监听：成功触碰 reader/edit/write 后入名单
+      if (normalized.ok && this.runContext && !this.toolIsParallelSafe(toolCall.name)) {
+        this.runContext.gitDirty = true;
+      }
       if (normalized.ok && this.fileDiffWatch && sessionId) {
         try {
           this.fileDiffWatch.noteToolTouch(
@@ -5393,6 +5497,7 @@ export class AgentRuntime {
             toolCall.name,
             (toolCall.parameters ?? {}) as Record<string, unknown>,
           );
+          this.runContext && (this.runContext.gitDirty = true);
         } catch { /* ignore */ }
       }
 
@@ -5440,6 +5545,25 @@ export class AgentRuntime {
     return detail
       ? { type: "log", level, message, detail }
       : { type: "log", level, message };
+  }
+
+  private mediaPolicyKey(sessionId: string | undefined, model: string): string {
+    return `${sessionId ?? "_"}::${model}`;
+  }
+
+  private rememberTextOnlyMedia(sessionId: string | undefined, model: string): void {
+    this.textOnlyMediaKeys.add(this.mediaPolicyKey(sessionId, model));
+  }
+
+  /** 预设声明不支持，或本会话该模型已被 API 拒过图。 */
+  private allowsVision(
+    sessionId: string | undefined,
+    preset: { supportsVision?: boolean; model?: string },
+  ): boolean {
+    if (preset.supportsVision === false) return false;
+    return !this.textOnlyMediaKeys.has(
+      this.mediaPolicyKey(sessionId, String(preset.model ?? "")),
+    );
   }
 
   /** 压缩系统事件：一行摘要 + 可展开详情（阶段 token / 压缩文） */
@@ -5709,21 +5833,14 @@ export class AgentRuntime {
 
     if (engineEnabled && this.harnessStore) {
       try {
-        const engine = new ContextEngine({
-          sessionId,
-          harnessStore: this.harnessStore,
-          extensions: this.contextExtensions,
-          summarizer: runSummarizer,
-          microTurn: this.sessions.getMicroTurn(sessionId),
-          microRounds: this.microCompactRounds,
-        });
+        const engine = this.ensureRunEngine(sessionId, runSummarizer);
         engine.seedWorkingSet(sessionMessages);
         this.writeCompactBracket(sessionId, "start", { source: "overflow" });
         const report = await engine.compress(contextLimit, {
           force: true,
           sourceSessionMessages: sessionMessages,
         });
-        compressedHistory = engine.toLLMHistory();
+        compressedHistory = this.takeRunLlmHistory(engine, { appended: 0, useAsLlmHistory: true }, true);
         stage = report.stage;
         originalTokens = report.originalTokens;
         droppedSummary = report.droppedSummary;
@@ -5784,6 +5901,7 @@ export class AgentRuntime {
           structuredMemory: leanExtras ? "" : opts.structuredMemory,
           projectRoot: opts.projectRoot,
           compressedHistory,
+          supportsVision: this.allowsVision(sessionId, this.currentPreset ?? {}),
         }) as Array<Record<string, unknown>>;
       } catch (e) {
         this.writeCompactBracket(sessionId, "end", { error: String(e), source: "overflow" });

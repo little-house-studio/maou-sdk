@@ -256,7 +256,7 @@ describe("SessionList scheme A + tree", () => {
     );
     assert.match(
       draftCss,
-      /\.wire-left > \[data-aside-pane\]\[hidden\]\s*\{[^}]*display:\s*none\s*!important/s,
+      /\.wire-left > \[data-aside-pane\]\[hidden\][^{]*\{[^}]*display:\s*none\s*!important/s,
     );
     assert.match(
       liveCss,

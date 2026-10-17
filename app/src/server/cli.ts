@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 /**
- * maou-app —— 只启动桌面客户端，不提供浏览器 HTTP。
+ * maou-app —— 只启动桌面客户端（src-tauri 编出的 Tauri 二进制），不提供浏览器 HTTP。
  */
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const mainJs = join(here, "../desktop/main.js");
+const appRoot = join(here, "../..");
+const exe = process.platform === "win32" ? "maou-app.exe" : "maou-app";
 
-function electronBin(): string {
-  const require = createRequire(import.meta.url);
-  try {
-    return require("electron") as string;
-  } catch {
-    throw new Error(
-      "找不到 Electron。开发请运行：pnpm --filter @little-house-studio/app dev",
-    );
-  }
+/**
+ * 只认 release：debug 二进制（tauri dev 产物）页面指向 Vite dev server，单独起是白屏。
+ */
+function desktopBinary(): string | null {
+  const candidates = [
+    process.env.MAOU_APP_BIN?.trim(),
+    join(appRoot, "src-tauri", "target", "release", exe),
+  ].filter((p): p is string => Boolean(p));
+  return candidates.find((p) => existsSync(p)) ?? null;
 }
 
 function main() {
@@ -31,18 +31,22 @@ Usage:
   maou-app
 
 只开桌面窗口，没有浏览器地址。
+环境变量：MAOU_APP_BIN 指定客户端二进制；MAOU_NODE 指定跑 hub 的 node。
 `);
     process.exit(0);
   }
 
-  if (!existsSync(mainJs)) {
+  const bin = desktopBinary();
+  if (!bin) {
     process.stderr.write(
-      "[maou-app] 缺少 dist/desktop/main.js。先运行：pnpm --filter @little-house-studio/app build\n",
+      "[maou-app] 找不到桌面客户端二进制。\n" +
+        "  开发：pnpm --filter @little-house-studio/app dev\n" +
+        "  本机编译：pnpm --filter @little-house-studio/app tauri build --no-bundle\n",
     );
     process.exit(1);
   }
 
-  const child = spawn(electronBin(), [mainJs, ...process.argv.slice(2)], {
+  const child = spawn(bin, process.argv.slice(2), {
     stdio: "inherit",
     env: process.env,
   });

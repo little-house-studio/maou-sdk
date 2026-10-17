@@ -87,6 +87,7 @@ export function mountLlmConfigRoutes(app: Express): void {
 
       res.json({
         ok: result.ok,
+        error: result.ok ? undefined : result.error,
         result,
       });
     } catch (e) {

@@ -21,13 +21,18 @@ import { formatMetadata, errToString } from "../../util/common.js";
 import {
   ENGINE_OUTPUT_CHAR_BUDGET,
   TERMINAL_LOG_FETCH_LINES,
+  hasTerminalProgress,
   inferPromptWaitState,
+  noteTerminalOutputProgress,
+  parseTerminalCreatedAt,
   peekOverflow,
+  peekTerminalStall,
   peekWaitState,
   rememberWaitState,
   resolveTerminalLineLimit,
   retainTerminalOutput,
 } from "../overflow.js";
+import { applyExitZeroWarning } from "../exit-zero-errors.js";
 import {
   getTerminalReviewer,
   getTerminalApprover,
@@ -104,7 +109,8 @@ export class TerminalTool extends Tool {
       " action=write 键盘输入。" +
       " 【条件返回】run 时 return_when=filter|until + match(正则可选) + expr(受限 Python 表达式)，盯命令输出。" +
       " 表达式可用 line/n/re/m；例: match='a\\\\s*=\\\\s*(\\\\d+)' expr='m is not None and 2 < int(m.group(1)) < 5'。" +
-      " until=第一次命中即返回（可 keep_running）；filter=命令结束后筛出所有命中行。" +
+      " until=第一次命中即返回（可 keep_running；id 已在跑时可省略 command，挂到该任务输出）。" +
+      " filter=命令结束后筛出所有命中行。" +
       " background=false（默认）阻塞等待；到 timeout 仍在跑则转后台并汇报。命令成功或失败后进程即停。",
     parameters: {
       type: "object",
@@ -117,11 +123,12 @@ export class TerminalTool extends Tool {
         id: {
           type: "string",
           description:
-            "终端名称。后台/until/前台超时转后台时复用或保留此 id；前台正常结束后未指定 id 则销毁。",
+            "终端名称（命名 + 日志/管理定位）。后台/until/前台超时转后台时保留此 id；但每次 run 都是新 shell，cd/export 等状态不会跨调用保留。前台正常结束后未指定 id 则销毁。",
         },
         command: {
           type: "string",
-          description: "要执行的 shell 命令（run 时必填）",
+          description:
+            "要执行的 shell 命令。新开任务必填；return_when=until 且 id 已在跑时可省略，只盯该任务输出。",
         },
         description: {
           type: "string",
@@ -144,7 +151,7 @@ export class TerminalTool extends Tool {
           type: "string",
           enum: ["filter", "until"],
           description:
-            "条件返回：filter=筛出所有命中行；until=第一次命中即返回（终端流/长任务）。需配 expr 和/或 match",
+            "条件返回：filter=筛出所有命中行；until=第一次命中即返回。可挂已有后台 id（省略 command）。需配 expr 和/或 match",
         },
         match: {
           type: "string",
@@ -179,7 +186,8 @@ export class TerminalTool extends Tool {
         },
         data: {
           type: "string",
-          description: "要发送的键盘输入（write 时必填，如 'y\\n'、'\\x03' 表示 Ctrl+C）",
+          description:
+            "要发送的键盘输入（write 时必填）。交互式程序在行编辑模式下默认等换行才提交输入，通常需以 \\n 结尾，如 'y\\n'；'\\x03' 表示 Ctrl+C（无需换行）。",
         },
         reason: {
           type: "string",
@@ -270,7 +278,16 @@ export class TerminalTool extends Tool {
               const wait = peekWaitState(t.id) ?? inferPromptWaitState("", t.state);
               const waitLabel = wait === "waiting" ? "等你" : "忙";
               const spill = peekOverflow(t.id);
-              return `${t.id}${t.description ? `「${t.description}」` : ""} 属主=${t.agentName || agent} ${waitLabel}${spill ? ` 溢出=${spill}` : ""}`;
+              if (!hasTerminalProgress(t.id)) {
+                noteTerminalOutputProgress(
+                  t.id,
+                  "",
+                  Date.now(),
+                  parseTerminalCreatedAt(t.createdAt),
+                );
+              }
+              const stall = peekTerminalStall(t.id, t.state);
+              return `${t.id}${t.description ? `「${t.description}」` : ""} 属主=${t.agentName || agent} ${waitLabel}${spill ? ` 溢出=${spill}` : ""}${stall ? " ⚠无进展" : ""}`;
             })
             .join("; "),
       );
@@ -343,23 +360,45 @@ export class TerminalTool extends Tool {
     const returnWhen = String(params.return_when ?? "").trim() as ReturnWhen | "";
 
     let command = String(params.command ?? "").trim();
-    if (!command) return createToolResponse(false,
-      "❌ run 操作必须提供 command 参数。\n" +
-      "正确用法示例：{\"action\":\"run\",\"command\":\"git status\",\"reason\":\"查看仓库状态\"}\n" +
-      "等输出命中再返回：加 return_when=until 和 match/expr。",
-    );
+    const id = params.id ? String(params.id) : undefined;
+    const attachUntil =
+      returnWhen === "until" && id ? findRunningTerminal(ctx, id) : undefined;
+    if (!command && !attachUntil) {
+      if (returnWhen === "until" && id) {
+        // 想挂已有后台任务但没给 command：区分「已结束」与「不存在」
+        const existing = findAnyTerminal(ctx, id);
+        if (existing) {
+          const exitLabel =
+            existing.exitCode != null ? `（exit ${existing.exitCode}）` : "";
+          return createToolResponse(false,
+            `任务 ${id} 已结束${exitLabel}，无法挂 until；请用 manage logs id=${id} 查看输出，` +
+              `或提供 command 重新运行。`,
+            { payload: { id, state: existing.state, exit_code: existing.exitCode ?? null } },
+          );
+        }
+        return createToolResponse(false,
+          `终端 ${id} 不存在；请提供 command 新开任务，或确认 id 是否属于本 agent / 已被删除。`,
+          { payload: { id } },
+        );
+      }
+      return createToolResponse(false,
+        "❌ run 操作必须提供 command；盯已有后台任务时也可只给正在运行的 id。\n" +
+        "正确用法示例：{\"action\":\"run\",\"command\":\"git status\",\"reason\":\"查看仓库状态\"}\n" +
+        "等已有后台输出：{\"action\":\"run\",\"id\":\"build\",\"return_when\":\"until\",\"match\":\"DONE\",\"reason\":\"等结束\"}",
+      );
+    }
 
     // ── 终端审批策略（normal / auto / yolo + 黑白名单 + 重复放行）──
     // 审批 UI 优先展示模型在 tool_call 里写的 description / reason（不是另一套 AI 生成）
     const aiDescription = String(params.description ?? "").trim();
     const aiReason = String(params.reason ?? "").trim();
-    const gate = await this._approve(command, ctx, {
-      description: aiDescription,
-      reason: aiReason,
-    });
-    if (gate) return gate; // 非空 = 被拦截，返回审批提示/拒绝
-
-    const id = params.id ? String(params.id) : undefined;
+    if (!attachUntil) {
+      const gate = await this._approve(command, ctx, {
+        description: aiDescription,
+        reason: aiReason,
+      });
+      if (gate) return gate; // 非空 = 被拦截，返回审批提示/拒绝
+    }
     const background = Boolean(params.background);
     // cwd 解析：默认在项目工作目录（与 reader/glob/grep 等文件工具一致，操作真实项目）。
     // 仅当显式 sandboxMode 为隔离模式时才落到 sandboxRoot；否则旧逻辑会把终端命令
@@ -374,21 +413,27 @@ export class TerminalTool extends Tool {
         ? (ctx.sandboxRoot || ctx.workingDir || ctx.projectRoot)
         : (ctx.workingDir || ctx.projectRoot || ctx.sandboxRoot);
 
-    const pre = await gateTerminal("terminal_pre_run", {
-      command,
-      cwd,
-      background,
-      return_when: returnWhen || "complete",
-      id,
-      ...terminalHookCtx(ctx),
-    });
-    if (!pre.allowed) return deniedByTerminalHook("run", command, pre.reason);
-    if (typeof pre.command === "string" && pre.command.trim()) {
-      command = pre.command.trim();
+    if (!attachUntil) {
+      const pre = await gateTerminal("terminal_pre_run", {
+        command,
+        cwd,
+        background,
+        return_when: returnWhen || "complete",
+        id,
+        ...terminalHookCtx(ctx),
+      });
+      if (!pre.allowed) return deniedByTerminalHook("run", command, pre.reason);
+      if (typeof pre.command === "string" && pre.command.trim()) {
+        command = pre.command.trim();
+      }
     }
 
     // description 缺失时用命令兜底（而非报错），减少模型多花一轮补参数。
-    const description = aiDescription || `执行命令: ${command.slice(0, 60)}`;
+    const description =
+      aiDescription ||
+      (attachUntil
+        ? attachUntil.description || `等待 ${id}`
+        : `执行命令: ${command.slice(0, 60)}`);
     const resultLimit = resolveTerminalLineLimit(params.result_limit);
 
     // 条件返回路径
@@ -418,9 +463,9 @@ export class TerminalTool extends Tool {
       if (returnWhen === "until") {
         return this._runUntilCondition({
           id,
-          command,
+          command: attachUntil?.command || command || id || "",
           description,
-          cwd,
+          cwd: attachUntil?.cwd || cwd,
           ctx,
           timeoutSec,
           resultLimit,
@@ -428,6 +473,7 @@ export class TerminalTool extends Tool {
           match,
           contextLines,
           keepRunning,
+          attachExisting: Boolean(attachUntil),
         });
       }
       // filter：跑完（或超时）后对输出筛行
@@ -466,6 +512,7 @@ export class TerminalTool extends Tool {
     match?: string;
     contextLines: number;
     keepRunning: boolean;
+    attachExisting?: boolean;
   }): Promise<ToolResponse> {
     const agent = opts.ctx.agentName || "main";
     const timeoutMs = Math.max(1000, opts.timeoutSec * 1000);
@@ -473,6 +520,32 @@ export class TerminalTool extends Tool {
     const started = Date.now();
 
     let terminalId: string;
+    if (opts.attachExisting && opts.id) {
+      terminalId = opts.id;
+      try {
+        await be(opts.ctx).logs(terminalId, agent, 1);
+      } catch (err: unknown) {
+        return createToolResponse(
+          false,
+          `until 挂接失败: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      emitTerminalStarted(opts.ctx, {
+        id: terminalId,
+        command: opts.command,
+        cwd: opts.cwd,
+        background: true,
+        return_when: "until",
+      });
+      const listed = be(opts.ctx).list(agent) ?? [];
+      const existing = listed.find((x) => x.id === terminalId);
+      noteTerminalOutputProgress(
+        terminalId,
+        "",
+        Date.now(),
+        parseTerminalCreatedAt(existing?.createdAt),
+      );
+    } else {
     try {
       const bg = await be(opts.ctx).runBackground(
         agent,
@@ -489,6 +562,7 @@ export class TerminalTool extends Tool {
         background: true,
         return_when: "until",
       });
+      noteTerminalOutputProgress(terminalId, bg.output || "", Date.now());
       // 已瞬间结束：对输出做 until
       if (bg.exitCode != null) {
         const cond = await evalConditionOnText(bg.output || "", {
@@ -515,20 +589,21 @@ export class TerminalTool extends Tool {
           cwd: opts.cwd,
           exit_code: bg.exitCode,
         });
-        const body = applyResultLimit(
+        const limited = applyResultLimit(
           formatConditionHits(cond),
           opts.resultLimit,
           opts.ctx,
           terminalId,
         );
-        const meta = formatMetadata({
-          terminal_id: terminalId,
-          exit_code: bg.exitCode,
-          cwd: opts.cwd,
-          return_when: "until",
-        });
-        return createToolResponse(ok, `${body}\n\n${meta}`, {
-          payload: {
+        const warned = applyExitZeroWarning(
+          limited,
+          {
+            terminal_id: terminalId,
+            exit_code: bg.exitCode,
+            cwd: opts.cwd,
+            return_when: "until",
+          },
+          {
             terminal_id: terminalId,
             exit_code: bg.exitCode,
             return_when: "until",
@@ -536,7 +611,14 @@ export class TerminalTool extends Tool {
             hits: cond.hits ?? [],
             elapsed_ms: Date.now() - started,
           },
-        });
+          bg.output || "",
+          bg.exitCode,
+        );
+        return createToolResponse(
+          ok,
+          `${warned.body}\n\n${formatMetadata(warned.meta)}`,
+          { payload: warned.payload },
+        );
       }
     } catch (err: unknown) {
       return createToolResponse(
@@ -544,16 +626,20 @@ export class TerminalTool extends Tool {
         `until 启动失败: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    }
 
     let lastEvalKey = "";
+    let firstPoll = true;
     while (Date.now() - started < timeoutMs) {
-      await new Promise((r) => setTimeout(r, pollMs));
+      if (!firstPoll) await new Promise((r) => setTimeout(r, pollMs));
+      firstPoll = false;
       let output = "";
       try {
         output = await be(opts.ctx).logs(terminalId, agent, 5000);
       } catch {
         continue;
       }
+      noteTerminalOutputProgress(terminalId, output);
       // 无变化则跳过求值
       const key = `${output.length}:${output.slice(-200)}`;
       if (key === lastEvalKey) {
@@ -682,6 +768,7 @@ export class TerminalTool extends Tool {
     } catch {
       /* ignore */
     }
+    const stall = peekTerminalStall(terminalId, "running");
     const meta = formatMetadata({
       terminal_id: terminalId,
       cwd: opts.cwd,
@@ -693,6 +780,7 @@ export class TerminalTool extends Tool {
       true,
       `until 等待 ${opts.timeoutSec}s 未命中条件，进程仍在后台跑。\n` +
         `命令结束或失败后进程即停，下一轮会带上结束结果。\n` +
+        (stall ? `${stall}\n` : "") +
         `expr: ${opts.expr}\n` +
         (opts.match ? `match: ${opts.match}\n` : "") +
         (tail ? `\n── 最近输出 ──\n${applyResultLimit(tail, opts.resultLimit, opts.ctx, terminalId)}\n` : "") +
@@ -736,6 +824,7 @@ export class TerminalTool extends Tool {
         timeoutMs,
         200_000, // 内部多取一点再 filter
       );
+      noteTerminalOutputProgress(result.terminalId, result.output || "", Date.now());
       const promoted = isPromotedToBackground(result, opts.ctx);
       emitTerminalStarted(opts.ctx, {
         id: result.terminalId,
@@ -1271,6 +1360,7 @@ export class TerminalTool extends Tool {
         timeoutMs,
         ENGINE_OUTPUT_CHAR_BUDGET,
       );
+      noteTerminalOutputProgress(result.terminalId, result.output || "", Date.now());
 
       if (isPromotedToBackground(result, ctx)) {
         emitTerminalStarted(ctx, {
@@ -1341,31 +1431,37 @@ export class TerminalTool extends Tool {
         : result.exitCode != null
           ? `失败(退出码${result.exitCode})`
           : "已结束";
-      const meta = formatMetadata({
-        exit_code: result.exitCode ?? null,
-        cwd,
-        terminal_id: result.terminalId,
-        duration_ms: Math.round(result.durationMs),
-      });
       // 摄入层压缩：测试输出只留失败+摘要、通用输出去噪去重超长截断。短输出不动。
       // 级别由 ctx.compressionLevel（agent.json tool_compression）控制，off 时原样。
       const compressed = result.output
         ? compressTerminalOutput(command, result.output, ctx.compressionLevel ?? "normal")
         : "";
       // 前台也按 result_limit 截断（与后台一致），避免压缩后输出仍过长撑大上下文
-      const body =
+      const limited =
         (compressed
           ? applyResultLimit(compressed, resultLimit, ctx, result.terminalId)
           : "") || (ok ? "（无输出）" : `命令${status}`);
-
-      return createToolResponse(ok, `${body}\n\n${meta}`, {
-        payload: {
+      const warned = applyExitZeroWarning(
+        limited,
+        {
+          exit_code: result.exitCode ?? null,
+          cwd,
+          terminal_id: result.terminalId,
+          duration_ms: Math.round(result.durationMs),
+        },
+        {
           exit_code: result.exitCode ?? null,
           cwd,
           terminal_id: result.terminalId,
           duration_ms: Math.round(result.durationMs),
           spillPath: peekOverflow(result.terminalId),
         },
+        result.output || "",
+        result.exitCode ?? null,
+      );
+
+      return createToolResponse(ok, `${warned.body}\n\n${formatMetadata(warned.meta)}`, {
+        payload: warned.payload,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1397,6 +1493,7 @@ export class TerminalTool extends Tool {
         cwd,
         background: true,
       });
+      noteTerminalOutputProgress(result.terminalId, result.output || "", Date.now());
 
       // 已快速完成
       if (result.exitCode != null) {
@@ -1414,22 +1511,25 @@ export class TerminalTool extends Tool {
           ? compressTerminalOutput(command, result.output, level)
           : "";
         const truncated = applyResultLimit(compressed, resultLimit, ctx, result.terminalId);
-        const meta = formatMetadata({
-          terminal_id: result.terminalId,
-          exit_code: result.exitCode,
-          cwd,
-        });
-        return createToolResponse(ok,
-          `后台任务「${description}」${status}。\n${truncated ? `\n输出:\n${truncated}\n` : ""}\n${meta}`,
+        const warned = applyExitZeroWarning(
+          `后台任务「${description}」${status}。\n${truncated ? `\n输出:\n${truncated}\n` : ""}`,
           {
-            payload: {
-              terminal_id: result.terminalId,
-              exit_code: result.exitCode,
-              cwd,
-              spillPath: peekOverflow(result.terminalId),
-            },
+            terminal_id: result.terminalId,
+            exit_code: result.exitCode,
+            cwd,
           },
+          {
+            terminal_id: result.terminalId,
+            exit_code: result.exitCode,
+            cwd,
+            spillPath: peekOverflow(result.terminalId),
+          },
+          result.output || "",
+          result.exitCode,
         );
+        return createToolResponse(ok, `${warned.body}\n${formatMetadata(warned.meta)}`, {
+          payload: warned.payload,
+        });
       }
 
       // 仍在运行
@@ -1596,9 +1696,19 @@ export class TerminalTool extends Tool {
       const rawOutput = await be(ctx).logs(id, ctx.agentName, TERMINAL_LOG_FETCH_LINES);
       const terminals = be(ctx).list(ctx.agentName);
       const term = terminals.find((t) => t.id === id);
+      noteTerminalOutputProgress(
+        id,
+        rawOutput || "",
+        Date.now(),
+        parseTerminalCreatedAt(term?.createdAt),
+      );
+      const running = term?.state === "running";
+      const stall = running ? peekTerminalStall(id, term?.state) : undefined;
       const stateLabel = term
-        ? term.state === "running"
-          ? "运行中"
+        ? running
+          ? stall
+            ? "疑似卡死"
+            : "运行中"
           : term.state === "exited"
             ? `已退出(${term.exitCode})`
             : term.state
@@ -1614,8 +1724,14 @@ export class TerminalTool extends Tool {
         rememberWaitState(id, inferPromptWaitState(rawOutput, term?.state));
       }
 
+      const head = running
+        ? stall
+          ? `${stall}\n\n`
+          : ""
+        : `进程已退出${term?.exitCode != null ? `（exit ${term.exitCode}）` : ""}。\n\n`;
+
       return createToolResponse(true,
-        `${limited || "（无输出）"}\n\n${meta}`,
+        `${head}${limited || "（无输出）"}\n\n${meta}`,
         {
           payload: {
             id,
@@ -1624,6 +1740,8 @@ export class TerminalTool extends Tool {
             exit_code: term?.exitCode ?? null,
             owner: term?.agentName ?? ctx.agentName,
             overflow_path: peekOverflow(id) ?? null,
+            process_exited: !running,
+            stalled: Boolean(stall),
           },
         },
       );
@@ -1656,7 +1774,8 @@ export class TerminalTool extends Tool {
     try {
       await be(ctx).write(id, ctx.agentName, data);
       emitTerminal("terminal_write", { id, data, ...terminalHookCtx(ctx) });
-      return createToolResponse(true, `已向终端 ${id} 发送输入: ${JSON.stringify(data)}`, {
+      const hint = writeNewlineHint(data);
+      return createToolResponse(true, `已向终端 ${id} 发送输入: ${JSON.stringify(data)}${hint}`, {
         payload: { id, data },
       });
     } catch (err: unknown) {
@@ -1672,6 +1791,19 @@ export class TerminalTool extends Tool {
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * write 换行提示：PTY 行编辑（canonical）模式下，交互程序默认等换行才提交输入。
+ * 控制序列（Ctrl+C/D/L、ESC、ANSI）无需换行，不提示。
+ */
+export function writeNewlineHint(data: string): string {
+  const needsNewline =
+    !/[\n\r]$/.test(data) && !/^[\x1b\x03\x04\x0c]/.test(data) && !data.includes("\x1b[");
+  return needsNewline
+    ? "\n注意：终端的行编辑（canonical）模式下，交互式程序默认等「换行」才会提交输入；" +
+        `你发送的内容不以 \\n 或 \\r 结尾，进程可能仍在等待。需要回车确认时请用 data="y\\n" 或补发 data="\\n"。`
+    : "";
+}
+
 function applyResultLimit(
   output: string,
   limit: number,
@@ -1685,8 +1817,28 @@ function applyResultLimit(
   });
   if (terminalId && output) {
     rememberWaitState(terminalId, inferPromptWaitState(output));
+    noteTerminalOutputProgress(terminalId, output);
   }
   return r.text;
+}
+
+function findRunningTerminal(ctx: ToolContext, id: string): TerminalInfo | undefined {
+  try {
+    const list = be(ctx).list(ctx.agentName || "main") ?? [];
+    return list.find((t) => t.id === id && t.state === "running");
+  } catch {
+    return undefined;
+  }
+}
+
+/** 任意状态查找（含已结束），用于给「挂已结束任务」提供友好提示 */
+function findAnyTerminal(ctx: ToolContext, id: string): TerminalInfo | undefined {
+  try {
+    const list = be(ctx).list(ctx.agentName || "main") ?? [];
+    return list.find((t) => t.id === id);
+  } catch {
+    return undefined;
+  }
 }
 
 function terminalHookCtx(ctx: ToolContext): { agent_name: string; session_id?: string } {

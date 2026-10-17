@@ -39,6 +39,7 @@ import { AgentRegistry } from "./registry.js";
 import { AgentFactory } from "./factory.js";
 import { createTeamFromTemplate, listTeamTemplates } from "./team-factory.js";
 import { SubagentExecutor } from "./subagent-executor.js";
+import { writeDetachedResultToParent } from "./detached-parent-writeback.js";
 import { createDefaultSubagentRunFn } from "./default-subagent-run-fn.js";
 import { McpConnectionManager } from "./mcp/manager.js";
 import { GitWatcher } from "../agent_factory/git-watcher.js";
@@ -479,6 +480,7 @@ export class Runtime {
             void hooks.subagentStart({ ...ev });
           } else if (ev.kind === "fork_end") {
             void hooks.subagentStop({ ...ev });
+            if (ev.detached) writeDetachedResultToParent(sessionStore, ev);
           }
         },
         // Todo 分身：预分配 sessionId
@@ -613,6 +615,7 @@ export class Runtime {
     abortSignal?: AbortSignal;
     platformContext?: string;
     source?: string;
+    deferQueueOnExit?: boolean;
     traceId?: string;
     /** 绑定级项目根路径（飞书 binding.project_root → 覆盖运行时 projectRoot） */
     projectRoot?: string;
@@ -656,6 +659,7 @@ export class Runtime {
         userVideo: params.userVideo,
         userAudio: params.userAudio,
         userMessageSource: params.source,
+        deferQueueOnExit: params.deferQueueOnExit,
         abortSignal: params.abortSignal,
         platformContext: params.platformContext,
         bindingProjectRoot: params.projectRoot,

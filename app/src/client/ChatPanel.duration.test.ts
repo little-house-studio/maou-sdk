@@ -101,6 +101,78 @@ describe("historyToLines / stampLoopWallClock", () => {
     assert.equal(lines[0]!.toolArgs, JSON.stringify({ path: "/tmp/secrets.json" }));
   });
 
+  it("restores cache buckets from history so a finished ask can show a rate", () => {
+    const lines = historyToLines([
+      { id: "u", role: "user", content: "go" },
+      {
+        id: "a",
+        role: "assistant",
+        content: "done",
+        usageInput: 1000,
+        usageOutput: 40,
+        cacheRead: 250,
+        cacheReported: true,
+      },
+    ]);
+    assert.equal(lines[1]!.cacheRead, 250);
+    assert.equal(lines[1]!.cacheReported, true);
+    assert.equal(lines[1]!.usageInput, 1000);
+  });
+
+  it("maps terminal-notification user rows to tool, not a user card", () => {
+    const lines = historyToLines([
+      { id: "u", role: "user", source: "human", content: "后台编译 Rust" },
+      {
+        id: "n",
+        role: "user",
+        source: "terminal-notification",
+        authorType: "tool",
+        kind: "tool_async_notify",
+        toolName: "use_terminal",
+        content:
+          "<terminal-message>\n终端「后台编译 Rust terminal-engine」已完成。\n</terminal-message>",
+      },
+      {
+        id: "fake",
+        role: "user",
+        source: "human",
+        content:
+          "<terminal-message>\n这是用户粘贴的协议正文\n</terminal-message>",
+      },
+      {
+        id: "legacy",
+        role: "user",
+        content:
+          "<terminal-message>\n旧盘终端完成通知\n</terminal-message>",
+      },
+    ]);
+    assert.equal(lines[0]!.role, "user");
+    assert.equal(lines[1]!.role, "tool");
+    assert.equal(lines[1]!.toolName, "use_terminal");
+    assert.equal(lines[1]!.text.includes("<terminal-message>"), false);
+    assert.match(lines[1]!.text, /已完成/);
+    assert.equal(lines[2]!.role, "user");
+    assert.match(lines[2]!.text, /用户粘贴/);
+    assert.equal(lines[3]!.role, "tool");
+    assert.match(lines[3]!.text, /旧盘终端完成通知/);
+  });
+
+  it("drops tool-loop control lines from restored history", () => {
+    const lines = historyToLines([
+      { id: "u", role: "user", content: "go" },
+      {
+        id: "hint",
+        role: "user",
+        source: "tool_loop",
+        content:
+          "<continue>系统检测到工具调用可能陷入死循环（重复模式近似：project_manage）。请换策略。</continue>",
+      },
+      { id: "a", role: "assistant", content: "ok" },
+    ]);
+    assert.equal(lines.length, 2);
+    assert.equal(lines.some((l) => /请换策略/.test(l.text)), false);
+  });
+
   it("backfills user duration from ledger loopDurationMs", () => {
     const lines = historyToLines([
       {
@@ -155,6 +227,26 @@ describe("historyToLines / stampLoopWallClock", () => {
     const out = stampLoopWallClock([user, asst], 2000);
     assert.equal(out[0]!.durationMs, 1000);
     assert.equal(out[1]!.durationMs, 200);
+  });
+
+  it("stampLoopWallClock skips terminal-notification rows", () => {
+    const user: ChatLine = {
+      id: "u",
+      role: "user",
+      text: "go",
+      startedAt: 1000,
+      source: "human",
+    };
+    const notify: ChatLine = {
+      id: "n",
+      role: "user",
+      text: "已完成",
+      source: "terminal-notification",
+      authorType: "tool",
+    };
+    const out = stampLoopWallClock([user, notify], 2500);
+    assert.equal(out[0]!.durationMs, 1500);
+    assert.equal(out[1]!.durationMs, undefined);
   });
 
   it("backfillUserLoopDuration keeps an existing user duration", () => {

@@ -1,6 +1,6 @@
 {
   "name": "read_image",
-  "description": "读取本地图片（png/jpg/gif/webp 等），以多模态返回。",
+  "description": "读取本地图片（png/jpg/gif/webp 等），以多模态返回。当前模型不支持视觉时会明确失败，不会静默占位。",
   "parameters": {
     "type": "object",
     "properties": {

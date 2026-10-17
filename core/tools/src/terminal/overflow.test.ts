@@ -5,18 +5,56 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   applyOutputLimit,
   cleanupSpillDir,
+  forgetTerminalProgress,
   inferPromptWaitState,
+  noteTerminalOutputProgress,
+  parseTerminalCreatedAt,
   peekOverflow,
+  peekTerminalStall,
   retainTerminalOutput,
   resolveTerminalLineLimit,
   TERMINAL_RESULT_LIMIT_LINES,
   TERMINAL_CAPTURE_MAX_BYTES,
+  TERMINAL_STALL_MS,
 } from "./overflow.js";
 
 describe("terminal overflow + wait", () => {
   const dirs: string[] = [];
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it("stalls after silent running window, not when exited", () => {
+    forgetTerminalProgress("stall-a");
+    noteTerminalOutputProgress("stall-a", "same-out", 1_000);
+    expect(peekTerminalStall("stall-a", "running", 1_000 + TERMINAL_STALL_MS - 1)).toBeUndefined();
+    expect(peekTerminalStall("stall-a", "running", 1_000 + TERMINAL_STALL_MS)).toMatch(/疑似卡死/);
+    expect(peekTerminalStall("stall-a", "exited", 1_000 + TERMINAL_STALL_MS)).toBeUndefined();
+    noteTerminalOutputProgress("stall-a", "same-out-new", 1_000 + TERMINAL_STALL_MS);
+    expect(peekTerminalStall("stall-a", "running", 1_000 + TERMINAL_STALL_MS + 10)).toBeUndefined();
+    forgetTerminalProgress("stall-a");
+  });
+
+  it("stalls from create with empty output; exited does not", () => {
+    forgetTerminalProgress("stall-empty");
+    noteTerminalOutputProgress("stall-empty", "", 1_000);
+    expect(peekTerminalStall("stall-empty", "running", 1_000 + 76_000)).toMatch(/疑似卡死|无进展/);
+    expect(peekTerminalStall("stall-empty", "exited", 1_000 + 76_000)).toBeUndefined();
+    forgetTerminalProgress("stall-empty");
+  });
+
+  it("first note uses startedAt when there is no record", () => {
+    forgetTerminalProgress("stall-started");
+    noteTerminalOutputProgress("stall-started", "", 80_000, 1_000);
+    expect(peekTerminalStall("stall-started", "running", 80_000)).toMatch(/疑似卡死|无进展/);
+    expect(peekTerminalStall("stall-started", "exited", 80_000)).toBeUndefined();
+    forgetTerminalProgress("stall-started");
+  });
+
+  it("parses createdAt stamp into epoch", () => {
+    const at = parseTerminalCreatedAt("2026-09-12 05:00:00");
+    expect(at).toBe(Date.parse("2026-09-12T05:00:00"));
+    expect(parseTerminalCreatedAt(1_700_000_000_000)).toBe(1_700_000_000_000);
   });
 
   it("infer waiting from prompt, busy from running without prompt", () => {

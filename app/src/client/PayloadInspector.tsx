@@ -5,6 +5,7 @@
  * 敏感 header 在 core/llm 侧已剔除。两个视图共用一套骨架：概要条 + 结构/原文两页。
  */
 import React, { useEffect, useMemo, useState } from "react";
+import { useDialog } from "./use-dialog";
 import type { PayloadDetail } from "./session-payloads";
 
 export type PayloadInspectorProps = {
@@ -344,14 +345,7 @@ export function PayloadInspector({
   loading,
   error,
 }: PayloadInspectorProps) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  const dialogRef = useDialog(open, onClose);
 
   if (!open) return null;
   const kindLabel = view === "request" ? "POST 请求" : "返回内容";
@@ -367,6 +361,8 @@ export function PayloadInspector({
     >
       <div
         className="payload-modal"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="payload-inspector-title"

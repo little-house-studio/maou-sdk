@@ -15,10 +15,16 @@ export type ProjectBag = {
   projectPath: string;
 };
 
+export type AgentInspectBag = {
+  switchId: string;
+};
+
 /**
  * Root props bag. Seats pick the slice they render; extra keys are ignored.
  */
 export type WireHostBag = {
+  notice?: string;
+  onDismissNotice?: () => void;
   variant: WireShellVariant;
   mode: UiMode;
   leftTab: string | null;
@@ -46,4 +52,5 @@ export type WireHostBag = {
   chat?: LiveChatBag;
   liveSettings?: LiveSettingsPanelProps;
   project: ProjectBag;
+  agentInspect?: AgentInspectBag;
 };

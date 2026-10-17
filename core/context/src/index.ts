@@ -179,6 +179,10 @@ export {
   isLedgerEventType,
   ledgerPath,
   readLedgerRecords,
+  readLedgerFileRows,
+  clearLedgerCache,
+  configureLedgerCache,
+  ledgerCacheStats,
   flushLedger,
   isLedgerBarrier,
   KIND_TO_LEDGER_TYPE,
@@ -186,7 +190,7 @@ export {
   LEDGER_FILE_SUFFIX,
   mirrorMessageToLedger,
 } from "./session-ledger.js";
-export type { LedgerEventSpec } from "./session-ledger.js";
+export type { LedgerEventSpec, LedgerRow, LedgerCacheStats } from "./session-ledger.js";
 export {
   CONTEXT_ASSERT_ENV,
   contextAssertEnabled,
@@ -345,6 +349,7 @@ export type { UsageTokens } from "./token-estimate.js";
 export {
   emergencyTrimMessages,
   stripNonTextContent,
+  IMAGE_PLACEHOLDER,
 } from "./emergency-trim.js";
 export type { EmergencyTrimResult } from "./emergency-trim.js";
 
@@ -472,6 +477,7 @@ export {
   sessionZipFilename,
 } from "./session-export.js";
 export type { ExportPreflight } from "./session-export.js";
+export { cachedFileReadCount, resetFileTextCache } from "./file-text-cache.js";
 export {
   resolveWorkspaceInstructionsEnabled,
   compileWorkspaceInstructions,

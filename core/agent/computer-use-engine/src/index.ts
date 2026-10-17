@@ -31,6 +31,8 @@ import {
 import { currentPlatform, findHelperPath, isDarwin, resetHelperPathCache } from "./native.js";
 import { hasHelperRunner, runHelper, setHelperRunnerForTest, type HelperRunner } from "./exec.js";
 import { newSnapshotId, recallSnapshot, rememberSnapshot, resetSnapshotsForTest } from "./store.js";
+import { COMPUTER_ACTIONS, formatComputerCatalog } from "./catalog.js";
+import { rememberPointer, withDesktopLock, type DesktopOwner } from "./cursor.js";
 
 export type {
   ActKind,
@@ -77,6 +79,15 @@ export {
   toLocator,
 } from "./refs.js";
 export { formatApps, formatAvailability, formatHelp, formatPermissions, formatSnapshot, formatWindows } from "./format.js";
+export { COMPUTER_ACTIONS, formatComputerCatalog } from "./catalog.js";
+export {
+  desktopOwnerFrom,
+  rememberPointer,
+  recallPointer,
+  withDesktopLock,
+  resetCursorsForTest,
+  type DesktopOwner,
+} from "./cursor.js";
 export { findHelperPath, isDarwin, resetHelperPathCache } from "./native.js";
 export { setHelperRunnerForTest } from "./exec.js";
 export { newSnapshotId, recallSnapshot, rememberSnapshot, resetSnapshotsForTest } from "./store.js";
@@ -90,6 +101,7 @@ export interface RunOptions {
   helperPath?: string;
   runner?: HelperRunner;
   includeImage?: boolean;
+  owner?: DesktopOwner;
 }
 
 function emptyPerms(): ComputerPermissions {
@@ -153,8 +165,25 @@ function snapshotFromEnvelope(env: HelperEnvelope, fallbackId?: string): Snapsho
   });
 }
 
+function cursorFields(opts?: RunOptions): Pick<HelperRequest, "restoreMouse" | "cursorX" | "cursorY" | "cursorColor" | "cursorLabel"> {
+  const owner = opts?.owner;
+  if (!owner) return { restoreMouse: true };
+  return {
+    restoreMouse: true,
+    cursorX: owner.x,
+    cursorY: owner.y,
+    cursorColor: owner.color,
+    cursorLabel: owner.label,
+  };
+}
+
+function stampOwnerPoint(opts: RunOptions | undefined, x?: number, y?: number): void {
+  if (!opts?.owner) return;
+  opts.owner = rememberPointer(opts.owner, x, y);
+}
+
 async function call(req: HelperRequest, opts?: RunOptions): Promise<HelperEnvelope> {
-  return runHelper(req, { helperPath: opts?.helperPath, runner: opts?.runner });
+  return runHelper({ ...cursorFields(opts), ...req }, { helperPath: opts?.helperPath, runner: opts?.runner });
 }
 
 function gatePlatform(opts?: RunOptions): EngineResult | null {
@@ -254,6 +283,9 @@ export async function act(
       action: params.kind,
     });
   }
+  const pointX = params.x ?? (el?.frame ? el.frame.x + el.frame.w / 2 : undefined);
+  const pointY = params.y ?? (el?.frame ? el.frame.y + el.frame.h / 2 : undefined);
+  stampOwnerPoint(opts, pointX, pointY);
   const env = await call(
     {
       op: "act",
@@ -352,6 +384,14 @@ export async function run(
   opts?: RunOptions,
 ): Promise<EngineResult> {
   const actName = action.trim();
+  if (actName === "list" || actName === "schema" || actName === "search") {
+    return ok(formatComputerCatalog(), { action: "list", actions: COMPUTER_ACTIONS });
+  }
+  if (actName === "call") {
+    const name = str(params.name ?? params.tool) ?? "";
+    const args = asRecord(params.arguments ?? params.params ?? params.args);
+    return run(name, { ...args }, opts);
+  }
   if (actName === "help") return ok(formatHelp(), { action: "help" });
   if (actName === "available" || actName === "status") {
     const a = isAvailable(opts);
@@ -361,6 +401,17 @@ export async function run(
   const blocked = gatePlatform(opts);
   if (blocked && actName !== "help") return blocked;
 
+  if (actName !== "permissions" && actName !== "apps" && actName !== "windows") {
+    return withDesktopLock(() => dispatchAction(actName, params, opts));
+  }
+  return dispatchAction(actName, params, opts);
+}
+
+async function dispatchAction(
+  actName: string,
+  params: Record<string, unknown>,
+  opts?: RunOptions,
+): Promise<EngineResult> {
   if (actName === "permissions") return permissions(opts);
   if (actName === "apps") return apps(opts);
   if (actName === "windows") {
@@ -372,7 +423,7 @@ export async function run(
         app: str(params.app),
         window: str(params.window),
         pid: num(params.pid),
-        includeImage: bool(params.include_image ?? params.includeImage),
+        includeImage: bool(params.include_image ?? params.includeImage) ?? true,
       },
       opts,
     );
@@ -428,7 +479,7 @@ export async function run(
     );
   }
   return fail(
-    `未知操作: ${actName}。action=help 查看用法。`,
+    `未知操作: ${actName}。先 list，再 call name=screenshot 或 name=click。`,
     { unknown_action: actName },
   );
 }
@@ -450,6 +501,21 @@ function bool(v: unknown): boolean | undefined {
   if (v === "true" || v === "1") return true;
   if (v === "false" || v === "0") return false;
   return undefined;
+}
+
+function asRecord(v: unknown): Record<string, unknown> {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
+  if (typeof v === "string" && v.trim().startsWith("{")) {
+    try {
+      const parsed = JSON.parse(v) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* fallthrough */
+    }
+  }
+  return {};
 }
 
 export { resetHelperPathCache as _resetHelperPathCache };

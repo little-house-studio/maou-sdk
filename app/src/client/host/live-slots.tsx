@@ -5,6 +5,7 @@ import { AgentList } from "../wire/sidebar/AgentList";
 import { BottomInfoBar } from "../wire/dock/BottomInfoBar";
 import { PluginsPanel } from "../wire/plugins/PluginsPanel";
 import { LiveFilesRail } from "../live/LiveFilesRail";
+import { LiveAgentInspect } from "../live/LiveAgentInspect";
 import { LiveSettingsPanel } from "../live/LiveSettingsPanel";
 import { applySlotPlugins, SlotRegistry, type SlotPlugin } from "../slots";
 import {
@@ -29,9 +30,10 @@ import {
   SHELL_CHILDREN,
   SIDEBAR_CHILDREN,
 } from "../slots/map";
-import { Bot, FolderTree } from "lucide-react";
+import { Bot, FolderTree, ScrollText } from "lucide-react";
 import { registerAsideTab } from "../shell/aside-tab";
 import {
+  AGENT_ACTIVITY_ID,
   FILES_ACTIVITY_ID,
   SIDEBAR_ACTIVITY_ID,
 } from "../shell/activity";
@@ -80,7 +82,7 @@ const LiveChatSeat = memo(function LiveChatSeat(bag: WireHostBag) {
   const chat = bag.chat;
   if (!chat) return null;
   const { remountKey, ...props } = chat;
-  return <ChatPanel key={remountKey} {...props} />;
+  return <ChatPanel key={remountKey} bootCacheKey={remountKey} {...props} />;
 }, sliceEq("chat"));
 
 const LiveSettingsSeat = memo(function LiveSettingsSeat(bag: WireHostBag) {
@@ -100,6 +102,7 @@ const LiveProjectSeat = memo(function LiveProjectSeat(bag: WireHostBag) {
       }
     >
       <LiveProjectHostLazy
+        key={bag.project.projectPath}
         projectLabel={bag.project.projectLabel}
         projectPath={bag.project.projectPath}
       />
@@ -111,9 +114,13 @@ function PluginsSeat() {
   return <PluginsPanel />;
 }
 
-function LiveFilesSeat() {
-  return <LiveFilesRail />;
+function LiveFilesSeat(bag: WireHostBag) {
+  return <LiveFilesRail key={bag.project.projectPath} />;
 }
+
+const LiveAgentInspectSeat = memo(function LiveAgentInspectSeat(bag: WireHostBag) {
+  return <LiveAgentInspect switchId={bag.agentInspect?.switchId} />;
+}, sliceEq("agentInspect"));
 
 const BottomSeat = memo(function BottomSeat(bag: WireHostBag) {
   return <BottomInfoBar {...bag.dock} />;
@@ -237,6 +244,15 @@ export function createLiveHostSlots(
     order: 10,
     registrant: "files",
     pane: LiveFilesSeat,
+  });
+  registerAsideTab(slots, {
+    edge: "right",
+    id: AGENT_ACTIVITY_ID,
+    label: "Agent",
+    icon: ScrollText,
+    order: 20,
+    registrant: "agent-inspect",
+    pane: LiveAgentInspectSeat,
   });
   slots.register(
     { name: "shell.bottom", registrant: "bottom", children: BOTTOM_CHILDREN },

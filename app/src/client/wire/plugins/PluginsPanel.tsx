@@ -1,7 +1,7 @@
 /**
  * 插件中栏：磁盘插件开关 / 重载。live 与草稿站共用。
  */
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ChromeMark } from "../icons/Marks";
 import { t } from "../../i18n";
 import { refreshThemeAndPlugins } from "../../plugin-ui";
@@ -40,14 +40,26 @@ export function PluginsPanel({ plugins }: PluginsPanelProps) {
   );
   const controlled = plugins !== undefined;
 
-  const load = useCallback(() => {
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+
+  const load = useCallback(async () => {
     if (controlled) return;
-    void fetch("/api/plugins")
-      .then((r) => r.json())
-      .then((j) => {
-        if (Array.isArray(j.plugins)) setRows(j.plugins);
-      })
-      .catch(() => setRows([]));
+    setLoading(true);
+    try {
+      const r = await fetch("/api/plugins");
+      if (!r.ok) throw new Error(`读取插件失败 (${r.status})`);
+      const j = await r.json();
+      if (!Array.isArray(j.plugins)) throw new Error("插件列表格式无效");
+      setRows(j.plugins);
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
   }, [controlled]);
 
   useEffect(() => {
@@ -55,25 +67,33 @@ export function PluginsPanel({ plugins }: PluginsPanelProps) {
       setRows([...plugins]);
       return;
     }
-    load();
+    void load();
   }, [controlled, plugins, load]);
 
-  const reload = () => {
-    void fetch("/api/plugins/reload", { method: "POST" }).then(() => {
-      load();
-      void refreshThemeAndPlugins();
-    });
+  const mutate = async (url: string, body?: unknown) => {
+    if (controlled || busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        ...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+      });
+      if (!r.ok) throw new Error(`插件操作失败 (${r.status})`);
+      await load();
+      await refreshThemeAndPlugins();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   };
 
+  const reload = () => { void mutate("/api/plugins/reload"); };
   const toggle = (id: string, enabled: boolean) => {
-    void fetch("/api/plugins/toggle", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, enabled }),
-    }).then(() => {
-      load();
-      void refreshThemeAndPlugins();
-    });
+    void mutate("/api/plugins/toggle", { id, enabled });
   };
 
   return (
@@ -88,11 +108,14 @@ export function PluginsPanel({ plugins }: PluginsPanelProps) {
           <button
             type="button"
             className="wire-plugins-reload"
+            disabled={controlled || busy || loading}
             onClick={reload}
           >
             {t("settings.plugins.reload")}
           </button>
         </header>
+        {error ? <p role="alert">{error} <button type="button" disabled={busy || loading} onClick={() => void load()}>重试</button></p> : null}
+        {loading ? <p role="status">加载插件…</p> : null}
         {rows.length === 0 ? (
           <div className="wire-plugins-empty">
             <p className="wire-plugins-sub">{t("settings.plugins.empty")}</p>
@@ -110,6 +133,7 @@ export function PluginsPanel({ plugins }: PluginsPanelProps) {
                   <input
                     type="checkbox"
                     checked={p.enabled}
+                    disabled={controlled || busy || loading}
                     onChange={(e) => toggle(p.id, e.target.checked)}
                   />
                   <span className="wire-plugin-copy">

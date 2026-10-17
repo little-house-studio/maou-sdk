@@ -6,6 +6,8 @@
  * 配错比不显示更糟，所以对齐前先做一次 output token 一致性抽查。
  */
 
+import { isHumanUserBubble } from "./wire/thread/thread-blocks";
+
 export type PayloadUsage = {
   input: number;
   output: number;
@@ -75,9 +77,75 @@ export type PayloadHydration = {
 
 type HydratableLine = {
   role: string;
+  source?: string;
+  kind?: string;
+  authorType?: string;
+  text?: string;
   usageInput?: number;
   usageOutput?: number;
 } & PayloadHydration;
+
+function asUsageRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+function usageNum(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function usagePresent(v: unknown): boolean {
+  return v !== undefined && v !== null;
+}
+
+function usageFloor(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0;
+}
+
+/**
+ * 从流式 / 落盘 usage 抽出缓存分桶。字段在（含 0）就算 reported。
+ * ChatPanel 直播与 history 回填共用，不依赖 hydrate 索引。
+ */
+export function readUsageBuckets(raw: unknown): PayloadUsage {
+  const rec = asUsageRecord(raw);
+  if (!rec) {
+    return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reported: false };
+  }
+  const details =
+    asUsageRecord(rec.prompt_tokens_details) ??
+    asUsageRecord(rec.input_tokens_details);
+  const input = usageNum(rec.prompt_tokens ?? rec.input_tokens ?? rec.input);
+  const output = usageNum(
+    rec.completion_tokens ?? rec.output_tokens ?? rec.output,
+  );
+  const cacheVals = [
+    rec.cached_tokens,
+    rec.cache_read,
+    rec.cache_read_input_tokens,
+    rec.cache_hit_tokens,
+    rec.prompt_cache_hit_tokens,
+    details?.cached_tokens,
+  ];
+  const writeVals = [
+    rec.cache_write,
+    rec.cache_write_tokens,
+    rec.cache_creation_input_tokens,
+    details?.cache_write_tokens,
+  ];
+  const reported = cacheVals.some(usagePresent) || writeVals.some(usagePresent);
+  let cacheRead = 0;
+  let cacheWrite = 0;
+  for (const v of cacheVals) {
+    if (usagePresent(v)) cacheRead = Math.max(cacheRead, usageFloor(v));
+  }
+  for (const v of writeVals) {
+    if (usagePresent(v)) cacheWrite = Math.max(cacheWrite, usageFloor(v));
+  }
+  return { input, output, cacheRead, cacheWrite, reported };
+}
 
 const EMPTY_INDEX: PayloadIndex = {
   ok: false,
@@ -156,7 +224,15 @@ export function applySessionPayloadIndex<T extends HydratableLine>(
   index: PayloadIndex,
 ): T[] {
   if (!index.ok) return lines;
-  const userLines = lines.filter((l) => l.role === "user");
+  const userLines = lines.filter((l) =>
+    isHumanUserBubble({
+      role: l.role,
+      source: l.source,
+      kind: l.kind,
+      authorType: l.authorType,
+      text: l.text,
+    }),
+  );
   const asstLines = lines.filter((l) => l.role === "assistant");
   const patch = new Map<T, PayloadHydration>();
 

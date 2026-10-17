@@ -98,7 +98,7 @@ LLM 配置的唯一权威是用户级 `~/.maou/config.json`（`api.presets`）�
 ```
                     ┌─ maou          Ratatui TUI
   AgentRuntime  ────┤
-  tools / llm       └─ maou-app      Electron 桌面
+  tools / llm       └─ maou-app      Tauri 桌面
   context / types
          │
          ├─ coding-agent   项目内编程
@@ -235,7 +235,9 @@ maou update
 
 `maou-app` 与 CLI 共用 coding-agent 和 terminal-engine：对话是流式 `StreamEvent`，底栏终端是 Agent `use_terminal` 的真实会话（不是另开一个壳），并带项目内 Markdown 树 / 大纲 / 编辑。
 
-开发（只开 Electron，界面热更新走 Vite）：
+壳是 Tauri 2（Rust + 系统 WebView），业务在 Node hub 子进程里，两者走 unix socket / named pipe，不占 TCP 端口。开发需要 Rust 工具链；hub 用本机 Node（>= 20）。
+
+开发（`tauri dev`，界面热更新走 Vite）：
 
 ```bash
 pnpm --filter @little-house-studio/app dev
@@ -250,7 +252,7 @@ pnpm --filter @little-house-studio/app pack:win
 pnpm --filter @little-house-studio/app pack:linux
 ```
 
-产物在 `app/release/`。图标由 `app/scripts/build-icon.mjs` 生成，打包配置见 `app/electron-builder.yml`。
+产物在 `app/src-tauri/target/release/bundle/`。图标由 `app/scripts/build-icon.mjs` 生成，打包配置见 `app/src-tauri/tauri.conf.json` + `tauri.pack.conf.json`。
 
 桌面目前**不**打进 CLI 的预编译包；要用窗口就从源码 `dev` 或按上表 pack。设计说明见 [`app/DESIGN.md`](app/DESIGN.md)。
 
@@ -370,7 +372,7 @@ pnpm bundle:stable       # stable 通道
 
 版本号以 **`cli/package.json` 的 `version`** 为准，必须是合法 semver（自更新靠版本比较）。完整流程、交叉打包和 doctor 分轨见 [`docs/RELEASE.md`](docs/RELEASE.md)。
 
-桌面客户端单独走 `electron-builder`（`app/electron-builder.yml`），产物在 `app/release/`，与上面的 CLI bundle 不是同一条流水线。
+桌面客户端单独走 `tauri build`（`app/src-tauri/`），产物在 `app/src-tauri/target/release/bundle/`，与上面的 CLI bundle 不是同一条流水线。
 
 ---
 
@@ -388,7 +390,7 @@ maou-sdk/
   core/hub                多设备通讯（协议尚未对齐，未作为交付能力）
   agent-products/         coding-agent · ops-agent
   cli/                    maou（Ratatui）
-  app/                    maou-app（Electron）
+  app/                    maou-app（Tauri）
   scripts/                安装器、setup:dev、打 bundle、拉取原生件
   docs/RELEASE.md         发布手册
 ```

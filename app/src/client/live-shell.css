@@ -14,7 +14,7 @@
 }
 
 /* Keep ChatPanel mounted across modes without flashing layout */
-.live-shell .wire-mid.is-chat.is-hidden-mode,
+.live-shell .wire-mid.is-hidden-mode,
 .live-shell .wire-mid.is-chat[hidden] {
   display: none !important;
 }
@@ -278,6 +278,86 @@
   color: var(--n-err, #ff741d);
   border-top: 1px solid var(--n-line-solid, #9b9b9b);
   background: var(--n-bg, #ededed);
+}
+
+.live-shell .live-agent-inspect {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--n-paper, #fff);
+  color: var(--n-label, #000);
+}
+
+.live-shell .live-agent-inspect-head,
+.live-shell .live-agent-inspect-prompt-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--n-label, #000);
+  background: var(--n-paper, #fff);
+  border-bottom: 1px solid var(--n-line-solid, #9b9b9b);
+  flex: 0 0 auto;
+}
+
+.live-shell .live-agent-inspect-title {
+  font-weight: 600;
+}
+
+.live-shell .live-agent-inspect-id,
+.live-shell .live-agent-inspect-prompt-head span {
+  font-size: 11px;
+  color: var(--n-on-quiet, #5c5c58);
+  font-family: var(--n-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-shell .live-agent-inspect-params {
+  margin: 0;
+  padding: 8px 10px;
+  flex: 0 1 auto;
+  max-height: 40%;
+  overflow: auto;
+  border-bottom: 1px solid var(--n-line-solid, #9b9b9b);
+}
+
+.live-shell .live-agent-inspect-row {
+  display: grid;
+  grid-template-columns: minmax(7em, 38%) 1fr;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.live-shell .live-agent-inspect-row dt {
+  margin: 0;
+  color: var(--n-on-quiet, #5c5c58);
+}
+
+.live-shell .live-agent-inspect-row dd {
+  margin: 0;
+  color: var(--n-label, #000);
+  overflow-wrap: anywhere;
+}
+
+.live-shell .live-agent-inspect-prompt {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  font-family: var(--n-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  background: var(--n-fence-bg, #d0d0d0);
+  color: var(--n-label, #000);
 }
 
 .live-shell .live-project-host .md-workbench {

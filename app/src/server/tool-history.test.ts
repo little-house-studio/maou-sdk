@@ -112,4 +112,20 @@ describe("tool-history", () => {
     backfillUserLoopDuration(lines);
     assert.equal(lines[0]!.durationMs, 1500);
   });
+
+  it("does not treat terminal-notification rows as the human user", () => {
+    const lines = [
+      { role: "user" as const, source: "human" },
+      {
+        role: "user" as const,
+        source: "terminal-notification",
+        authorType: "tool",
+        kind: "tool_async_notify",
+      },
+      { role: "assistant" as const, loopDurationMs: 1800 },
+    ];
+    backfillUserLoopDuration(lines);
+    assert.equal(lines[0]!.durationMs, 1800);
+    assert.equal(lines[1]!.durationMs, undefined);
+  });
 });

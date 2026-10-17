@@ -22,10 +22,14 @@ import {
 } from "../../conversation";
 import type { DraftMessage } from "../types";
 import {
+  displayRoleForUserLine,
   groupLoopTurns,
   groupThreadBlocks,
+  isHiddenToolLoopLine,
+  isHumanUserBubble,
   isModelCallProgressText,
   isPlaceholderAssistantBody,
+  unwrapInjectedNoticeBody,
   replyBlockLive,
   formatReplyPackFold,
   formatReplyPackMeta,
@@ -118,6 +122,9 @@ type ChatLineLike = {
   payloadId?: string;
   payloadIndex?: number;
   ordinal?: number;
+  source?: string;
+  kind?: string;
+  authorType?: string;
   images?: Array<{ mimeType: string; data: string; name?: string }>;
 };
 
@@ -213,7 +220,13 @@ const MessageRow = React.memo(function MessageRow({
       data-msg-id={message.id}
       data-msg-role={message.role}
       data-msg-preview={
-        message.role === "user"
+        isHumanUserBubble({
+          role: message.role,
+          source: message.source,
+          kind: message.meta?.kind,
+          authorType: message.authorType,
+          content: message.body,
+        })
           ? message.body.replace(/\s+/g, " ").trim().slice(0, ASK_PREVIEW_MAX)
           : undefined
       }
@@ -221,7 +234,13 @@ const MessageRow = React.memo(function MessageRow({
       <div className="msg-body">
         {lead}
         {!isTool ? <MessageHeadLine head={head} /> : null}
-        {message.role === "user" ? (
+        {isHumanUserBubble({
+          role: message.role,
+          source: message.source,
+          kind: message.meta?.kind,
+          authorType: message.authorType,
+          content: message.body,
+        }) ? (
           <UserMsgClip className={textClass}>{body}</UserMsgClip>
         ) : (
           <div className={textClass}>{body}</div>
@@ -1044,7 +1063,15 @@ const LoopBlock = React.memo(function LoopBlock({
 export function userOrdinalMap(
   messages: readonly DraftMessage[],
 ): Map<string, number> {
-  const users = messages.filter((m) => m.role === "user");
+  const users = messages.filter((m) =>
+    isHumanUserBubble({
+      role: m.role,
+      source: m.source,
+      kind: m.meta?.kind,
+      authorType: m.authorType,
+      content: m.body,
+    }),
+  );
   let offset = 0;
   for (let i = 0; i < users.length; i++) {
     const known = users[i]!.meta?.ordinal;
@@ -1094,7 +1121,18 @@ export const WireThreadView = React.memo(function WireThreadView({
   const empty = messages.length === 0;
   const userOrdinals = useMemo(() => userOrdinalMap(messages), [messages]);
   const userIds = useMemo(
-    () => messages.filter((m) => m.role === "user").map((m) => m.id),
+    () =>
+      messages
+        .filter((m) =>
+          isHumanUserBubble({
+            role: m.role,
+            source: m.source,
+            kind: m.meta?.kind,
+            authorType: m.authorType,
+            content: m.body,
+          }),
+        )
+        .map((m) => m.id),
     [messages],
   );
   const enterIds = useEnterIds(threadKey, userIds);
@@ -1125,7 +1163,16 @@ export const WireThreadView = React.memo(function WireThreadView({
       {segments.map((seg, i) => {
         if (seg.kind === "solo") {
           const m = seg.message;
-          if (m.role === "user") {
+          if (
+            m.role === "user" &&
+            isHumanUserBubble({
+              role: m.role,
+              source: m.source,
+              kind: m.meta?.kind,
+              authorType: m.authorType,
+              content: m.body,
+            })
+          ) {
             if (i === segments.length - 1 && agentBusy) {
               return (
                 <LoopBlock
@@ -1261,7 +1308,12 @@ export function chatLinesToDraftMessages(
     : undefined;
   const visible = lines.filter(
     (l) =>
-      !(l.role === "system" && isModelCallProgressText(l.text || "")),
+      !(l.role === "system" && isModelCallProgressText(l.text || "")) &&
+      !isHiddenToolLoopLine({
+        role: l.role,
+        source: l.source,
+        text: l.text,
+      }),
   );
   let lastAssistantIdx = -1;
   for (let i = visible.length - 1; i >= 0; i--) {
@@ -1304,8 +1356,19 @@ export function chatLinesToDraftMessages(
       if (l.role === "assistant") assistantRound += 1;
       return previousMessage;
     }
+    const displayRole =
+      l.role === "user" ? displayRoleForUserLine(l) : l.role;
+    const displayText =
+      l.role === "user" && displayRole !== "user"
+        ? unwrapInjectedNoticeBody(l.text || "")
+        : l.text || "";
+    const displayToolName =
+      displayRole === "tool"
+        ? (l.toolName || "").trim() ||
+          (l.source === "terminal-notification" ? "use_terminal" : "")
+        : l.toolName;
     // Tool rows keep role=tool even when err — badge must show real tool name
-    if (l.err && l.role !== "tool") {
+    if (l.err && displayRole !== "tool" && l.role !== "tool") {
       return {
         id: l.id,
         role: "err" as const,
@@ -1313,13 +1376,17 @@ export function chatLinesToDraftMessages(
         meta: { authorLabel: "error" },
       };
     }
-    if (l.role === "tool") {
-      const toolName = resolveToolDisplayName(l);
+    if (displayRole === "tool") {
+      const toolName = resolveToolDisplayName({
+        ...l,
+        toolName: displayToolName,
+        text: displayText,
+      });
       const isErr =
         Boolean(l.err) ||
-        /^[✗×❌]/.test((l.text || "").trim()) ||
-        /缺少必填|失败|error|❌/i.test(l.text || "");
-      const body = l.text || "";
+        /^[✗×❌]/.test((displayText || "").trim()) ||
+        /缺少必填|失败|error|❌/i.test(displayText || "");
+      const body = displayText || "";
       const inFlight = /^▶/.test(body.trim()) || (busy && body.trim().length === 0);
       const description =
         (l.toolDescription || "").trim() ||
@@ -1328,6 +1395,8 @@ export function chatLinesToDraftMessages(
       return {
         id: l.id,
         role: "tool" as const,
+        source: l.source,
+        authorType: l.authorType,
         body,
         tag: l.terminalId || toolName || undefined,
         clickable: false,
@@ -1389,13 +1458,16 @@ export function chatLinesToDraftMessages(
         },
       };
     }
-    if (l.role === "user") {
+    if (displayRole === "user") {
       return {
         id: l.id,
         role: "user" as const,
         body: l.text || "",
+        source: l.source,
+        authorType: l.authorType,
         meta: {
           authorLabel: "user",
+          ...(l.kind ? { kind: l.kind } : {}),
           ...(l.startedAt != null ? { ts: l.startedAt } : {}),
           ...(l.durationMs != null ? { durationMs: l.durationMs } : {}),
           ...(l.ordinal != null ? { ordinal: l.ordinal } : {}),
@@ -1406,7 +1478,10 @@ export function chatLinesToDraftMessages(
     return {
       id: l.id,
       role: "system" as const,
-      body: l.text || "",
+      body: displayText || l.text || "",
+      source: l.source,
+      authorType: l.authorType,
+      meta: l.kind ? { kind: l.kind } : undefined,
     };
   });
 }

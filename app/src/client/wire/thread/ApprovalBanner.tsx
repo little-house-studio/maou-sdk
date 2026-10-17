@@ -1,10 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import type { DraftApproval } from "../types";
 import { ChromeMark, StatusMark } from "../icons/Marks";
 
 export type ApprovalBannerProps = {
   approval: DraftApproval;
-  onDecision: (d: "once" | "always" | "deny" | "blacklist") => void;
+  onDecision: (d: "once" | "always" | "deny" | "blacklist") => void | Promise<void>;
 };
 
 const DECISION_LABEL = {
@@ -28,15 +28,40 @@ export function ApprovalBanner({ approval, onDecision }: ApprovalBannerProps) {
   const onceRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+  const uid = useId();
+  const decidingRef = useRef(false);
+  const [deciding, setDeciding] = useState(false);
+  const [error, setError] = useState("");
+
+  const decide = async (choice: Decision) => {
+    if (decidingRef.current) return;
+    decidingRef.current = true;
+    setDeciding(true);
+    setError("");
+    try {
+      await onDecision(choice);
+    } catch (e) {
+      setError(`审批失败：${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      decidingRef.current = false;
+      setDeciding(false);
+    }
+  };
 
   // Focus primary action when a new approval appears
   useEffect(() => {
-    onceRef.current?.focus({ preventScroll: true });
+    if (!rootRef.current?.closest("[hidden], [inert]")) {
+      onceRef.current?.focus({ preventScroll: true });
+    }
   }, [approval.id, approval.command]);
 
   // Number keys 1–4 when not typing in a field; Esc = deny
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+      // Only the focused approval owns shortcuts; other cards must not answer too.
+      if (!rootRef.current?.contains(e.target as Node)) return;
+      if (rootRef.current.closest("[hidden], [inert]")) return;
       const t = e.target as HTMLElement | null;
       const inField =
         !!t &&
@@ -48,13 +73,13 @@ export function ApprovalBanner({ approval, onDecision }: ApprovalBannerProps) {
 
       if (e.key === "Escape") {
         e.preventDefault();
-        onDecision("deny");
+        void decide("deny");
         return;
       }
       const d = KEY_MAP[e.key];
       if (!d) return;
       e.preventDefault();
-      onDecision(d);
+      void decide(d);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -79,7 +104,7 @@ export function ApprovalBanner({ approval, onDecision }: ApprovalBannerProps) {
       role="alertdialog"
       aria-modal="false"
       aria-label="待审批"
-      aria-describedby="wire-approval-summary wire-approval-cmd"
+      aria-describedby={`${uid}-summary ${uid}-cmd`}
     >
       <div className="approval-card">
         <div className="approval-head">
@@ -99,11 +124,11 @@ export function ApprovalBanner({ approval, onDecision }: ApprovalBannerProps) {
             1–4 · Esc 拒绝
           </span>
         </div>
-        <div id="wire-approval-summary" className="approval-summary">
+        <div id={`${uid}-summary`} className="approval-summary">
           {approval.summary}
         </div>
         <div className="approval-cmd-row">
-          <code id="wire-approval-cmd" className="approval-cmd">
+          <code id={`${uid}-cmd`} className="approval-cmd">
             {approval.command}
           </code>
           <button
@@ -120,7 +145,8 @@ export function ApprovalBanner({ approval, onDecision }: ApprovalBannerProps) {
           <button
             ref={onceRef}
             type="button"
-            onClick={() => onDecision("once")}
+            disabled={deciding}
+            onClick={() => void decide("once")}
             title="快捷键 1"
           >
             <span className="approval-key">1</span>
@@ -128,7 +154,8 @@ export function ApprovalBanner({ approval, onDecision }: ApprovalBannerProps) {
           </button>
           <button
             type="button"
-            onClick={() => onDecision("always")}
+            disabled={deciding}
+            onClick={() => void decide("always")}
             title="快捷键 2"
           >
             <span className="approval-key">2</span>
@@ -137,7 +164,8 @@ export function ApprovalBanner({ approval, onDecision }: ApprovalBannerProps) {
           <button
             type="button"
             className="ghost"
-            onClick={() => onDecision("deny")}
+            disabled={deciding}
+            onClick={() => void decide("deny")}
             title="快捷键 3 / Esc"
           >
             <span className="approval-key">3</span>
@@ -146,13 +174,15 @@ export function ApprovalBanner({ approval, onDecision }: ApprovalBannerProps) {
           <button
             type="button"
             className="ghost"
-            onClick={() => onDecision("blacklist")}
+            disabled={deciding}
+            onClick={() => void decide("blacklist")}
             title="快捷键 4"
           >
             <span className="approval-key">4</span>
             {DECISION_LABEL.blacklist}
           </button>
         </div>
+        {error ? <p role="alert">{error}</p> : null}
       </div>
     </div>
   );

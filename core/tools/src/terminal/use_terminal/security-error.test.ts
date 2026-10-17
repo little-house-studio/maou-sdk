@@ -85,13 +85,13 @@ describe("use_terminal security → tool error category", () => {
     const agent = `term-ask-${Date.now()}`;
     setMode(agent, "normal");
 
-    // Same pattern as gate.test: dangerous non-fatal under normal → deny_dangerous_pending
+    // DCG high deny under normal → deny_dangerous_pending
     setDcgEvaluatorForTest(async (cmd) => ({
       decision: "deny" as const,
       command: cmd,
       severity: "high" as const,
-      ruleId: "core.git:clean-force",
-      reason: "git clean -f",
+      ruleId: "core.filesystem:rm-rf-general",
+      reason: "rm -rf",
     }));
 
     setTerminalApprover(async () => ({
@@ -102,7 +102,7 @@ describe("use_terminal security → tool error category", () => {
     const res = await tool.execute(
       {
         action: "run",
-        command: "git clean -fd",
+        command: "rm -rf ./src",
         description: "test user deny",
         reason: "unit test",
       },

@@ -10,7 +10,8 @@ export type ComposerSendMode = "queue" | "insert";
 export type ComposerOutboxItem = {
   localId: string;
   text: string;
-  status: "queued" | "failed";
+  status: "sending" | "queued" | "failed";
+  queueId?: number;
   mode: ComposerSendMode;
   error?: string;
   locked?: boolean;
@@ -128,6 +129,14 @@ export type ComposerProps = {
   onUsageClick?: () => void;
   onRetryLast: () => void;
   onCopyTranscript: () => void;
+  queueBusy?: boolean;
+  queuePending?: boolean;
+  queueCapacity?: number;
+  queueSyncError?: string;
+  onRefreshQueue?: () => void;
+  onResumeQueue?: () => void;
+  onEditOutbox?: (item: ComposerOutboxItem, text: string) => Promise<boolean>;
+  onMoveOutbox?: (item: ComposerOutboxItem, move: "up" | "down") => void;
   onRemoveOutbox?: (item: ComposerOutboxItem) => void;
   onClearOutbox?: () => void;
   onRetryOutbox?: (item: ComposerOutboxItem) => void;

@@ -76,6 +76,10 @@ describe("LiveSettingsPanel structure", () => {
       api,
       /export async function runLlmSvgProbe[\s\S]{0,500}jsonOrThrow/,
     );
+    assert.doesNotMatch(
+      api,
+      /export async function testLlmConnection[\s\S]{0,700}jsonOrThrow/,
+    );
   });
 
   it("agent + template share roles SoT and bind main/fast/vision", () => {

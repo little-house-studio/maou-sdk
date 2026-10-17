@@ -3,7 +3,7 @@
   "display_name": "{{display_name}}",
   "role": "{{role}}",
   "scope": "project",
-  "round_limit": 50,
+  "round_limit": 0,
   "max_retries": 10,
   "terminal_mode": "normal",
   "thinking_context_mode": "first_round",

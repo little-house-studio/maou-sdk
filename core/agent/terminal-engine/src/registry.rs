@@ -199,6 +199,31 @@ impl TerminalRegistry {
         Ok(())
     }
 
+    /// 主进程已退出则标 exited，避免 list/logs 仍显示 running
+    pub fn reap_exited(&self) -> usize {
+        let mut n = 0usize;
+        for entry in self.terminals.iter() {
+            let mut terminal = match entry.value().lock() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if !terminal.is_running() {
+                continue;
+            }
+            if let Ok(Some(code)) = terminal.try_wait_exit() {
+                let id = terminal.id.clone();
+                terminal.mark_exited(Some(code));
+                drop(terminal);
+                crate::logger::log_exit(&id, Some(code));
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.persist_all();
+        }
+        n
+    }
+
     /// 获取终端日志
     pub fn logs(&self, id: &str, agent_name: &str, lines: usize) -> TerminalResult<String> {
         let output = {
@@ -212,6 +237,13 @@ impl TerminalRegistry {
                 return Err(TerminalError::AgentMismatch(id.to_string(), agent_name.to_string()));
             }
 
+            if terminal.is_running() {
+                if let Ok(Some(code)) = terminal.try_wait_exit() {
+                    terminal.mark_exited(Some(code));
+                    crate::logger::log_exit(id, Some(code));
+                }
+            }
+
             terminal.touch_viewed();
             terminal.tail(lines)
         };
@@ -221,6 +253,7 @@ impl TerminalRegistry {
 
     /// 列出终端（按 agent 过滤）
     pub fn list(&self, agent_name: Option<&str>) -> Vec<TerminalInfo> {
+        self.reap_exited();
         self.terminals
             .iter()
             .filter(|entry| {

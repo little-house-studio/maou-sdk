@@ -44,6 +44,7 @@ export function createLivePorts(): AppPorts {
       fetchChatQueue: api.fetchChatQueue,
       clearChatQueue: api.clearChatQueue,
       removeChatQueueItem: api.removeChatQueueItem,
+      updateChatQueueItem: api.updateChatQueueItem,
     },
     shell: {
       fetchMeta: api.fetchMeta,

@@ -15,7 +15,6 @@ export const OPS_TOOL_WHITELIST = [
   "use_browser",
   "browser/*",
   "use_computer",
-  "computer/*",
   "board/*",
   "skill",
   "use_skill",

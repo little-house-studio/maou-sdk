@@ -148,3 +148,50 @@ describe("resolveReadWindow", () => {
     expect(resolveReadWindow({ offset: 1, limit: 9000 }, 10000).limit).toBe(2000);
   });
 });
+
+describe("reader image vision gate", () => {
+  const dirs: string[] = [];
+  const tool = new ReadTool();
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  function pngCtx(supportsVision?: boolean): { ctx: ToolContext; path: string } {
+    const root = join(tmpdir(), `maou-img-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+    mkdirSync(root, { recursive: true });
+    dirs.push(root);
+    writeFileSync(join(root, "dot.png"), png);
+    return {
+      path: "dot.png",
+      ctx: {
+        projectRoot: root,
+        workingDir: root,
+        sessionId: "sess-img",
+        agentMode: "execute",
+        sandboxMode: "open",
+        supportsVision,
+      } as ToolContext,
+    };
+  }
+
+  it("injects pixels when vision is allowed", async () => {
+    const { ctx, path } = pngCtx(true);
+    const res = await tool.execute({ description: "t", reason: "t", path }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.images?.length).toBe(1);
+  });
+
+  it("fails honestly when the model has no vision", async () => {
+    const { ctx, path } = pngCtx(false);
+    const res = await tool.execute({ description: "t", reason: "t", path }, ctx);
+    expect(res.ok).toBe(false);
+    expect(res.images ?? []).toEqual([]);
+    expect(res.message).toMatch(/不支持视觉/);
+    expect(res.error?.code).toBe("vision_unavailable");
+  });
+});

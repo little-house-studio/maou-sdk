@@ -1,6 +1,6 @@
 {
   "name": "project_agent",
-  "description": "Ops 项目代理：list 清单；create 绑定已有路径；send 派任务。已有 .maou 时 create 只重新挂上。失效项在 list/send 里写清怎么用 create 修。",
+  "description": "Ops 项目代理：list 清单；create 绑定已有路径；send 后台派任务并立即返回。已有 .maou 时 create 只重新挂上。失效项在 list/send 里写清怎么用 create 修。",
   "type": "object",
   "properties": {
     "description": {
@@ -10,7 +10,7 @@
     "action": {
       "type": "string",
       "enum": ["list", "create", "send"],
-      "description": "list=清单；create=绑定路径+驻扎；send=派任务。"
+      "description": "list=清单；create=绑定路径+驻扎；send=后台派任务，立即返回。"
     },
     "project": {
       "type": "string",

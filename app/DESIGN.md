@@ -24,7 +24,13 @@
 ## 架构
 
 ```
-Electron renderer
+Tauri 壳（src-tauri，Rust）
+  ├─ 拉起 / 监管 Node hub（等 stdout `hub-ready`，意外退出重启一次，退出时 SIGTERM）
+  ├─ /api/* → hub socket（hyper），响应体经 Channel 流回页面
+  ├─ /ws/*  → hub socket（tungstenite），双向中继
+  └─ 选文件夹 / 在文件夹中显示 / 默认应用打开、macOS 菜单
+
+WebView 页面（window.maouApp = tauri-bridge.ts）
   ├─ Chat | Markdown | Split 视图切换
   ├─ ChatPanel  ──IPC → host POST /api/chat (NDJSON StreamEvent)
   │              点击 use_terminal 工具行 → 打开右侧会话
@@ -34,7 +40,7 @@ Electron renderer
        ├─ file-tree / doc-outline / editor
        └─ server/markdown  GET|PUT|POST /api/fs/*
 
-Node createAppServer()
+Node hub 子进程 createAppServer()（只听 unix socket / named pipe）
   ├─ AgentHub            coding-agent Runtime
   ├─ agent-terminals     @little-house-studio/terminal-engine
   └─ fs-api              projectRoot 内 Markdown 读写
@@ -72,7 +78,7 @@ list / logs 轮询 / write 键盘输入 / stop。
 2. **工作流对齐 CLI（已实现）**：项目会话 list/new/switch/clear/delete/rename、模型切换、审批 normal/auto/yolo + 待批卡片、slash 本地 + Runtime 透传（`/compact` `/usage` `/context` `/init` `/goal`）、last-session 恢复、export/retry/busy 队列、会话 stats  
 3. **Codex-desktop 布局（已实现）**：左 threads、中对话、右 Terminal/Files；Work/Docs/Lab 工作区  
 4. 挂接 terminal-engine 事件总线（可选增强，非阻塞）  
-5. 预编译二进制 / 一键安装时一并带上 Electron 客户端（发布期）  
+5. 预编译二进制 / 一键安装时一并带上 Tauri 客户端（发布期）  
 
 ### 非目标（不与 CLI 1:1 复刻）
 
@@ -105,10 +111,11 @@ list / logs 轮询 / write 键盘输入 / stop。
 ```
 app/
   package.json          @little-house-studio/app
-  electron-builder.yml  darwin / win32 / linux
+  src-tauri/            Tauri 壳（Rust）：hub 监管 / socket 转发 / 窗口与菜单
+    tauri.conf.json     开发与基础打包配置
+    tauri.pack.conf.json 打包叠加：hub 作为资源
   resources/            桌面图标（方印，scripts/build-icon.mjs）
-  src/desktop/          Electron 主进程 + preload
-    platforms/          darwin.ts / win32.ts / linux.ts
+  src/desktop/          Node hub 入口（hub-main.ts / hub-run.ts）
   src/server/           AgentHub + Express（桌面走 socket）
   src/client/           Vite + React + xterm
     wire/               共享组件库（thread/sidebar/dock/chrome/project…）
@@ -116,7 +123,7 @@ app/
     ports/              AppPorts：live=/api
     shell/              薄壳只开洞，只渲染 root
     host/               live 座位投稿
-  dist/                 server + client + sdk + desktop
+  dist/                 server + client + sdk + desktop（hub-main.js）
 ```
 
 公开 SDK：`@little-house-studio/app`（server）、`/slots`、`/shell`（座位表）、`/ports`（类型）。

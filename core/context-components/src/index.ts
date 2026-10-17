@@ -9,6 +9,13 @@ export * from "./constants.js";
 export * from "./thinking-context.js";
 export * from "./session-event.js";
 export * from "./session-ledger.js";
+export {
+  clearLedgerCache,
+  configureLedgerCache,
+  ledgerCacheStats,
+  type LedgerCacheStats,
+  type LedgerRow,
+} from "./ledger-cache.js";
 export * from "./context-assert.js";
 export * from "./durable-write.js";
 export * from "./tool-result.js";

@@ -98,4 +98,30 @@ describe("SessionStore tree compat", () => {
     expect(child.parentSessionId).toBe(root.id);
     expect(s.list().find((x) => x.id === child.id)?.parentSessionId).toBe(root.id);
   });
+
+  it("getLlmHistoryMessages 第二次走 fold 内存，不再全量折枝", () => {
+    const s = store();
+    const session = s.create({ title: "fold" });
+    s.appendMessage(session.id, "user", "hello");
+    s.appendMessage(session.id, "assistant", "world");
+    const first = s.getLlmHistoryMessages(session.id);
+    expect(first.map((m) => m.content)).toEqual(["hello", "world"]);
+    const rebuilds = s.foldFullRebuilds;
+    expect(rebuilds).toBeGreaterThan(0);
+    const second = s.getLlmHistoryMessages(session.id);
+    expect(second.map((m) => m.content)).toEqual(["hello", "world"]);
+    expect(s.foldFullRebuilds).toBe(rebuilds);
+    s.appendMessage(session.id, "user", "more");
+    const third = s.getLlmHistoryMessages(session.id);
+    expect(third.map((m) => m.content)).toEqual(["hello", "world", "more"]);
+    expect(s.foldFullRebuilds).toBe(rebuilds);
+  });
+
+  it("setParentSessionId writes list()", () => {
+    const s = store();
+    const root = s.create({ title: "root" });
+    const child = s.create({ title: "coding" });
+    expect(s.setParentSessionId(child.id, root.id)).toBe(true);
+    expect(s.list().find((x) => x.id === child.id)?.parentSessionId).toBe(root.id);
+  });
 });

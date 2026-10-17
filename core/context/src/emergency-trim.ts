@@ -22,9 +22,16 @@ function msgChars(m: Record<string, unknown>): number {
   return 0;
 }
 
+/** 文本模型上下文里代替 image_url 的占位。 */
+export const IMAGE_PLACEHOLDER = "[图片]";
+
+function placeholderForPart(type: string): string {
+  if (type === "image_url" || type === "image") return IMAGE_PLACEHOLDER;
+  return "[非文本]";
+}
+
 /**
- * 把多模态 content 数组压成纯文本（去掉 image_url 等）。
- * 用于「模型不支持图片」时的就地修复重试。
+ * 把多模态 content 数组压成纯文本：图片变成 [图片] 占位，不丢进 API。
  */
 export function stripNonTextContent(
   messages: Array<Record<string, unknown>>,
@@ -43,11 +50,15 @@ export function stripNonTextContent(
       if (part && typeof part === "object") {
         const p = part as Record<string, unknown>;
         const typ = String(p.type ?? "");
-        if (typ === "text" || typeof p.text === "string") {
+        if (
+          typ === "text" ||
+          (typeof p.text === "string" && typ !== "image_url" && typ !== "image")
+        ) {
           texts.push(String(p.text ?? ""));
         } else {
           removed++;
           stripped++;
+          texts.push(placeholderForPart(typ));
         }
       }
     }
@@ -56,7 +67,7 @@ export function stripNonTextContent(
       ...m,
       content:
         texts.filter(Boolean).join("\n") ||
-        "[非文本内容已移除：当前模型不支持 image/多模态]",
+        `${IMAGE_PLACEHOLDER}（当前模型不支持多模态）`,
     };
   });
   return { messages: out, stripped };

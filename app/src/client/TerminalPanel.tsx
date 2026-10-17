@@ -25,8 +25,12 @@ type Props = {
 const FONT_KEY = "maou.app.term.fontSize";
 
 function readFontSize(): number {
-  const n = Number(localStorage.getItem(FONT_KEY));
-  return Number.isFinite(n) && n >= 10 && n <= 22 ? n : 12;
+  try {
+    const n = Number(localStorage.getItem(FONT_KEY));
+    return Number.isFinite(n) && n >= 10 && n <= 22 ? n : 12;
+  } catch {
+    return 12;
+  }
 }
 
 function isHumanId(id: string, kind?: string): boolean {
@@ -107,6 +111,9 @@ export function TerminalPanel({
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressReconnect = useRef(false);
   const activeRef = useRef<Active | null>(null);
+  const connectingRef = useRef(false);
+  const actionRef = useRef(false);
+  const [actionBusy, setActionBusy] = useState(false);
   const listRef = useRef(list);
   activeRef.current = active;
   listRef.current = list;
@@ -117,7 +124,7 @@ export function TerminalPanel({
       const next = ts.slice().reverse();
       setList((prev) => (sameTerminalList(prev, next) ? prev : next));
     } catch {
-      setList((prev) => (prev.length === 0 ? prev : []));
+      setStatus("终端列表刷新失败，可重试");
     }
   }, [fetchTerminals]);
 
@@ -268,7 +275,10 @@ export function TerminalPanel({
       host.removeEventListener("dragover", onDragOver);
       if (hbRef.current) clearInterval(hbRef.current);
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
-      wsRef.current?.close();
+      suppressReconnect.current = true;
+      const ws = wsRef.current;
+      wsRef.current = null;
+      ws?.close();
       term.dispose();
       termRef.current = null;
     };
@@ -290,6 +300,7 @@ export function TerminalPanel({
   ) => {
     startHeartbeat(ws);
     ws.onmessage = (ev) => {
+      if (wsRef.current !== ws) return;
       try {
         const msg = JSON.parse(String(ev.data)) as {
           type: string;
@@ -304,6 +315,7 @@ export function TerminalPanel({
         };
         if (msg.type === "pong") return;
         if (msg.type === "ready") {
+          connectingRef.current = false;
           onReady?.(msg);
           if (msg.data) term.write(msg.data);
           try {
@@ -337,12 +349,15 @@ export function TerminalPanel({
       }
     };
     ws.onclose = () => {
-      if (hbRef.current) clearInterval(hbRef.current);
       if (wsRef.current !== ws) return;
+      connectingRef.current = false;
+      if (hbRef.current) clearInterval(hbRef.current);
       setStatus((s) => (s.startsWith("已退出") || s.startsWith("exited") ? s : "已断开"));
       const cur = activeRef.current;
       if (!suppressReconnect.current && cur) {
         reconnectRef.current = setTimeout(() => {
+          reconnectRef.current = null;
+          if (wsRef.current !== ws || suppressReconnect.current) return;
           if (isHumanId(cur.id, cur.kind)) {
             connectHuman({ mode: "attach", id: cur.id, silent: true });
           } else {
@@ -365,7 +380,19 @@ export function TerminalPanel({
         return;
       }
       suppressReconnect.current = false;
-      wsRef.current?.close();
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      reconnectRef.current = null;
+      connectingRef.current = true;
+      const previous = wsRef.current;
+      wsRef.current = null;
+      previous?.close();
+      if (opts.mode === "create") {
+        activeRef.current = null;
+        setActive(null);
+      } else if (opts.id) {
+        activeRef.current = { id: opts.id, agent: defaultAgent, kind: "human" };
+        setActive(activeRef.current);
+      }
       if (!opts.silent) {
         setStatus(opts.mode === "create" ? "新开壳…" : "重连人壳…");
         term.reset();
@@ -376,6 +403,7 @@ export function TerminalPanel({
       const ws = new WebSocket(humanTerminalWsUrl());
       wsRef.current = ws;
       ws.onopen = () => {
+        if (wsRef.current !== ws) return;
         try {
           fitRef.current?.fit();
         } catch {
@@ -403,12 +431,14 @@ export function TerminalPanel({
       };
       wireCommon(ws, term, (msg) => {
         if (msg.id) {
-          setActive({
+          const next: Active = {
             id: msg.id,
             agent: msg.agentName || defaultAgent,
             kind: "human",
             cwd: msg.cwd,
-          });
+          };
+          activeRef.current = next;
+          setActive(next);
         }
         setStatus("人壳");
       });
@@ -442,9 +472,15 @@ export function TerminalPanel({
       }
 
       suppressReconnect.current = false;
-      wsRef.current?.close();
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      reconnectRef.current = null;
+      connectingRef.current = true;
+      const previous = wsRef.current;
+      wsRef.current = null;
+      previous?.close();
       const info = listRef.current.find((t) => t.id === id);
-      setActive({ id, agent, kind: "agent", cwd: info?.cwd });
+      activeRef.current = { id, agent, kind: "agent", cwd: info?.cwd };
+      setActive(activeRef.current);
       if (!opts?.silent) {
         setStatus("连接中…");
         term.reset();
@@ -473,37 +509,44 @@ export function TerminalPanel({
   }, [openRequest, attach, defaultAgent, onOpenConsumed, refreshList]);
 
   useEffect(() => {
-    if (active || list.length === 0) return;
+    if (active || connectingRef.current || list.length === 0) return;
     if (!termRef.current) return;
     const top = list[0]!;
     attach(top.id, top.agentName || defaultAgent);
   }, [list, active, attach, defaultAgent]);
 
-  const onStop = async () => {
-    if (!active) return;
-    suppressReconnect.current = true;
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "stop" }));
+  const stopActive = async (): Promise<boolean> => {
+    const target = activeRef.current;
+    if (!target || actionRef.current) return false;
+    actionRef.current = true;
+    setActionBusy(true);
+    try {
+      await stopTerminal(target.id, target.agent);
+      if (activeRef.current?.id === target.id && activeRef.current?.agent === target.agent) {
+        suppressReconnect.current = true;
+        if (reconnectRef.current) clearTimeout(reconnectRef.current);
+        setStatus("已停止");
+      }
+      void refreshList();
+      return true;
+    } catch (e) {
+      setStatus(`停止失败：${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    } finally {
+      actionRef.current = false;
+      setActionBusy(false);
     }
-    await stopTerminal(active.id, active.agent);
-    void refreshList();
   };
 
-  const onRestart = () => {
+  const onRestart = async () => {
     if (!active || !isHumanId(active.id, active.kind)) {
       openHumanShell();
       return;
     }
-    suppressReconnect.current = true;
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "stop" }));
+    const target = active;
+    if (await stopActive()) {
+      if (activeRef.current?.id === target.id) connectHuman({ mode: "create", cwd: target.cwd });
     }
-    const cwd = active.cwd;
-    void stopTerminal(active.id, active.agent).finally(() => {
-      connectHuman({ mode: "create", cwd });
-    });
   };
 
   const info = active ? list.find((t) => t.id === active.id) : undefined;
@@ -551,6 +594,7 @@ export function TerminalPanel({
             className="term-search"
             type="search"
             placeholder="搜索"
+            aria-label="搜索终端输出"
             value={searchQ}
             onChange={(e) => {
               const q = e.target.value;
@@ -559,9 +603,13 @@ export function TerminalPanel({
               else searchRef.current?.clearDecorations();
             }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (e.key === "Enter") {
                 e.preventDefault();
-                if (searchQ) searchRef.current?.findNext(searchQ);
+                if (searchQ) {
+                  if (e.shiftKey) searchRef.current?.findPrevious(searchQ);
+                  else searchRef.current?.findNext(searchQ);
+                }
               }
             }}
           />
@@ -582,7 +630,7 @@ export function TerminalPanel({
           <button
             type="button"
             className="term-btn"
-            disabled={caps != null && !caps.humanShell}
+            disabled={actionBusy || (caps != null && !caps.humanShell)}
             title={
               caps && !caps.humanShell
                 ? caps.reason ?? "人壳需要 Rust .node"
@@ -596,8 +644,8 @@ export function TerminalPanel({
             type="button"
             className="term-btn"
             title="同目录重启人壳"
-            disabled={caps != null && !caps.humanShell}
-            onClick={() => onRestart()}
+            disabled={actionBusy || (caps != null && !caps.humanShell)}
+            onClick={() => void onRestart()}
           >
             重启壳
           </button>
@@ -607,8 +655,8 @@ export function TerminalPanel({
           <button
             type="button"
             className="term-btn is-danger"
-            disabled={!active}
-            onClick={() => void onStop()}
+            disabled={!active || actionBusy}
+            onClick={() => void stopActive()}
           >
             停止
           </button>

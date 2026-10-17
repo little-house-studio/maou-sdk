@@ -267,6 +267,7 @@ describe("cache rate + user-turn tip", () => {
     assert.equal(formatCacheRate(0.6234), "62.3%");
     assert.equal(formatCacheCell({ promptTotal: 10_000, cacheRead: 6234 }), "62.3% · 6.2k");
     assert.equal(formatCacheCell({ promptTotal: 1000, cacheRead: 0, reported: false }), "—");
+    assert.equal(formatCacheCell({ promptTotal: 1000, cacheRead: 0, reported: true }), "0%");
   });
 
   it("roundTipRows carries the cache row once buckets are known", () => {
@@ -364,6 +365,79 @@ describe("cache rate + user-turn tip", () => {
     assert.equal(get("工作时间"), "…");
     assert.equal(get("平均缓存率"), "—");
     assert.equal(get("请求体"), "待落盘");
+  });
+
+  it("completed ask with cached_tokens shows a rate, not —", () => {
+    const rows = userTurnTipRows({
+      ...summarizeLoop([
+        {
+          assistant: {
+            meta: {
+              usageInput: 1000,
+              usageOutput: 40,
+              cacheRead: 250,
+              cacheReported: true,
+            },
+          },
+          internals: [],
+        },
+      ]),
+      ordinal: 1,
+      live: false,
+    });
+    const get = (label: string) => rows.find((r) => r.label === label)?.value;
+    assert.equal(get("平均缓存率"), "25% · 250");
+    assert.equal(get("工作时间"), "—");
+  });
+
+  it("completed ask with no cache field stays —; cached=0 is 0%", () => {
+    const missing = userTurnTipRows({
+      ...summarizeLoop([
+        {
+          assistant: { meta: { usageInput: 800, usageOutput: 10 } },
+          internals: [],
+        },
+      ]),
+      ordinal: 1,
+    });
+    const zero = userTurnTipRows({
+      ...summarizeLoop([
+        {
+          assistant: {
+            meta: {
+              usageInput: 800,
+              usageOutput: 10,
+              cacheRead: 0,
+              cacheReported: true,
+            },
+          },
+          internals: [],
+        },
+      ]),
+      ordinal: 1,
+    });
+    assert.equal(missing.find((r) => r.label === "平均缓存率")?.value, "—");
+    assert.equal(zero.find((r) => r.label === "平均缓存率")?.value, "0%");
+  });
+
+  it("usage already on a finished ask still shows the rate if the loop is marked live", () => {
+    const rows = userTurnTipRows({
+      ...summarizeLoop([
+        {
+          assistant: {
+            meta: {
+              usageInput: 1000,
+              cacheRead: 600,
+              cacheReported: true,
+            },
+          },
+          internals: [],
+        },
+      ]),
+      ordinal: 1,
+      live: true,
+    });
+    assert.equal(rows.find((r) => r.label === "平均缓存率")?.value, "60% · 600");
   });
 });
 

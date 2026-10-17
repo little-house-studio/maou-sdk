@@ -72,10 +72,9 @@ export function formatAvailability(a: Availability): string {
 
 export function formatHelp(): string {
   return [
-    "use_computer 控制本机桌面 App（不是浏览器；网页用 use_browser）。",
-    "流程：permissions → activate → snapshot → click/type target='[N]'。",
-    "路线：auto 先走系统控件树；失败可降级截图/抽帧 + 坐标。可锁 ax / pixels。",
-    "观察：snapshot, screenshot, record, apps, windows, permissions。",
-    "动作：click, type, press, scroll, hotkey, set-value, activate。",
+    "use_computer 是桌面门面（网页用 use_browser）。说明不进系统提示词，先 list 再 call。",
+    "每个 agent 一把虚拟光标，动作串行，系统指针会还回去。",
+    "先 screenshot 看画面，或 snapshot 拿 [N]，再 click/type。",
+    "list / call name=screenshot / call name=click arguments={target:\"[N]\",snapshot:\"…\"}",
   ].join("\n");
 }

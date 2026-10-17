@@ -10,7 +10,9 @@ import {
   composeContextBreakdown,
   estimateSessionMessageTokens,
   formatContextBreakdownBlock,
+  readLedgerFileRows,
   type ContextBreakdown,
+  type LedgerRow,
 } from "@little-house-studio/context";
 
 export type { ContextBreakdown };
@@ -109,8 +111,21 @@ function parseUsage(raw: unknown): {
   };
 }
 
+type UsageAcc = Pick<
+  SessionStats,
+  | "inputTokens"
+  | "outputTokens"
+  | "cacheRead"
+  | "lastInputTokens"
+  | "lastOutputTokens"
+  | "lastCacheRead"
+  | "lastCacheWrite"
+  | "lastCacheReported"
+  | "contextUsed"
+>;
+
 function applyUsage(
-  stats: SessionStats,
+  stats: UsageAcc,
   raw: unknown,
 ): void {
   const u = parseUsage(raw);
@@ -150,6 +165,123 @@ function emptyBreakdown(): ContextBreakdown {
   return composeContextBreakdown({ window: 0, used: 0 });
 }
 
+/** 账本里累出来的计数与估算；上下文窗口与 lifetime 每次现算。 */
+type StatsScan = UsageAcc &
+  Pick<SessionStats, "messageCount" | "userTurns" | "assistantTurns" | "toolCalls"> & {
+    messageTokens: number;
+    imageCount: number;
+    systemTokens: number;
+  };
+
+function emptyScan(): StatsScan {
+  return {
+    messageCount: 0,
+    userTurns: 0,
+    assistantTurns: 0,
+    toolCalls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheRead: 0,
+    lastInputTokens: 0,
+    lastOutputTokens: 0,
+    lastCacheRead: 0,
+    lastCacheWrite: 0,
+    lastCacheReported: false,
+    contextUsed: 0,
+    messageTokens: 0,
+    imageCount: 0,
+    systemTokens: 0,
+  };
+}
+
+function scanEvent(acc: StatsScan, ev: LedgerRow): void {
+  const data = (ev.data && typeof ev.data === "object" ? ev.data : ev) as Record<string, unknown>;
+  const type = String(ev.type ?? "");
+  const role = String(data.role ?? ev.role ?? "");
+  const usage = ev.usage ?? data.usage;
+
+  if (
+    type === "message" ||
+    type === "user/message" ||
+    type === "assistant/message" ||
+    role === "user" ||
+    role === "assistant"
+  ) {
+    acc.messageCount++;
+    if (role === "user" || type === "user/message") acc.userTurns++;
+    if (role === "assistant" || type === "assistant/message") acc.assistantTurns++;
+  }
+  if (
+    type === "tool_call" ||
+    type === "tool/call" ||
+    type === "tool" ||
+    (ev.name && type.includes("tool"))
+  ) {
+    acc.toolCalls++;
+  }
+  if (usage) applyUsage(acc, usage);
+
+  const isCompact =
+    type === "compact" ||
+    type.startsWith("compact/") ||
+    role === "compact" ||
+    (typeof ev.content === "string" && /上下文已压缩/.test(ev.content)) ||
+    (typeof data.content === "string" && /上下文已压缩/.test(data.content));
+  if (isCompact && type !== "compact/start" && type !== "compact/summary") {
+    acc.lastInputTokens = 0;
+    acc.lastOutputTokens = 0;
+    acc.lastCacheRead = 0;
+    acc.lastCacheWrite = 0;
+    acc.lastCacheReported = false;
+    acc.contextUsed = 0;
+    acc.messageTokens = 0;
+    acc.imageCount = 0;
+    acc.systemTokens = 0;
+    return;
+  }
+
+  if (type === "trace" || type === "session/trace" || type === "info") return;
+  if (role === "system") {
+    const est = estimateSessionMessageTokens(data);
+    acc.systemTokens += est.tokens;
+    return;
+  }
+  if (
+    type === "message" ||
+    type === "user/message" ||
+    type === "assistant/message" ||
+    type === "tool/call" ||
+    type === "tool/result" ||
+    role === "user" ||
+    role === "assistant" ||
+    role === "tool" ||
+    type === "tool_call" ||
+    type === "tool_result" ||
+    type === "tool"
+  ) {
+    const est = estimateSessionMessageTokens({ ...data, role, content: data.content ?? ev.content });
+    acc.messageTokens += est.tokens;
+    acc.imageCount += est.images;
+  }
+}
+
+/**
+ * 账本解析缓存返回的数组在只追加时原地变长 —— 按数组记住折到第几条，只折新增的；
+ * 换了数组（文件被改写）就从头折。
+ */
+const scanMemo = new WeakMap<readonly LedgerRow[], { folded: number; acc: StatsScan }>();
+
+function scanLedger(rows: readonly LedgerRow[]): StatsScan {
+  let memo = scanMemo.get(rows);
+  if (!memo || memo.folded > rows.length) {
+    memo = { folded: 0, acc: emptyScan() };
+    scanMemo.set(rows, memo);
+  }
+  for (let i = memo.folded; i < rows.length; i++) scanEvent(memo.acc, rows[i]!);
+  memo.folded = rows.length;
+  return memo.acc;
+}
+
 export function collectSessionStats(
   projectRoot: string,
   sessionId: string,
@@ -180,87 +312,9 @@ export function collectSessionStats(
     return stats;
   }
 
-  let messageTokens = 0;
-  let imageCount = 0;
-  let systemTokens = 0;
-  const lines = readFileSync(file, "utf8").split("\n");
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    let ev: Record<string, unknown>;
-    try {
-      ev = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    const data = (ev.data && typeof ev.data === "object" ? ev.data : ev) as Record<string, unknown>;
-    const type = String(ev.type ?? "");
-    const role = String(data.role ?? ev.role ?? "");
-    const usage = ev.usage ?? data.usage;
-
-    if (
-      type === "message" ||
-      type === "user/message" ||
-      type === "assistant/message" ||
-      role === "user" ||
-      role === "assistant"
-    ) {
-      stats.messageCount++;
-      if (role === "user" || type === "user/message") stats.userTurns++;
-      if (role === "assistant" || type === "assistant/message") stats.assistantTurns++;
-    }
-    if (
-      type === "tool_call" ||
-      type === "tool/call" ||
-      type === "tool" ||
-      (ev.name && type.includes("tool"))
-    ) {
-      stats.toolCalls++;
-    }
-    if (usage) applyUsage(stats, usage);
-
-    const isCompact =
-      type === "compact" ||
-      type.startsWith("compact/") ||
-      role === "compact" ||
-      (typeof ev.content === "string" && /上下文已压缩/.test(ev.content)) ||
-      (typeof data.content === "string" && /上下文已压缩/.test(data.content));
-    if (isCompact && type !== "compact/start" && type !== "compact/summary") {
-      stats.lastInputTokens = 0;
-      stats.lastOutputTokens = 0;
-      stats.lastCacheRead = 0;
-      stats.lastCacheWrite = 0;
-      stats.lastCacheReported = false;
-      stats.contextUsed = 0;
-      messageTokens = 0;
-      imageCount = 0;
-      systemTokens = 0;
-      continue;
-    }
-
-    if (type === "trace" || type === "session/trace" || type === "info") continue;
-    if (role === "system") {
-      const est = estimateSessionMessageTokens(data);
-      systemTokens += est.tokens;
-      continue;
-    }
-    if (
-      type === "message" ||
-      type === "user/message" ||
-      type === "assistant/message" ||
-      type === "tool/call" ||
-      type === "tool/result" ||
-      role === "user" ||
-      role === "assistant" ||
-      role === "tool" ||
-      type === "tool_call" ||
-      type === "tool_result" ||
-      type === "tool"
-    ) {
-      const est = estimateSessionMessageTokens({ ...data, role, content: data.content ?? ev.content });
-      messageTokens += est.tokens;
-      imageCount += est.images;
-    }
-  }
+  const scan = scanLedger(readLedgerFileRows(file));
+  const { messageTokens, imageCount, systemTokens, ...counts } = scan;
+  Object.assign(stats, counts);
   stats.contextBreakdown = composeContextBreakdown({
     window: opts?.window ?? 0,
     used: stats.contextUsed,

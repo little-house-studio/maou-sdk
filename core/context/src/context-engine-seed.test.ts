@@ -109,12 +109,40 @@ describe("ContextEngine.seedWorkingSet (B1)", () => {
     expect(texts).toContain("unique-delta-1");
     expect(texts).toContain("unique-delta-2");
 
-    // 第三轮：无新消息 → appended=0，仍 fromHarness
+    // append 不写盘；同一 engine 再 seed 只认内存覆盖
+    expect(harness.getCurrentRecord(sessionId)!.sourceSessionMessageCount).toBe(msgs1.length);
+    const seed2b = e2.seedWorkingSet(msgs2);
+    expect(seed2b.appended).toBe(0);
+    expect(e2.getHistory().length).toBe(harnessLen + 2);
+
+    e2.save();
     const e3 = engine();
     const seed3 = e3.seedWorkingSet(msgs2);
     expect(seed3.fromHarness).toBe(true);
     expect(seed3.appended).toBe(0);
     expect(e3.getHistory().length).toBe(e2.getHistory().length);
+  });
+
+  it("同一 engine 第二轮只 append 且不写 harness", async () => {
+    const e = engine();
+    const msgs1 = makeSessionMsgs(12);
+    e.seedWorkingSet(msgs1);
+    await e.compress(512, {
+      knownTokens: 20_000,
+      force: true,
+      sourceSessionMessages: msgs1,
+    });
+    const afterCompress = JSON.stringify(harness.getCurrentRecord(sessionId));
+    const harnessLen = e.getHistory().length;
+    const msgs2 = [
+      ...msgs1,
+      { role: "user", content: "delta-only", createdAt: new Date().toISOString() },
+    ];
+    const seed = e.seedWorkingSet(msgs2);
+    expect(seed.fromHarness).toBe(true);
+    expect(seed.appended).toBe(1);
+    expect(e.getHistory().length).toBe(harnessLen + 1);
+    expect(JSON.stringify(harness.getCurrentRecord(sessionId))).toBe(afterCompress);
   });
 
   it("session 被截断/指纹不匹配 → 回退全量 session", async () => {

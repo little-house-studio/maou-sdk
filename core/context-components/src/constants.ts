@@ -63,10 +63,10 @@ export const SUMMARY_MAX_ENTRIES_PER_ROLE = 8;
 
 // ─── Agent 循环 ──────────────────────────────────────────
 
-/** Agent 循环安全上限，防止无限循环（当 agent.json 未配置 round_limit 时使用） */
+/** Agent 循环安全上限常量 */
 export const MAX_ROUNDS = 200;
 
-/** 默认 Agent 轮次上限（0 = 使用 MAX_ROUNDS 兜底） */
+/** 默认 Agent 轮次上限。0 = 不限轮 */
 export const DEFAULT_AGENT_ROUND_LIMIT = 0;
 
 /** 默认循环检测阈值 */

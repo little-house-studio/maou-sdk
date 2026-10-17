@@ -151,6 +151,7 @@ describe("live shell production wiring", () => {
     assert.match(app, /TerminalPanel/);
     assert.match(app, /onOpenTerminal/);
     assert.match(app, /showFiles|rightTab|FILES_ACTIVITY_ID/);
+    assert.match(read("../server/create-server.ts"), /\/api\/agent\/inspect/);
     assert.match(
       read("host/live-state.tsx"),
       /\[rightTab, setRightTab\] = useState<string \| null>\(null\)/,
@@ -162,6 +163,11 @@ describe("live shell production wiring", () => {
     assert.match(read("host/live-slots.tsx"), /registerAsideTab/);
     assert.match(read("host/live-slots.tsx"), /from\s+["']lucide-react["']/);
     assert.match(read("shell/activity.ts"), /SIDEBAR_ACTIVITY_ID/);
+    assert.match(read("shell/activity.ts"), /AGENT_ACTIVITY_ID/);
+    assert.match(read("host/live-slots.tsx"), /AGENT_ACTIVITY_ID/);
+    assert.match(read("host/live-slots.tsx"), /LiveAgentInspect/);
+    assert.match(read("host/live-state.tsx"), /agentInspect/);
+    assert.match(read("api.ts"), /\/api\/agent\/inspect/);
     assert.match(read("shell/activity.ts"), /toggleAsideTab/);
     assert.match(read("shell/activity.ts"), /modeShowsLeftRail/);
     assert.match(read("shell/LeftAside.tsx"), /modeShowsLeftRail/);
@@ -233,9 +239,12 @@ describe("live shell production wiring", () => {
     assert.match(app, /liveAgentsToDraftAgents/);
     assert.match(app, /setActiveAgent/);
     assert.match(app, /onSelectAgent|liveAgentRows|activeSwitchId/);
-    // 聊天页只跟 ops，不随项目 agent 切换重挂
-    assert.match(app, /remountKey:\s*["']ops["']/);
-    assert.match(app, /defaultAgent:\s*["']ops["']/);
+    // 聊天页默认跟 ops；顶栏活动 Agent 可切走并按 switchId 重挂
+    assert.match(app, /chatFollowUser/);
+    assert.match(app, /activityAgents/);
+    assert.match(app, /onSelectActivityAgent/);
+    assert.match(app, /remountKey:\s*activeSwitchId/);
+    assert.match(app, /defaultAgent:\s*activeAgentName/);
     // Still may fall back to metaToAgents when list empty
     assert.match(app, /metaToAgents/);
     // No bare name-only highlight when switch_id misses (multi-project safe)
@@ -448,6 +457,8 @@ describe("live shell production wiring", () => {
     assert.doesNotMatch(liveState, /onSessionTitleChange/);
     assert.match(topbar, /formatTodayInArrow/);
     assert.match(topbar, /formatTodayOutArrow/);
+    assert.match(topbar, /wire-agent-crumb|ActivityAgentCrumb/);
+    assert.match(liveState, /onSelectActivityAgent/);
     assert.doesNotMatch(topbar, /todayBarPercents|wire-today-track/);
     assert.doesNotMatch(topbar, /wire-meta-model|usageLabel|formatTodayTokenLabel/);
     assert.match(hub, /stampTodayOnUsage/);
@@ -485,9 +496,12 @@ describe("live shell production wiring", () => {
     assert.match(chat, /ChatSendMode|sendMode/);
     assert.match(chat, /enqueueChat/);
     assert.match(chat, /cycleSendMode|send-mode-toggle/);
-    assert.match(chat, /composer-outbox/);
+    assert.match(chat, /QueueDock/);
     assert.match(chat, /interrupt_immediately|after_round_complete|insert/);
     assert.match(chat, /queued_user|queue_delivered/);
+    assert.match(chat, /useChatQueue/);
+    assert.match(chat, /resumeQueue/);
+    assert.doesNotMatch(chat, /replayLeftoverQueuedTurn/);
     // shortcuts: Enter / Ctrl+Enter insert / Alt+Enter cycle
     assert.match(chat, /send\(["']insert["']\)/);
     assert.match(chat, /altKey/);

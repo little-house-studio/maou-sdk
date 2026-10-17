@@ -119,14 +119,14 @@ describe("ContextPanel semantic structure", () => {
     assert.match(html, /等待审批/);
   });
 
-  it("shows send (not stop) when busy but draft has text", () => {
+  it("keeps send and stop available when busy with a draft", () => {
     const html = renderPanel({
       agentBusy: true,
       pendingApproval: null,
       draftInput: "hello queue",
     });
     assert.match(html, /wire-composer-send/);
-    assert.doesNotMatch(html, /wire-composer-stop/);
+    assert.match(html, /wire-composer-stop/);
     assert.match(html, /运行中也可输入/);
   });
 

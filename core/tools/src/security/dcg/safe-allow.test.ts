@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { matchMaouSafeAllow } from "./safe-allow.js";
 import { evaluateWithDcg, setDcgEvaluatorForTest, resetDcgBinaryCache } from "./client.js";
 import { afterEach } from "vitest";
+
+const USER_ABS_RM =
+  "rm -rf /Users/mac/Documents/移植/正太勇者的崛起/.dcgtest/sub";
+const ISO_ABS_RM = `rm -rf ${join(homedir(), "Documents", "移植", "正太勇者的崛起", ".dcgtest", "sub")}`;
 
 describe("maou-dcg-allow (safe overrides)", () => {
   it("allows artifact rm -rf, denies source/tree rm -rf", () => {
@@ -14,6 +20,32 @@ describe("maou-dcg-allow (safe overrides)", () => {
     expect(matchMaouSafeAllow("rm -rf *")).toBeNull();
     expect(matchMaouSafeAllow("rm -rf ../secret")).toBeNull();
     expect(matchMaouSafeAllow("rm -rf /etc/passwd")).toBeNull();
+  });
+
+  it("allows concrete disposable project subpaths, not source trees", () => {
+    expect(matchMaouSafeAllow("rm -rf testdata/shototayusha-tmp")?.id).toBe(
+      "maou.allow:rm-rf-concrete-subpath",
+    );
+    expect(matchMaouSafeAllow("rm -rf .maou/scratch/probe")?.id).toBe(
+      "maou.allow:rm-rf-concrete-subpath",
+    );
+    expect(matchMaouSafeAllow("rm -rf src/tmp")).toBeTruthy();
+    expect(matchMaouSafeAllow("rm -rf src/components")).toBeNull();
+    expect(matchMaouSafeAllow("rm -rf core/agent")).toBeNull();
+  });
+
+  it("allows deep home absolute project subdir, not home/root tops", () => {
+    expect(matchMaouSafeAllow(USER_ABS_RM)?.id).toBe("maou.allow:rm-rf-concrete-subpath");
+    expect(matchMaouSafeAllow(ISO_ABS_RM)?.id).toBe("maou.allow:rm-rf-concrete-subpath");
+    expect(matchMaouSafeAllow("rm -rf ~")).toBeNull();
+    expect(matchMaouSafeAllow("rm -rf /")).toBeNull();
+    expect(matchMaouSafeAllow("rm -rf /Users/mac")).toBeNull();
+    expect(matchMaouSafeAllow("rm -rf /Users/mac/Documents")).toBeNull();
+    expect(matchMaouSafeAllow(`rm -rf ${homedir()}`)).toBeNull();
+    expect(matchMaouSafeAllow(`rm -rf ${homedir()}/Documents`)).toBeNull();
+    expect(matchMaouSafeAllow("rm -rf *")).toBeNull();
+    expect(matchMaouSafeAllow("rm -rf src")).toBeNull();
+    expect(matchMaouSafeAllow("rm -rf src/components")).toBeNull();
   });
 
   it("allows single-file restore/checkout discard, not whole tree", () => {
@@ -66,6 +98,18 @@ describe("evaluateWithDcg applies safe allow after DCG deny", () => {
     const r = await evaluateWithDcg("rm -rf dist");
     expect(r.decision).toBe("allow");
     expect(r.maouSafeAllow?.id).toMatch(/rm-rf-artifacts/);
+  });
+
+  it("overrides deny for deep home project rm -rf", async () => {
+    setDcgEvaluatorForTest(async (cmd) => ({
+      decision: "deny",
+      command: cmd,
+      ruleId: "core.filesystem:rm-rf-root-home",
+      reason: "rm-rf-root-home",
+    }));
+    const r = await evaluateWithDcg(USER_ABS_RM);
+    expect(r.decision).toBe("allow");
+    expect(r.maouSafeAllow?.id).toBe("maou.allow:rm-rf-concrete-subpath");
   });
 
   it("keeps deny for rm -rf src", async () => {

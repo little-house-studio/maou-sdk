@@ -67,6 +67,14 @@ describe("context chrome CSS coexistence", () => {
     assert.match(css, /\.wire-turn-fold\s*\{/);
     assert.match(css, /\.wire-reply-turn\.is-folded\s*\{/);
     assert.match(css, /\.wire-reply-turn\.has-fold > \.wire-turn-fold/);
+    assert.match(
+      css,
+      /\.wire-reply-turn\.has-fold:not\(\.is-folded\) > \.wire-msg\s*\{[^}]*grid-row:\s*2/s,
+    );
+    assert.match(
+      css,
+      /\.wire-reply-turn\.has-fold:not\(\.is-folded\)\.has-body > \.wire-reply-plan\s*\{[^}]*grid-row:\s*3/s,
+    );
     assert.match(css, /\.wire-loop-rounds > \.wire-reply-pack-block \+ \.wire-reply-turn/);
     assert.match(css, /\.wire-reply-pack-list\s*\{[^}]*grid-template-rows:\s*0fr/s);
     assert.match(css, /\.wire-pack-chevron\s*\{[^}]*transition:\s*transform/s);

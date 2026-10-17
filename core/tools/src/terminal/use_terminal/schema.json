@@ -1,6 +1,6 @@
 {
   "name": "use_terminal",
-  "description": "执行 shell 命令或管理常驻终端。不指定 id 为临时终端（执行完即销毁）；指定 id 为持久终端（可反复操作）。action=run 运行命令；action=manage 管理终端；action=write 键盘输入；return_when=filter|until + match/expr 对命令输出做条件返回。background=false（默认）阻塞等待；到 timeout 仍在跑则转后台并汇报。命令成功或失败后进程即停。",
+  "description": "执行 shell 命令或管理常驻终端。不指定 id 为临时终端（执行完即销毁）；指定 id 仅命名并保留在列表（每次调用都是新 shell，不保留上一轮的 cd/export 状态）。action=run 运行命令；action=manage 管理终端；action=write 键盘输入（交互程序通常需以 \\n 结尾）；return_when=filter|until + match/expr 对命令输出做条件返回。until 可挂正在运行的已有后台 id（省略 command；已结束请用 manage logs）。background=false（默认）阻塞等待；到 timeout 仍在跑则转后台并汇报。命令成功或失败后进程即停。",
   "parameters": {
     "type": "object",
     "properties": {
@@ -15,11 +15,11 @@
       },
       "id": {
         "type": "string",
-        "description": "终端名称。后台/until/前台超时转后台时复用或保留此 id；前台正常结束后未指定 id 则销毁。"
+        "description": "终端名称（命名 + 日志/管理定位）。后台/until/前台超时转后台时保留此 id；但每次 run 都是新 shell，cd/export 等状态不会跨调用保留。前台正常结束后未指定 id 则销毁。"
       },
       "command": {
         "type": "string",
-        "description": "要执行的命令（run 时必填）。Unix 用 $HOME、/tmp；Windows 原生 PowerShell 用 $env:USERPROFILE、C:\\Users\\…，不要调用 wsl.exe。"
+        "description": "要执行的命令。新开任务必填；return_when=until 且 id 已在跑时可省略，只盯该任务输出。Unix 用 $HOME、/tmp；Windows 原生 PowerShell 用 $env:USERPROFILE、C:\\Users\\…，不要调用 wsl.exe。"
       },
       "description": {
         "type": "string",
@@ -43,7 +43,7 @@
           "filter",
           "until"
         ],
-        "description": "条件返回：filter=筛出命中行；until=第一次命中即返回。需 expr 和/或 match。"
+        "description": "条件返回：filter=筛出命中行；until=第一次命中即返回。until 可挂已有后台 id（省略 command）。需 expr 和/或 match。"
       },
       "match": {
         "type": "string",
@@ -81,7 +81,7 @@
       },
       "data": {
         "type": "string",
-        "description": "write 时键盘输入。"
+        "description": "write 时键盘输入。交互式程序（input/prompt/REPL）在行编辑模式下默认等「换行」才提交输入，请以 \\n 结尾（如 'y\\n'、'\\x03' 表示 Ctrl+C，无需换行）。"
       },
       "reason": {
         "type": "string",

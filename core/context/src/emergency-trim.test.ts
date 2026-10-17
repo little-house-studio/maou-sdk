@@ -52,6 +52,6 @@ describe("stripNonTextContent", () => {
     ];
     const r = stripNonTextContent(msgs);
     expect(r.stripped).toBe(1);
-    expect(r.messages[0]!.content).toBe("看这图");
+    expect(r.messages[0]!.content).toBe("看这图\n[图片]");
   });
 });

@@ -154,6 +154,7 @@ export class ToolRegistry {
       if (effectiveWhitelist && !this._nameAllowed(name, tool.definition.aliases ?? [], effectiveWhitelist)) {
         continue;
       }
+      if (tool.definition.deferPrompt) continue;
 
       const prompt = this._readToolPromptCached(tool);
       if (prompt) {

@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  resetCursorsForTest,
   resetHelperPathCache,
   resetSnapshotsForTest,
   setHelperRunnerForTest,
 } from "@little-house-studio/computer-use-engine";
 import type { ToolContext } from "../../base.js";
+import { registerBuiltins } from "../../impls/index.js";
+import { ToolRegistry } from "../../registry.js";
 import { ComputerTool } from "./tool.js";
 
 afterEach(() => {
   setHelperRunnerForTest(undefined);
   resetSnapshotsForTest();
   resetHelperPathCache();
+  resetCursorsForTest();
   delete process.env.MAOU_COMPUTER_USE_HELPER;
 });
 
@@ -32,6 +36,24 @@ describe("use_computer", () => {
   it("registers as use_computer and stays visible in plan", () => {
     expect(tool.definition.name).toBe("use_computer");
     expect(tool.definition.allowedModes).toEqual(["plan", "execute"]);
+    expect(tool.definition.deferPrompt).toBe(true);
+  });
+
+  it("keeps TOOL.md out of getToolPrompts", () => {
+    const reg = new ToolRegistry();
+    registerBuiltins(reg);
+    const prompts = reg.getToolPrompts();
+    expect(prompts.has("use_computer")).toBe(false);
+    expect(prompts.has("use_terminal")).toBe(true);
+  });
+
+  it("list works in plan without a helper", async () => {
+    const r = await tool.execute(
+      { action: "list", reason: "catalog", description: "list" },
+      ctx({ agentMode: "plan" }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.message).toMatch(/screenshot/);
   });
 
   it("blocks activate in plan", async () => {

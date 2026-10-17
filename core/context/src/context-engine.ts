@@ -157,13 +157,23 @@ export class ContextEngine {
   /**
    * B1 主入口：构建本轮 LLM 工作集。
    *
-   * 1. harness 有对齐 meta 且尾指纹匹配 → 加载 harness，append session 增量
-   * 2. 否则 → 从完整 session 初始化（不写 harness）
-   * 3. 有增量 append 时写回 harness，避免下轮重复 append
+   * 1. 内存工作集已对齐 → 只 append session 增量（不写盘）
+   * 2. harness 有对齐 meta 且尾指纹匹配 → 加载 harness，append session 增量（不写盘）
+   * 3. 否则 → 从完整 session 初始化（不写 harness）
    */
   seedWorkingSet(
     sessionMessages: Array<Record<string, unknown>>,
   ): SeedWorkingSetResult {
+    const live = this.liveCoverageMeta();
+    if (live && this.history.length > 0 && isHarnessMetaAligned(live, sessionMessages)) {
+      const appended = this.appendSessionDelta(sessionMessages);
+      return {
+        fromHarness: this.seededFromHarness,
+        appended,
+        useAsLlmHistory: this.seededFromHarness,
+      };
+    }
+
     const record = this.harnessStore.getCurrentRecord(this.sessionId);
     const meta: HarnessWorkingSetMeta | null = record
       ? {
@@ -184,27 +194,12 @@ export class ContextEngine {
           ? Math.max(...this.history.map((m) => m.seqId)) + 1
           : 0;
       this.seededFromHarness = true;
+      this.sourceSessionMessageCount = record.sourceSessionMessageCount;
+      this.sourceTailFingerprint = record.sourceTailFingerprint ?? "";
+      this.absorbedSeq = record.absorbedSeq ?? 0;
       if (typeof record.microTurn === "number") this.microTurn = record.microTurn;
       if (record.microUnlockHint?.items?.length) this.unlockHint = record.microUnlockHint;
-
-      const start = Math.max(0, record.sourceSessionMessageCount);
-      const delta = sessionMessages.slice(start);
-      let appended = 0;
-      if (delta.length > 0) {
-        const newMsgs = delta.map((sm, i) =>
-          sessionToMaouMessage(
-            sm as Parameters<typeof sessionToMaouMessage>[0],
-            this.nextSeqId + i,
-          ),
-        );
-        this.sync(newMsgs);
-        appended = newMsgs.length;
-      }
-      this.markSourceCoverage(sessionMessages);
-      // 有增量或 harness 缺指纹时，把对齐 meta 写回去
-      if (appended > 0 || !record.sourceTailFingerprint) {
-        this.persistWorkingSet();
-      }
+      const appended = this.appendSessionDelta(sessionMessages);
       return {
         fromHarness: true,
         appended,
@@ -219,6 +214,33 @@ export class ContextEngine {
       appended: 0,
       useAsLlmHistory: false,
     };
+  }
+
+  private liveCoverageMeta(): HarnessWorkingSetMeta | null {
+    if (this.history.length === 0 || this.sourceSessionMessageCount <= 0) return null;
+    return {
+      sourceSessionMessageCount: this.sourceSessionMessageCount,
+      sourceTailFingerprint: this.sourceTailFingerprint,
+      absorbedSeq: this.absorbedSeq,
+    };
+  }
+
+  private appendSessionDelta(sessionMessages: Array<Record<string, unknown>>): number {
+    const start = Math.max(0, this.sourceSessionMessageCount);
+    const delta = sessionMessages.slice(start);
+    if (delta.length === 0) {
+      this.markSourceCoverage(sessionMessages);
+      return 0;
+    }
+    const newMsgs = delta.map((sm, i) =>
+      sessionToMaouMessage(
+        sm as Parameters<typeof sessionToMaouMessage>[0],
+        this.nextSeqId + i,
+      ),
+    );
+    this.sync(newMsgs);
+    this.markSourceCoverage(sessionMessages);
+    return newMsgs.length;
   }
 
   /**
@@ -264,12 +286,8 @@ export class ContextEngine {
     if (out.unlockItems.length > 0) {
       this.unlockHint = { atTurn: this.microTurn + 1, items: out.unlockItems };
     }
-    if (!out.changed) {
-      this.persistClock();
-      return false;
-    }
+    if (!out.changed) return false;
     this.history = out.history;
-    this.persistWorkingSet();
     return true;
   }
 
@@ -305,10 +323,6 @@ export class ContextEngine {
         toolCalls: m.toolCalls?.map((t) => ({ ...t })),
       };
     });
-  }
-
-  private persistClock(): void {
-    if (this.seededFromHarness) this.persistWorkingSet();
   }
 
   /**
@@ -377,8 +391,6 @@ export class ContextEngine {
       this.harnessStore.backupBeforeCompress(this.sessionId, beforeHistory);
       this.seededFromHarness = true;
       this.persistWorkingSet();
-    } else if (this.seededFromHarness) {
-      this.persistWorkingSet();
     }
 
     if (result.compressed && result.stage !== "activeStage") {
@@ -406,7 +418,13 @@ export class ContextEngine {
    * 将当前工作上下文转为 LLMMessage[]，供 buildMessages 使用。
    */
   toLLMHistory(): LLMMessage[] {
-    const msgs = this.history.map(maouToLLMMessage);
+    return this.toLLMHistoryFrom(0);
+  }
+
+  /** 只转换 startIndex 起的工作集（run 内增量拼 LLM 历史）。 */
+  toLLMHistoryFrom(startIndex: number): LLMMessage[] {
+    const start = Math.max(0, startIndex);
+    const msgs = this.history.slice(start).map(maouToLLMMessage);
     const prefix = this.unlockPrefixIfDue();
     if (prefix) msgs.push({ role: "user", content: prefix });
     return msgs;

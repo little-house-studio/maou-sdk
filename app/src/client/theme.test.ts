@@ -190,6 +190,45 @@ describe("sheet theme", () => {
     );
   });
 
+  it("expanded tool card IO uses paper/fence + label, not mid-gray term ink", () => {
+    assert.match(
+      draftCss,
+      /\.wire-tool-body\s*\{[^}]*background:\s*var\(--n-paper\)[^}]*color:\s*var\(--n-label\)/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-tool-pre\s*\{[^}]*background:\s*var\(--n-fence-bg\)[^}]*color:\s*var\(--n-label\)/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-tool-pre\.is-input\s*\{[^}]*color:\s*var\(--n-label\)/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-tool-pre\.is-output\s*\{[^}]*color:\s*var\(--n-label\)/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-tool-section-label\s*\{[^}]*color:\s*var\(--n-on-quiet\)/s,
+    );
+    assert.match(
+      draftCss,
+      /\.wire-tool-fold\s*\{[^}]*color:\s*var\(--n-on-quiet\)/s,
+    );
+    assert.doesNotMatch(
+      draftCss,
+      /\.wire-tool-pre\.is-input\s*\{[^}]*color:\s*var\(--n-warn\)/s,
+    );
+    assert.doesNotMatch(
+      draftCss,
+      /\.wire-tool-pre\.is-output\s*\{[^}]*color:\s*var\(--n-tool-ok/s,
+    );
+    assert.doesNotMatch(
+      draftCss,
+      /\.wire-shell\.draft-shell \.wire-tool-pre\s*\{[^}]*--n-term-bg/s,
+    );
+  });
+
   it("tool stack shares the bubble-text left edge", () => {
     assert.match(
       draftCss,

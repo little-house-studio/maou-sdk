@@ -38,6 +38,8 @@ export type DeliveryPhase =
   | "task_complete"; // task 表全部完成
 
 export interface EnqueueOptions {
+  /** 同一进程内重试的稳定请求 ID（按会话隔离） */
+  requestId?: string;
   /** 该条消息的投递模式（缺省走会话默认模式） */
   mode?: MessageQueueMode;
   /** 消息来源标记（hook / user / plugin / feishu 等） */
@@ -111,10 +113,30 @@ export class MessageQueue {
   private queues = new Map<string, QueuedMessage[]>();
   private defaultModes = new Map<string, MessageQueueMode>();
   private seq = 0;
+  private accepted = new Map<string, { id: number; mode: MessageQueueMode }>();
+
+  get capacity(): number { return this.maxQueuePerSession; }
   private defaultMode: MessageQueueMode;
   private maxQueuePerSession: number;
   private onInterrupt?: (sessionId: string, mode: "interrupt_immediately" | "interrupt_stop") => void;
   private sessionDirs = new Map<string, string>();
+  private interruptHandlers = new Map<string, (mode: "interrupt_immediately" | "interrupt_stop") => void>();
+
+  /** Multiple runtimes share this queue; interruption belongs to the owning session. */
+  bindInterrupt(sessionId: string, handler: (mode: "interrupt_immediately" | "interrupt_stop") => void): () => void {
+    const previous = this.interruptHandlers.get(sessionId);
+    this.interruptHandlers.set(sessionId, handler);
+    return () => {
+      if (this.interruptHandlers.get(sessionId) !== handler) return;
+      if (previous) this.interruptHandlers.set(sessionId, previous);
+      else this.interruptHandlers.delete(sessionId);
+    };
+  }
+
+  private interrupt(sessionId: string, mode: "interrupt_immediately" | "interrupt_stop"): void {
+    const handler = this.interruptHandlers.get(sessionId);
+    try { if (handler) handler(mode); else this.onInterrupt?.(sessionId, mode); } catch { /* queue mutation is committed */ }
+  }
 
   rememberSessionDir(sessionId: string, sessionDir: string): void {
     this.sessionDirs.set(sessionId, sessionDir);
@@ -168,20 +190,17 @@ export class MessageQueue {
     message: string,
     opts: EnqueueOptions = {},
   ): { id: number; decision: DeliveryDecision } {
+    const key = opts.requestId ? JSON.stringify([sessionId, opts.requestId]) : undefined;
+    const pending = opts.requestId ? this.queues.get(sessionId)?.find(m => m.metadata.requestId === opts.requestId) : undefined;
+    const accepted = pending ?? (key ? this.accepted.get(key) : undefined);
+    if (accepted) return { id: accepted.id, decision: { ...this.evaluateDecision(accepted.mode), shouldAbort: false, shouldStopRun: false } };
     const mode = opts.mode ?? this.getDefaultMode(sessionId);
     const queue = this.queues.get(sessionId) ?? [];
 
     if (opts.sessionDir) this.rememberSessionDir(sessionId, opts.sessionDir);
 
     if (queue.length >= this.maxQueuePerSession) {
-      const dropped = queue.shift();
-      if (dropped) {
-        this.noteInbox(sessionId, "inbox/cancel", {
-          queue_id: dropped.id,
-          reason: "overflow",
-          ran: false,
-        }, opts.sessionDir);
-      }
+      throw new Error(`队列已满（最多 ${this.maxQueuePerSession} 条），请等待处理或移除消息`);
     }
 
     const entry: QueuedMessage = {
@@ -189,10 +208,15 @@ export class MessageQueue {
       message,
       mode,
       source: opts.source ?? "user",
-      metadata: opts.metadata ?? {},
+      metadata: { ...opts.metadata, ...(opts.requestId ? { requestId: opts.requestId } : {}) },
       enqueuedAt: Date.now(),
     };
     queue.push(entry);
+    if (key) {
+      this.accepted.set(key, { id: entry.id, mode });
+      // Bounded replay window; pending requests remain detectable independently.
+      if (this.accepted.size > 10000) this.accepted.delete(this.accepted.keys().next().value!);
+    }
     this.queues.set(sessionId, queue);
     this.noteInbox(sessionId, "inbox/enqueue", {
       queue_id: entry.id,
@@ -205,16 +229,7 @@ export class MessageQueue {
 
     // interrupt 模式：立即触发 onInterrupt 回调（runtime 注入的 abortCurrentRun）
     // 这样调用方只需调 messageQueue.enqueue，runtime 自动 abort，无需调用方再判断 decision.shouldAbort
-    if (decision.shouldAbort && this.onInterrupt) {
-      try {
-        this.onInterrupt(
-          sessionId,
-          decision.shouldStopRun ? "interrupt_stop" : "interrupt_immediately",
-        );
-      } catch {
-        // 回调失败不应影响入队本身
-      }
-    }
+    if (decision.shouldAbort) this.interrupt(sessionId, decision.shouldStopRun ? "interrupt_stop" : "interrupt_immediately");
 
     return { id: entry.id, decision };
   }
@@ -265,6 +280,8 @@ export class MessageQueue {
     options: {
       /** interrupt 模式的消息是否可投递（要求 run 已退出 / abort 已触发） */
       runExited?: boolean;
+      /** 插入仅消费立即打断的消息，普通队列仍等待安全轮次边界。 */
+      interruptOnly?: boolean;
       /** 当前 run 是否已被 abort（用于 interrupt_immediately：abort 后即可投递，不必等 run 退出） */
       aborted?: boolean;
       /** 是否所有 task 已完成（task_complete phase 的判定依据） */
@@ -278,6 +295,7 @@ export class MessageQueue {
     const remaining: QueuedMessage[] = [];
 
     for (const msg of queue) {
+      if (options.interruptOnly && msg.mode !== "interrupt_immediately") { remaining.push(msg); continue; }
       const phases = PHASE_DELIVERY_MAP[msg.mode];
 
       // interrupt 模式投递条件：
@@ -409,7 +427,10 @@ export class MessageQueue {
 
     const fromRaw = msg.metadata.fromAgent ?? msg.metadata.from ?? msg.metadata.fromSessionId;
     const from = typeof fromRaw === "string" ? fromRaw.trim() : "";
-    const agentInbound = msg.source === "report_to_parent" || msg.source === "message_bus";
+    const agentInbound =
+      msg.source === "report_to_parent" ||
+      msg.source === "message_bus" ||
+      msg.source === "project_dispatch";
     appendSessionEvent(sessions, sessionId, {
       kind: agentInbound ? "agent_message" : "queued_user",
       content: msg.message,
@@ -447,10 +468,50 @@ export class MessageQueue {
     return queue && queue.length > 0 ? queue[0]! : null;
   }
 
+  /** 取出队首并记 claim。run 结束后接下一轮用。 */
+  takeNext(sessionId: string): QueuedMessage | null {
+    const queue = this.queues.get(sessionId);
+    if (!queue || queue.length === 0) return null;
+    const msg = queue.shift();
+    if (!msg) return null;
+    if (queue.length === 0) this.queues.delete(sessionId);
+    else this.queues.set(sessionId, queue);
+    this.noteInbox(sessionId, "inbox/claim", {
+      queue_id: msg.id,
+      queue_mode: msg.mode,
+      phase: "run_end",
+    });
+    return msg;
+  }
+
   /** 列出指定 session 的全部排队消息（不移除） */
   list(sessionId: string): QueuedMessage[] {
     const queue = this.queues.get(sessionId);
-    return queue ? [...queue] : [];
+    return queue ? queue.map(m => ({ ...m, metadata: { ...m.metadata } })) : [];
+  }
+
+  /** Atomic mutation of a still-pending item. Never recreates a claimed item. */
+  update(sessionId: string, id: number, patch: {
+    message?: string; mode?: MessageQueueMode; move?: "up" | "down";
+  }): boolean {
+    const queue = this.queues.get(sessionId);
+    const index = queue?.findIndex(m => m.id === id) ?? -1;
+    if (!queue || index < 0) return false;
+    if (patch.message !== undefined && !patch.message.trim()) throw new Error("message required");
+    const item = queue[index]!;
+    const previousMode = item.mode;
+    if (patch.message !== undefined) item.message = patch.message.trim();
+    if (patch.mode !== undefined) item.mode = patch.mode;
+    if (patch.move) {
+      const target = Math.max(0, Math.min(queue.length - 1, index + (patch.move === "up" ? -1 : 1)));
+      queue.splice(index, 1);
+      queue.splice(target, 0, item);
+    }
+    this.noteInbox(sessionId, "inbox/enqueue", { queue_id: id, action: "update", queue_mode: item.mode, position: queue.indexOf(item) });
+    if (item.mode !== previousMode && (item.mode === "interrupt_immediately" || item.mode === "interrupt_stop")) {
+      this.interrupt(sessionId, item.mode);
+    }
+    return true;
   }
 
   /** 按 id 移除一条排队消息；成功返回 true */

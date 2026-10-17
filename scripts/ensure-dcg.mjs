@@ -12,7 +12,7 @@
  *   node scripts/ensure-dcg.mjs --user   # 只装到 ~/.maou/bin
  *
  * 环境变量：
- *   MAOU_DCG_VERSION=v0.6.7  固定版本（默认 GitHub latest）
+ *   MAOU_DCG_VERSION=v0.14.3 覆盖钉死版本（默认本文件 DEFAULT_DCG_VERSION）
  *   MAOU_DCG_SKIP=1          跳过
  *   MAOU_DCG_DEST=path       覆盖目标文件路径
  */
@@ -46,9 +46,20 @@ import { Readable } from "node:stream";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OWNER = "Dicklesworthstone";
 const REPO = "destructive_command_guard";
+/** 发布资产名与 robot JSON 已对过；ensure 见到更旧的能跑二进制也会换掉。 */
+const DEFAULT_DCG_VERSION = "v0.14.3";
 const FORCE = process.argv.includes("--force");
 const USER_ONLY = process.argv.includes("--user");
 const BIN = platform() === "win32" ? "dcg.exe" : "dcg";
+
+function pinnedTag() {
+  const v = process.env.MAOU_DCG_VERSION || DEFAULT_DCG_VERSION;
+  return v.startsWith("v") ? v : `v${v}`;
+}
+
+function pinnedVersionNumber() {
+  return pinnedTag().replace(/^v/, "");
+}
 
 if (process.env.MAOU_DCG_SKIP === "1") {
   console.log("[ensure-dcg] MAOU_DCG_SKIP=1，跳过");
@@ -58,7 +69,7 @@ if (process.env.MAOU_DCG_SKIP === "1") {
 function targetTriple() {
   const p = platform();
   const a = arch();
-  // GitHub release assets (v0.6.7):
+  // GitHub release assets（v0.14.3 同形）:
   // darwin arm/x64, linux gnu/musl x64, windows msvc x64/arm64
   if (p === "darwin" && a === "arm64") return "aarch64-apple-darwin";
   if (p === "darwin" && a === "x64") return "x86_64-apple-darwin";
@@ -93,23 +104,8 @@ function defaultDests() {
   return list;
 }
 
-async function latestTag() {
-  if (process.env.MAOU_DCG_VERSION) {
-    const v = process.env.MAOU_DCG_VERSION;
-    return v.startsWith("v") ? v : `v${v}`;
-  }
-  const res = await fetch(
-    `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`,
-    {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "User-Agent": "maou-sdk-ensure-dcg",
-      },
-    },
-  );
-  if (!res.ok) throw new Error(`GitHub releases API ${res.status}`);
-  const j = await res.json();
-  return j.tag_name;
+function latestTag() {
+  return pinnedTag();
 }
 
 async function listAssetNames(tag) {
@@ -134,7 +130,7 @@ function alreadyOk(dest) {
       encoding: "utf-8",
       timeout: 5000,
     });
-    return /\d+\.\d+/.test(out);
+    return out.includes(pinnedVersionNumber());
   } catch {
     return false;
   }
@@ -225,7 +221,7 @@ function extractArchive(archivePath, outDir) {
 }
 
 async function installBinary(dest) {
-  const tag = await latestTag();
+  const tag = latestTag();
   let triple = targetTriple();
   let assets = await listAssetNames(tag);
 

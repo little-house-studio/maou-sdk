@@ -16,6 +16,7 @@ import { noteContextStructure } from "./context-assert.js";
 import { compileProjectContext } from "./project-context.js";
 import { compileWorkspaceInstructions } from "./workspace-instructions.js";
 import { contentWithThinkingForLlm } from "./thinking-context.js";
+import { IMAGE_PLACEHOLDER, stripNonTextContent } from "./emergency-trim.js";
 
 export const TRADITIONAL_SLOT = {
   systemPre: "system_pre",
@@ -129,6 +130,15 @@ export function createTraditionalAssembly(): Assembly<BuildMessagesParams> {
         },
       }),
       defineHook<BuildMessagesParams>({
+        name: "text_only_media",
+        apply: (messages, ctx) => {
+          if (ctx.supportsVision !== false) return;
+          const r = stripNonTextContent(messages);
+          if (r.stripped <= 0) return;
+          messages.splice(0, messages.length, ...(r.messages as AssemblyMessage[]));
+        },
+      }),
+      defineHook<BuildMessagesParams>({
         name: "note_structure",
         apply: (messages, _ctx, meta) => {
           noteContextStructure(messages, meta.prefixCount);
@@ -138,8 +148,10 @@ export function createTraditionalAssembly(): Assembly<BuildMessagesParams> {
   });
 }
 
+const traditionalAssembly = createTraditionalAssembly();
+
 export function buildMessages(params: BuildMessagesParams): Record<string, unknown>[] {
-  return createTraditionalAssembly().assemble(params);
+  return traditionalAssembly.assemble(params);
 }
 
 function provideHistory(params: BuildMessagesParams): AssemblyMessage[] {
@@ -248,32 +260,46 @@ function provideHistory(params: BuildMessagesParams): AssemblyMessage[] {
       entry.tool_call_id = msg.tool_call_id;
     }
     const msgImages = msg.images as Array<{ mimeType: string; data: string }> | undefined;
+    const vision = params.supportsVision !== false;
     if (msg.role === "user" && msgImages && msgImages.length > 0) {
-      const parts: Array<Record<string, unknown>> = [];
-      if (typeof historyContent === "string" && historyContent.trim()) {
-        parts.push({ type: "text", text: historyContent });
+      if (vision) {
+        const parts: Array<Record<string, unknown>> = [];
+        if (typeof historyContent === "string" && historyContent.trim()) {
+          parts.push({ type: "text", text: historyContent });
+        }
+        for (const img of msgImages) {
+          parts.push({
+            type: "image_url",
+            image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+          });
+        }
+        entry.content = parts;
+      } else {
+        const marks = msgImages.map(() => IMAGE_PLACEHOLDER).join(" ");
+        const base =
+          typeof historyContent === "string" ? historyContent.trim() : "";
+        entry.content = base ? `${base}\n${marks}` : marks;
       }
-      for (const img of msgImages) {
-        parts.push({
-          type: "image_url",
-          image_url: { url: `data:${img.mimeType};base64,${img.data}` },
-        });
-      }
-      entry.content = parts;
     }
     messages.push(entry);
 
     if (msg.role === "tool" && msgImages && msgImages.length > 0) {
-      const imageContentParts: Array<Record<string, unknown>> = [
-        { type: "text", text: `[以下是工具 ${msg.tool_name ?? "read"} 返回的图片]` },
-      ];
-      for (const img of msgImages) {
-        imageContentParts.push({
-          type: "image_url",
-          image_url: { url: `data:${img.mimeType};base64,${img.data}` },
-        });
+      const caption = `[以下是工具 ${msg.tool_name ?? "read"} 返回的图片]`;
+      if (vision) {
+        const imageContentParts: Array<Record<string, unknown>> = [
+          { type: "text", text: caption },
+        ];
+        for (const img of msgImages) {
+          imageContentParts.push({
+            type: "image_url",
+            image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+          });
+        }
+        messages.push({ role: "user", content: imageContentParts });
+      } else {
+        const marks = msgImages.map(() => IMAGE_PLACEHOLDER).join(" ");
+        messages.push({ role: "user", content: `${caption}\n${marks}` });
       }
-      messages.push({ role: "user", content: imageContentParts });
     }
   }
   return messages;

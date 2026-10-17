@@ -118,6 +118,12 @@ export interface HelperRequest {
   amount?: number;
   durationMs?: number;
   path?: string;
+  /** 动作结束后把系统指针移回原处 */
+  restoreMouse?: boolean;
+  cursorX?: number;
+  cursorY?: number;
+  cursorColor?: string;
+  cursorLabel?: string;
 }
 
 export interface HelperEnvelope {
@@ -161,6 +167,8 @@ export const ACT_ACTIONS = [
 ] as const;
 
 export const OBSERVE_ACTIONS = [
+  "list",
+  "call",
   "snapshot",
   "screenshot",
   "apps",

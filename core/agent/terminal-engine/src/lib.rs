@@ -26,6 +26,37 @@ use terminal::StreamEvent;
 /// 全局注册表单例
 static REGISTRY: Lazy<Arc<TerminalRegistry>> = Lazy::new(|| Arc::new(TerminalRegistry::new()));
 
+/// 后台/超时转后台后继续等主进程退出并标 exited
+fn spawn_exit_reaper(terminal_id: String) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+            let finished = match REGISTRY.get_terminal(&terminal_id) {
+                None => true,
+                Some(entry) => {
+                    let mut terminal = match entry.lock() {
+                        Ok(t) => t,
+                        Err(_) => break,
+                    };
+                    match terminal.try_wait_exit() {
+                        Ok(Some(code)) => {
+                            terminal.mark_exited(Some(code));
+                            logger::log_exit(&terminal_id, Some(code));
+                            true
+                        }
+                        Ok(None) => false,
+                        Err(_) => true,
+                    }
+                }
+            };
+            if finished {
+                REGISTRY.persist();
+                break;
+            }
+        }
+    });
+}
+
 // ─── napi 导出的结构体 ─────────────────────────────────────────────────────
 
 /// 运行结果
@@ -229,6 +260,9 @@ pub async fn run(
                     })
                 }
                 Ok(None) => {
+                    if timed_out {
+                        spawn_exit_reaper(terminal_id.clone());
+                    }
                     REGISTRY.persist();
                     Ok(RunResult {
                         ok: timed_out,
@@ -313,6 +347,9 @@ pub async fn run_background(
             } else {
                 (String::new(), None, false)
             };
+            if exit_code.is_none() && ok {
+                spawn_exit_reaper(tid.clone());
+            }
             REGISTRY.persist();
 
             let duration_ms = start.elapsed().as_millis() as f64;

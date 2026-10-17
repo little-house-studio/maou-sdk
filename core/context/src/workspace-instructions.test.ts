@@ -9,6 +9,7 @@ import {
   loadWorkspaceInstructionFiles,
   resolveWorkspaceInstructionsEnabled,
 } from "./workspace-instructions.js";
+import { cachedFileReadCount, resetFileTextCache } from "./file-text-cache.js";
 
 describe("workspace-instructions", () => {
   const dirs: string[] = [];
@@ -21,6 +22,7 @@ describe("workspace-instructions", () => {
     if (prevProject === undefined) delete process.env.MAOU_PROJECT_CONTEXT;
     else process.env.MAOU_PROJECT_CONTEXT = prevProject;
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    resetFileTextCache();
   });
 
   function root(): string {
@@ -89,6 +91,18 @@ describe("workspace-instructions", () => {
     const files = loadWorkspaceInstructionFiles(dir);
     expect(files.some((f) => f.exists)).toBe(false);
     expect(compileWorkspaceInstructions(dir)).toBe("");
+  });
+
+  it("compileWorkspaceInstructions 同 mtime 不重读文件", () => {
+    const dir = root();
+    writeFileSync(join(dir, "AGENTS.md"), "stable rules\n", "utf-8");
+    resetFileTextCache();
+    const first = compileWorkspaceInstructions(dir);
+    const reads = cachedFileReadCount();
+    expect(first).toContain("stable rules");
+    expect(reads).toBeGreaterThan(0);
+    expect(compileWorkspaceInstructions(dir)).toBe(first);
+    expect(cachedFileReadCount()).toBe(reads);
   });
 
   it("emits empty replacement when disabled after compact", () => {

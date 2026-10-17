@@ -4,10 +4,13 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import type { OpenTerminalRequest } from "../TerminalPanel";
-import type { LiveAgentInfo, Meta } from "../api";
+import type { ActivityAgentInfo, LiveAgentInfo, Meta } from "../api";
+import { readBootShell, saveBootShell } from "../boot-cache";
+import { buildActivityMenu } from "../wire/chrome/activity-agents";
 import type { DraftBgTask, UiMode } from "../wire/types";
 import type { DockCardId } from "../dock-plugin/ids";
 import { useAppPorts } from "../ports";
@@ -29,6 +32,21 @@ import {
   toggleAsideTab,
 } from "../shell/activity";
 import type { WireHostBag } from "../shell/types";
+
+function sameActivityAgents(
+  a: ActivityAgentInfo[],
+  b: ActivityAgentInfo[],
+): boolean {
+  return (
+    a.length === b.length &&
+    a.every(
+      (item, i) =>
+        item.id === b[i]?.id &&
+        item.status === b[i]?.status &&
+        item.sessionId === b[i]?.sessionId,
+    )
+  );
+}
 
 function opsSwitchId(
   rows: Array<{ name: string; group?: string; id: string; switchId?: string }> | null,
@@ -56,8 +74,13 @@ export function useLiveHostBag(): WireHostBag {
   const { fetchMeta, fetchAgents, setActiveAgent, fetchTerminals, fetchTodayUsage } =
     ports.shell;
 
+  const agentMutationRef = useRef(false);
+  const agentEpochRef = useRef(0);
+  // 上次开机看到的 Agent / meta：首帧先画它，hub 回来再换；agentsReady 仍只认真响应
+  const [boot] = useState(readBootShell);
+  const [notice, setNotice] = useState("");
   const [mode, setMode] = useState<UiMode>("chat");
-  const [meta, setMeta] = useState<Meta | null>(null);
+  const [meta, setMeta] = useState<Meta | null>(() => boot?.meta ?? null);
   const [metaOffline, setMetaOffline] = useState(true);
   const [openTerm, setOpenTerm] = useState<OpenTerminalRequest>(null);
   const [dockOpenReq, setDockOpenReq] = useState<{
@@ -67,8 +90,9 @@ export function useLiveHostBag(): WireHostBag {
   const [rightTab, setRightTab] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<string | null>(SIDEBAR_ACTIVITY_ID);
   const [agentBusy, setAgentBusy] = useState(false);
-  const [todayInput, setTodayInput] = useState(0);
-  const [todayOutput, setTodayOutput] = useState(0);
+  const bootToday = boot?.today?.date === localDayKey() ? boot.today : undefined;
+  const [todayInput, setTodayInput] = useState(bootToday?.input ?? 0);
+  const [todayOutput, setTodayOutput] = useState(bootToday?.output ?? 0);
   const [todayDate, setTodayDate] = useState(() => localDayKey());
   const [leftW, setLeftW] = useState<number>(SHELL_LEFT.default);
   const [agentPct, setAgentPct] = useState<number>(SHELL_LEFT.agentPct);
@@ -79,39 +103,81 @@ export function useLiveHostBag(): WireHostBag {
   const [chatLogLines, setChatLogLines] = useState<string[]>([]);
   const [bgTasks, setBgTasks] = useState<DraftBgTask[]>([]);
   const [liveAgentRows, setLiveAgentRows] = useState<LiveAgentInfo[] | null>(
-    null,
+    () => (boot?.agents.length ? boot.agents : null),
   );
-  const [activeAgentName, setActiveAgentName] = useState<string>("coding");
-  const [activeSwitchId, setActiveSwitchId] = useState<string>("");
+  const [activeAgentName, setActiveAgentName] = useState<string>(
+    () => boot?.activeAgentName || "coding",
+  );
+  const [activeSwitchId, setActiveSwitchId] = useState<string>(
+    () => boot?.activeSwitchId ?? "",
+  );
   const [activeProjectPath, setActiveProjectPath] = useState<string | null>(
-    null,
+    () => boot?.activeProjectPath ?? null,
   );
   const [agentsReady, setAgentsReady] = useState(false);
+  const [activityAgents, setActivityAgents] = useState<ActivityAgentInfo[]>(
+    () => boot?.activityAgents ?? [],
+  );
+  const [chatFollowUser, setChatFollowUser] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
+  const prevActivityRef = useRef<Map<string, string>>(new Map());
   const termLines = useMemo(() => {
     if (!chatLogLines.length) return termLinesRaw;
     return [...chatLogLines.slice(-12), ...termLinesRaw.slice(0, 12)];
   }, [chatLogLines, termLinesRaw]);
 
+  // 服务端确认过的壳状态落一份快照，下次开机首帧直接画
   useEffect(() => {
     if (!agentsReady) return;
+    saveBootShell({
+      agents: liveAgentRows ?? [],
+      activeAgentName,
+      activeSwitchId,
+      activeProjectPath,
+      activityAgents,
+      meta,
+      today: { date: todayDate, input: todayInput, output: todayOutput },
+    });
+  }, [
+    agentsReady,
+    liveAgentRows,
+    activeAgentName,
+    activeSwitchId,
+    activeProjectPath,
+    activityAgents,
+    meta,
+    todayDate,
+    todayInput,
+    todayOutput,
+  ]);
+
+  useEffect(() => {
+    if (!agentsReady) return;
+    const epoch = agentEpochRef.current;
+    let cancelled = false;
     void fetchMeta()
       .then((m) => {
+        if (cancelled || agentMutationRef.current || epoch !== agentEpochRef.current) return;
         setMeta(m);
         setMetaOffline(false);
         if (m.agentName) setActiveAgentName(m.agentName);
       })
       .catch(() => {
+        if (cancelled || agentMutationRef.current || epoch !== agentEpochRef.current) return;
         setMeta(null);
         setMetaOffline(true);
       });
+    return () => { cancelled = true; };
   }, [agentsReady, fetchMeta]);
 
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
+      if (agentMutationRef.current) return;
+      const epoch = agentEpochRef.current;
       try {
         const r = await fetchAgents();
-        if (cancelled) return;
+        if (cancelled || agentMutationRef.current || epoch !== agentEpochRef.current) return;
         setAgentsReady(true);
         setLiveAgentRows((prev) => {
           const next = r.agents;
@@ -143,6 +209,10 @@ export function useLiveHostBag(): WireHostBag {
           const proj = r.activeProjectPath ?? null;
           setActiveProjectPath((prev) => (prev === proj ? prev : proj));
         }
+        const nextActivity = r.activityAgents ?? [];
+        setActivityAgents((prev) =>
+          sameActivityAgents(prev, nextActivity) ? prev : nextActivity,
+        );
       } catch {
         if (!cancelled) setAgentsReady(true);
         /* keep previous agents on poll failure */
@@ -201,6 +271,8 @@ export function useLiveHostBag(): WireHostBag {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
+      if ((e.target as HTMLElement | null)?.closest(".term-panel, [role=dialog], .cm-editor")) return;
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       if (e.key.toLowerCase() === "b" && !e.shiftKey) {
@@ -322,7 +394,10 @@ export function useLiveHostBag(): WireHostBag {
     async (agentId: string) => {
       const hit = agents.find((a) => a.id === agentId);
       const switchId = hit?.id || agentId;
-      if (switchId === activeSwitchId) return;
+      if (switchId === activeSwitchId || agentMutationRef.current) return;
+      agentMutationRef.current = true;
+      agentEpochRef.current += 1;
+      setNotice("");
       try {
         const r = await setActiveAgent(switchId);
         setActiveAgentName(r.activeAgentName);
@@ -332,24 +407,23 @@ export function useLiveHostBag(): WireHostBag {
         setMeta(r.meta);
         setMetaOffline(false);
       } catch (e) {
-        console.error("[app] setActiveAgent failed", e);
-        setActiveSwitchId(switchId);
-        if (hit?.name) setActiveAgentName(hit.name);
-        if (hit?.projectPath !== undefined) {
-          setActiveProjectPath(hit.projectPath ?? null);
-        }
+        setNotice(`切换 Agent 失败：${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        agentMutationRef.current = false;
       }
     },
     [agents, activeSwitchId, setActiveAgent],
   );
 
   const onAddProject = useCallback(() => {
-    void pickAndOpenProject().then(async (root) => {
-      if (!root) {
-        if (!window.maouApp?.pickFolder) setMode("settings");
-        return;
-      }
+    if (agentMutationRef.current) return;
+    agentMutationRef.current = true;
+    agentEpochRef.current += 1;
+    setNotice("");
+    void (async () => {
       try {
+        const root = await pickAndOpenProject();
+        if (!root) return;
         const a = await fetchAgents();
         setLiveAgentRows(a.agents);
         setAgentsReady(true);
@@ -360,9 +434,11 @@ export function useLiveHostBag(): WireHostBag {
         setMeta(m);
         setMetaOffline(false);
       } catch (e) {
-        console.error("[app] add project refresh failed", e);
+        setNotice(`打开项目失败：${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        agentMutationRef.current = false;
       }
-    });
+    })();
   }, [fetchMeta, fetchAgents]);
 
   const applyTodayUsage = useCallback(
@@ -410,10 +486,22 @@ export function useLiveHostBag(): WireHostBag {
   }, []);
 
   useEffect(() => {
-    if (mode !== "chat" || !agentsReady) return;
+    if (mode !== "chat" || !agentsReady || chatFollowUser) return;
     if (activeAgentName === "ops") return;
     void onSelectAgent(opsSwitchId(liveAgentRows));
-  }, [mode, agentsReady, activeAgentName, liveAgentRows, onSelectAgent]);
+  }, [mode, agentsReady, chatFollowUser, activeAgentName, liveAgentRows, onSelectAgent]);
+
+  useEffect(() => {
+    let bump = false;
+    for (const item of activityAgents) {
+      const prev = prevActivityRef.current.get(item.id);
+      if (prev === "running" && (item.status === "done" || item.status === "failed")) {
+        if (activeAgentName === "ops") bump = true;
+      }
+      prevActivityRef.current.set(item.id, item.status);
+    }
+    if (bump) setReloadToken((n) => n + 1);
+  }, [activityAgents, activeAgentName]);
 
   const onSettingsMetaChange = useCallback((m: Meta) => {
     setMeta(m);
@@ -465,6 +553,29 @@ export function useLiveHostBag(): WireHostBag {
 
   const onOpenChat = useCallback(() => setMode("chat"), []);
 
+  const activityMenu = useMemo(
+    () =>
+      buildActivityMenu({
+        home: {
+          switchId: opsSwitchId(liveAgentRows),
+          agent: "ops",
+          displayName: "OPS",
+        },
+        currentSwitchId: activeSwitchId || opsSwitchId(liveAgentRows),
+        activity: activityAgents,
+      }),
+    [liveAgentRows, activeSwitchId, activityAgents],
+  );
+
+  const onSelectActivityAgent = useCallback(
+    (switchId: string) => {
+      setChatFollowUser(true);
+      setMode("chat");
+      void onSelectAgent(switchId);
+    },
+    [onSelectAgent],
+  );
+
   /*
    * Each slice below is memoized on its own inputs so a token stream (which
    * touches only `agentBusy` / dock log lines) leaves topbar / agentList /
@@ -472,8 +583,15 @@ export function useLiveHostBag(): WireHostBag {
    * slices — keep the two in step when adding fields.
    */
   const topbar = useMemo<WireHostBag["topbar"]>(
-    () => ({ mode, onModeChange, todayInput, todayOutput }),
-    [mode, onModeChange, todayInput, todayOutput],
+    () => ({
+      mode,
+      onModeChange,
+      todayInput,
+      todayOutput,
+      activityAgents: activityMenu,
+      onSelectActivityAgent,
+    }),
+    [mode, onModeChange, todayInput, todayOutput, activityMenu, onSelectActivityAgent],
   );
 
   const agentList = useMemo<WireHostBag["agentList"]>(
@@ -523,14 +641,15 @@ export function useLiveHostBag(): WireHostBag {
   );
 
   const chatThreadRailId = mode === "chat" ? LIVE_SESSION_RAIL_ID : "";
-  const chatModeReady = mode !== "chat" || activeAgentName === "ops";
+  const chatModeReady =
+    mode !== "chat" || activeAgentName === "ops" || chatFollowUser;
   const chat = useMemo<WireHostBag["chat"]>(
     () => ({
-      remountKey: "ops",
+      remountKey: activeSwitchId || activeAgentName || "ops",
       layout: "codex",
       chrome: "wire",
       className: "wire-context",
-      defaultAgent: "ops",
+      defaultAgent: activeAgentName || "ops",
       onOpenTerminal,
       onMetaChange: onChatMetaChange,
       threadRailId: chatThreadRailId,
@@ -538,8 +657,11 @@ export function useLiveHostBag(): WireHostBag {
       onTodayUsageChange: applyTodayUsage,
       onDockLogLines,
       bootReady: agentsReady && chatModeReady,
+      reloadToken,
     }),
     [
+      activeSwitchId,
+      activeAgentName,
       onOpenTerminal,
       onChatMetaChange,
       chatThreadRailId,
@@ -547,16 +669,18 @@ export function useLiveHostBag(): WireHostBag {
       onDockLogLines,
       agentsReady,
       chatModeReady,
+      reloadToken,
     ],
   );
 
   const liveSettings = useMemo<WireHostBag["liveSettings"]>(
     () => ({
       presentation: "page",
+      active: mode === "settings",
       onClose: onSettingsClose,
       onMetaChange: onSettingsMetaChange,
     }),
-    [onSettingsClose, onSettingsMetaChange],
+    [onSettingsClose, onSettingsMetaChange, mode],
   );
 
   const project = useMemo<WireHostBag["project"]>(
@@ -567,8 +691,15 @@ export function useLiveHostBag(): WireHostBag {
     [draftMeta.projectLabel, draftMeta.projectPath],
   );
 
+  const agentInspect = useMemo<WireHostBag["agentInspect"]>(
+    () => ({ switchId: activeSwitchId }),
+    [activeSwitchId],
+  );
+
   return {
     variant: "live",
+    notice,
+    onDismissNotice: () => setNotice(""),
     mode,
     leftTab,
     rightTab,
@@ -593,5 +724,6 @@ export function useLiveHostBag(): WireHostBag {
     chat,
     liveSettings,
     project,
+    agentInspect,
   };
 }

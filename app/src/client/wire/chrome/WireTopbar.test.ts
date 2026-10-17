@@ -41,4 +41,38 @@ describe("WireTopbar today tokens", () => {
     assert.match(html, /↑ 0/);
     assert.match(html, /↓ 0/);
   });
+
+  it("lists activity agents in the topbar crumb", () => {
+    const html = renderToStaticMarkup(
+      createElement(WireTopbar, {
+        mode: "chat",
+        onModeChange: () => {},
+        todayInput: 0,
+        todayOutput: 0,
+        activityAgents: [
+          {
+            id: "system:ops",
+            switchId: "system:ops",
+            agent: "ops",
+            displayName: "OPS",
+            status: "idle",
+            current: true,
+          },
+          {
+            id: "c1",
+            switchId: "project:/p:coding",
+            agent: "coding",
+            displayName: "Coding",
+            projectName: "app",
+            sessionId: "s1",
+            status: "running",
+          },
+        ],
+        onSelectActivityAgent: () => {},
+      }),
+    );
+    assert.match(html, /wire-agent-crumb/);
+    assert.match(html, /Coding · 运行中/);
+    assert.match(html, /活动 Agent/);
+  });
 });

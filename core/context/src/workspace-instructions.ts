@@ -3,8 +3,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { readTextCached } from "./file-text-cache.js";
 
 export const WORKSPACE_INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
 
@@ -53,7 +54,8 @@ export function loadWorkspaceInstructionFiles(projectRoot: string): WorkspaceIns
         out.push({ name, path: filePath, content: "", hash: "", exists: false });
         continue;
       }
-      const content = readFileSync(filePath, "utf-8").trim();
+      const raw = readTextCached(filePath);
+      const content = (raw ?? "").trim();
       out.push({
         name,
         path: filePath,

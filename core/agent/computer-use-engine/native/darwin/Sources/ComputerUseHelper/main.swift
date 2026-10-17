@@ -74,6 +74,11 @@ struct Request: Codable {
     var amount: Double? = nil
     var durationMs: Int? = nil
     var path: String? = nil
+    var restoreMouse: Bool? = nil
+    var cursorX: Double? = nil
+    var cursorY: Double? = nil
+    var cursorColor: String? = nil
+    var cursorLabel: String? = nil
 }
 
 struct Response: Codable {
@@ -621,7 +626,7 @@ func snapshot(_ req: Request) async -> Response {
                 return Response(ok: false, op: "snapshot", error: "需要屏幕录制权限才能走像素降级。\(screenHint)", permissions: perms)
             }
         } else {
-            image = await capturePNG(app: running, windowTitle: req.window)
+            image = await capturePNG(app: running, windowTitle: req.window, req: req)
         }
     }
     return Response(
@@ -742,6 +747,7 @@ func act(_ req: Request) async -> Response {
         return Response(ok: false, op: "act", error: "找不到应用", permissions: perms)
     }
     activateRunning(running)
+    let savedMouse = currentMouseLocation()
     var used = "ax"
     var message = ""
     do {
@@ -827,8 +833,10 @@ func act(_ req: Request) async -> Response {
             }
         }
     } catch {
+        restoreMouseIfNeeded(req, saved: savedMouse)
         return Response(ok: false, op: "act", error: error.localizedDescription, permissions: perms)
     }
+    restoreMouseIfNeeded(req, saved: savedMouse)
     return Response(
         ok: true,
         op: "act",
@@ -855,7 +863,7 @@ func observe(_ req: Request) async -> Response {
         let gap = UInt32((ms / steps) * 1000)
         var frames: [String] = []
         for i in 0..<steps {
-            if let png = await capturePNG(app: running, windowTitle: req.window) {
+            if let png = await capturePNG(app: running, windowTitle: req.window, req: req) {
                 frames.append(png)
             }
             if i + 1 < steps { usleep(gap) }
@@ -875,7 +883,7 @@ func observe(_ req: Request) async -> Response {
             app: running?.localizedName
         )
     }
-    guard let png = await capturePNG(app: running, windowTitle: req.window) else {
+    guard let png = await capturePNG(app: running, windowTitle: req.window, req: req) else {
         return Response(ok: false, op: "observe", error: "截图失败", permissions: perms)
     }
     if let path = req.path, let data = Data(base64Encoded: png) {
@@ -893,19 +901,99 @@ func observe(_ req: Request) async -> Response {
     )
 }
 
+func currentMouseLocation() -> CGPoint {
+    CGEvent(source: nil)?.location ?? .zero
+}
+
+func restoreMouseIfNeeded(_ req: Request, saved: CGPoint) {
+    guard req.restoreMouse == true else { return }
+    CGWarpMouseCursorPosition(saved)
+    CGAssociateMouseAndMouseCursorPosition(boolean_t(1))
+}
+
+struct CaptureShot {
+    let image: CGImage
+    let originX: CGFloat
+    let originY: CGFloat
+    let sourceW: CGFloat
+    let sourceH: CGFloat
+}
+
 @MainActor
-func capturePNG(app: NSRunningApplication?, windowTitle: String?) async -> String? {
+func capturePNG(app: NSRunningApplication?, windowTitle: String?, req: Request? = nil) async -> String? {
     do {
-        let image = try await captureCGImage(pid: app?.processIdentifier, windowTitle: windowTitle)
-        return encodePNG(image)
+        let shot = try await captureCGImage(pid: app?.processIdentifier, windowTitle: windowTitle)
+        let stamped = paintVirtualCursor(shot, req: req)
+        return encodePNG(stamped)
     } catch {
         return nil
     }
 }
 
+func paintVirtualCursor(_ shot: CaptureShot, req: Request?) -> CGImage {
+    let image = shot.image
+    guard let req, let x = req.cursorX, let y = req.cursorY else { return image }
+    let w = image.width
+    let h = image.height
+    guard w > 2, h > 2, shot.sourceW > 1, shot.sourceH > 1 else { return image }
+    let ix = (CGFloat(x) - shot.originX) * CGFloat(w) / shot.sourceW
+    let iy = (CGFloat(y) - shot.originY) * CGFloat(h) / shot.sourceH
+    if ix < -20 || iy < -20 || ix > CGFloat(w) + 20 || iy > CGFloat(h) + 20 {
+        return image
+    }
+    let color = parseHexColor(req.cursorColor ?? "#5B8DEF")
+    let ctx = CGContext(
+        data: nil,
+        width: w,
+        height: h,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )
+    guard let ctx else { return image }
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+    let px = ix
+    let py = CGFloat(h) - iy
+    ctx.setFillColor(color)
+    ctx.fillEllipse(in: CGRect(x: px - 7, y: py - 7, width: 14, height: 14))
+    ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.9))
+    ctx.setLineWidth(2)
+    ctx.strokeEllipse(in: CGRect(x: px - 8, y: py - 8, width: 16, height: 16))
+    if let label = req.cursorLabel, !label.isEmpty {
+        let text = label as NSString
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor.white,
+        ]
+        let size = text.size(withAttributes: attrs)
+        let box = CGRect(x: px + 10, y: py + 6, width: size.width + 8, height: size.height + 4)
+        ctx.setFillColor(color)
+        ctx.fill(box)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        text.draw(at: CGPoint(x: box.minX + 4, y: box.minY + 2), withAttributes: attrs)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    return ctx.makeImage() ?? image
+}
+
+func parseHexColor(_ raw: String) -> CGColor {
+    var hex = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if hex.hasPrefix("#") { hex.removeFirst() }
+    guard hex.count == 6, let val = UInt32(hex, radix: 16) else {
+        return CGColor(red: 0.36, green: 0.55, blue: 0.94, alpha: 1)
+    }
+    let r = CGFloat((val >> 16) & 0xFF) / 255
+    let g = CGFloat((val >> 8) & 0xFF) / 255
+    let b = CGFloat(val & 0xFF) / 255
+    return CGColor(red: r, green: g, blue: b, alpha: 1)
+}
+
 @MainActor
-func captureCGImage(pid: pid_t?, windowTitle: String?) async throws -> CGImage {
+func captureCGImage(pid: pid_t?, windowTitle: String?) async throws -> CaptureShot {
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+    let displayH = CGFloat(content.displays.first?.height ?? 0)
     if let pid {
         if let win = content.windows.first(where: { window in
             window.owningApplication?.processID == pid
@@ -916,7 +1004,15 @@ func captureCGImage(pid: pid_t?, windowTitle: String?) async throws -> CGImage {
             cfg.width = max(2, Int(win.frame.width))
             cfg.height = max(2, Int(win.frame.height))
             cfg.showsCursor = false
-            return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            let originY = displayH > 0 ? displayH - win.frame.maxY : 0
+            return CaptureShot(
+                image: image,
+                originX: win.frame.minX,
+                originY: originY,
+                sourceW: win.frame.width,
+                sourceH: win.frame.height
+            )
         }
     }
     guard let display = content.displays.first else {
@@ -927,7 +1023,14 @@ func captureCGImage(pid: pid_t?, windowTitle: String?) async throws -> CGImage {
     cfg.width = display.width
     cfg.height = display.height
     cfg.showsCursor = false
-    return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+    return CaptureShot(
+        image: image,
+        originX: 0,
+        originY: 0,
+        sourceW: CGFloat(display.width),
+        sourceH: CGFloat(display.height)
+    )
 }
 
 func encodePNG(_ image: CGImage, maxWidth: Int = 1280) -> String? {

@@ -4,6 +4,11 @@
  */
 
 import {
+  configurePerfLog,
+  shouldWritePerfLog,
+  writePerfLog,
+} from "@little-house-studio/types";
+import {
   formatCpu,
   formatFps,
   formatMem,
@@ -12,6 +17,7 @@ import {
   processStatsHudEnabled,
   processStatsRollSec,
   processStatsSampleMs,
+  retainProcessStatsSampler,
   setAgentBusy,
   subscribeProcessStats,
   UI_PHASES,
@@ -58,6 +64,37 @@ export function ensurePerfHudSampler(onTick?: () => void): () => void {
     if (!processStatsHudEnabled()) return;
     onTick?.();
   });
+}
+
+/** 热窗把 process-stats 快照写进同一套 perf jsonl。 */
+export function ensurePerfLogSink(maouRoot?: string): () => void {
+  configurePerfLog({ process: "cli", maouRoot });
+  const release = retainProcessStatsSampler();
+  const unsub = subscribeProcessStats(() => {
+    const s = getProcessStats();
+    const snap = {
+      cpuPct: s.cpuPct,
+      rssMb: s.rssMb,
+      heapMb: s.heapMb,
+      loopLagMs: s.loopLagMs,
+      load1: s.load1,
+    };
+    const gate = shouldWritePerfLog({ snap });
+    if (s.verdict === "idle" && !gate.write) return;
+    void writePerfLog(
+      {
+        kind: "occupancy",
+        process: "cli",
+        snap,
+        reasons: gate.reasons,
+      },
+      { maouRoot, force: true },
+    );
+  });
+  return () => {
+    unsub();
+    release();
+  };
 }
 
 export function buildPerfHudPayload(

@@ -942,6 +942,71 @@ describe("user ask mark", () => {
     assert.match(html, /data-user-chip="" data-digits="1">8</);
   });
 
+  it("keeps human users as cards and remaps terminal-notification off the user card", () => {
+    const msgs = chatLinesToDraftMessages([
+      { id: "u", role: "user", text: "后台编译", source: "human" },
+      { id: "a", role: "assistant", text: "已派发" },
+      {
+        id: "n",
+        role: "user",
+        text: "<terminal-message>\n终端「后台编译 Rust terminal-engine」已完成。\n</terminal-message>",
+        source: "terminal-notification",
+        authorType: "tool",
+        kind: "tool_async_notify",
+        toolName: "use_terminal",
+      },
+      {
+        id: "paste",
+        role: "user",
+        text: "<terminal-message>\n用户粘贴\n</terminal-message>",
+        source: "human",
+      },
+    ]);
+    assert.equal(msgs[0]!.role, "user");
+    assert.equal(msgs[2]!.role, "tool");
+    assert.equal(msgs[2]!.tool?.name, "use_terminal");
+    assert.equal((msgs[2]!.body || "").includes("<terminal-message>"), false);
+    assert.equal(msgs[3]!.role, "user");
+    const html = renderToStaticMarkup(
+      createElement(WireThreadView, { messages: msgs }),
+    );
+    assert.match(html, /data-msg-id="u"[^>]*data-msg-role="user"/);
+    assert.match(html, /data-msg-id="paste"[^>]*data-msg-role="user"/);
+    assert.match(html, /data-tool-name="use_terminal"/);
+    assert.match(html, /已完成/);
+    assert.equal(/data-msg-id="n"/.test(html), false);
+    assert.equal(userOrdinalMap(msgs).has("n"), false);
+    const segs = groupLoopTurns(groupThreadBlocks(msgs));
+    const userIds = segs.flatMap((s) => {
+      if (s.kind === "loop" && s.user) return [s.user.id];
+      if (s.kind === "solo" && s.message.role === "user") return [s.message.id];
+      return [];
+    });
+    assert.deepEqual(userIds, ["u", "paste"]);
+  });
+
+  it("drops tool-loop warning bubbles including dominant≈", () => {
+    const msgs = chatLinesToDraftMessages([
+      { id: "u", role: "user", text: "go" },
+      { id: "a", role: "assistant", text: "ok" },
+      {
+        id: "sys",
+        role: "system",
+        text: "工具循环警告：请换策略",
+        source: "tool_loop",
+      },
+      {
+        id: "sys2",
+        role: "system",
+        text: "检测到工具调用死循环倾向（1/3）dominant≈project_manage",
+      },
+    ]);
+    assert.equal(
+      msgs.some((m) => /工具循环|请换策略|dominant/.test(m.body || "")),
+      false,
+    );
+  });
+
   it("drops 调用模型 system telemetry so thinking stays in the same loop", () => {
     const msgs = chatLinesToDraftMessages([
       { id: "u", role: "user", text: "咕咕嘎嘎" },

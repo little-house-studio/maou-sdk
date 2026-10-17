@@ -2,22 +2,18 @@
  * 终端三层安全策略机
  *
  * ┌────────────┬──────────────────────────────────────────────────────────┐
- * │ 致命 fatal │ 完全硬拦。不可 yolo、不可「再执行一次」放行、不可白名单。 │
- * │            │ 来源：DCG critical / 灾难性 high 规则 / maou-hard-deny。  │
+ * │ 致命 fatal │ DCG critical deny；不可 yolo、二次执行、用户白名单。     │
+ * │            │ 另含 maou-hard-deny。                                    │
  * ├────────────┼──────────────────────────────────────────────────────────┤
- * │ 危险 dang. │ 需确认。normal→用户审批或「相同命令再执行一次」；         │
- * │            │ auto→审核 Agent，拒绝后仍可用二次执行确认；               │
- * │            │ yolo→静默放行（不问）。致命级仍硬拦。                     │
- * │            │ 来源：DCG high/medium deny（且未进安全白名单）。           │
+ * │ 危险 dang. │ DCG 非 critical 的 deny；以及 DCG allow 后的 local-rules。│
+ * │            │ normal→审批或相同命令再执行一次；auto→审核 Agent；      │
+ * │            │ yolo→静默放行。                                          │
  * ├────────────┼──────────────────────────────────────────────────────────┤
- * │ 安全 safe  │ 无顾虑放行（仍可走用户白名单/普通 ask 管未知命令）。       │
- * │            │ 来源：DCG allow / maou 安全白名单 / 未匹配。              │
+ * │ 安全 safe  │ DCG allow / maou-safe / 未匹配。                         │
  * └────────────┴──────────────────────────────────────────────────────────┘
  *
- * 对齐 DCG 官方：
- *   - severity: critical/high/medium/low
- *   - policy mode: deny/warn/log（我们把 warn/log 当 safe 侧放行）
- *   - 默认 core 匹配多为 deny；我们再映射到 fatal/dangerous
+ * DCG severity：critical / high / medium / low。
+ * DCG decision/mode：deny / warn / log（robot 下 ask 记为 deny）。
  */
 
 import { evaluateWithDcg, formatDcgDenyMessage, type DcgEvalResult } from "./dcg/client.js";
@@ -45,39 +41,13 @@ export type {
   SecurityTier,
 } from "./types.js";
 
-/**
- * 致命规则：不可二次确认绕过。
- * 注意：DCG 会把 clean-force 等也标 critical，那些应归 dangerous（可二次确认），
- * 故不能「凡 critical 一律 fatal」。
- */
-const FATAL_RULE_IDS = new Set([
-  "core.git:reset-hard",
-  "core.filesystem:rm-rf-root",
-  "core.filesystem:rm-rf-root-home",
-  "core.filesystem:rm-rf-star",
-]);
-
-const FATAL_RULE_PREFIXES = ["system.disk:", "windows.system:", "windows.filesystem:format"];
-
 function normSeverity(s?: string): string {
   return (s || "").toLowerCase().trim();
 }
 
-/**
- * 将 DCG deny 映射为 fatal 或 dangerous。
- * - fatal：真正不可恢复 / 系统级（reset --hard、删根、磁盘）
- * - dangerous：其余 deny（含 DCG 标 critical 的 clean-force 等）→ 可二次确认
- */
+/** DCG deny → Maou 分层。读 dcg.severity（trim、大小写不敏感）。 */
 export function mapDcgDenyToTier(dcg: DcgEvalResult): "fatal" | "dangerous" {
-  const rule = dcg.ruleId || "";
-  const blob = `${rule} ${dcg.reason || ""} ${dcg.explanation || ""}`;
-
-  if (FATAL_RULE_IDS.has(rule)) return "fatal";
-  if (FATAL_RULE_PREFIXES.some((p) => rule.startsWith(p))) return "fatal";
-  if (/rm-rf-root|reset-hard|mkfs|wipefs|\bdd\b.*\/dev\/|vssadmin|format-volume/i.test(blob)) {
-    return "fatal";
-  }
-  return "dangerous";
+  return normSeverity(dcg.severity) === "critical" ? "fatal" : "dangerous";
 }
 
 /**
@@ -124,19 +94,7 @@ export async function assessCommandSecurity(
   }
 
   if (dcg.decision === "deny") {
-    let tier = mapDcgDenyToTier(dcg);
-    // 本地规则可能把某些场景抬到 fatal
-    const local = checkLocalSecurityRules(command);
-    if (local?.tier === "fatal") {
-      return {
-        tier: "fatal",
-        severity: "critical",
-        ruleId: local.id,
-        reason: local.reason,
-        source: "local-rules",
-        dcg,
-      };
-    }
+    const tier = mapDcgDenyToTier(dcg);
     return {
       tier,
       severity: dcg.severity || (tier === "fatal" ? "critical" : "high"),
@@ -148,7 +106,6 @@ export async function assessCommandSecurity(
     };
   }
 
-  // DCG allow：仍检查本地规则（补默认未开的 docker/db/云 等）
   const local = checkLocalSecurityRules(command);
   if (local) {
     return {

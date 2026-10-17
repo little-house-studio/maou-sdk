@@ -42,6 +42,12 @@ export function WireShell(bag: WireHostBag) {
         onPointerDown={focus.onPointerDown}
         onFocusCapture={focus.onFocusIn}
       >
+        {bag.notice ? (
+          <div className="wire-shell-notice" role="alert">
+            <span>{bag.notice}</span>
+            <button type="button" onClick={bag.onDismissNotice} aria-label="关闭提示">×</button>
+          </div>
+        ) : null}
         <ShellRegion id="topbar">
           <SlotOutlet name="shell.topbar" props={bag} />
         </ShellRegion>

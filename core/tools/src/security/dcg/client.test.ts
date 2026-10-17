@@ -1,21 +1,37 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  DEFAULT_DCG_EXTRA_PACKS,
   evaluateWithDcg,
   formatDcgDenyMessage,
   resetDcgBinaryCache,
   resolveDcgBinary,
+  resolveDcgExtraPacks,
   setDcgBinaryCacheForTest,
   setDcgEvaluatorForTest,
 } from "./client.js";
 import { checkMaouHardDeny } from "../hard-deny.js";
 
 describe("maou-hard-deny", () => {
-  it("blocks fork bomb and shutdown, allows normal cmds", () => {
-    expect(checkMaouHardDeny(":(){ :|:& };:")?.id).toMatch(/fork-bomb/);
+  it("blocks shutdown/init, allows fork bomb and normal cmds", () => {
     expect(checkMaouHardDeny("sudo reboot")?.id).toMatch(/shutdown/);
     expect(checkMaouHardDeny("init 0")?.id).toMatch(/init/);
+    expect(checkMaouHardDeny(":(){ :|:& };:")).toBeNull();
     expect(checkMaouHardDeny("git status")).toBeNull();
     expect(checkMaouHardDeny("npm test")).toBeNull();
+  });
+});
+
+describe("default extra packs", () => {
+  it("lists official pack ids used at evaluate time", () => {
+    expect(DEFAULT_DCG_EXTRA_PACKS).toContain("system.permissions");
+    expect(DEFAULT_DCG_EXTRA_PACKS).toContain("system.services");
+    expect(DEFAULT_DCG_EXTRA_PACKS).toContain("containers.docker");
+    expect(DEFAULT_DCG_EXTRA_PACKS).toContain("package_managers");
+    expect(resolveDcgExtraPacks({})).toBe(DEFAULT_DCG_EXTRA_PACKS.join(","));
+    expect(resolveDcgExtraPacks({}, { MAOU_DCG_PACKS: "containers.docker" })).toBe(
+      "containers.docker",
+    );
+    expect(resolveDcgExtraPacks({ extraPacks: ["storage.s3"] })).toBe("storage.s3");
   });
 });
 
@@ -121,5 +137,14 @@ describe("dcg-guard integration (real binary if present)", () => {
 
     const rm = await evaluateWithDcg("rm -rf ./src", { binaryPath: bin, required: true });
     expect(rm.decision).toBe("deny");
+
+    const prune = await evaluateWithDcg("docker system prune -af", {
+      binaryPath: bin,
+      required: true,
+      safeAllow: false,
+    });
+    expect(prune.decision).toBe("deny");
+    expect(prune.packId).toBe("containers.docker");
+    expect((prune.severity || "").toLowerCase()).toBe("high");
   }, 15_000);
 });

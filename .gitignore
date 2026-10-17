@@ -98,6 +98,8 @@ app/.vite/
 # ─── App 本地校验 / 抓取产物（勿提交） ───
 app/verify-out/
 app/release/
+# Tauri 打包前摊平的 Node hub（app/scripts/stage-hub.mjs）
+app/.tauri-stage/
 **/verify-out/
 app/**/draft-audit*.png
 app/**/.preview-*.png

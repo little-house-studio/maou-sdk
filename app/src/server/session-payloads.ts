@@ -127,8 +127,22 @@ function isModelTurn(data: Record<string, unknown>): boolean {
 }
 
 function isHumanTurn(data: Record<string, unknown>): boolean {
+  const author = asRecord(data.author);
+  const authorType = String(author?.type ?? "");
+  if (authorType === "human") return true;
+  if (authorType === "tool" || authorType === "system" || authorType === "agent") {
+    return false;
+  }
   const kind = String(data.kind ?? "");
-  return kind === "" || kind === "human_user" || kind === "queued_user";
+  if (kind === "human_user" || kind === "queued_user") return true;
+  if (kind) return false;
+  const source = String(data.source ?? "");
+  if (source === "human" || source === "user" || source === "cli" || source === "feishu") {
+    return true;
+  }
+  if (source) return false;
+  const content = String(data.content ?? "");
+  return !content.includes("<terminal-message>") && !content.includes("<tool-followup");
 }
 
 function toolCallList(data: Record<string, unknown>): Array<Record<string, unknown>> {

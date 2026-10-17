@@ -6,12 +6,17 @@ export type DesktopHttpStart = {
   body?: string;
 };
 
+export type DesktopHttpHead = {
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+};
+
+/** 桌面壳暴露给页面的能力（Tauri 实现见 tauri-bridge.ts）。 */
 export type DesktopAppBridge = {
   kind: "desktop";
   platform?: "darwin" | "win32" | "linux";
-  httpStart: (
-    req: DesktopHttpStart,
-  ) => Promise<{ status: number; statusText: string; headers: Record<string, string> }>;
+  httpStart: (req: DesktopHttpStart) => Promise<DesktopHttpHead>;
   httpAbort: (id: string) => void;
   onHttpChunk: (id: string, cb: (chunk: Uint8Array) => void) => () => void;
   onHttpEnd: (id: string, cb: () => void) => () => void;
@@ -20,6 +25,8 @@ export type DesktopAppBridge = {
   wsSend: (id: string, data: string) => void;
   wsClose: (id: string) => void;
   onWsMessage: (id: string, cb: (data: string) => void) => () => void;
+  /** hub 一侧断开（或没连上）。 */
+  onWsClose?: (id: string, cb: () => void) => () => void;
   pickFolder?: () => Promise<{ path: string | null }>;
   revealInFolder?: (path: string) => Promise<{ ok: boolean }>;
   openPath?: (path: string) => Promise<{ ok: boolean; error?: string }>;
@@ -147,6 +154,7 @@ export function installDesktopTransport(bridge = window.maouApp): boolean {
     private id = crypto.randomUUID();
     private pending: string[] = [];
     private offMsg: (() => void) | null = null;
+    private offClose: (() => void) | null = null;
 
     constructor(url: string | URL) {
       this.url = String(url);
@@ -155,6 +163,13 @@ export function installDesktopTransport(bridge = window.maouApp): boolean {
         if (this.onmessage) this.onmessage(ev);
         else this.pending.push(data);
       });
+      this.offClose =
+        host.onWsClose?.(this.id, () => {
+          if (this.readyState === IpcWebSocket.CLOSED) return;
+          this.readyState = IpcWebSocket.CLOSED;
+          this.unsubscribe();
+          this.onclose?.(new CloseEvent("close"));
+        }) ?? null;
       queueMicrotask(() => {
         if (this.readyState === IpcWebSocket.CLOSED) return;
         host.wsOpen(this.id, this.url);
@@ -176,10 +191,16 @@ export function installDesktopTransport(bridge = window.maouApp): boolean {
     close() {
       if (this.readyState === IpcWebSocket.CLOSED) return;
       this.readyState = IpcWebSocket.CLOSED;
-      this.offMsg?.();
-      this.offMsg = null;
+      this.unsubscribe();
       host.wsClose(this.id);
       this.onclose?.(new CloseEvent("close"));
+    }
+
+    private unsubscribe() {
+      this.offMsg?.();
+      this.offMsg = null;
+      this.offClose?.();
+      this.offClose = null;
     }
 
     addEventListener() {}
@@ -189,7 +210,11 @@ export function installDesktopTransport(bridge = window.maouApp): boolean {
     }
   }
 
-  window.WebSocket = IpcWebSocket as unknown as typeof WebSocket;
-  void OrigWS;
+  // 只有 hub 的 /ws/* 走 IPC；其它（如 Vite HMR）仍用原生 WebSocket
+  const RoutedWebSocket = function (url: string | URL, protocols?: string | string[]) {
+    return desktopWsPath(String(url)) ? new IpcWebSocket(url) : new OrigWS(url, protocols);
+  } as unknown as typeof WebSocket;
+  Object.assign(RoutedWebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
+  window.WebSocket = RoutedWebSocket;
   return true;
 }

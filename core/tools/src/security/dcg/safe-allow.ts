@@ -8,9 +8,11 @@
  *
  * 设计原则：
  *   1. 只放行「可重建 / 局部 / 明确意图」的操作
- *   2. 路径含 ..、绝对路径到非 tmp、源码目录、.git 等 → 不放行
+ *   2. 路径含 ..、通配、home/根顶层、源码树根、.git → 不放行
  *   3. 整树 discard（git restore .）仍拒绝
  */
+
+import { homedir } from "node:os";
 
 export interface MaouSafeAllowHit {
   id: string;
@@ -62,35 +64,135 @@ function tokenize(cmd: string): string[] {
   return tokens;
 }
 
+function normSlash(p: string): string {
+  let s = p.trim().replace(/\\/g, "/");
+  if (s.length > 1) s = s.replace(/\/+$/, "");
+  return s;
+}
+
+function expandUserPath(raw: string): string {
+  const p = raw.trim();
+  const home = normSlash(homedir());
+  if (p === "~" || p === "$HOME") return home;
+  if (p.startsWith("~/") || p.startsWith("~\\")) return normSlash(home + "/" + p.slice(2));
+  if (p.startsWith("$HOME/") || p.startsWith("$HOME\\")) {
+    return normSlash(home + "/" + p.slice(6));
+  }
+  return normSlash(p);
+}
+
+/** home 之下的路径段；不是该 home 下则 null。 */
+function restUnderHome(abs: string): string[] | null {
+  const home = normSlash(homedir());
+  const n = normSlash(abs);
+  if (n === home) return [];
+  if (n.startsWith(`${home}/`)) {
+    return n.slice(home.length + 1).split("/").filter(Boolean);
+  }
+  return null;
+}
+
+/** `/Users/<name>/...` 或 `/home/<name>/...` 在用户目录之后的段。 */
+function restUnderHomeShaped(abs: string): string[] | null {
+  const n = normSlash(abs);
+  const m = n.match(/^\/(?:Users|home)\/([^/]+)(?:\/(.*))?$/);
+  if (!m) return null;
+  return (m[2] || "").split("/").filter(Boolean);
+}
+
+function restAfterHome(abs: string): string[] | null {
+  return restUnderHome(abs) ?? restUnderHomeShaped(abs);
+}
+
 function isSafeRmRfTarget(raw: string): boolean {
   let p = raw.trim();
   if (!p || p === "." || p === ".." || p === "*" || p === "./*" || p.includes("*")) {
     return false;
   }
-  // 拒绝路径穿越与家目录/系统根
   if (p.includes("..")) return false;
-  if (p === "/" || p === "~" || p.startsWith("~/") || p.startsWith("~\\")) return false;
-  // 绝对路径：仅 /tmp /var/tmp
-  if (p.startsWith("/")) {
-    return /^\/(tmp|var\/tmp)(\/|$)/.test(p);
+  if (p === "/" || p === "~" || p === "$HOME") return false;
+  const expanded = expandUserPath(p);
+  if (expanded === "/" ) return false;
+  if (expanded.startsWith("/")) {
+    return /^\/(tmp|var\/tmp)(\/|$)/.test(expanded);
   }
-  p = p.replace(/^\.\//, "");
+  p = expanded.replace(/^\.\//, "");
   const parts = p.split(/[/\\]+/).filter(Boolean);
   if (parts.length === 0) return false;
-  // 任何一段是 .git → 拒绝
   if (parts.some((seg) => seg.toLowerCase() === ".git")) return false;
 
   const base = parts[parts.length - 1]!.toLowerCase();
-  // 最后一级是已知可重建产物/依赖目录 → 允许（含 monorepo 深路径 core/tools/dist）
   if (SAFE_RM_RF_BASENAMES.has(base)) return true;
-  // node_modules 下任意子路径（缓存等）
   if (parts.some((seg) => seg.toLowerCase() === "node_modules")) return true;
   if (base.endsWith(".egg-info")) return true;
   return false;
 }
 
+const DISPOSABLE_FIRST = new Set([
+  "testdata",
+  "tmp",
+  "temp",
+  "scratch",
+  "fixtures",
+  ".maou",
+  ".cache",
+]);
+
+const SOURCE_FIRST = new Set([
+  "src",
+  "lib",
+  "app",
+  "apps",
+  "core",
+  "cli",
+  "packages",
+  "agent-products",
+  "docs",
+  "include",
+  "source",
+]);
+
+function isDisposableSeg(seg: string): boolean {
+  const s = seg.toLowerCase();
+  if (SAFE_RM_RF_BASENAMES.has(s)) return true;
+  if (s.endsWith(".egg-info")) return true;
+  return /(?:^|[._-])(tmp|temp|cache|out|build|scratch|probe|screenshot)s?$/.test(s);
+}
+
+/** 具体子路径：相对临时/产物树，或 home 下 >=2 段且无通配/穿越的绝对路径 */
+function isConcreteProjectSubpath(raw: string): boolean {
+  const p = raw.trim();
+  if (!p || p === "." || p === ".." || p.includes("*") || p.includes("..")) return false;
+  if (p === "/" || p === "~" || p === "$HOME") return false;
+
+  const looksAbs =
+    p.startsWith("/") ||
+    p.startsWith("~") ||
+    p.startsWith("$HOME/") ||
+    p.startsWith("$HOME\\");
+  if (looksAbs) {
+    const expanded = expandUserPath(p);
+    const rest = restAfterHome(expanded);
+    if (!rest || rest.length < 2) return false;
+    if (rest.some((seg) => seg.toLowerCase() === ".git")) return false;
+    return true;
+  }
+
+  let rel = p.replace(/^\.\//, "");
+  const parts = rel.split(/[/\\]+/).filter(Boolean);
+  if (parts.length < 2) return false;
+  if (parts.some((seg) => seg.toLowerCase() === ".git")) return false;
+  const first = parts[0]!.toLowerCase();
+  const last = parts[parts.length - 1]!.toLowerCase();
+  if (SAFE_RM_RF_BASENAMES.has(first) || DISPOSABLE_FIRST.has(first)) return true;
+  if (isDisposableSeg(last)) return true;
+  if (SOURCE_FIRST.has(first)) return false;
+  return false;
+}
+
 function isRmWithRf(tokens: string[]): boolean {
-  if (tokens[0] !== "rm") return false;
+  const head = tokens[0] ?? "";
+  if (head !== "rm" && !/(?:^|\/)rm$/.test(head)) return false;
   // 收集所有以 - 开头的 flag
   const flags = tokens.slice(1).filter((t) => t.startsWith("-") && !t.startsWith("--"));
   const joined = flags.join("");
@@ -170,11 +272,21 @@ export function matchMaouSafeAllow(command: string): MaouSafeAllowHit | null {
   }
   if (isRmWithRf(rmTokens)) {
     const targets = rmRfTargets(rmTokens);
-    if (targets.length > 0 && targets.length <= 15 && targets.every(isSafeRmRfTarget)) {
-      return {
-        id: "maou.allow:rm-rf-artifacts",
-        reason: `允许删除可重建产物/依赖目录：${targets.join(", ")}`,
-      };
+    if (targets.length > 0 && targets.length <= 15) {
+      const allArtifacts = targets.every(isSafeRmRfTarget);
+      const allConcrete = targets.every((t) => isSafeRmRfTarget(t) || isConcreteProjectSubpath(t));
+      if (allArtifacts) {
+        return {
+          id: "maou.allow:rm-rf-artifacts",
+          reason: `允许删除可重建产物/依赖目录：${targets.join(", ")}`,
+        };
+      }
+      if (allConcrete) {
+        return {
+          id: "maou.allow:rm-rf-concrete-subpath",
+          reason: `允许删除项目内具体临时/产物子路径：${targets.join(", ")}`,
+        };
+      }
     }
   }
 

@@ -3,8 +3,10 @@ import {
   MISSING_HELPER,
   UNSUPPORTED_PLATFORM,
   act,
+  desktopOwnerFrom,
   isAvailable,
   rememberSnapshot,
+  resetCursorsForTest,
   resetHelperPathCache,
   resetSnapshotsForTest,
   run,
@@ -17,6 +19,7 @@ afterEach(() => {
   setHelperRunnerForTest(undefined);
   resetSnapshotsForTest();
   resetHelperPathCache();
+  resetCursorsForTest();
 });
 
 function axSnap(over: Partial<HelperEnvelope> = {}): HelperEnvelope {
@@ -78,7 +81,49 @@ describe("run with injected helper", () => {
   it("help does not need a helper", async () => {
     const r = await run("help");
     expect(r.ok).toBe(true);
-    expect(r.message).toMatch(/控件树/);
+    expect(r.message).toMatch(/list/);
+  });
+
+  it("list returns the catalog without a helper", async () => {
+    const r = await run("list");
+    expect(r.ok).toBe(true);
+    expect(r.message).toMatch(/screenshot/);
+    expect(Array.isArray(r.payload.actions)).toBe(true);
+  });
+
+  it("call name=screenshot routes to observe", async () => {
+    let seen: HelperRequest | undefined;
+    setHelperRunnerForTest(async (req) => {
+      seen = req;
+      return { ok: true, op: "observe", route: "pixels", message: "screenshot", imageBase64: "aaa" };
+    });
+    const owner = desktopOwnerFrom("coding", "s1");
+    const r = await run("call", { name: "screenshot" }, { helperPath: "/dev/null", owner });
+    expect(r.ok).toBe(true);
+    expect(seen?.op).toBe("observe");
+    expect(seen?.kind).toBe("screenshot");
+    expect(seen?.restoreMouse).toBe(true);
+    expect(seen?.cursorLabel).toBe("coding");
+  });
+
+  it("serializes desktop actions on one lock", async () => {
+    let finishedFirst = false;
+    let calls = 0;
+    setHelperRunnerForTest(async () => {
+      const n = calls++;
+      if (n === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        finishedFirst = true;
+      } else {
+        expect(finishedFirst).toBe(true);
+      }
+      return { ok: true, op: "observe", route: "pixels", message: "screenshot", imageBase64: "x" };
+    });
+    await Promise.all([
+      run("screenshot", {}, { helperPath: "/dev/null" }),
+      run("screenshot", {}, { helperPath: "/dev/null" }),
+    ]);
+    expect(calls).toBe(2);
   });
 
   it("unknown action names the miss", async () => {

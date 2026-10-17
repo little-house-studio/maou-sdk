@@ -284,6 +284,7 @@ export class LLMClient {
     jsonSettings?: Record<string, unknown> | null;
     toolSchemas?: Record<string, unknown>[] | null;
     nativeToolCalling?: boolean;
+    _logContext?: Record<string, unknown>;
   }): Promise<{ url: string; headers: Record<string, string>; body: string; rawPayload: Record<string, unknown> }> {
     // 规范化：采样 → extraBody、pricing 嵌套、reasoning 双写
     let preset = normalizeApiPreset(params.preset);
@@ -316,8 +317,15 @@ export class LLMClient {
 
     let headers = adapter.buildRequestHeaders(preset);
 
+    const sessionRaw =
+      params._logContext?.session_id ?? params._logContext?.sessionId;
+    const sessionId =
+      typeof sessionRaw === "string" && sessionRaw.trim()
+        ? sessionRaw.trim()
+        : undefined;
+
     // OAuth / 自定义头覆盖（订阅登录场景：按厂商调整认证头）
-    headers = applyAuthOverrides(headers, preset, protocol);
+    headers = applyAuthOverrides(headers, preset, protocol, { sessionId });
 
     const payload = adapter.buildRequestPayload({
       preset,
@@ -481,6 +489,7 @@ export class LLMClient {
       jsonSettings,
       toolSchemas,
       nativeToolCalling,
+      _logContext,
     });
 
     const startedAt = Date.now();
@@ -822,6 +831,7 @@ export class LLMClient {
       jsonSettings,
       toolSchemas,
       nativeToolCalling,
+      _logContext,
     });
 
     const startedAt = Date.now();

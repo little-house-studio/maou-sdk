@@ -84,10 +84,13 @@ const SOURCE_KIND: Record<string, SessionEventKind> = {
   feishu: "human_user",
   message_bus: "agent_message",
   report_to_parent: "agent_message",
+  project_dispatch: "agent_message",
   empty_retry: "runtime_control",
   verification: "runtime_control",
   todo_notice: "system_notice",
   "terminal-notification": "tool_async_notify",
+  "tool-followup": "tool_async_notify",
+  tool: "tool_result",
   hook: "system_notice",
   injected: "system_notice",
 };
@@ -136,6 +139,7 @@ export function resolveSessionEventKind(msg: {
   if (role === "system") return "system_notice";
 
   if (role === "user") {
+    // 旧盘无 source/kind：当时终端完成 / 工具 follow-up 带着协议标签。
     const c = String(msg.content ?? "");
     if (c.includes("<terminal-message>") || c.includes("<tool-followup")) {
       return "tool_async_notify";
@@ -217,7 +221,11 @@ export function resolveMessageAuthor(msg: {
   if (msg.source === "todo_notice") return authorSystem("todo", "todo");
   if (msg.source === "empty_retry") return authorSystem("runtime", "runtime");
   if (msg.source === "verification") return authorSystem("verify", "verify");
-  if (msg.source === "message_bus" || msg.source === "report_to_parent") {
+  if (
+    msg.source === "message_bus" ||
+    msg.source === "report_to_parent" ||
+    msg.source === "project_dispatch"
+  ) {
     return authorAgent(from || "peer", from || "peer");
   }
   if (msg.source === "terminal-notification") {

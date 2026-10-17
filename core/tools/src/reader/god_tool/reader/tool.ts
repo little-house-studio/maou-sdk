@@ -13,6 +13,7 @@ import { formatRetentionNotice } from "@little-house-studio/types";
 import { resolveToolPath } from "../../../path-guard.js";
 import { markRead } from "../../../file/read-registry.js";
 import { extractSignatures } from "../../../compress/output-compressor.js";
+import { ctxSupportsVision, VISION_UNAVAILABLE_HINT } from "../../../vision.js";
 
 const IMAGE_MIMES: Record<string, string> = {
   ".png": "image/png",
@@ -400,6 +401,17 @@ export class ReadTool extends Tool {
       const buffer = readFileSync(fullPath);
       const ext = extname(fullPath).toLowerCase();
       const mime = IMAGE_MIMES[ext] ?? "application/octet-stream";
+      if (!ctxSupportsVision(ctx)) {
+        return toolFail(
+          "precondition",
+          `当前模型不支持视觉，未注入图片：${userPath}（mime=${mime} | size=${buffer.length} 字节）。\n` +
+            VISION_UNAVAILABLE_HINT,
+          {
+            code: "vision_unavailable",
+            payload: { path: fullPath, mime_type: mime, size: buffer.length },
+          },
+        );
+      }
       const base64 = buffer.toString("base64");
 
       return createToolResponse(true, `[图片: ${userPath} | mime=${mime} | size=${buffer.length} 字节]`, {

@@ -30,6 +30,7 @@ import type {
   fetchTerminals,
   parseLlmClipboard,
   removeChatQueueItem,
+  updateChatQueueItem,
   renameSession,
   runCommand,
   runLlmSvgProbe,
@@ -110,6 +111,7 @@ export type ChatPorts = {
   fetchChatQueue: typeof fetchChatQueue;
   clearChatQueue: typeof clearChatQueue;
   removeChatQueueItem: typeof removeChatQueueItem;
+  updateChatQueueItem: typeof updateChatQueueItem;
 };
 
 export type ShellPorts = {

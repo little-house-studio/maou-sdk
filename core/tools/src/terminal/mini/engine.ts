@@ -227,6 +227,7 @@ export class MiniBackend implements TerminalBackend {
   async logs(id: string, agentName: string, lines?: number): Promise<string> {
     const entry = this.mustGet(id);
     assertOwner(entry, agentName);
+    this.reapEntry(entry);
     entry.lastViewedAt = nowStamp();
     this.persist();
     const n = lines && lines > 0 ? lines : 100;
@@ -237,6 +238,7 @@ export class MiniBackend implements TerminalBackend {
   list(agentName?: string): TerminalInfo[] {
     const out: TerminalInfo[] = [];
     for (const t of this.terminals.values()) {
+      this.reapEntry(t);
       if (agentName && t.agentName !== agentName) continue;
       out.push(this.toInfo(t));
     }
@@ -321,6 +323,17 @@ export class MiniBackend implements TerminalBackend {
 
   openInteractive(): Promise<{ id: string }> {
     return Promise.reject(new MiniUnsupportedError("openInteractive"));
+  }
+
+  private reapEntry(entry: MiniEntry): void {
+    if (entry.state !== "running") return;
+    const child = entry.child;
+    if (child && child.exitCode == null) return;
+    entry.state = "exited";
+    entry.exitCode = child?.exitCode ?? entry.exitCode ?? 0;
+    entry.child = null;
+    entry.updatedAt = nowStamp();
+    this.persist();
   }
 
   private mustGet(id: string): MiniEntry {

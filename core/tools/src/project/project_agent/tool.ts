@@ -21,6 +21,7 @@ import {
 } from "@little-house-studio/types";
 import { Tool, createToolResponse, resolveToolRuntimePorts, toolDir } from "../../base.js";
 import type { ToolContext, ToolDefinition, ToolResponse } from "../../base.js";
+import { tryProjectDispatch } from "../dispatch-host.js";
 
 const PROJECT_CODING_AGENT = "coding";
 
@@ -89,7 +90,7 @@ function ensureProjectCodingAgent(
   const tools = [
     "reader", "write_file", "edit_file", "glob", "grep", "find_code",
     "use_terminal", "search_internet", "use_skill", "find_skill",
-    "todo_manage", "todo_finish",
+    "todo_manage", "todo_finish", "use_computer",
   ];
   writeFileSync(join(projectDir, "agent.json"), JSON.stringify({
     name: PROJECT_CODING_AGENT,
@@ -99,7 +100,7 @@ function ensureProjectCodingAgent(
     scope: "project",
     description: "项目级编码助手（project_agent create 物化）",
     notes: "由 project_agent create 物化；可自由编辑，不会被覆盖。",
-    round_limit: 50,
+    round_limit: 0,
     tools,
     tool_compression: "normal",
     working_dir: projectPath,
@@ -127,7 +128,8 @@ export class ProjectAgentTool extends Tool {
     name: "project_agent",
     aliases: [],
     description:
-      "Ops Agent 的项目代理。list 清单；create 绑定已有路径并驻扎；send 派任务。" +
+      "Ops Agent 的项目代理。list 清单；create 绑定已有路径并驻扎；send 后台派任务。" +
+      "send 立即返回，Coding 在目标项目会话跑完后回写本会话。" +
       "路径已有 .maou 时 create 只重新挂上，不初始化。失效项目在 list / send 结果里写清怎么用 create 修。",
     parameters: {
       type: "object",
@@ -287,6 +289,32 @@ export class ProjectAgentTool extends Tool {
       );
     }
 
+    const hosted = await tryProjectDispatch({
+      projectPath: resolved.project.path,
+      projectName: resolved.project.name,
+      task,
+      parentSessionId: ctx.sessionId,
+      parentAgent: ctx.agentName,
+    });
+    if (hosted) {
+      return createToolResponse(true, [
+        `已在后台启动 Coding Agent「${resolved.project.name}」`,
+        `sessionId: ${hosted.sessionId}`,
+        `project: ${hosted.project}`,
+      ].join("\n"), {
+        payload: {
+          background: true,
+          agent: hosted.agent,
+          sessionId: hosted.sessionId,
+          project: hosted.project,
+          projectName: resolved.project.name,
+          switchId: hosted.switchId,
+          status: "running",
+          taskId: hosted.taskId,
+        },
+      });
+    }
+
     const executor = resolveToolRuntimePorts(ctx).subagentExecutor;
     if (!executor) return createToolResponse(false, "项目 Agent 执行器未注入。");
 
@@ -299,16 +327,24 @@ export class ProjectAgentTool extends Tool {
         persistContext: true,
         enableLoop: true,
         toolPreset: "coding_scoped",
+        detached: true,
       });
-      return createToolResponse(result.ok, [
-        `${result.ok ? "✅" : "❌"} 项目 Agent「${resolved.project.name}」任务完成`,
-        `path: ${resolved.project.path}`,
-        `session: ${result.subSessionId}`,
-        result.error ? `error: ${result.error}` : "",
-        "── 输出 ──",
-        result.output || "(无输出)",
-      ].filter(Boolean).join("\n"), {
-        payload: { project: resolved.project, result },
+      return createToolResponse(true, [
+        `已在后台启动 Coding Agent「${resolved.project.name}」`,
+        `sessionId: ${result.subSessionId}`,
+        `project: ${resolved.project.path}`,
+        `taskId: ${result.taskId}`,
+      ].join("\n"), {
+        payload: {
+          background: true,
+          agent: "coding",
+          sessionId: result.subSessionId,
+          project: resolved.project.path,
+          projectName: resolved.project.name,
+          status: "running",
+          taskId: result.taskId,
+          result,
+        },
       });
     } catch (error) {
       return createToolResponse(false, `项目 Agent 执行失败: ${error instanceof Error ? error.message : String(error)}`);

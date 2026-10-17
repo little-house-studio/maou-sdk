@@ -2,8 +2,8 @@
  * Session usage / context stats modal (wire shell).
  * Opened from the composer 「上下文」 chip — not dumped into the chat thread.
  */
-import { useEffect } from "react";
 import { ContextBreakdownPanel } from "./composer/ContextBreakdownPanel";
+import { useDialog } from "./use-dialog";
 import type { ContextBreakdown } from "./composer/types";
 
 export type SessionUsageStats = {
@@ -54,14 +54,7 @@ export function SessionUsageModal({
   error,
   rawText,
 }: SessionUsageModalProps) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  const dialogRef = useDialog(open, onClose);
 
   if (!open) return null;
 
@@ -90,6 +83,8 @@ export function SessionUsageModal({
     >
       <div
         className="session-usage-modal"
+        ref={dialogRef}
+        tabIndex={-1}
         role="dialog"
         aria-modal="true"
         aria-labelledby="session-usage-title"

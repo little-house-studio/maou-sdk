@@ -63,10 +63,14 @@ function formatTodoPlan(tasks: Task[]): string {
  * AgentRegistry 适配器 —— 实现 PersonaStatusProvider 接口
  */
 class AgentRegistryStatusProvider implements PersonaStatusProvider {
-  constructor(private registry: AgentRegistry) {}
+  constructor(
+    private registry: AgentRegistry,
+    private memo = false,
+  ) {}
 
   getStatus(): PersonaStatus[] {
-    return this.registry.list().map((a) => ({
+    const list = this.memo ? this.registry.listMemoized() : this.registry.list();
+    return list.map((a) => ({
       name: a.name,
       role: a.role,
       status: a.status,
@@ -95,13 +99,18 @@ class TerminalRegistryStatusProvider implements TerminalStatusProvider {
  *
  * @param sessionId - 会话 ID（todo 已改走靠后 system_notice，此处不再写入前缀）
  */
-export function compileDynamicContext(maouRoot: string, agentName?: string, sessionId?: string): string {
+export function compileDynamicContext(
+  maouRoot: string,
+  agentName?: string,
+  sessionId?: string,
+  opts?: { registry?: AgentRegistry },
+): string {
   const parts: string[] = [];
 
   // Agent 状态注入
   try {
-    const registry = new AgentRegistry(maouRoot);
-    const provider = new AgentRegistryStatusProvider(registry);
+    const registry = opts?.registry ?? new AgentRegistry(maouRoot);
+    const provider = new AgentRegistryStatusProvider(registry, Boolean(opts?.registry));
     const agentsText = formatAgentStatus(provider);
     if (agentsText) parts.push(agentsText);
   } catch {

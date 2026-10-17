@@ -9,8 +9,8 @@ security/
   index.ts                 # 对外 API
   types.ts                 # SecurityTier 等
   gate.ts                  # 三层门禁评估与放行决策
-  hard-deny.ts             # 致命硬拦（fork bomb / 关机 / curl|sh / dd…）
-  local-rules.ts           # 补 DCG 默认未开 pack 的资产风险（docker/k8s/db/云…）
+  hard-deny.ts             # 致命硬拦（DCG 现有 pack 仍 allow 的关机/重启）
+  local-rules.ts           # DCG 现有 pack 仍 allow 的缺口（命令行明文 Authorization）
   dcg/
     client.ts              # DCG 子进程适配（必要依赖）
     safe-allow.ts          # 开发向安全操作白名单（rm -rf dist 等）
@@ -31,9 +31,11 @@ security/
 1. `MAOU_DCG_BYPASS` / `DCG_BYPASS`（旁路，生产慎用）
 2. **hard-deny** → fatal  
 3. **DCG**（+ safe-allow 升 safe）  
-4. DCG deny → 映射 fatal/dangerous  
-5. DCG allow → **local-rules**（补资产/供应链）  
+4. DCG deny → critical=fatal，其余=dangerous
+5. DCG allow → **local-rules**（现有 pack 仍 allow 的缺口）  
 6. safe → **approval**（白名单 / ask / auto / yolo）  
+
+评测默认额外启用的官方 pack 见 `DEFAULT_DCG_EXTRA_PACKS`（`MAOU_DCG_PACKS` / `DCG_PACKS` 可覆盖）。`DCG_PACKS` 叠加默认 `core.filesystem` / `core.git` / `system.disk`。
 
 执行层（PTY 路径沙箱、自定义 filter）在 `terminal-engine`，不混入本目录。
 
@@ -41,20 +43,15 @@ security/
 
 - 某 skill 清理自己的临时目录  
 - 浏览器/文件工具的 `safePath`  
-- 写在对应工具旁，不要塞进 `local-rules`  
+- 写在对应工具旁  
 
 ## 残留风险（审计备忘）
-
-见同目录维护时同步更新 `AUDIT.md` 或下方「已知缺口」。
-
-### 已知残余风险
 
 | 风险 | 状态 |
 |------|------|
 | 写脚本再 `bash script.sh` 绕过 SERP 扫描 | 残余：DCG heredoc 管 `bash -c`，不管文件内脚本 |
 | `rimraf` / `rm -r`（无 f） | 故意未当 fatal；可走 dangerous 若扩展 |
-| 默认未开 DCG docker/db pack | 已用 **local-rules** 覆盖常见 prune/destroy/DROP |
+| `poetry publish` / `twine upload` | DCG `package_managers` 对 poetry 因 keyword gate 未命中；无 twine 规则 |
 | 文件工具写敏感路径 | 依赖 `safePath` 项目根限制，非命令安全 |
-| 泄露密钥到 stdout/日志 | 部分 curl -H 规则；无法覆盖所有 exfil |
 | `MAOU_DCG_BYPASS=1` | 人为旁路 |
 | 引擎层 filter 预设默认关 | 主策略在 TS security；引擎仅 sandbox+自定义 |

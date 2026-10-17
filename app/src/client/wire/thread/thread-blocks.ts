@@ -49,9 +49,135 @@ export function isPlaceholderAssistantBody(body: string | undefined): boolean {
 /** Runtime 循环进度（status / log），不是给人看的系统通知。 */
 export function isModelCallProgressText(text: string): boolean {
   const t = text.trim().replace(/^(?:⏳\s*)+/, "");
+  if (
+    /模型不支持多模态/.test(t) ||
+    /Unsupported media/i.test(t) ||
+    /非文本块后重试/.test(t)
+  ) {
+    return true;
+  }
   return /^(?:调用模型|编译\s*Prompt|开始编译\s*Prompt|规划目标合同)(?:\.\.\.|…|：|:|\s|$)/.test(
     t,
   );
+}
+
+/**
+ * 同工具连打的软提醒：只喂模型，人看不见。
+ * 助手正文偶尔提到「请换策略」不要误伤。
+ */
+export function isToolLoopHintText(text: string): boolean {
+  const t = text.trim().replace(/^(?:⏳\s*)+/, "");
+  if (!t) return false;
+  if (/工具循环警告/.test(t)) return true;
+  if (/检测到工具调用(?:可能陷入)?死循环/.test(t)) return true;
+  if (/dominant\s*≈/.test(t)) return true;
+  if (/同一工具连续\s*\d+/.test(t) || /同一调用第\s*\d+/.test(t)) return true;
+  if (/请换策略/.test(t) && /<continue>|死循环|重复模式|换工具/.test(t)) {
+    return true;
+  }
+  return false;
+}
+
+/** 落盘 runtime_control / 直播 system 行：按 source 或正文藏起来。 */
+export function isHiddenToolLoopLine(input: {
+  role?: string;
+  source?: string;
+  text?: string;
+  content?: string;
+}): boolean {
+  const source = (input.source || "").trim();
+  if (source === "tool_loop" || source === "tool_streak") return true;
+  const role = input.role || "";
+  if (role === "assistant" || role === "tool" || role === "thinking") return false;
+  return isToolLoopHintText(input.text || input.content || "");
+}
+
+/** 真人入口（与 session-event SOURCE_KIND 对齐）。 */
+const HUMAN_USER_SOURCES = new Set(["human", "user", "cli", "feishu"]);
+
+const NON_BUBBLE_KINDS = new Set([
+  "tool_async_notify",
+  "tool_result",
+  "runtime_control",
+  "system_notice",
+  "agent_message",
+  "compact",
+  "tool_call",
+  "assistant_turn",
+]);
+
+export type UserLineMeta = {
+  role?: string;
+  source?: string;
+  kind?: string;
+  authorType?: string;
+  text?: string;
+  content?: string;
+};
+
+/** 旧盘没写 author/kind/source 时，当时终端完成 / 工具 follow-up 带着协议标签。 */
+function hasLegacyInjectedUserMarkup(body: string): boolean {
+  return body.includes("<terminal-message>") || body.includes("<tool-followup");
+}
+
+/**
+ * 用户卡只给真人。wireRole 可能是 user（喂模型），看 author / kind / source。
+ * 正文标签不是主路径，只兼容旧盘。
+ */
+export function isHumanUserBubble(input: UserLineMeta): boolean {
+  if ((input.role || "") !== "user") return false;
+  const authorType = (input.authorType || "").trim();
+  if (authorType === "human") return true;
+  if (
+    authorType === "tool" ||
+    authorType === "system" ||
+    authorType === "agent"
+  ) {
+    return false;
+  }
+  const kind = (input.kind || "").trim();
+  if (kind === "human_user" || kind === "queued_user") return true;
+  if (NON_BUBBLE_KINDS.has(kind)) return false;
+  const source = (input.source || "").trim();
+  if (source) return HUMAN_USER_SOURCES.has(source);
+  return !hasLegacyInjectedUserMarkup(input.text || input.content || "");
+}
+
+export type UserDisplayRole = "user" | "tool" | "system";
+
+/** 非真人的 wire-user：终端完成 / 工具 follow-up 走工具卡，其余走系统条。 */
+export function displayRoleForUserLine(input: UserLineMeta): UserDisplayRole {
+  if ((input.role || "") !== "user") return "system";
+  if (isHumanUserBubble(input)) return "user";
+  const source = (input.source || "").trim();
+  const kind = (input.kind || "").trim();
+  const authorType = (input.authorType || "").trim();
+  if (
+    authorType === "tool" ||
+    source === "terminal-notification" ||
+    source === "tool-followup" ||
+    source === "tool" ||
+    kind === "tool_async_notify" ||
+    kind === "tool_result" ||
+    (!source && !kind && !authorType && hasLegacyInjectedUserMarkup(input.text || input.content || ""))
+  ) {
+    return "tool";
+  }
+  return "system";
+}
+
+/** 分类靠元数据；解开标签只为展示。 */
+export function unwrapInjectedNoticeBody(text: string): string {
+  const t = (text || "").trim();
+  const term = t.match(
+    /^<terminal-message>\s*([\s\S]*?)\s*<\/terminal-message>\s*$/i,
+  );
+  if (term) return term[1]!.trim();
+  const follow = t.match(
+    /^<tool-followup\b[^>]*>\s*([\s\S]*?)\s*<\/tool-followup>\s*$/i,
+  );
+  if (follow) return follow[1]!.trim();
+  return text;
 }
 
 export function replyBlockLive(block: ReplyBlock): boolean {
@@ -337,7 +463,16 @@ export function groupLoopTurns(blocks: ThreadBlock[]): ThreadSegment[] {
 
   for (const block of blocks) {
     if (block.kind === "solo") {
-      if (block.message.role === "user") {
+      if (
+        block.message.role === "user" &&
+        isHumanUserBubble({
+          role: block.message.role,
+          source: block.message.source,
+          kind: block.message.meta?.kind,
+          authorType: block.message.authorType,
+          content: block.message.body,
+        })
+      ) {
         flush();
         user = block.message;
         continue;

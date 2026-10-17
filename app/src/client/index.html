@@ -10,17 +10,13 @@
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="icon" href="/icon.png" type="image/png" />
     <script>
+      // 首帧前按 Tauri 壳注入的平台画 data-app-chrome（红绿灯让位 / 拖拽条）
       (function () {
-        var ua = navigator.userAgent;
-        if (!/Electron/i.test(ua)) return;
-        var chrome = /Mac/i.test(ua)
-          ? "darwin"
-          : /Windows NT/i.test(ua)
-            ? "win32"
-            : /Linux/i.test(ua)
-              ? "linux"
-              : "";
-        if (chrome) document.documentElement.dataset.appChrome = chrome;
+        var desktop = window.__MAOU_DESKTOP__;
+        var chrome = desktop && desktop.platform;
+        if (chrome === "darwin" || chrome === "win32" || chrome === "linux") {
+          document.documentElement.dataset.appChrome = chrome;
+        }
       })();
     </script>
   </head>

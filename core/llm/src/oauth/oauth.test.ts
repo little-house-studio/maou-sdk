@@ -262,4 +262,50 @@ describe("applyAuthOverrides", () => {
     expect(headers["x-xai-token-auth"]).toBe("xai-grok-cli");
     expect(headers["x-grok-client-identifier"]).toBe("grok-shell");
   });
+
+  it("OpenCode Zen 补 x-opencode-session，沿用传入会话", () => {
+    const headers = applyAuthOverrides(
+      { Authorization: "Bearer k", "User-Agent": "Mozilla/5.0" },
+      {
+        model: "deepseek-v4.1-flash",
+        url: "https://opencode.ai/zen/go/v1/chat/completions",
+        key: "k",
+        protocol: "openai",
+      },
+      "openai",
+      { sessionId: "sess-abc" },
+    );
+    expect(headers["x-opencode-session"]).toBe("sess-abc");
+    expect(headers["User-Agent"]).toBe("maou-agent/0.1.0");
+  });
+
+  it("OpenCode Zen 已有 extraHeaders session 不覆盖", () => {
+    const headers = applyAuthOverrides(
+      { Authorization: "Bearer k" },
+      {
+        model: "deepseek-v4.1-flash",
+        url: "https://opencode.ai/zen/go/v1/chat/completions",
+        key: "k",
+        extraHeaders: { "x-opencode-session": "keep-me" },
+      },
+      "openai",
+      { sessionId: "sess-other" },
+    );
+    expect(headers["x-opencode-session"]).toBe("keep-me");
+  });
+
+  it("非 OpenCode 地址不补 session 头", () => {
+    const headers = applyAuthOverrides(
+      { Authorization: "Bearer k", "User-Agent": "Mozilla/5.0" },
+      {
+        model: "gpt-4o",
+        url: "https://api.openai.com/v1/chat/completions",
+        key: "k",
+      },
+      "openai",
+      { sessionId: "sess-abc" },
+    );
+    expect(headers["x-opencode-session"]).toBeUndefined();
+    expect(headers["User-Agent"]).toBe("Mozilla/5.0");
+  });
 });

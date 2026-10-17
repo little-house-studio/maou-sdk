@@ -104,6 +104,7 @@ let scrollFlag = false;
 let scrollSampleStart = Date.now();
 let timer: ReturnType<typeof setInterval> | null = null;
 let enabled = true;
+let samplerRetain = 0;
 
 let paintFrameCount = 0;
 let inkFrameCount = 0;
@@ -474,10 +475,24 @@ function ensureTimer(): void {
 }
 
 function stopTimerIfIdle(): void {
-  if (listeners.size === 0 && timer) {
+  if (listeners.size === 0 && samplerRetain === 0 && timer) {
     clearInterval(timer);
     timer = null;
   }
+}
+
+/** 占用日志需要采样时挂住定时器，不依赖 HUD 开关。 */
+export function retainProcessStatsSampler(): () => void {
+  samplerRetain += 1;
+  enabled = true;
+  ensureTimer();
+  return () => {
+    samplerRetain = Math.max(0, samplerRetain - 1);
+    if (samplerRetain === 0 && !processStatsHudEnabled()) {
+      if (listeners.size === 0) enabled = false;
+      stopTimerIfIdle();
+    }
+  };
 }
 
 export function setAgentBusy(busy: boolean): void {
@@ -515,26 +530,26 @@ function envPerfHudDefault(): boolean {
 /** Settings / store: turn right-top PerfHud sampling + display on/off at runtime. */
 export function setProcessStatsHudEnabled(on: boolean): void {
   hudUserEnabled = on;
-  if (!on) {
+  if (!on && samplerRetain === 0) {
     enabled = false;
     if (timer) {
       clearInterval(timer);
       timer = null;
     }
-  } else {
-    enabled = true;
-    if (listeners.size > 0) {
-      ensureTimer();
-      if (snap.ts === 0 || Date.now() - snap.ts > SAMPLE_MS * 2) tick();
-    }
+    return;
+  }
+  enabled = true;
+  if (listeners.size > 0 || samplerRetain > 0) {
+    ensureTimer();
+    if (snap.ts === 0 || Date.now() - snap.ts > SAMPLE_MS * 2) tick();
   }
 }
 
 export function subscribeProcessStats(cb: () => void): () => void {
   listeners.add(cb);
-  if (processStatsHudEnabled()) {
+  if (processStatsHudEnabled() || samplerRetain > 0) {
     enabled = true;
-    ensureTimer(); // 内部会立即 tick 一次
+    ensureTimer();
   } else {
     enabled = false;
   }

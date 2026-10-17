@@ -15,6 +15,7 @@ import { Tool, toolDir } from "../../../base.js";
 import type { ToolContext, ToolResponse, ToolDefinition } from "../../../base.js";
 import { createToolResponse, toolFail } from "../../../base.js";
 import { errToString } from "./_util.js";
+import { ctxSupportsVision, visionUnavailableMessage } from "../../../vision.js";
 
 export class BrowserTool extends Tool {
   readonly schemaDir = toolDir(import.meta.url);
@@ -265,7 +266,7 @@ export class BrowserTool extends Tool {
             );
           }
         }
-        return this.wrap(opened);
+        return this.wrap(opened, ctx);
       }
 
       // ── 编排类 ──
@@ -278,7 +279,7 @@ export class BrowserTool extends Tool {
             { code: "missing_params", details: { missing: ["steps"], action: "batch" } },
           );
         }
-        return this.wrap(await opencli.batch(session, steps, { cwd }));
+        return this.wrap(await opencli.batch(session, steps, { cwd }), ctx);
       }
       if (action === "multi") {
         const steps = params.steps as opencli.MultiStep[] | undefined;
@@ -289,7 +290,7 @@ export class BrowserTool extends Tool {
             { code: "missing_params", details: { missing: ["steps"], action: "multi" } },
           );
         }
-        return this.wrap(await opencli.multi(steps, { cwd }));
+        return this.wrap(await opencli.multi(steps, { cwd }), ctx);
       }
       if (action === "watch") {
         return this.wrap(await opencli.watch(session, {
@@ -300,7 +301,7 @@ export class BrowserTool extends Tool {
           timeout: String(params.timeout ?? "60000"),
           poll_interval: String(params.poll_interval ?? "2000"),
           extract_js: String(params.extract_js ?? ""),
-        }, { cwd }));
+        }, { cwd }), ctx);
       }
       if (action === "run") {
         const command = String(params.command ?? "").trim();
@@ -311,7 +312,7 @@ export class BrowserTool extends Tool {
             { code: "missing_params", details: { missing: ["command"], action: "run" } },
           );
         }
-        return this.wrap(await opencli.runRaw(session, command.split(/\s+/), { cwd }));
+        return this.wrap(await opencli.runRaw(session, command.split(/\s+/), { cwd }), ctx);
       }
 
       // ── 普通 action（SHORTCUTS）──
@@ -326,7 +327,7 @@ export class BrowserTool extends Tool {
         ttl: String(params.ttl ?? ""), workspace: String(params.workspace ?? ""), domain: String(params.domain ?? ""),
         path_prefix: String(params.path_prefix ?? ""), wait_type: String(params.wait_type ?? ""),
       };
-      return this.wrap(await opencli.run(session, action, shortcutArgs, { cwd }));
+      return this.wrap(await opencli.run(session, action, shortcutArgs, { cwd }), ctx);
     } catch (e) {
       const raw = `browser 执行失败: ${errToString(e)}`;
       return createToolResponse(false, this.enrichBrowserError(raw, false));
@@ -334,12 +335,18 @@ export class BrowserTool extends Tool {
   }
 
   /** 把引擎 EngineResult 封装为 ToolResponse */
-  private wrap(r: opencli.EngineResult): ToolResponse {
+  private wrap(r: opencli.EngineResult, ctx: ToolContext): ToolResponse {
     const extras: { payload: Record<string, unknown>; images?: { mimeType: string; data: string }[] } = { payload: r.payload };
-    if (r.imageBase64) {
+    const vision = ctxSupportsVision(ctx);
+    if (r.imageBase64 && vision) {
       extras.images = [{ mimeType: "image/png", data: r.imageBase64 }];
+    } else if (r.imageBase64) {
+      extras.payload = { ...extras.payload, vision: "stripped" };
     }
-    return createToolResponse(r.ok, this.enrichBrowserError(r.message, r.ok), extras);
+    const message = r.imageBase64 && !vision
+      ? visionUnavailableMessage(this.enrichBrowserError(r.message, r.ok))
+      : this.enrichBrowserError(r.message, r.ok);
+    return createToolResponse(r.ok, message, extras);
   }
 
   /** Bridge / 扩展未连接时补安装指引 */

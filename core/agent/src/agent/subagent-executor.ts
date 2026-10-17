@@ -436,7 +436,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
 
   private async _forkImpl(taskId: string, taskDesc: string, options?: ForkOptions): Promise<SubagentResultLike> {
     const parentSessionId = this.parentSessionId;
-    const subSessionId = this._idFactory(parentSessionId, taskId);
+    const subSessionId = String(options?.subSessionId ?? "").trim() || this._idFactory(parentSessionId, taskId);
     const start = Date.now();
 
     // ── kind 策略解析（多态 SubagentPolicy → RunPlan）──
@@ -1151,6 +1151,7 @@ export class SubagentExecutor implements SubagentExecutorLike {
     const forkOpts: ForkOptions = {
       ...(options ?? {}),
       detached: false,
+      subSessionId: params.subSessionId,
     };
 
     let result: SubagentResultLike | undefined;
@@ -1165,6 +1166,10 @@ export class SubagentExecutor implements SubagentExecutorLike {
         subSessionId: params.subSessionId,
         ok: false,
         elapsedMs: Date.now() - params.start,
+        detached: true,
+        parentSessionId: params.parentSessionId,
+        output: msg,
+        agentName: params.subAgentName,
       });
       return;
     }
@@ -1180,6 +1185,10 @@ export class SubagentExecutor implements SubagentExecutorLike {
         elapsedMs: result.elapsedMs,
         requests: result.requests,
         tokens: result.tokens,
+        detached: true,
+        parentSessionId: params.parentSessionId,
+        output: result.output,
+        agentName: params.subAgentName,
       });
       this._log("info", `[FORK] task=${taskId} 后台执行完成: ok=${result.ok} elapsed=${result.elapsedMs}ms`);
     }

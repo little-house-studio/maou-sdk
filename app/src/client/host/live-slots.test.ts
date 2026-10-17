@@ -47,7 +47,7 @@ describe("live host slots", () => {
     );
     assert.deepEqual(
       slots.entriesOfSlot("aside.right.tab").map((e) => e.options.id),
-      ["files"],
+      ["files", "agent"],
     );
     slots.dispose();
   });
@@ -70,7 +70,7 @@ describe("live host slots", () => {
     ]);
     assert.deepEqual(
       slots.entriesOfSlot("aside.right.tab").map((e) => e.options.id),
-      ["files", "search"],
+      ["files", "agent", "search"],
     );
     slots.dispose();
   });

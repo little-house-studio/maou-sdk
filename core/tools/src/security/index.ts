@@ -6,8 +6,8 @@
  * 目录：
  *   gate.ts                 — 三层门禁（fatal / dangerous / safe）
  *   types.ts                — 公共类型
- *   hard-deny.ts            — 致命硬拦
- *   local-rules.ts          — 补 DCG 默认未覆盖的资产/供应链风险
+ *   hard-deny.ts            — 致命硬拦（DCG 现有 pack 仍 allow 的关机/重启）
+ *   local-rules.ts          — DCG 现有 pack 仍 allow 的缺口
  *   dcg/client.ts           — DCG 二进制适配
  *   dcg/safe-allow.ts       — 开发安全操作白名单（产物 rm 等）
  *   approval/terminal-policy.ts — 用户白/黑名单与 normal/auto/yolo
@@ -39,8 +39,10 @@ export { checkLocalSecurityRules, listLocalSecurityRules } from "./local-rules.j
 export type { LocalRuleHit } from "./local-rules.js";
 
 export {
+  DEFAULT_DCG_EXTRA_PACKS,
   evaluateWithDcg,
   resolveDcgBinary,
+  resolveDcgExtraPacks,
   ensureDcgInstalled,
   formatDcgDenyMessage,
   setDcgEvaluatorForTest,

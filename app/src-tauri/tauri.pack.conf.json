@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "pnpm run build && pnpm run stage:hub"
+  },
+  "bundle": {
+    "resources": {
+      "../.tauri-stage/hub": "hub"
+    }
+  }
+}

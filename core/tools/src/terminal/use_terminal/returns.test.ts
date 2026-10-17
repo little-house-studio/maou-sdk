@@ -10,6 +10,10 @@ import type { ToolContext } from "../../base.js";
 import { setDcgEvaluatorForTest, resetDcgBinaryCache } from "../../security/dcg/client.js";
 import { setMode, setTerminalPolicyRoot } from "../../security/index.js";
 import { resetTerminalBackendForTest } from "../resolve-backend.js";
+import {
+  forgetTerminalProgress,
+  noteTerminalOutputProgress,
+} from "../overflow.js";
 
 function stubCtx(agentName: string, projectRoot: string): ToolContext {
   return {
@@ -202,6 +206,127 @@ describe("use_terminal 消息返回", () => {
     expect(rm.payload).toMatchObject({ id: "bg-sleep", terminals_total: 0 });
   });
 
+  it("后台已退出后 logs 提示进程已退出", async () => {
+    const agent = `ret-exited-${Date.now()}`;
+    setup(agent);
+    const ctx = stubCtx(agent, tmp);
+    const started = await tool.execute(
+      {
+        action: "run",
+        command: "echo DONE_EXIT_MARK",
+        background: true,
+        id: "bg-done",
+        description: "即完",
+        reason: "unit test",
+      },
+      ctx,
+    );
+    expect(started.ok).toBe(true);
+    const deadline = Date.now() + 4000;
+    let logs = await tool.execute(
+      { action: "manage", manage_action: "logs", id: "bg-done", reason: "unit test" },
+      ctx,
+    );
+    while (Date.now() < deadline && logs.payload?.state === "running") {
+      await new Promise((r) => setTimeout(r, 80));
+      logs = await tool.execute(
+        { action: "manage", manage_action: "logs", id: "bg-done", reason: "unit test" },
+        ctx,
+      );
+    }
+    expect(logs.message).toMatch(/进程已退出/);
+    expect(logs.payload?.process_exited).toBe(true);
+    expect(logs.payload?.state).not.toBe("running");
+    await tool.execute(
+      { action: "manage", manage_action: "rm", id: "bg-done", reason: "unit test" },
+      ctx,
+    );
+  });
+
+  it("exit 0 + 大量 ERROR 行：ok 仍 true，正文/meta/payload 有 warning", async () => {
+    const agent = `ret-warn-${Date.now()}`;
+    setup(agent);
+    const cmd =
+      "node -e \"for (let i=1;i<=50;i++) console.error('ERROR line '+i); process.exit(0)\"";
+    const res = await tool.execute(
+      { action: "run", command: cmd, description: "err-lines", reason: "unit test" },
+      stubCtx(agent, tmp),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.payload?.exit_code).toBe(0);
+    expect(res.message).toMatch(/⚠ \[warning\]/);
+    expect(res.message).toMatch(/warning=true/);
+    expect(res.message).toMatch(/ERROR line 1/);
+    expect(res.payload?.warning).toBe(true);
+  });
+
+  it("echo ERROR >&2; exit 0 短输出也 warning", async () => {
+    const agent = `ret-warn1-${Date.now()}`;
+    setup(agent);
+    const cmd = "node -e \"console.error('ERROR'); process.exit(0)\"";
+    const res = await tool.execute(
+      { action: "run", command: cmd, description: "one-err", reason: "unit test" },
+      stubCtx(agent, tmp),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.message).toMatch(/⚠ \[warning\]/);
+    expect(res.payload?.warning).toBe(true);
+  });
+
+  it("exit 1 不打 exit-0 warning", async () => {
+    const agent = `ret-no-warn-${Date.now()}`;
+    setup(agent);
+    const res = await tool.execute(
+      {
+        action: "run",
+        command: "node -e \"console.error('ERROR'); process.exit(1)\"",
+        description: "fail-err",
+        reason: "unit test",
+      },
+      stubCtx(agent, tmp),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.message).not.toMatch(/⚠ \[warning\]/);
+    expect(res.payload?.warning).not.toBe(true);
+  });
+
+  it("后台无输出任务：从创建时钟 +76s 后 logs/footer 标 stall", async () => {
+    const agent = `ret-stall-${Date.now()}`;
+    setup(agent);
+    const ctx = stubCtx(agent, tmp);
+    const cmd = process.platform === "win32" ? "ping -n 100 127.0.0.1" : "sleep 100";
+    const started = await tool.execute(
+      {
+        action: "run",
+        command: cmd,
+        background: true,
+        id: "stall-sleep",
+        description: "空转",
+        reason: "unit test",
+      },
+      ctx,
+    );
+    expect(started.ok).toBe(true);
+    const id = String(started.payload?.terminal_id || "stall-sleep");
+    forgetTerminalProgress(id);
+    noteTerminalOutputProgress(id, "", Date.now() - 76_000);
+    const logs = await tool.execute(
+      { action: "manage", manage_action: "logs", id, reason: "unit test" },
+      ctx,
+    );
+    expect(logs.ok).toBe(true);
+    expect(logs.message).toMatch(/疑似卡死|无进展/);
+    expect(logs.payload?.stalled).toBe(true);
+    await tool.execute(
+      { action: "manage", manage_action: "stop", id, reason: "unit test" },
+      ctx,
+    );
+    await tool.execute(
+      { action: "manage", manage_action: "rm", id, reason: "unit test" },
+      ctx,
+    );
+  });
+
   it("mini write 返回不支持错误", async () => {
     const agent = `ret-wr-${Date.now()}`;
     setup(agent);
@@ -211,5 +336,25 @@ describe("use_terminal 消息返回", () => {
     );
     expect(res.ok).toBe(false);
     expect(res.message).toMatch(/不支持 write/);
+  });
+});
+
+describe("writeNewlineHint（问题1：换行提示）", () => {
+  it("普通文本无换行 → 给提示", async () => {
+    const { writeNewlineHint } = await import("./tool.js");
+    const hint = writeNewlineHint("y");
+    expect(hint).toMatch(/换行|\\n/);
+  });
+  it("以 \\n 结尾 → 无提示", async () => {
+    const { writeNewlineHint } = await import("./tool.js");
+    expect(writeNewlineHint("y\n")).toBe("");
+    expect(writeNewlineHint("y\r")).toBe("");
+  });
+  it("控制序列（Ctrl+C/D、ESC、ANSI）→ 无提示", async () => {
+    const { writeNewlineHint } = await import("./tool.js");
+    expect(writeNewlineHint("\x03")).toBe("");
+    expect(writeNewlineHint("\x04")).toBe("");
+    expect(writeNewlineHint("\x1b[A")).toBe("");
+    expect(writeNewlineHint("\x1b[5~")).toBe("");
   });
 });

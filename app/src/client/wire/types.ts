@@ -124,6 +124,10 @@ export type DraftMessage = {
   role: MessageRole;
   persisted?: boolean;
   body: string;
+  /** 落盘 / 直播 source：human / terminal-notification / tool_loop … */
+  source?: string;
+  /** 发言人类型：human / agent / system / tool */
+  authorType?: string;
   /** Tool name shortcut (CLI tools[] / card name) */
   tag?: string;
   clickable?: boolean;

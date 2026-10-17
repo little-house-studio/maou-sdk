@@ -622,8 +622,10 @@ impl Terminal {
         }
     }
 
-    /// 停止终端：先 ProcessGroup（整树），再 kill 直接 child；Windows 再 taskkill /T
+    /// 停止终端：先 ProcessGroup（整树），再 kill 直接 child；Windows 再 taskkill /T。
+    /// 仅对 running 状态标 Killed；已 exited / interrupted 的任务保持原状态（stop 是 no-op 而非覆盖为 killed）。
     pub fn kill(&mut self) -> TerminalResult<()> {
+        let was_running = self.state == TerminalState::Running;
         self.running.store(false, Ordering::SeqCst);
 
         if let Some(ref pg) = self.process_group {
@@ -646,8 +648,10 @@ impl Terminal {
             process_group::taskkill_tree(pid);
         }
 
-        self.state = TerminalState::Killed;
-        self.updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        if was_running {
+            self.state = TerminalState::Killed;
+            self.updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        }
         emit_listeners(&self.listeners, StreamEvent::Exit(self.exit_code));
         Ok(())
     }
